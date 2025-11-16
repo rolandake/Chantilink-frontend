@@ -37,25 +37,27 @@ export default defineConfig({
             sizes: "512x512",
             type: "image/png",
             purpose: "any maskable",
-          }
-        ]
+          },
+        ],
       },
 
       workbox: {
         globPatterns: ["**/*.{js,css,html,woff2,ttf,svg,png,jpg,jpeg,webp,webmanifest}"],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 Mo
+
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.destination === "image",
             handler: "CacheFirst",
             options: {
               cacheName: "images-cache",
-              expiration: { maxEntries: 120, maxAgeSeconds: 60 * 60 * 24 * 30 }
-            }
+              expiration: { maxEntries: 120, maxAgeSeconds: 60 * 60 * 24 * 30 },
+            },
           },
           {
             urlPattern: ({ request }) => ["script", "style"].includes(request.destination),
             handler: "StaleWhileRevalidate",
-            options: { cacheName: "assets-cache" }
+            options: { cacheName: "assets-cache" },
           },
           {
             urlPattern: /^https:\/\/api\.chantilink\.ci\/.*/i,
@@ -63,38 +65,38 @@ export default defineConfig({
             options: {
               cacheName: "api-cache",
               networkTimeoutSeconds: 8,
-              expiration: { maxEntries: 100, maxAgeSeconds: 60 * 5 }
-            }
-          }
-        ]
-      }
-    })
+              expiration: { maxEntries: 100, maxAgeSeconds: 60 * 5 },
+            },
+          },
+        ],
+      },
+    }),
   ],
 
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "src")
+      "@": path.resolve(__dirname, "src"),
     },
     extensions: [".js", ".jsx", ".ts", ".tsx"],
-    dedupe: ["react", "react-dom"] // évite hooks invalides
+    dedupe: ["react", "react-dom"], // évite hooks invalides
   },
 
   server: {
-    host: "localhost", // force localhost pour HMR stable
+    host: "localhost",
     port: 5173,
     strictPort: true,
     hmr: {
       protocol: "ws",
-      host: "localhost", // doit matcher host
+      host: "localhost",
       port: 5173,
     },
     proxy: {
       "/api": {
         target: "http://localhost:5000",
         changeOrigin: true,
-        ws: true
-      }
-    }
+        ws: true,
+      },
+    },
   },
 
   build: {
@@ -109,14 +111,14 @@ export default defineConfig({
           react: ["react", "react-dom"],
           motion: ["framer-motion"],
           icons: ["lucide-react"],
-        }
-      }
-    }
+        },
+      },
+    },
   },
 
   define: {
     "process.env.VITE_COUNTRY": JSON.stringify("CI"),
-    "process.env.VITE_CURRENCY": JSON.stringify("XOF")
+    "process.env.VITE_CURRENCY": JSON.stringify("XOF"),
   },
 
   optimizeDeps: {
@@ -128,8 +130,8 @@ export default defineConfig({
       "react-icons",
       "react-icons/hi2",
       "react-icons/fa",
-      "framer-motion"
+      "framer-motion",
     ],
-    exclude: []
-  }
+    exclude: [],
+  },
 });
