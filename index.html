@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="description" content="ChantiLink - Réseau social professionnel avec IA intégrée" />
+
+    <!-- PWA -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="ChantiLink" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="msapplication-tap-highlight" content="no" />
+
+    <!-- GEO: Côte d'Ivoire -->
+    <meta name="geo.region" content="CI" />
+    <meta name="geo.placename" content="Abidjan" />
+    <meta name="geo.position" content="5.3600;-3.9667" />
+
+    <title>ChantiLink</title>
+
+    <!-- Icons -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#E67E3C" />
+    <meta name="msapplication-TileColor" content="#2B2D42" />
+    <meta name="theme-color" content="#2B2D42" />
+
+    <!-- Préchargement -->
+    <link rel="preload" href="/chantilink-logo.png" as="image" />
+    <link rel="preload" href="/src/main.jsx" as="script" />
+
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+      * { box-sizing: border-box; }
+      html, body, #root { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+      body { font-family: 'Inter', sans-serif; background: #f9fafb; -webkit-font-smoothing: antialiased; }
+      .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
