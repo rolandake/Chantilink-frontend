@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [
     react({
       jsxRuntime: "automatic",
@@ -13,7 +13,7 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       injectRegister: "auto",
-      devOptions: { enabled: true },
+      devOptions: { enabled: mode === "development" },
 
       manifest: {
         name: "ChantiLink",
@@ -43,7 +43,7 @@ export default defineConfig({
 
       workbox: {
         globPatterns: ["**/*.{js,css,html,woff2,ttf,svg,png,jpg,jpeg,webp,webmanifest}"],
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 Mo
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
 
         runtimeCaching: [
           {
@@ -78,7 +78,7 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
     extensions: [".js", ".jsx", ".ts", ".tsx"],
-    dedupe: ["react", "react-dom"], // évite hooks invalides
+    dedupe: ["react", "react-dom"],
   },
 
   server: {
@@ -90,13 +90,17 @@ export default defineConfig({
       host: "localhost",
       port: 5173,
     },
-    proxy: {
-      "/api": {
-        target: "http://localhost:5000",
-        changeOrigin: true,
-        ws: true,
-      },
-    },
+
+    // Proxy uniquement en développement
+    proxy: mode === "development"
+      ? {
+          "/api": {
+            target: "http://localhost:5000",
+            changeOrigin: true,
+            ws: true,
+          },
+        }
+      : undefined,
   },
 
   build: {
@@ -132,6 +136,5 @@ export default defineConfig({
       "react-icons/fa",
       "framer-motion",
     ],
-    exclude: [],
   },
-});
+}));

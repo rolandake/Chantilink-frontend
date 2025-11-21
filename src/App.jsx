@@ -1,4 +1,8 @@
-// src/App.jsx - VERSION CORRIGÉE (pas de BrowserRouter ici)
+// ========================================
+// VERSION COMPLÈTE DU FICHIER APP.JSX :
+// ========================================
+
+// src/App.jsx - VERSION CORRIGÉE AVEC VISIONPAGE IMMERSIVE
 import React, { useState, Suspense, useEffect, useMemo, useCallback } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -27,7 +31,6 @@ import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
 import StoryViewer from "./pages/Home/StoryViewer";
 import PremiumPage from "./pages/Premium/Premium";
 
-// ⚠️ PAS DE BrowserRouter ICI - il est dans main.jsx
 export default function App() {
   const [idbReady, setIdbReady] = useState(false);
 
@@ -42,7 +45,6 @@ export default function App() {
     })();
   }, []);
 
-  // === PWA: Viewport + Fullscreen + Safe Area ===
   useEffect(() => {
     const meta = document.querySelector('meta[name="viewport"]');
     if (meta) meta.setAttribute("content", "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no");
@@ -76,10 +78,11 @@ function AppContent() {
   const isVideosPage = location.pathname === "/videos";
   const isAdminPage = location.pathname === "/admin";
   const isMessagesPage = location.pathname === "/messages";
+  const isVisionPage = location.pathname === "/vision"; // 🔥 AJOUT
   const isAdminUser = user?.role === 'admin' || user?.role === 'superadmin';
 
-  // 🔥 ROUTES IMMERSIVES (sans navigation)
-  const isImmersiveRoute = isMessagesPage || isVideosPage || isAdminPage;
+  // 🔥 ROUTES IMMERSIVES (sans navigation) - AJOUT DE isVisionPage
+  const isImmersiveRoute = isMessagesPage || isVideosPage || isAdminPage || isVisionPage;
 
   const openStoryViewer = useCallback((stories, owner) => {
     setStoryViewerData({ stories, owner });
@@ -121,7 +124,7 @@ function AppContent() {
     <div className="fixed inset-0 overflow-hidden bg-gray-50 dark:bg-gray-900">
       <BackgroundParticles isDarkMode={isDarkMode} />
 
-      {/* === HEADER UNIQUEMENT SUR HOME (pas sur routes immersives) === */}
+      {/* === HEADER MASQUÉ SUR ROUTES IMMERSIVES === */}
       {!isImmersiveRoute && location.pathname === "/" && (
         <motion.div 
           initial={{ y: -100 }} 
@@ -132,7 +135,7 @@ function AppContent() {
         </motion.div>
       )}
 
-      {/* === SIDEBAR DESKTOP (masqué sur routes immersives) === */}
+      {/* === SIDEBAR MASQUÉ SUR ROUTES IMMERSIVES === */}
       {!isImmersiveRoute && <SidebarDesktop isDarkMode={isDarkMode} isVideosPage={isVideosPage} isAdminUser={isAdminUser} />}
 
       {/* === MAIN CONTENT === */}
@@ -167,7 +170,7 @@ function AppContent() {
         </AnimatePresence>
       </main>
 
-      {/* === NAVBAR MOBILE (masqué sur routes immersives) === */}
+      {/* === NAVBAR MASQUÉ SUR ROUTES IMMERSIVES === */}
       {!isImmersiveRoute && <NavbarMobile isDarkMode={isDarkMode} isVideosPage={isVideosPage} isAdminUser={isAdminUser} />}
 
       {/* === STORY VIEWER === */}
