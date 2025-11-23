@@ -7,14 +7,19 @@ import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
 const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+// ✅ CORRECTION CRITIQUE : Ajouter /api à l'URL
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+
+// 🔍 Log de debug
+console.log("🔧 [AuthContext] API_URL:", API_URL);
+console.log("🔧 [AuthContext] Mode:", import.meta.env.MODE);
 
 const CONFIG = {
-  TOKEN_REFRESH_MARGIN_MS: 5 * 60 * 1000, // ✅ 5 min avant expiration (au lieu de 2)
+  TOKEN_REFRESH_MARGIN_MS: 5 * 60 * 1000,
   SESSION_TIMEOUT_MS: 7 * 24 * 60 * 60 * 1000,
   MAX_STORED_USERS: 10,
   NOTIFICATIONS_MAX: 50,
-  AUTO_REFRESH_INTERVAL_MS: 60 * 1000, // ✅ Vérifier toutes les 60s (au lieu de 30s)
+  AUTO_REFRESH_INTERVAL_MS: 60 * 1000,
   MAX_LOGIN_ATTEMPTS: 5,
   LOCKOUT_DURATION_MS: 15 * 60 * 1000,
 };
@@ -59,11 +64,12 @@ export function AuthProvider({ children }) {
 
   const isMounted = useRef(true);
   const refreshInterval = useRef(null);
-  const isRefreshing = useRef(false); // ✅ Éviter les refresh multiples simultanés
+  const isRefreshing = useRef(false);
 
   // === NOTIFICATIONS ===
   const addNotification = useCallback((type, message) => {
     const safeMessage = typeof message === "string" ? message : "Action effectuée";
+    console.log(`📢 [Notification] ${type.toUpperCase()}: ${safeMessage}`);
     setNotifications(prev => [
       ...prev.slice(-CONFIG.NOTIFICATIONS_MAX + 1),
       { id: Date.now() + Math.random(), type, message: safeMessage, time: Date.now() }
@@ -173,7 +179,7 @@ export function AuthProvider({ children }) {
     addNotification("info", "Déconnecté en toute sécurité");
   }, [activeUserId, persistUsers, addNotification]);
 
-  // === REFRESH TOKEN ✅ CORRIGÉ ===
+  // === REFRESH TOKEN ===
   const refreshTokenForUser = useCallback(async (userId) => {
     if (isRefreshing.current) {
       console.log("⏳ Refresh déjà en cours, attente...");
@@ -183,7 +189,6 @@ export function AuthProvider({ children }) {
     const userData = users.get(userId);
     if (!userData) return false;
 
-    // ✅ Ne pas refresh si encore valide pour plus de 3 minutes
     const timeLeft = userData.expiresAt - Date.now();
     if (timeLeft > 3 * 60 * 1000) {
       console.log(`✅ Token encore valide pour ${Math.floor(timeLeft / 60000)} minutes`);
@@ -194,9 +199,10 @@ export function AuthProvider({ children }) {
     console.log("🔄 Rafraîchissement du token...");
 
     try {
-      const res = await axios.post(`${API_URL}/api/auth/refresh-token`, {}, { 
+      // ✅ Utilise /auth/refresh-token (déjà avec /api dans API_URL)
+      const res = await axios.post(`${API_URL}/auth/refresh-token`, {}, { 
         withCredentials: true, 
-        timeout: 10000 
+        timeout: 15000 
       });
 
       if (res.status !== 200 || !res.data.token) {
@@ -204,7 +210,7 @@ export function AuthProvider({ children }) {
       }
 
       const { token } = res.data;
-      const expiresAt = Date.now() + (14 * 60 * 1000); // ✅ Token valide 14 min (marge de sécurité)
+      const expiresAt = Date.now() + (14 * 60 * 1000);
 
       setUsers(prev => {
         const map = new Map(prev);
@@ -233,7 +239,7 @@ export function AuthProvider({ children }) {
     }
   }, [users, logout, addNotification, persistUsers]);
 
-  // === GET TOKEN ✅ CORRIGÉ ===
+  // === GET TOKEN ===
   const getToken = useCallback(async (userId = activeUserId) => {
     const userData = users.get(userId);
     if (!userData?.token) {
@@ -243,7 +249,6 @@ export function AuthProvider({ children }) {
 
     const timeLeft = userData.expiresAt - Date.now();
     
-    // ✅ Refresh si moins de 5 minutes de validité
     if (timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS) {
       console.log(`⚠️ Token expire bientôt (${Math.floor(timeLeft / 60000)} min), refresh...`);
       const refreshed = await refreshTokenForUser(userId);
@@ -263,10 +268,10 @@ export function AuthProvider({ children }) {
     if (!token) return null;
 
     try {
-      const res = await axios.get(`${API_URL}/api/admin/verify`, {
+      const res = await axios.get(`${API_URL}/admin/verify`, {
         headers: { Authorization: `Bearer ${token}` },
         withCredentials: true,
-        timeout: 8000,
+        timeout: 10000,
       });
 
       if (res.status === 200 && (res.data.user?.role === 'admin' || res.data.user?.role === 'superadmin')) {
@@ -286,10 +291,10 @@ export function AuthProvider({ children }) {
   const verifyStoredToken = useCallback(async (userId, token) => {
     if (!token) return { valid: false };
     try {
-      const res = await axios.get(`${API_URL}/api/auth/verify`, {
+      const res = await axios.get(`${API_URL}/auth/verify`, {
         headers: { Authorization: `Bearer ${token}` },
         withCredentials: true,
-        timeout: 8000,
+        timeout: 10000,
       });
       return res.status === 200 && res.data.valid ? { valid: true, user: res.data.user } : { valid: false };
     } catch { return { valid: false }; }
@@ -328,7 +333,7 @@ export function AuthProvider({ children }) {
     setReady(true);
   }, [verifyStoredToken]);
 
-  // === LOGIN ===
+  // === LOGIN ✅ CORRIGÉ ===
   const login = useCallback(async (email, password) => {
     const safeEmail = (email || "").toString().trim().toLowerCase();
     if (!safeEmail || !password) {
@@ -343,14 +348,22 @@ export function AuthProvider({ children }) {
     }
 
     setLoading(true);
+    console.log("📤 [Login] Tentative de connexion...", { email: safeEmail });
+
     try {
-      const res = await axios.post(`${API_URL}/api/auth/login`, { 
+      // ✅ Timeout de 60 secondes pour Render
+      const res = await axios.post(`${API_URL}/auth/login`, { 
         email: safeEmail, 
         password: password.toString() 
       }, {
         withCredentials: true,
-        timeout: 15000,
+        timeout: 60000, // ✅ 60 secondes
+        headers: {
+          'Content-Type': 'application/json'
+        }
       });
+
+      console.log("📥 [Login] Réponse:", res.status, res.data);
 
       if (res.status >= 400 || !res.data.success) {
         trackLoginAttempt(safeEmail);
@@ -363,7 +376,7 @@ export function AuthProvider({ children }) {
       const { user, token } = res.data;
       if (!user?._id || !token) throw new Error("Réponse invalide");
 
-      const expiresAt = Date.now() + (14 * 60 * 1000); // ✅ 14 min de validité
+      const expiresAt = Date.now() + (14 * 60 * 1000);
       const updated = new Map(users);
       updated.set(user._id, { user, token, expiresAt, lastActive: Date.now(), socket: null });
 
@@ -377,7 +390,17 @@ export function AuthProvider({ children }) {
       addNotification("success", "Connecté avec succès");
       return { success: true, user };
     } catch (err) {
-      const msg = err.code === 'ECONNABORTED' ? "Délai dépassé" : err.response?.data?.message || err.message || "Erreur réseau";
+      console.error("❌ [Login] Erreur:", err);
+      
+      let msg;
+      if (err.code === 'ECONNABORTED') {
+        msg = "Délai dépassé (60s). Le serveur Render est peut-être en veille. Attendez 1 minute et réessayez.";
+      } else if (err.code === 'ERR_NETWORK') {
+        msg = "Impossible de contacter le serveur. Vérifiez votre connexion.";
+      } else {
+        msg = err.response?.data?.message || err.message || "Erreur réseau";
+      }
+      
       trackLoginAttempt(safeEmail);
       playAudioSafe('/sounds/error.mp3');
       addNotification("error", msg);
@@ -416,23 +439,26 @@ export function AuthProvider({ children }) {
     }
 
     setLoading(true);
-    try {
-      console.log("📤 Inscription:", { fullName: safeFullName, email: safeEmail });
+    console.log("📤 [Register] Inscription:", { fullName: safeFullName, email: safeEmail });
 
-      const res = await axios.post(`${API_URL}/api/auth/register`, {
+    try {
+      // ✅ Payload simple sans confirmEmail (sauf si votre backend l'exige)
+      const payload = {
         fullName: safeFullName,
         email: safeEmail,
-        confirmEmail: safeEmail, // ✅ Nécessaire pour le backend
         password: safePassword,
-      }, { 
+      };
+
+      // ✅ Timeout de 60 secondes pour Render
+      const res = await axios.post(`${API_URL}/auth/register`, payload, { 
         withCredentials: true, 
-        timeout: 20000, // ✅ 20 secondes pour inscription
+        timeout: 60000, // ✅ 60 secondes
         headers: {
           'Content-Type': 'application/json'
         }
       });
 
-      console.log("📥 Réponse:", res.status, res.data);
+      console.log("📥 [Register] Réponse:", res.status, res.data);
 
       if (!res.data.success) {
         const msg = res.data?.message || "Erreur lors de l'inscription";
@@ -460,11 +486,13 @@ export function AuthProvider({ children }) {
       
       return { success: true, user };
     } catch (err) {
-      console.error("❌ Erreur inscription:", err);
+      console.error("❌ [Register] Erreur:", err);
       
       let msg;
       if (err.code === 'ECONNABORTED') {
-        msg = "Délai dépassé. Vérifiez votre connexion";
+        msg = "Délai dépassé (60s). Le serveur Render est en veille. Attendez 1 minute et réessayez.";
+      } else if (err.code === 'ERR_NETWORK') {
+        msg = "Impossible de contacter le serveur. Vérifiez votre connexion.";
       } else if (err.response?.status === 400) {
         msg = err.response.data?.message || "Données invalides";
       } else if (err.response?.status === 409) {
@@ -492,7 +520,7 @@ export function AuthProvider({ children }) {
     if (images.profile) formData.append("profilePhoto", images.profile);
     if (images.cover) formData.append("coverPhoto", images.cover);
 
-    const res = await axios.put(`${API_URL}/api/users/${userId}/images`, formData, {
+    const res = await axios.put(`${API_URL}/users/${userId}/images`, formData, {
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data" },
       withCredentials: true,
       timeout: 30000,
@@ -524,7 +552,7 @@ export function AuthProvider({ children }) {
     if (updates.location !== undefined) safeUpdates.location = updates.location.trim();
     if (updates.website !== undefined) safeUpdates.website = updates.website.trim();
 
-    const res = await axios.put(`${API_URL}/api/users/${userId}`, safeUpdates, {
+    const res = await axios.put(`${API_URL}/users/${userId}`, safeUpdates, {
       headers: { Authorization: `Bearer ${token}` },
       withCredentials: true,
       timeout: 10000,
@@ -550,14 +578,12 @@ export function AuthProvider({ children }) {
     return () => { isMounted.current = false; };
   }, [loadStoredUsers]);
 
-  // ✅ INTERVALLE DE REFRESH AUTOMATIQUE CORRIGÉ
   useEffect(() => {
     if (!ready) return;
     
     refreshInterval.current = setInterval(() => {
       users.forEach((data, id) => {
         const timeLeft = data.expiresAt - Date.now();
-        // ✅ Refresh si moins de 5 minutes de validité
         if (timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS && timeLeft > 0) {
           console.log(`🔄 Auto-refresh pour user ${id}`);
           refreshTokenForUser(id);
