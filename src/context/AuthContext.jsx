@@ -1,27 +1,25 @@
-// src/context/AuthContext.jsx - VERSION FINALE CORRIGÉE
+// src/context/AuthContext.jsx - VERSION CORRIGÉE ET FINALE
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import axios from "axios";
+import { io } from "socket.io-client";
 import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
 
 const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
-// ✅ CORRECTION CRITIQUE : Ajouter /api à l'URL
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
-
-// 🔍 Log de debug
-console.log("🔧 [AuthContext] API_URL:", API_URL);
-console.log("🔧 [AuthContext] Mode:", import.meta.env.MODE);
+const SOCKET_URL = API_URL.replace('/api', '');
 
 const CONFIG = {
-  TOKEN_REFRESH_MARGIN_MS: 5 * 60 * 1000,
+  TOKEN_REFRESH_MARGIN_MS: 10 * 60 * 1000,
+  AUTO_REFRESH_INTERVAL_MS: 30 * 1000,
   SESSION_TIMEOUT_MS: 7 * 24 * 60 * 60 * 1000,
   MAX_STORED_USERS: 10,
-  NOTIFICATIONS_MAX: 50,
-  AUTO_REFRESH_INTERVAL_MS: 60 * 1000,
+  MAX_NOTIFICATIONS: 50,
   MAX_LOGIN_ATTEMPTS: 5,
   LOCKOUT_DURATION_MS: 15 * 60 * 1000,
+  MAX_REFRESH_RETRIES: 3,
 };
 
 const STORAGE_KEYS = {
@@ -30,30 +28,31 @@ const STORAGE_KEYS = {
   LOGIN_ATTEMPTS: "chantilink_login_attempts_v6",
 };
 
-// === UTILITAIRES SÉCURISÉS ===
+// === UTILITAIRES ===
 const secureSetItem = (key, value) => {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) { console.warn("localStorage.setItem échoué:", err); }
+  try { 
+    localStorage.setItem(key, JSON.stringify(value)); 
+  } catch (err) { 
+    console.warn("localStorage.setItem échec:", err); 
+  }
 };
+
 const secureGetItem = (key) => {
-  try { const val = localStorage.getItem(key); return val ? JSON.parse(val) : null; } catch { return null; }
-};
-const secureRemoveItem = (key) => { try { localStorage.removeItem(key); } catch {} };
-
-// === GESTION AUDIO SÉCURISÉE ===
-const playAudioSafe = (audioPath) => {
-  setTimeout(() => {
-    try {
-      const audio = new Audio(audioPath);
-      audio.volume = 0.3;
-      const playPromise = audio.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(() => {});
-      }
-    } catch (err) {}
-  }, 0);
+  try { 
+    const val = localStorage.getItem(key); 
+    return val ? JSON.parse(val) : null; 
+  } catch { 
+    return null; 
+  }
 };
 
-// === PROVIDER ===
+const secureRemoveItem = (key) => { 
+  try { 
+    localStorage.removeItem(key); 
+  } catch {} 
+};
+
+// === FOURNISSEUR ===
 export function AuthProvider({ children }) {
   const [users, setUsers] = useState(new Map());
   const [activeUserId, setActiveUserId] = useState(null);
@@ -65,13 +64,17 @@ export function AuthProvider({ children }) {
   const isMounted = useRef(true);
   const refreshInterval = useRef(null);
   const isRefreshing = useRef(false);
+  const refreshQueue = useRef([]);
+  const lastRefreshAttempt = useRef(0);
+  const socketRef = useRef(null);
+  const REFRESH_COOLDOWN = 5000;
 
   // === NOTIFICATIONS ===
   const addNotification = useCallback((type, message) => {
     const safeMessage = typeof message === "string" ? message : "Action effectuée";
     console.log(`📢 [Notification] ${type.toUpperCase()}: ${safeMessage}`);
     setNotifications(prev => [
-      ...prev.slice(-CONFIG.NOTIFICATIONS_MAX + 1),
+      ...prev.slice(-CONFIG.MAX_NOTIFICATIONS + 1),
       { id: Date.now() + Math.random(), type, message: safeMessage, time: Date.now() }
     ]);
   }, []);
@@ -81,8 +84,8 @@ export function AuthProvider({ children }) {
     const emailKey = email.toLowerCase();
     setLoginAttempts(prev => {
       const attempts = (prev[emailKey]?.count || 0) + 1;
-      const lockoutUntil = attempts >= CONFIG.MAX_LOGIN_ATTEMPTS 
-        ? Date.now() + CONFIG.LOCKOUT_DURATION_MS 
+      const lockoutUntil = attempts >= CONFIG.MAX_LOGIN_ATTEMPTS
+        ? Date.now() + CONFIG.LOCKOUT_DURATION_MS
         : null;
       const newAttempts = { ...prev, [emailKey]: { count: attempts, lockoutUntil } };
       secureSetItem(STORAGE_KEYS.LOGIN_ATTEMPTS, newAttempts);
@@ -136,7 +139,7 @@ export function AuthProvider({ children }) {
     }
   }, [users, activeUserId]);
 
-  // === IDB SYNC ===
+  // === SYNCHRONISATION IDB ===
   const syncUserToIDB = async (userId, user) => {
     if (!userId || !user?._id) return;
     try {
@@ -167,113 +170,192 @@ export function AuthProvider({ children }) {
   const getActiveUser = useCallback(() => activeUserId ? users.get(activeUserId) : null, [activeUserId, users]);
   const getUserById = useCallback((id) => users.get(id) || null, [users]);
 
-  // === LOGOUT ===
-  const logout = useCallback(async (userId = activeUserId) => {
+  // === SOCKET CLEANUP ===
+  const cleanupSocket = useCallback(() => {
+    if (socketRef.current) {
+      console.log("🛑 [AuthContext] Nettoyage Socket");
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
+  }, []);
+
+  // === DÉCONNEXION ===
+  const logout = useCallback(async (userId = activeUserId, silent = false) => {
     if (!userId) return;
-    setUsers(prev => { const map = new Map(prev); map.delete(userId); return map; });
+
+    console.log(`🔒 [Logout] Déconnexion${silent ? ' silencieuse' : ''} user:`, userId);
+
+    cleanupSocket();
+
+    setUsers(prev => { 
+      const map = new Map(prev); 
+      map.delete(userId); 
+      return map; 
+    });
+
     if (activeUserId === userId) {
       setActiveUserId(null);
       await idbDelete("users", "user_active");
     }
-    persistUsers();
-    addNotification("info", "Déconnecté en toute sécurité");
-  }, [activeUserId, persistUsers, addNotification]);
 
-  // === REFRESH TOKEN ===
-  const refreshTokenForUser = useCallback(async (userId) => {
-    if (isRefreshing.current) {
-      console.log("⏳ Refresh déjà en cours, attente...");
+    persistUsers();
+
+    if (!silent) {
+      addNotification("info", "Déconnecté");
+    }
+  }, [activeUserId, persistUsers, addNotification, cleanupSocket]);
+
+  // === JETON DE RAFRAÎCHISSEMENT ===
+  const refreshTokenForUser = useCallback(async (userId, retryCount = 0) => {
+    const now = Date.now();
+    if (now - lastRefreshAttempt.current < REFRESH_COOLDOWN) {
+      console.warn('⏰ [Refresh] Cooldown actif, requête ignorée');
       return false;
+    }
+    lastRefreshAttempt.current = now;
+
+    if (isRefreshing.current) {
+      return new Promise((resolve) => {
+        refreshQueue.current.push({ userId, resolve });
+      });
     }
 
     const userData = users.get(userId);
     if (!userData) return false;
 
     const timeLeft = userData.expiresAt - Date.now();
-    if (timeLeft > 3 * 60 * 1000) {
-      console.log(`✅ Token encore valide pour ${Math.floor(timeLeft / 60000)} minutes`);
-      return true;
-    }
+    if (timeLeft > 5 * 60 * 1000) return true;
 
     isRefreshing.current = true;
-    console.log("🔄 Rafraîchissement du token...");
-
     try {
-      // ✅ Utilise /auth/refresh-token (déjà avec /api dans API_URL)
-      const res = await axios.post(`${API_URL}/auth/refresh-token`, {}, { 
-        withCredentials: true, 
-        timeout: 15000 
+      const refreshAxios = axios.create({
+        baseURL: API_URL.replace('/api', ''),
+        timeout: 30000,
+        withCredentials: true,
+        headers: { 'Content-Type': 'application/json' }
       });
 
-      if (res.status !== 200 || !res.data.token) {
-        throw new Error("Refresh failed");
+      const res = await refreshAxios.post('/api/auth/refresh-token');
+
+      if (res.status !== 200 || !res.data.success || !res.data.token) {
+        throw new Error(res.data?.message || "Réponse invalide");
       }
 
       const { token } = res.data;
-      const expiresAt = Date.now() + (14 * 60 * 1000);
+      const expiresAt = Date.now() + (55 * 60 * 1000);
 
       setUsers(prev => {
         const map = new Map(prev);
         const current = map.get(userId);
         if (current) {
-          map.set(userId, { 
-            ...current, 
-            token, 
-            expiresAt, 
-            lastActive: Date.now() 
-          });
+          map.set(userId, { ...current, token, expiresAt, lastActive: Date.now() });
         }
         return map;
       });
 
       persistUsers();
-      console.log("✅ Token rafraîchi avec succès");
+      
+      const queue = [...refreshQueue.current];
+      refreshQueue.current = [];
+      queue.forEach(({ resolve }) => resolve(true));
+
       return true;
     } catch (err) {
-      console.error("❌ Échec refresh:", err.message);
-      addNotification("error", "Session expirée, reconnexion nécessaire");
-      await logout(userId);
+      console.error(`❌ [Refresh] Erreur:`, err.message);
+      
+      const isClientError = err.response?.status >= 400 && err.response?.status < 500;
+      
+      if (!isClientError && retryCount < CONFIG.MAX_REFRESH_RETRIES - 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return refreshTokenForUser(userId, retryCount + 1);
+      }
+      
+      addNotification("warning", "Session expirée");
+      await logout(userId, true);
+      
+      const queue = [...refreshQueue.current];
+      refreshQueue.current = [];
+      queue.forEach(({ resolve }) => resolve(false));
+
       return false;
     } finally {
       isRefreshing.current = false;
     }
   }, [users, logout, addNotification, persistUsers]);
 
-  // === GET TOKEN ===
+  // === OBTENIR UN JETON ===
   const getToken = useCallback(async (userId = activeUserId) => {
     const userData = users.get(userId);
-    if (!userData?.token) {
-      console.warn("⚠️ Aucun token disponible");
-      return null;
-    }
+    if (!userData?.token) return null;
 
     const timeLeft = userData.expiresAt - Date.now();
-    
     if (timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS) {
-      console.log(`⚠️ Token expire bientôt (${Math.floor(timeLeft / 60000)} min), refresh...`);
       const refreshed = await refreshTokenForUser(userId);
-      if (!refreshed) {
-        console.error("❌ Impossible de rafraîchir le token");
-        return null;
-      }
+      if (!refreshed) return null;
       return users.get(userId)?.token || null;
     }
-
     return userData.token;
   }, [users, activeUserId, refreshTokenForUser]);
 
-  // === VÉRIFICATION ADMIN ===
+  // === SOCKET ===
+  useEffect(() => {
+    if (!activeUserId) {
+      cleanupSocket();
+      return;
+    }
+
+    const activeData = users.get(activeUserId);
+    const token = activeData?.token;
+    const userId = activeData?.user?._id;
+
+    if (socketRef.current?.connected && socketRef.current?.auth?.token === token) {
+      return;
+    }
+
+    cleanupSocket();
+
+    if (!userId || !token) return;
+
+    console.log(`🔌 [AuthContext] Initialisation Socket pour ${userId}...`);
+
+    const newSocket = io(SOCKET_URL, {
+      auth: { token },
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
+    });
+
+    newSocket.on("connect", () => {
+      console.log("✅ [AuthContext] Socket Connecté:", newSocket.id);
+    });
+
+    newSocket.on("connect_error", (err) => {
+      console.warn("⚠️ [AuthContext] Erreur connexion socket:", err.message);
+    });
+    
+    newSocket.on("disconnect", (reason) => {
+      console.log("🔌 [AuthContext] Socket Déconnecté:", reason);
+      if (reason === "io client disconnect") return;
+    });
+
+    socketRef.current = newSocket;
+
+    return () => { cleanupSocket(); };
+  }, [activeUserId, users]);
+
+  // === ADMIN VÉRIFICATION ===
   const verifyAdminToken = useCallback(async () => {
     const token = await getToken();
     if (!token) return null;
-
     try {
       const res = await axios.get(`${API_URL}/admin/verify`, {
         headers: { Authorization: `Bearer ${token}` },
         withCredentials: true,
         timeout: 10000,
       });
-
       if (res.status === 200 && (res.data.user?.role === 'admin' || res.data.user?.role === 'superadmin')) {
         return token;
       }
@@ -287,7 +369,7 @@ export function AuthProvider({ children }) {
     }
   }, [getToken, refreshTokenForUser, activeUserId]);
 
-  // === VÉRIFICATION TOKEN STOCKÉ ===
+  // === JETON DE VÉRIFICATION STOCKÉ ===
   const verifyStoredToken = useCallback(async (userId, token) => {
     if (!token) return { valid: false };
     try {
@@ -297,7 +379,9 @@ export function AuthProvider({ children }) {
         timeout: 10000,
       });
       return res.status === 200 && res.data.valid ? { valid: true, user: res.data.user } : { valid: false };
-    } catch { return { valid: false }; }
+    } catch { 
+      return { valid: false }; 
+    }
   }, []);
 
   // === CHARGEMENT INITIAL ===
@@ -312,7 +396,7 @@ export function AuthProvider({ children }) {
         if (data.expiresAt > Date.now()) {
           const { valid, user } = await verifyStoredToken(id, data.token);
           if (valid && user?._id === id) {
-            validUsers.set(id, { ...data, user, socket: null });
+            validUsers.set(id, { ...data, user });
             await syncUserToIDB(id, user);
           }
         }
@@ -322,7 +406,12 @@ export function AuthProvider({ children }) {
     if (validUsers.size === 0 && !navigator.onLine) {
       const idbUser = await idbGet("users", "user_active");
       if (idbUser?._id) {
-        validUsers.set(idbUser._id, { user: idbUser, token: null, expiresAt: 0, lastActive: Date.now(), socket: null });
+        validUsers.set(idbUser._id, { 
+          user: idbUser, 
+          token: null, 
+          expiresAt: 0, 
+          lastActive: Date.now() 
+        });
         setActiveUserId(idbUser._id);
       }
     }
@@ -333,52 +422,26 @@ export function AuthProvider({ children }) {
     setReady(true);
   }, [verifyStoredToken]);
 
-  // === LOGIN ✅ CORRIGÉ ===
+  // === CONNEXION ===
   const login = useCallback(async (email, password) => {
     const safeEmail = (email || "").toString().trim().toLowerCase();
-    if (!safeEmail || !password) {
-      addNotification("error", "Email et mot de passe requis");
-      return { success: false, message: "Champs requis" };
-    }
-
-    if (isLockedOut(safeEmail)) {
-      const minutes = Math.ceil((loginAttempts[safeEmail].lockoutUntil - Date.now()) / 60000);
-      addNotification("error", `Trop de tentatives. Réessayez dans ${minutes} min`);
-      return { success: false, message: "Compte verrouillé" };
-    }
-
     setLoading(true);
-    console.log("📤 [Login] Tentative de connexion...", { email: safeEmail });
-
     try {
-      // ✅ Timeout de 60 secondes pour Render
-      const res = await axios.post(`${API_URL}/auth/login`, { 
-        email: safeEmail, 
-        password: password.toString() 
-      }, {
+      const loginAxios = axios.create({
+        baseURL: API_URL.replace('/api', ''),
+        timeout: 60000,
         withCredentials: true,
-        timeout: 60000, // ✅ 60 secondes
-        headers: {
-          'Content-Type': 'application/json'
-        }
+        headers: { 'Content-Type': 'application/json' }
       });
 
-      console.log("📥 [Login] Réponse:", res.status, res.data);
+      const res = await loginAxios.post('/api/auth/login', { email: safeEmail, password: password.toString() });
 
-      if (res.status >= 400 || !res.data.success) {
-        trackLoginAttempt(safeEmail);
-        const msg = res.data?.message || "Identifiants incorrects";
-        addNotification("error", msg);
-        playAudioSafe('/sounds/error.mp3');
-        return { success: false, message: msg };
-      }
+      if (res.status >= 400 || !res.data.success) throw new Error(res.data?.message || "Erreur login");
 
       const { user, token } = res.data;
-      if (!user?._id || !token) throw new Error("Réponse invalide");
-
-      const expiresAt = Date.now() + (14 * 60 * 1000);
+      const expiresAt = Date.now() + (55 * 60 * 1000);
       const updated = new Map(users);
-      updated.set(user._id, { user, token, expiresAt, lastActive: Date.now(), socket: null });
+      updated.set(user._id, { user, token, expiresAt, lastActive: Date.now() });
 
       setUsers(updated);
       setActiveUserId(user._id);
@@ -386,254 +449,139 @@ export function AuthProvider({ children }) {
       resetLoginAttempts(safeEmail);
       await syncUserToIDB(user._id, user);
       
-      playAudioSafe('/sounds/success.mp3');
       addNotification("success", "Connecté avec succès");
       return { success: true, user };
     } catch (err) {
-      console.error("❌ [Login] Erreur:", err);
-      
-      let msg;
-      if (err.code === 'ECONNABORTED') {
-        msg = "Délai dépassé (60s). Le serveur Render est peut-être en veille. Attendez 1 minute et réessayez.";
-      } else if (err.code === 'ERR_NETWORK') {
-        msg = "Impossible de contacter le serveur. Vérifiez votre connexion.";
-      } else {
-        msg = err.response?.data?.message || err.message || "Erreur réseau";
-      }
-      
       trackLoginAttempt(safeEmail);
-      playAudioSafe('/sounds/error.mp3');
+      const msg = err.response?.data?.message || err.message || "Erreur connexion";
       addNotification("error", msg);
       return { success: false, message: msg };
     } finally {
       setLoading(false);
     }
-  }, [users, persistUsers, addNotification, isLockedOut, trackLoginAttempt, resetLoginAttempts]);
+  }, [users, persistUsers, addNotification, trackLoginAttempt, resetLoginAttempts]);
 
-  // === REGISTER ✅ CORRIGÉ FINAL ===
+  // === INSCRIPTION ===
   const register = useCallback(async (fullName, email, password) => {
-    const safeFullName = (fullName || "").toString().trim();
-    const safeEmail = (email || "").toString().trim().toLowerCase();
-    const safePassword = (password || "").toString();
-
-    // Validation frontend
-    if (!safeFullName || !safeEmail || !safePassword) {
-      addNotification("error", "Tous les champs sont requis");
-      return { success: false, message: "Champs manquants" };
-    }
-
-    if (safeFullName.length < 3) {
-      addNotification("error", "Le nom doit contenir au moins 3 caractères");
-      return { success: false, message: "Nom trop court" };
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(safeEmail)) {
-      addNotification("error", "Format d'email invalide");
-      return { success: false, message: "Email invalide" };
-    }
-
-    if (safePassword.length < 6) {
-      addNotification("error", "Le mot de passe doit contenir au moins 6 caractères");
-      return { success: false, message: "Mot de passe trop court" };
-    }
-
     setLoading(true);
-    console.log("📤 [Register] Inscription:", { fullName: safeFullName, email: safeEmail });
-
     try {
-      // ✅ Payload simple sans confirmEmail (sauf si votre backend l'exige)
-      const payload = {
-        fullName: safeFullName,
-        email: safeEmail,
-        password: safePassword,
-      };
-
-      // ✅ Timeout de 60 secondes pour Render
-      const res = await axios.post(`${API_URL}/auth/register`, payload, { 
-        withCredentials: true, 
-        timeout: 60000, // ✅ 60 secondes
-        headers: {
-          'Content-Type': 'application/json'
-        }
+      const registerAxios = axios.create({
+        baseURL: API_URL.replace('/api', ''),
+        timeout: 60000,
+        withCredentials: true,
+        headers: { 'Content-Type': 'application/json' }
       });
 
-      console.log("📥 [Register] Réponse:", res.status, res.data);
+      const res = await registerAxios.post('/api/auth/register', { fullName, email, password });
 
-      if (!res.data.success) {
-        const msg = res.data?.message || "Erreur lors de l'inscription";
-        addNotification("error", msg);
-        playAudioSafe('/sounds/error.mp3');
-        return { success: false, message: msg };
-      }
+      if (!res.data.success) throw new Error(res.data?.message || "Erreur inscription");
 
       const { user, token } = res.data;
-      if (!user?._id || !token) {
-        throw new Error("Réponse invalide du serveur");
-      }
-
-      const expiresAt = Date.now() + (14 * 60 * 1000);
+      const expiresAt = Date.now() + (55 * 60 * 1000);
       const updated = new Map(users);
-      updated.set(user._id, { user, token, expiresAt, lastActive: Date.now(), socket: null });
+      updated.set(user._id, { user, token, expiresAt, lastActive: Date.now() });
 
       setUsers(updated);
       setActiveUserId(user._id);
       persistUsers(updated, user._id);
       await syncUserToIDB(user._id, user);
       
-      playAudioSafe('/sounds/success.mp3');
       addNotification("success", "Compte créé avec succès !");
-      
       return { success: true, user };
     } catch (err) {
-      console.error("❌ [Register] Erreur:", err);
-      
-      let msg;
-      if (err.code === 'ECONNABORTED') {
-        msg = "Délai dépassé (60s). Le serveur Render est en veille. Attendez 1 minute et réessayez.";
-      } else if (err.code === 'ERR_NETWORK') {
-        msg = "Impossible de contacter le serveur. Vérifiez votre connexion.";
-      } else if (err.response?.status === 400) {
-        msg = err.response.data?.message || "Données invalides";
-      } else if (err.response?.status === 409) {
-        msg = "Cet email est déjà utilisé";
-      } else {
-        msg = err.response?.data?.message || err.message || "Erreur réseau";
-      }
-      
-      playAudioSafe('/sounds/error.mp3');
+      const msg = err.response?.data?.message || err.message || "Erreur inscription";
       addNotification("error", msg);
-      
       return { success: false, message: msg };
     } finally {
       setLoading(false);
     }
   }, [users, persistUsers, addNotification]);
 
-  // === UPDATE PROFILE / IMAGES ===
-  const updateUserImages = useCallback(async (userId, images) => {
-    if (!userId || !images || (!images.profile && !images.cover)) throw new Error("Données invalides");
-    const token = await getToken(userId);
-    if (!token) throw new Error("Authentification requise");
-
-    const formData = new FormData();
-    if (images.profile) formData.append("profilePhoto", images.profile);
-    if (images.cover) formData.append("coverPhoto", images.cover);
-
-    const res = await axios.put(`${API_URL}/users/${userId}/images`, formData, {
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "multipart/form-data" },
-      withCredentials: true,
-      timeout: 30000,
-    });
-
-    const updatedUser = res.data.user;
-    if (!updatedUser?._id) throw new Error("Utilisateur non retourné");
-
-    setUsers(prev => {
-      const map = new Map(prev);
-      const userData = map.get(userId);
-      if (userData) map.set(userId, { ...userData, user: updatedUser });
-      return map;
-    });
-
-    await syncUserToIDB(userId, updatedUser);
-    return updatedUser;
-  }, [getToken]);
-
+  // ✅✅✅ AJOUT: LA FONCTION MANQUANTE updateUserProfile ✅✅✅
   const updateUserProfile = useCallback(async (userId, updates) => {
-    if (!userId || !updates || Object.keys(updates).length === 0) throw new Error("Données invalides");
-    const token = await getToken(userId);
-    if (!token) throw new Error("Authentification requise");
-
-    const safeUpdates = {};
-    if (updates.fullName !== undefined) safeUpdates.fullName = updates.fullName.trim();
-    if (updates.username !== undefined) safeUpdates.username = updates.username.trim();
-    if (updates.bio !== undefined) safeUpdates.bio = updates.bio.trim();
-    if (updates.location !== undefined) safeUpdates.location = updates.location.trim();
-    if (updates.website !== undefined) safeUpdates.website = updates.website.trim();
-
-    const res = await axios.put(`${API_URL}/users/${userId}`, safeUpdates, {
-      headers: { Authorization: `Bearer ${token}` },
-      withCredentials: true,
-      timeout: 10000,
-    });
-
-    const updatedUser = res.data.user;
-    if (!updatedUser?._id) throw new Error("Utilisateur non retourné");
+    if (!userId) return;
 
     setUsers(prev => {
-      const map = new Map(prev);
-      const userData = map.get(userId);
-      if (userData) map.set(userId, { ...userData, user: updatedUser });
-      return map;
-    });
+      const newMap = new Map(prev);
+      const currentUserData = newMap.get(userId);
 
-    await syncUserToIDB(userId, updatedUser);
-    return updatedUser;
-  }, [getToken]);
+      if (currentUserData) {
+        // Fusionner les données existantes avec les mises à jour
+        const updatedUser = { ...currentUserData.user, ...updates };
+        
+        // Mettre à jour la Map
+        newMap.set(userId, { ...currentUserData, user: updatedUser });
+        
+        // Sauvegarder dans LocalStorage et IDB
+        persistUsers(newMap, activeUserId);
+        syncUserToIDB(userId, updatedUser);
+        
+        console.log("✅ [AuthContext] Profil mis à jour localement pour", userId);
+      }
+      return newMap;
+    });
+  }, [activeUserId, persistUsers]);
 
   // === EFFETS ===
-  useEffect(() => {
-    loadStoredUsers();
-    return () => { isMounted.current = false; };
+  useEffect(() => { 
+    loadStoredUsers(); 
+    return () => { isMounted.current = false; }; 
   }, [loadStoredUsers]);
 
   useEffect(() => {
-    if (!ready) return;
-    
+    if (!ready || users.size === 0) return;
     refreshInterval.current = setInterval(() => {
       users.forEach((data, id) => {
         const timeLeft = data.expiresAt - Date.now();
         if (timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS && timeLeft > 0) {
-          console.log(`🔄 Auto-refresh pour user ${id}`);
           refreshTokenForUser(id);
         }
       });
     }, CONFIG.AUTO_REFRESH_INTERVAL_MS);
-    
     return () => clearInterval(refreshInterval.current);
   }, [users, refreshTokenForUser, ready]);
 
   useEffect(() => {
     injectAuthHandlers({ getToken, logout, notify: addNotification });
   }, [getToken, logout, addNotification]);
-
-  // === VALEUR DU CONTEXT ===
+  
+  // === VALEUR DU CONTEXTE ===
   const value = useMemo(() => {
     const active = getActiveUser();
-    
-    const isAdmin = () => {
-      const role = active?.user?.role;
-      return role === 'admin' || role === 'superadmin';
-    };
+    const isAdmin = () => active?.user?.role === 'admin' || active?.user?.role === 'superadmin';
 
     return {
       users,
       activeUserId,
       user: active?.user || null,
       token: active?.token || null,
+      socket: socketRef.current,
+      loading,
+      ready,
+      notifications,
+      login,
+      logout,
+      register,
+      getToken,
+      updateUserProfile, // ✅ Maintenant elle est définie au-dessus
+      verifyAdminToken,
+      isAdmin,
+      addNotification,
+      isLockedOut,
       getActiveUser,
       getUserById,
-      getToken,
-      login,
-      register,
-      logout,
-      refreshTokenForUser,
-      updateUserImages,
-      updateUserProfile,
-      loading,
-      notifications,
-      ready,
-      isLockedOut,
-      loginAttempts,
-      isAdmin,
-      verifyAdminToken,
     };
   }, [
-    users, activeUserId, getActiveUser, getUserById, getToken, login, register, logout,
-    refreshTokenForUser, updateUserImages, updateUserProfile, loading, notifications, ready,
-    isLockedOut, loginAttempts, verifyAdminToken
+    users, activeUserId, loading, ready, notifications,
+    login, logout, register, getToken, 
+    updateUserProfile, // ✅ Dépendance correcte
+    verifyAdminToken,
+    addNotification, isLockedOut, getActiveUser, getUserById
   ]);
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }

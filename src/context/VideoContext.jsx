@@ -1,4 +1,4 @@
-// src/context/VideoContext.jsx - CORRECTIONS ERREURS 500
+// src/context/VideoContext.jsx
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
@@ -14,9 +14,10 @@ export const useVideos = () => {
 
 const LIMIT = 10;
 const SOCKET_NAMESPACE = '/videos';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export const VideosProvider = ({ children }) => {
-  const { getActiveUser } = useAuth();
+  const { user: currentUser, getToken } = useAuth();
   
   const [videos, setVideos] = useState([]);
   const [page, setPage] = useState(0);
@@ -26,447 +27,243 @@ export const VideosProvider = ({ children }) => {
 
   const socketRef = useRef(null);
   const fetchingRef = useRef(false);
-  const viewedVideos = useRef(new Set());
-  const observer = useRef(null);
   const abortController = useRef(null);
   const initialFetchDone = useRef(false);
 
-  const getToken = useCallback(() => {
-    const user = getActiveUser();
-    if (user?.token) return user.token;
-    
-    const localToken = localStorage.getItem('token');
-    if (localToken) return localToken;
-    
-    const sessionToken = sessionStorage.getItem('token');
-    if (sessionToken) return sessionToken;
-    
-    return null;
-  }, [getActiveUser]);
-
-  const getUserId = useCallback(() => {
-    const user = getActiveUser();
-    return user?.user?._id || user?.user?.id;
-  }, [getActiveUser]);
-
+  // === CLIENT AXIOS CONFIGURÉ ===
   const apiClient = useMemo(() => {
     const client = axios.create({
-      baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000',
-      timeout: 15000,
+      baseURL: API_URL,
+      timeout: 20000,
+      headers: { 'Content-Type': 'application/json' }
     });
 
-    const requestInterceptor = client.interceptors.request.use(
-      config => {
-        const token = getToken();
-        
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
-          console.log('✅ [VideoContext] Token ajouté à la requête');
-        } else {
-          console.warn('⚠️ [VideoContext] Pas de token disponible');
+    client.interceptors.request.use(
+      async (config) => {
+        if (getToken) {
+          const token = await getToken();
+          if (token) {
+            config.headers.Authorization = `Bearer ${token}`;
+          }
         }
-        
         return config;
       },
-      error => Promise.reject(error)
+      (error) => Promise.reject(error)
     );
 
-    const responseInterceptor = client.interceptors.response.use(
-      response => response,
-      error => {
-        if (error.response?.status === 401) {
-          console.error('🔒 [VideoContext] Session expirée (401)');
-        }
-        return Promise.reject(error);
-      }
-    );
-
-    return { client, requestInterceptor, responseInterceptor };
+    return client;
   }, [getToken]);
 
-  // === SOCKET.IO ===
+  // === SOCKET.IO CONNECTION ===
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
-      console.warn('⚠️ [VideoContext] Pas de token pour le socket');
-      return;
-    }
+    let socket = null;
 
-    const socket = io(`${apiClient.client.defaults.baseURL}${SOCKET_NAMESPACE}`, {
-      auth: { token },
-      transports: ['websocket', 'polling'],
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      forceNew: false,
-    });
+    const connectSocket = async () => {
+      const token = getToken ? await getToken() : null;
+      if (!token) return;
 
-    socketRef.current = socket;
+      socket = io(`${API_URL}${SOCKET_NAMESPACE}`, {
+        auth: { token },
+        transports: ['websocket'],
+        reconnectionAttempts: 5,
+      });
 
-    socket.on('connect', () => {
-      console.log('✅ [VideoContext] Socket connecté');
-    });
+      socketRef.current = socket;
 
-    socket.on('connect_error', (error) => {
-      console.warn('⚠️ [VideoContext] Socket erreur:', error.message);
-    });
+      socket.on('connect', () => console.log('✅ [VideoContext] Socket Connecté'));
+      
+      socket.on('newVideo', (video) => setVideos(prev => [video, ...prev]));
+      
+      socket.on('videoLiked', ({ videoId, likes }) => {
+        setVideos(prev => prev.map(v => v._id === videoId ? { ...v, likes } : v));
+      });
 
-    const handlers = {
-      newVideo: (video) => {
-        console.log('📹 [VideoContext] Nouvelle vidéo reçue');
-        setVideos(prev => [video, ...prev]);
-      },
-      videoLiked: ({ videoId, likes, userLiked }) => {
-        setVideos(prev => prev.map(v => 
-          v._id === videoId ? { ...v, likes, userLiked } : v
-        ));
-      },
-      commentAdded: ({ videoId, comment }) => {
+      socket.on('commentAdded', ({ videoId, comment }) => {
         setVideos(prev => prev.map(v => 
           v._id === videoId ? { ...v, comments: [...(v.comments || []), comment] } : v
         ));
-      },
-      videoViewed: ({ videoId, views }) => {
-        setVideos(prev => prev.map(v => 
-          v._id === videoId ? { ...v, views } : v
-        ));
-      },
+      });
     };
 
-    Object.entries(handlers).forEach(([event, handler]) => socket.on(event, handler));
+    if (currentUser) {
+      connectSocket();
+    }
 
     return () => {
-      console.log('🔌 [VideoContext] Déconnexion socket');
-      Object.keys(handlers).forEach(event => socket.off(event));
-      socket.disconnect();
-      socketRef.current = null;
+      if (socket) socket.disconnect();
     };
-  }, [getToken, apiClient]);
+  }, [currentUser, getToken]);
 
   // === FETCH VIDÉOS ===
   const fetchVideos = useCallback(async (reset = false) => {
     if (fetchingRef.current) return;
     if (!reset && !hasMore) return;
 
-    const token = getToken();
-    if (!token) {
-      console.warn('⚠️ [VideoContext] Impossible de charger sans token');
-      return;
-    }
-
     fetchingRef.current = true;
-    setLoading(true);
+    if (reset) setLoading(true);
+
     const targetPage = reset ? 1 : page + 1;
 
-    console.log(`📡 [VideoContext] Chargement page ${targetPage}`);
-
-    abortController.current?.abort();
+    if (abortController.current) abortController.current.abort();
     abortController.current = new AbortController();
 
     try {
-      const url = `/api/videos?page=${targetPage}&limit=${LIMIT}`;
-      const { data } = await apiClient.client.get(url, {
+      // Ajustement de l'URL pour correspondre à votre backend (parfois /api/videos, parfois /videos)
+      const { data } = await apiClient.get(`/api/videos?page=${targetPage}&limit=${LIMIT}`, {
         signal: abortController.current.signal,
       });
 
-      console.log('📥 [VideoContext] Données reçues:', data);
-
       let newVideos = [];
-      let pagination = {};
-
-      if (Array.isArray(data)) {
-        newVideos = data;
-      } else if (data.videos && Array.isArray(data.videos)) {
-        newVideos = data.videos;
-        pagination = data.pagination || {};
-      } else if (data.data && Array.isArray(data.data)) {
-        newVideos = data.data;
-      } else {
-        newVideos = [];
-      }
-
-      console.log(`✅ [VideoContext] ${newVideos.length} vidéos chargées`);
+      if (Array.isArray(data)) newVideos = data;
+      else if (Array.isArray(data.videos)) newVideos = data.videos;
+      else if (Array.isArray(data.data)) newVideos = data.data;
 
       setVideos(prev => {
-        if (reset) {
-          return newVideos;
-        }
-        const existing = new Set(prev.map(v => v._id));
-        const unique = newVideos.filter(v => !existing.has(v._id));
-        return [...prev, ...unique];
+        if (reset) return newVideos;
+        const existingIds = new Set(prev.map(v => v._id));
+        const filtered = newVideos.filter(v => !existingIds.has(v._id));
+        return [...prev, ...filtered];
       });
 
       setPage(targetPage);
-      
-      const hasMoreVideos = pagination.hasMore !== undefined 
-        ? pagination.hasMore 
-        : newVideos.length >= LIMIT;
-      
-      setHasMore(hasMoreVideos);
-
-      if (initialLoad) {
-        setInitialLoad(false);
-      }
+      setHasMore(newVideos.length >= LIMIT);
+      if (initialLoad) setInitialLoad(false);
 
     } catch (err) {
-      if (err.name === 'AbortError' || err.name === 'CanceledError') {
-        console.log('🚫 [VideoContext] Requête annulée');
-      } else {
-        console.error('❌ [VideoContext] Erreur fetch:', err);
-        
-        if (err.response?.status === 404 || err.response?.status === 500) {
-          setHasMore(false);
-        }
-      }
+      if (axios.isCancel(err)) return;
+      console.error('❌ [VideoContext] Erreur Fetch:', err);
     } finally {
       setLoading(false);
       fetchingRef.current = false;
     }
-  }, [page, hasMore, initialLoad, apiClient, getToken]);
+  }, [page, hasMore, initialLoad, apiClient]);
 
-  // === CHARGEMENT INITIAL ===
+  // Chargement Initial
   useEffect(() => {
-    const token = getToken();
-
-    if (initialFetchDone.current) return;
-    if (!token) {
-      console.warn('⚠️ [VideoContext] Attente du token...');
-      return;
+    if (!initialFetchDone.current) {
+      initialFetchDone.current = true;
+      fetchVideos(true);
     }
+  }, [fetchVideos]);
 
-    initialFetchDone.current = true;
-    fetchVideos(true);
-  }, [getToken, fetchVideos]);
+  // === ACTIONS UTILISATEUR ===
 
-  // === ACTIONS ===
-  const addVideo = useCallback((video) => {
-    console.log('➕ [VideoContext] Ajout vidéo:', video._id);
-    setVideos(prev => [video, ...prev]);
-    socketRef.current?.emit('newVideo', video);
-  }, []);
-
-  const updateVideo = useCallback((videoId, data) => {
-    setVideos(prev => prev.map(v => v._id === videoId ? { ...v, ...data } : v));
-  }, []);
-
-  const deleteVideo = useCallback(async (videoId) => {
-    try {
-      await apiClient.client.delete(`/api/videos/${videoId}`);
-      setVideos(prev => prev.filter(v => v._id !== videoId));
-    } catch (err) {
-      console.error('❌ [VideoContext] Erreur suppression:', err);
-      throw err;
-    }
-  }, [apiClient]);
-
-  const incrementViews = useCallback(async (videoId) => {
-    if (viewedVideos.current.has(videoId)) return;
-    viewedVideos.current.add(videoId);
-
-    setVideos(prev => prev.map(v => 
-      v._id === videoId ? { ...v, views: (v.views || 0) + 1 } : v
-    ));
-
-    try {
-      const { data } = await apiClient.client.post(`/api/videos/${videoId}/view`);
-      setVideos(prev => prev.map(v => 
-        v._id === videoId ? { ...v, views: data.views } : v
-      ));
-    } catch (err) {
-      console.warn('⚠️ [VideoContext] Erreur incrémentation vues:', err.message);
-      viewedVideos.current.delete(videoId);
-      setVideos(prev => prev.map(v => 
-        v._id === videoId ? { ...v, views: Math.max(0, (v.views || 0) - 1) } : v
-      ));
-    }
-  }, [apiClient]);
-
+  // 1. LIKE
   const likeVideo = useCallback(async (videoId) => {
-    const token = getToken();
-    if (!token) {
-      alert('Vous devez être connecté pour aimer une vidéo');
-      return;
-    }
+    if (!currentUser) return alert("Connectez-vous !");
 
-    const video = videos.find(v => v._id === videoId);
-    if (!video) return;
+    setVideos(prev => prev.map(v => {
+      if (v._id === videoId) {
+        const likesArr = Array.isArray(v.likes) ? v.likes : []; 
+        const isLiked = likesArr.includes(currentUser._id);
+        
+        let newLikes;
+        if (Array.isArray(v.likes)) {
+             newLikes = isLiked 
+                ? v.likes.filter(id => id !== currentUser._id)
+                : [...v.likes, currentUser._id];
+        } else {
+             newLikes = isLiked ? v.likes - 1 : v.likes + 1;
+        }
 
-    const wasLiked = video.userLiked;
-    const newLikes = wasLiked ? video.likes - 1 : video.likes + 1;
-
-    setVideos(prev => prev.map(v => 
-      v._id === videoId ? { ...v, likes: newLikes, userLiked: !wasLiked } : v
-    ));
+        return { ...v, likes: newLikes, userLiked: !isLiked };
+      }
+      return v;
+    }));
 
     try {
-      const { data } = await apiClient.client.post(`/api/videos/${videoId}/like`);
-      
+      const { data } = await apiClient.post(`/api/videos/${videoId}/like`);
       setVideos(prev => prev.map(v => 
-        v._id === videoId ? { ...v, likes: data.likes, userLiked: data.userLiked } : v
+        v._id === videoId ? { ...v, likes: data.likes } : v
       ));
-      
-      const userId = getUserId();
-      socketRef.current?.emit('likeVideo', { videoId, userId, likes: data.likes });
     } catch (err) {
-      console.error('❌ [VideoContext] Erreur like:', err);
-      
-      setVideos(prev => prev.map(v => 
-        v._id === videoId ? { ...v, likes: video.likes, userLiked: wasLiked } : v
-      ));
-      
-      if (err.response?.status === 401) {
-        alert('Session expirée. Veuillez vous reconnecter.');
-      }
+      console.error("❌ Erreur Like:", err);
     }
-  }, [videos, getToken, getUserId, apiClient]);
+  }, [currentUser, apiClient]);
 
-  // 🔥 FIX: AMÉLIORATION DE LA FONCTION COMMENTAIRE
+  // 2. COMMENT
   const commentVideo = useCallback(async (videoId, text) => {
-    if (!text || !text.trim()) {
-      console.warn('⚠️ [VideoContext] Texte de commentaire vide');
-      return;
-    }
-    
-    const token = getToken();
-    if (!token) {
-      alert('Vous devez être connecté pour commenter');
-      throw new Error('Token manquant');
-    }
+    if (!text?.trim()) return;
+    if (!currentUser) return alert("Connectez-vous !");
 
-    const user = getActiveUser();
-    if (!user?.user) {
-      alert('Informations utilisateur manquantes');
-      throw new Error('User manquant');
-    }
-
-    console.log('💬 [VideoContext] Commentaire vidéo:', { videoId, text: text.trim() });
-
-    // Créer le commentaire optimiste
+    const cleanText = text.trim();
+    const tempId = `temp-${Date.now()}`;
     const optimisticComment = {
-      _id: `temp-${Date.now()}`,
-      text: text.trim(),
-      user: {
-        _id: user.user._id || user.user.id,
-        username: user.user.username || user.user.fullName,
-        profilePicture: user.user.profilePhoto || user.user.profilePicture
-      },
+      _id: tempId,
+      text: cleanText,
+      user: currentUser,
       createdAt: new Date().toISOString()
     };
 
-    // Ajouter immédiatement (UI optimiste)
     setVideos(prev => prev.map(v => 
-      v._id === videoId 
-        ? { ...v, comments: [...(v.comments || []), optimisticComment] } 
-        : v
+      v._id === videoId ? { ...v, comments: [...(v.comments || []), optimisticComment] } : v
     ));
 
     try {
-      // 🔥 REQUÊTE CORRIGÉE
-      const { data } = await apiClient.client.post(
-        `/api/videos/${videoId}/comment`, 
-        { 
-          text: text.trim(),
-          content: text.trim() // Certains backends utilisent "content" au lieu de "text"
-        }
-      );
-      
-      console.log('✅ [VideoContext] Commentaire réussi:', data);
-      
-      // Remplacer le commentaire temporaire par le vrai
+      const { data } = await apiClient.post(`/api/videos/${videoId}/comment`, { 
+        text: cleanText,
+        content: cleanText
+      });
+
       setVideos(prev => prev.map(v => {
         if (v._id === videoId) {
-          // Enlever le commentaire optimiste
-          const withoutOptimistic = v.comments.filter(c => c._id !== optimisticComment._id);
-          
-          // Ajouter les commentaires du serveur
-          const serverComments = data.comments || data.video?.comments || [];
-          
-          return { 
-            ...v, 
-            comments: serverComments.length > 0 ? serverComments : [...withoutOptimistic, data.comment || data]
-          };
+          const others = v.comments.filter(c => c._id !== tempId);
+          const serverComment = data.comment || data; 
+          return { ...v, comments: [...others, serverComment] };
         }
         return v;
       }));
       
-      // Émettre via socket
-      const comment = data.comment || data.comments?.[data.comments.length - 1] || data;
-      socketRef.current?.emit('commentVideo', { videoId, comment });
-      
+      socketRef.current?.emit('commentVideo', { videoId, comment: data.comment || data });
+
     } catch (err) {
-      console.error('❌ [VideoContext] Erreur commentaire:', err);
-      console.error('❌ Détails:', {
-        status: err.response?.status,
-        data: err.response?.data,
-        message: err.message
-      });
-      
-      // Retirer le commentaire optimiste en cas d'erreur
+      console.error("❌ Erreur Commentaire:", err);
       setVideos(prev => prev.map(v => 
-        v._id === videoId 
-          ? { ...v, comments: v.comments.filter(c => c._id !== optimisticComment._id) } 
-          : v
+        v._id === videoId ? { ...v, comments: v.comments.filter(c => c._id !== tempId) } : v
       ));
-      
-      // Messages d'erreur explicites
-      if (err.response?.status === 401) {
-        alert('Session expirée. Veuillez vous reconnecter.');
-      } else if (err.response?.status === 500) {
-        alert('Erreur serveur. Réessayez plus tard.');
-      } else if (err.response?.data?.message) {
-        alert(err.response.data.message);
-      } else {
-        alert('Erreur lors de l\'ajout du commentaire');
-      }
-      
-      throw err;
     }
-  }, [getToken, getActiveUser, apiClient]);
+  }, [currentUser, apiClient]);
 
-  const fetchUserVideos = useCallback(async (userId) => {
+  // 3. DELETE
+  const deleteVideo = useCallback(async (videoId) => {
     try {
-      const { data } = await apiClient.client.get(`/api/videos/user/${userId}`);
-      return Array.isArray(data) ? data : [];
+      await apiClient.delete(`/api/videos/${videoId}`);
+      setVideos(prev => prev.filter(v => v._id !== videoId));
     } catch (err) {
-      console.error('❌ [VideoContext] Erreur fetch user videos:', err);
-      return [];
+      console.error("Erreur suppression:", err);
     }
   }, [apiClient]);
 
-  // === NETTOYAGE ===
-  useEffect(() => {
-    return () => {
-      observer.current?.disconnect();
-      abortController.current?.abort();
-      
-      if (apiClient.requestInterceptor !== undefined) {
-        apiClient.client.interceptors.request.eject(apiClient.requestInterceptor);
-      }
-      if (apiClient.responseInterceptor !== undefined) {
-        apiClient.client.interceptors.response.eject(apiClient.responseInterceptor);
-      }
-    };
+  // 4. INCREMENT VIEWS (C'est ce qui manquait !)
+  const incrementViews = useCallback(async (videoId) => {
+    if (!videoId) return;
+
+    // Mise à jour optimiste locale
+    setVideos((prev) => prev.map(v => 
+      v._id === videoId ? { ...v, views: (v.views || 0) + 1 } : v
+    ));
+
+    try {
+      // Appel silencieux à l'API
+      await apiClient.post(`/api/videos/${videoId}/view`);
+    } catch (err) {
+      // On ignore l'erreur silencieusement pour ne pas gêner l'UX
+      console.warn("Erreur incrémentation vue:", err);
+    }
   }, [apiClient]);
 
+  // === VALEURS EXPORTÉES ===
   const value = useMemo(() => ({
     videos,
     loading,
     hasMore,
-    page,
-    initialLoad,
     fetchVideos,
-    fetchUserVideos,
-    addVideo,
-    updateVideo,
-    deleteVideo,
-    incrementViews,
     likeVideo,
     commentVideo,
-    socket: socketRef.current,
-  }), [
-    videos, loading, hasMore, page, initialLoad,
-    fetchVideos, fetchUserVideos, addVideo, updateVideo,
-    deleteVideo, incrementViews, likeVideo, commentVideo
-  ]);
+    deleteVideo,
+    incrementViews, // <--- AJOUTÉ ICI POUR ÉVITER LE CRASH
+    currentUser
+  }), [videos, loading, hasMore, fetchVideos, likeVideo, commentVideo, deleteVideo, incrementViews, currentUser]);
 
   return <VideosContext.Provider value={value}>{children}</VideosContext.Provider>;
 };

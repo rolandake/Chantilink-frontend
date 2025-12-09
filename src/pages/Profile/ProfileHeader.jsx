@@ -1,5 +1,5 @@
-// src/components/ProfileHeader.jsx - VERSION CORRIGÉE CLOUDINARY
-import React, { useState, useRef, useMemo } from 'react';
+// src/components/ProfileHeader.jsx - VERSION AVEC RÉCUPÉRATION AUTO DES STATS
+import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   CameraIcon, 
@@ -18,7 +18,7 @@ import { useDarkMode } from '../../context/DarkModeContext';
 import { useAuth } from '../../context/AuthContext';
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const EMOJIS = ["😊", "🔥", "💡", "🎉", "🚀", "❤️", "😎", "✨", "🎵"];
 
 export default function ProfileHeader({ 
@@ -38,6 +38,13 @@ export default function ProfileHeader({
   const [saving, setSaving] = useState(false);
   const [showStats, setShowStats] = useState(false);
   
+  // ✅ NOUVEAUX STATES POUR LES STATS
+  const [userPosts, setUserPosts] = useState(posts);
+  const [userFollowers, setUserFollowers] = useState(followers);
+  const [userFollowing, setUserFollowing] = useState(following);
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [statsError, setStatsError] = useState(null);
+  
   const [editData, setEditData] = useState({
     fullName: user?.fullName || '',
     username: user?.username || '',
@@ -49,13 +56,83 @@ export default function ProfileHeader({
   const profileInputRef = useRef(null);
   const coverInputRef = useRef(null);
 
+  // ✅ RÉCUPÉRATION AUTOMATIQUE DES STATS
+  const fetchUserStats = useCallback(async () => {
+    if (!user?._id) return;
+    
+    setLoadingStats(true);
+    setStatsError(null);
+    
+    try {
+      const token = await getToken();
+      
+      // ✅ Récupérer les posts, followers, following en parallèle
+      const [postsRes, followersRes, followingRes] = await Promise.allSettled([
+        axios.get(`${API_URL}/posts/user/${user._id}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          timeout: 10000
+        }),
+        axios.get(`${API_URL}/users/${user._id}/followers`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          timeout: 10000
+        }),
+        axios.get(`${API_URL}/users/${user._id}/following`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          timeout: 10000
+        })
+      ]);
+
+      // ✅ Extraire les données avec gestion d'erreur
+      if (postsRes.status === 'fulfilled') {
+        const postsData = postsRes.value.data?.posts || postsRes.value.data?.data || [];
+        setUserPosts(Array.isArray(postsData) ? postsData : []);
+      }
+
+      if (followersRes.status === 'fulfilled') {
+        const followersData = followersRes.value.data?.followers || followersRes.value.data?.data || [];
+        setUserFollowers(Array.isArray(followersData) ? followersData : []);
+      }
+
+      if (followingRes.status === 'fulfilled') {
+        const followingData = followingRes.value.data?.following || followingRes.value.data?.data || [];
+        setUserFollowing(Array.isArray(followingData) ? followingData : []);
+      }
+
+      console.log('✅ [ProfileHeader] Stats chargées:', {
+        posts: postsRes.status === 'fulfilled' ? postsRes.value.data?.posts?.length : 0,
+        followers: followersRes.status === 'fulfilled' ? followersRes.value.data?.followers?.length : 0,
+        following: followingRes.status === 'fulfilled' ? followingRes.value.data?.following?.length : 0
+      });
+
+    } catch (err) {
+      console.error('❌ [ProfileHeader] Erreur chargement stats:', err);
+      setStatsError(err.message);
+    } finally {
+      setLoadingStats(false);
+    }
+  }, [user?._id, getToken]);
+
+  // ✅ CHARGER LES STATS AU MONTAGE
+  useEffect(() => {
+    // Si les props sont vides, charger depuis l'API
+    if (user?._id && (!posts.length || !followers.length || !following.length)) {
+      fetchUserStats();
+    } else {
+      // Sinon utiliser les props
+      setUserPosts(posts);
+      setUserFollowers(followers);
+      setUserFollowing(following);
+    }
+  }, [user?._id, posts, followers, following, fetchUserStats]);
+
+  // ✅ CALCUL DES STATS OPTIMISÉ
   const stats = useMemo(() => {
-    const totalLikes = posts.reduce((sum, post) => {
+    const totalLikes = userPosts.reduce((sum, post) => {
       const likesCount = Array.isArray(post.likes) ? post.likes.length : (post.likes || 0);
       return sum + likesCount;
     }, 0);
     
-    const totalViews = posts.reduce((sum, post) => {
+    const totalViews = userPosts.reduce((sum, post) => {
       const viewsCount = Array.isArray(post.views) 
         ? post.views.length 
         : (typeof post.views === 'number' ? post.views : 0);
@@ -63,28 +140,27 @@ export default function ProfileHeader({
     }, 0);
 
     return {
-      posts: posts.length,
-      followers: followers.length,
-      following: following.length,
+      posts: userPosts.length,
+      followers: userFollowers.length,
+      following: userFollowing.length,
       likes: totalLikes,
       views: totalViews
     };
-  }, [posts, followers, following]);
+  }, [userPosts, userFollowers, userFollowing]);
 
-  const graphData = [
+  const graphData = useMemo(() => [
     { name: "Posts", value: stats.posts },
     { name: "Abonnés", value: stats.followers },
     { name: "Abonnements", value: stats.following },
     { name: "Likes", value: stats.likes },
     { name: "Vues", value: stats.views }
-  ];
+  ], [stats]);
 
-  // ✅ UPLOAD PHOTO DE PROFIL CORRIGÉ
+  // ✅ UPLOAD PHOTO DE PROFIL
   const handleProfilePhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     
-    // Validations
     if (!file.type.startsWith('image/')) {
       showToast?.('Fichier non valide. Image requise.', 'error');
       return;
@@ -98,26 +174,24 @@ export default function ProfileHeader({
     setIsUploadingProfile(true);
     
     try {
-      // ✅ Créer FormData correctement
       const formData = new FormData();
       formData.append('profilePhoto', file);
       
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
       
-      // ✅ Envoyer avec axios et FormData
       const response = await axios.put(
-        `${API_URL}/api/users/${user._id}/images`,
+        `${API_URL}/users/${user._id}/images`,
         formData,
         {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
-          }
+          },
+          timeout: 30000
         }
       );
       
-      // Mise à jour du contexte
       if (response.data?.user) {
         await updateUserProfile(user._id, response.data.user);
       }
@@ -135,12 +209,11 @@ export default function ProfileHeader({
     }
   };
 
-  // ✅ UPLOAD PHOTO DE COUVERTURE CORRIGÉ
+  // ✅ UPLOAD PHOTO DE COUVERTURE
   const handleCoverPhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     
-    // Validations
     if (!file.type.startsWith('image/')) {
       showToast?.('Fichier non valide. Image requise.', 'error');
       return;
@@ -154,26 +227,24 @@ export default function ProfileHeader({
     setIsUploadingCover(true);
     
     try {
-      // ✅ Créer FormData correctement
       const formData = new FormData();
-      formData.append('coverPhoto', file); // ⚠️ Nom différent !
+      formData.append('coverPhoto', file);
       
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
       
-      // ✅ Envoyer avec axios et FormData
       const response = await axios.put(
-        `${API_URL}/api/users/${user._id}/images`,
+        `${API_URL}/users/${user._id}/images`,
         formData,
         {
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
-          }
+          },
+          timeout: 30000
         }
       );
       
-      // Mise à jour du contexte
       if (response.data?.user) {
         await updateUserProfile(user._id, response.data.user);
       }
@@ -232,7 +303,7 @@ export default function ProfileHeader({
         isDarkMode ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900' : 'bg-white'
       }`}
     >
-      {/* COUVERTURE + UPLOAD */}
+      {/* COUVERTURE */}
       <div className="relative h-64 sm:h-80 overflow-hidden group">
         <motion.img
           src={user?.coverPhoto || '/default-cover.jpg'}
@@ -274,7 +345,7 @@ export default function ProfileHeader({
         )}
       </div>
 
-      {/* PROFIL + UPLOAD */}
+      {/* PROFIL */}
       <div className="relative px-6 sm:px-8 pb-8">
         <div className="relative -mt-20 sm:-mt-24 mb-6">
           <div className="relative inline-block group">
@@ -493,7 +564,12 @@ export default function ProfileHeader({
         {/* STATISTIQUES */}
         <div className={`pt-6 border-t ${borderColor}`}>
           <div className="flex items-center justify-between mb-4">
-            <h3 className={`text-lg font-semibold ${textColor}`}>Statistiques</h3>
+            <h3 className={`text-lg font-semibold ${textColor}`}>
+              Statistiques
+              {loadingStats && (
+                <span className="ml-2 inline-block w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+              )}
+            </h3>
             <motion.button 
               onClick={() => setShowStats(!showStats)} 
               className={`p-2 rounded-lg ${isDarkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-gray-100 hover:bg-gray-200'}`}
@@ -501,6 +577,12 @@ export default function ProfileHeader({
               <ChartBarIcon className="w-5 h-5" />
             </motion.button>
           </div>
+
+          {statsError && (
+            <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+              <p className="text-sm text-red-400">Erreur de chargement des stats</p>
+            </div>
+          )}
 
           <div className="grid grid-cols-5 gap-2 mb-4">
             {graphData.map((stat, i) => (

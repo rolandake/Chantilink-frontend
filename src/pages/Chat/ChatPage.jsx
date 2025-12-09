@@ -1,4 +1,4 @@
-// src/pages/Chat/ChatPage.jsx - VERSION SOCKET avec AUTO-SWITCH IA
+// src/pages/Chat/ChatPage.jsx - VERSION CORRIGÉE SIMPLIFIÉE
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import EmojiPicker from "emoji-picker-react";
@@ -42,7 +42,9 @@ const ProviderBadge = ({ provider, status }) => {
 };
 
 export default function ChatPage() {
-  const { user } = useAuth();
+  // ✅ Utiliser AuthContext
+  const { user, getToken } = useAuth();
+  
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -58,100 +60,163 @@ export default function ChatPage() {
   const socketRef = useRef(null);
   const roomId = useRef(`chat-${user?.id || 'guest'}-${Date.now()}`);
   const pendingReplyId = useRef(null);
+  const typingTextRef = useRef("");
 
-  // Connexion Socket
+  // ✅ CONNEXION SOCKET SIMPLIFIÉE - Utilise directement getToken()
   useEffect(() => {
-    const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
+    if (!user?.id) {
+      console.warn("[Chat] ⚠️ Utilisateur non connecté");
+      return;
+    }
+
+    let mounted = true;
     
-    console.log("[Chat] 🔌 Connexion au socket:", SOCKET_URL);
-    
-    socketRef.current = io(`${SOCKET_URL}/gpt`, {
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-      auth: {
-        token: localStorage.getItem("token"),
-      },
-    });
-
-    const socket = socketRef.current;
-
-    socket.on("connect", () => {
-      console.log("[Chat] ✅ Socket connecté:", socket.id);
-      setIsConnected(true);
-      socket.emit("joinRoom", roomId.current);
-      socket.emit("getAIStatus");
-    });
-
-    socket.on("disconnect", () => {
-      console.log("[Chat] ❌ Socket déconnecté");
-      setIsConnected(false);
-    });
-
-    socket.on("roomJoined", (data) => {
-      console.log("[Chat] 🏠 Room rejoint:", data);
-    });
-
-    socket.on("aiStatus", ({ providers }) => {
-      console.log("[Chat] 🤖 Status IA reçu:", providers);
-      setAiProviders(providers);
-    });
-
-    socket.on("receiveGPTMessage", ({ replyId, role, content, typing, provider }) => {
-      if (replyId !== pendingReplyId.current) return;
-
-      if (provider) {
-        setCurrentProvider(provider);
+    const connectSocket = async () => {
+      // ✅ getToken() gère automatiquement le refresh si nécessaire
+      const token = await getToken();
+      
+      if (!token) {
+        console.error("[Chat] ❌ Aucun token disponible");
+        return;
       }
 
-      if (typing) {
-        setIsTyping(true);
-        setTypingText(prev => prev + content);
-      } else {
+      if (!mounted) return;
+
+      console.log("[Chat] 🔌 Token obtenu, connexion socket...");
+
+      // Déterminer l'URL du socket
+      const isDevelopment = 
+        import.meta.env.DEV || 
+        import.meta.env.MODE === 'development' ||
+        window.location.hostname === 'localhost' ||
+        window.location.hostname === '127.0.0.1';
+
+      const SOCKET_URL = isDevelopment
+        ? (import.meta.env.VITE_SOCKET_URL_DEV || 'http://localhost:5000')
+        : (import.meta.env.VITE_SOCKET_URL_PROD || 'https://chantilink-backend.onrender.com');
+      
+      console.log("[Chat] 🌍 Connexion à:", SOCKET_URL);
+      
+      // Créer la connexion socket
+      socketRef.current = io(`${SOCKET_URL}/gpt`, {
+        transports: ["websocket", "polling"],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionAttempts: 5,
+        auth: { token },
+      });
+
+      const socket = socketRef.current;
+
+      // ========================================
+      // HANDLERS SOCKET
+      // ========================================
+
+      socket.on("connect", () => {
+        console.log("[Chat] ✅ Socket connecté:", socket.id);
+        setIsConnected(true);
+        socket.emit("joinRoom", roomId.current);
+        socket.emit("getAIStatus");
+      });
+
+      socket.on("disconnect", (reason) => {
+        console.log("[Chat] ❌ Socket déconnecté:", reason);
+        setIsConnected(false);
+      });
+
+      socket.on("connect_error", async (error) => {
+        console.error("[Chat] 💥 Erreur de connexion:", error.message);
+        
+        // ✅ Si TOKEN_EXPIRED, AuthContext va auto-refresh au prochain getToken()
+        // On déconnecte et on va reconnecter automatiquement
+        if (error.message === "TOKEN_EXPIRED" || error.message.includes("jwt expired")) {
+          console.log("[Chat] 🔄 Token expiré détecté, reconnexion dans 2s...");
+          
+          if (socketRef.current) {
+            socketRef.current.disconnect();
+          }
+          
+          // Attendre 2 secondes puis reconnecter (getToken va auto-refresh)
+          setTimeout(() => {
+            if (mounted) {
+              connectSocket();
+            }
+          }, 2000);
+        }
+      });
+
+      socket.on("reconnect_attempt", (attemptNumber) => {
+        console.log("[Chat] 🔄 Reconnexion tentative #", attemptNumber);
+      });
+
+      socket.on("roomJoined", (data) => {
+        console.log("[Chat] 🏠 Room rejoint:", data);
+      });
+
+      socket.on("aiStatus", ({ providers }) => {
+        console.log("[Chat] 🤖 IA disponibles:", providers.length);
+        setAiProviders(providers);
+      });
+
+      socket.on("receiveGPTMessage", ({ replyId, role, content, typing, provider }) => {
+        if (replyId !== pendingReplyId.current) return;
+
+        if (provider) {
+          setCurrentProvider(provider);
+        }
+
+        if (typing) {
+          setIsTyping(true);
+          setTypingText(prev => prev + content);
+        } else {
+          setIsTyping(false);
+          
+          setMessages(prev => {
+            const filtered = prev.filter(m => m._id !== pendingReplyId.current);
+            return [...filtered, {
+              _id: pendingReplyId.current,
+              sender: "ai",
+              content: typingTextRef.current || content,
+              timestamp: Date.now(),
+              provider: currentProvider,
+            }];
+          });
+          
+          setTypingText("");
+          pendingReplyId.current = null;
+          setCurrentProvider(null);
+        }
+      });
+
+      socket.on("error", ({ message, code }) => {
+        console.error("[Chat] ❌ Erreur:", code, message);
         setIsTyping(false);
         
-        setMessages(prev => {
-          const filtered = prev.filter(m => m._id !== pendingReplyId.current);
-          return [...filtered, {
-            _id: pendingReplyId.current,
+        if (pendingReplyId.current) {
+          setMessages(prev => [...prev, {
+            _id: `error-${Date.now()}`,
             sender: "ai",
-            content: typingTextRef.current || content,
+            content: `❌ Erreur: ${message}`,
             timestamp: Date.now(),
-            provider: currentProvider,
-          }];
-        });
-        
-        setTypingText("");
-        pendingReplyId.current = null;
-        setCurrentProvider(null);
-      }
-    });
-
-    socket.on("error", ({ message, code }) => {
-      console.error("[Chat] ❌ Erreur socket:", code, message);
-      setIsTyping(false);
-      
-      if (pendingReplyId.current) {
-        setMessages(prev => [...prev, {
-          _id: `error-${Date.now()}`,
-          sender: "ai",
-          content: `❌ Erreur: ${message}`,
-          timestamp: Date.now(),
-          isError: true,
-        }]);
-        pendingReplyId.current = null;
-      }
-    });
-
-    return () => {
-      socket.emit("leaveRoom", roomId.current);
-      socket.disconnect();
+            isError: true,
+          }]);
+          pendingReplyId.current = null;
+        }
+      });
     };
-  }, [user]);
+    
+    connectSocket();
+    
+    return () => {
+      mounted = false;
+      if (socketRef.current) {
+        socketRef.current.emit("leaveRoom", roomId.current);
+        socketRef.current.disconnect();
+      }
+    };
+  }, [user, getToken]); // ✅ Dépendances correctes
 
-  // Utiliser une ref pour le texte en cours de frappe
-  const typingTextRef = useRef("");
+  // Ref pour le texte en cours de frappe
   useEffect(() => {
     typingTextRef.current = typingText;
   }, [typingText]);
@@ -349,7 +414,7 @@ export default function ChatPage() {
           <div className="flex items-end gap-3">
             <button
               onClick={() => setShowEmojiPicker(prev => !prev)}
-              className={`p-3 rounded-full transition-all ${darkMode ? "hover:bg-gray-800" : "hover:bg-gray-200"}`}
+              className={`p-3 rounded-full transition-all ${darkMode ? "hover:bg-gray-700" : "hover:bg-gray-200"}`}
             >
               <FaSmile className="text-xl text-orange-500" />
             </button>

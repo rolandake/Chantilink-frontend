@@ -1,140 +1,150 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite"; // 1. Import loadEnv
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 
-export default defineConfig(({ mode }) => ({
-  plugins: [
-    react({
-      jsxRuntime: "automatic",
-      fastRefresh: true,
-    }),
+// https://vitejs.dev/config/
+export default defineConfig(({ mode }) => {
+  // 2. Charger les variables d'environnement (.env)
+  const env = loadEnv(mode, process.cwd(), "");
+  const API_URL = env.VITE_API_URL || "http://localhost:5000";
 
-    VitePWA({
-      registerType: "autoUpdate",
-      injectRegister: "auto",
-      devOptions: { enabled: mode === "development" },
+  return {
+    plugins: [
+      react({
+        jsxRuntime: "automatic",
+        fastRefresh: true,
+      }),
 
-      manifest: {
-        name: "ChantiLink",
-        short_name: "ChantiLink",
-        description: "Réseau social professionnel avec IA intégrée",
-        theme_color: "#E67E3C",
-        background_color: "#2B2D42",
-        display: "standalone",
-        start_url: "/",
-        lang: "fr-CI",
-        orientation: "portrait-primary",
-        icons: [
-          {
-            src: "/android-chrome-192x192.png",
-            sizes: "192x192",
-            type: "image/png",
-            purpose: "any maskable",
-          },
-          {
-            src: "/android-chrome-512x512.png",
-            sizes: "512x512",
-            type: "image/png",
-            purpose: "any maskable",
-          },
-        ],
-      },
+      VitePWA({
+        registerType: "autoUpdate",
+        injectRegister: "auto",
+        devOptions: { 
+          enabled: true, // 3. Activé en dev pour tester le SW
+          type: 'module',
+        },
 
-      workbox: {
-        globPatterns: ["**/*.{js,css,html,woff2,ttf,svg,png,jpg,jpeg,webp,webmanifest}"],
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-
-        runtimeCaching: [
-          {
-            urlPattern: ({ request }) => request.destination === "image",
-            handler: "CacheFirst",
-            options: {
-              cacheName: "images-cache",
-              expiration: { maxEntries: 120, maxAgeSeconds: 60 * 60 * 24 * 30 },
+        manifest: {
+          name: "ChantiLink",
+          short_name: "ChantiLink",
+          description: "Réseau social professionnel avec IA intégrée",
+          theme_color: "#E67E3C",
+          background_color: "#2B2D42",
+          display: "standalone",
+          start_url: "/",
+          lang: "fr-CI",
+          orientation: "portrait-primary",
+          icons: [
+            {
+              src: "/pwa-192x192.png", // Assure-toi que ces noms matchent tes fichiers
+              sizes: "192x192",
+              type: "image/png",
+              purpose: "any maskable",
             },
-          },
-          {
-            urlPattern: ({ request }) => ["script", "style"].includes(request.destination),
-            handler: "StaleWhileRevalidate",
-            options: { cacheName: "assets-cache" },
-          },
-          {
-            urlPattern: /^https:\/\/api\.chantilink\.ci\/.*/i,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "api-cache",
-              networkTimeoutSeconds: 8,
-              expiration: { maxEntries: 100, maxAgeSeconds: 60 * 5 },
+            {
+              src: "/pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "any maskable",
             },
-          },
-        ],
-      },
-    }),
-  ],
+          ],
+        },
 
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "src"),
+        workbox: {
+          globPatterns: ["**/*.{js,css,html,woff2,ttf,svg,png,jpg,jpeg,webp,webmanifest}"],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          // Cleanup automatique des vieux caches
+          cleanupOutdatedCaches: true, 
+
+          runtimeCaching: [
+            {
+              // Cache les images (avatars, posts)
+              urlPattern: ({ request }) => request.destination === "image",
+              handler: "CacheFirst",
+              options: {
+                cacheName: "images-cache",
+                expiration: { maxEntries: 150, maxAgeSeconds: 60 * 60 * 24 * 30 }, // 30 jours
+              },
+            },
+            {
+              // Cache les polices et styles
+              urlPattern: ({ request }) => ["style", "script", "font"].includes(request.destination),
+              handler: "StaleWhileRevalidate",
+              options: { cacheName: "assets-cache" },
+            },
+            {
+              // Cache API intelligent (marche en Prod ET en Dev via regex souple)
+              urlPattern: ({ url }) => url.pathname.startsWith('/api'),
+              handler: "NetworkFirst",
+              options: {
+                cacheName: "api-cache",
+                networkTimeoutSeconds: 5, // Réduit à 5s pour UX plus rapide si hors ligne
+                expiration: { maxEntries: 50, maxAgeSeconds: 60 * 5 }, // 5 min
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+          ],
+        },
+      }),
+    ],
+
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "src"),
+      },
+      extensions: [".js", ".jsx", ".ts", ".tsx"],
     },
-    extensions: [".js", ".jsx", ".ts", ".tsx"],
-    dedupe: ["react", "react-dom"],
-  },
 
-  server: {
-    host: "localhost",
-    port: 5173,
-    strictPort: true,
-    hmr: {
-      protocol: "ws",
-      host: "localhost",
+    server: {
+      host: true, // 4. Permet l'accès via IP locale (ex: 192.168.1.x) pour tester sur ton téléphone
       port: 5173,
-    },
-
-    // Proxy uniquement en développement
-    proxy: mode === "development"
-      ? {
-          "/api": {
-            target: "http://localhost:5000",
-            changeOrigin: true,
-            ws: true,
-          },
-        }
-      : undefined,
-  },
-
-  build: {
-    target: "esnext",
-    minify: "esbuild",
-    sourcemap: false,
-    cssMinify: "esbuild",
-    chunkSizeWarningLimit: 900,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          react: ["react", "react-dom"],
-          motion: ["framer-motion"],
-          icons: ["lucide-react"],
+      strictPort: true,
+      watch: {
+        usePolling: true, // Parfois nécessaire sur Windows/Docker pour le HMR
+      },
+      proxy: {
+        "/api": {
+          target: API_URL, // Utilise la variable d'env
+          changeOrigin: true,
+          secure: false,
+          ws: true, // Indispensable pour Socket.io
         },
       },
     },
-  },
 
-  define: {
-    "process.env.VITE_COUNTRY": JSON.stringify("CI"),
-    "process.env.VITE_CURRENCY": JSON.stringify("XOF"),
-  },
+    build: {
+      target: "es2015", // 5. Plus compatible que 'esnext' pour les vieux Android
+      minify: "esbuild",
+      cssMinify: "esbuild",
+      chunkSizeWarningLimit: 1000,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            // Optimisation du chargement
+            vendor: ["react", "react-dom", "react-router-dom"],
+            ui: ["framer-motion", "lucide-react"],
+            utils: ["axios", "date-fns"],
+          },
+        },
+      },
+    },
 
-  optimizeDeps: {
-    entries: ["./index.html"],
-    include: [
-      "react",
-      "react-dom",
-      "use-debounce",
-      "react-icons",
-      "react-icons/hi2",
-      "react-icons/fa",
-      "framer-motion",
-    ],
-  },
-}));
+    define: {
+      "process.env.VITE_COUNTRY": JSON.stringify("CI"),
+      "process.env.VITE_CURRENCY": JSON.stringify("XOF"),
+    },
+
+    optimizeDeps: {
+      include: [
+        "react",
+        "react-dom",
+        "react-router-dom",
+        "framer-motion",
+        "socket.io-client", 
+        "axios"
+      ],
+    },
+  };
+});

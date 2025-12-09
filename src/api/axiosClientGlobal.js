@@ -1,70 +1,125 @@
-// frontend/src/api/axiosClientGlobal.js
+// ============================================
+// 📁 src/api/axiosClientGlobal.js
+// ✅ VERSION FUSIONNÉE ET OPTIMISÉE
+// ============================================
 import axios from "axios";
 
-// ✅ Utilise VITE_API_URL (cohérent avec api.js)
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+// 1. Détection automatique de l'URL (comme dans api.js mais intégré ici)
+const isDevelopment = 
+  import.meta.env.DEV || 
+  window.location.hostname === 'localhost';
 
-// 🔍 Log de debug
-console.log("🔧 [AxiosClient] API URL:", API_BASE_URL);
+const API_BASE_URL = isDevelopment
+  ? (import.meta.env.VITE_API_URL_DEV || 'http://localhost:5000/api')
+  : (import.meta.env.VITE_API_URL_PROD || 'https://chantilink-backend.onrender.com/api');
+
+console.log(`🔧 [AxiosClient] Mode: ${isDevelopment ? 'DEV' : 'PROD'}`);
+console.log(`📡 [AxiosClient] URL: ${API_BASE_URL}`);
 
 const axiosClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000, // 30s pour Render
+  timeout: 60000, // 60s pour les connexions lentes en 4G
   withCredentials: true,
   headers: { 
     "Content-Type": "application/json" 
   },
 });
 
-// Intercepteur pour injecter le token automatiquement
-export const injectAuthHandlers = ({ getToken }) => {
-  axiosClient.interceptors.request.use(
-    async (config) => {
-      try {
-        const token = await getToken?.();
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
-          console.log("✅ [AxiosClient] Token injecté");
-        }
-      } catch (err) {
-        console.error("❌ [AxiosClient] Erreur récupération token:", err);
-      }
-      return config;
-    },
-    (error) => {
-      return Promise.reject(error);
-    }
-  );
+// Stockage des handlers d'authentification (injectés depuis AuthContext)
+let authHandlers = null;
+
+export const injectAuthHandlers = (handlers) => {
+  authHandlers = handlers;
+  console.log("✅ [AxiosClient] Handlers Auth injectés");
 };
 
-// Intercepteur global pour les erreurs
+// ============================================
+// 🔑 INTERCEPTEUR REQUEST
+// ============================================
+axiosClient.interceptors.request.use(
+  async (config) => {
+    // Liste des routes qui n'ont PAS besoin de token
+    const publicRoutes = ['/auth/login', '/auth/register', '/auth/refresh'];
+    const isPublic = publicRoutes.some(r => config.url?.includes(r));
+
+    if (!isPublic) {
+      // 1. Essayer via le handler injecté (le plus fiable)
+      if (authHandlers?.getToken) {
+        const token = await authHandlers.getToken();
+        if (token) config.headers.Authorization = `Bearer ${token}`;
+      } 
+      // 2. Fallback localStorage (si AuthContext pas encore prêt)
+      else {
+        const token = localStorage.getItem("token");
+        if (token) config.headers.Authorization = `Bearer ${token}`;
+      }
+    }
+    
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// ============================================
+// 🔄 INTERCEPTEUR RESPONSE (Retry & Erreurs)
+// ============================================
 axiosClient.interceptors.response.use(
   (response) => response,
-  (error) => {
-    // Timeout
-    if (error.code === "ECONNABORTED") {
-      console.error("❌ [AxiosClient] Timeout");
-      error.userMessage = "Le serveur met trop de temps à répondre (Render en veille ?).";
-    }
+  async (error) => {
+    const originalRequest = error.config;
     
-    // Erreur réseau
-    if (error.code === "ERR_NETWORK") {
-      console.error("❌ [AxiosClient] Erreur réseau");
-      error.userMessage = "Impossible de contacter le serveur.";
+    // ------------------------------------
+    // Cas 1 : Token Expiré (401)
+    // ------------------------------------
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      
+      // Éviter boucle infinie sur la route de refresh elle-même
+      if (originalRequest.url?.includes('/auth/refresh')) {
+        // Si le refresh échoue, c'est fini -> Logout
+        if (authHandlers?.logout) await authHandlers.logout();
+        return Promise.reject(error);
+      }
+
+      console.warn("⚠️ [AxiosClient] 401 - Tentative de refresh...");
+      originalRequest._retry = true;
+
+      try {
+        // Tenter le refresh via AuthContext
+        if (authHandlers?.refreshTokenForUser) {
+          const success = await authHandlers.refreshTokenForUser();
+          if (success) {
+            // Récupérer le nouveau token
+            const newToken = await authHandlers.getToken();
+            originalRequest.headers.Authorization = `Bearer ${newToken}`;
+            console.log("✅ [AxiosClient] Refresh réussi, on rejoue la requête.");
+            return axiosClient(originalRequest);
+          }
+        }
+      } catch (refreshErr) {
+        console.error("❌ [AxiosClient] Echec du refresh:", refreshErr);
+        if (authHandlers?.logout) await authHandlers.logout();
+      }
     }
-    
-    // 401 Unauthorized
-    if (error.response?.status === 401) {
-      console.warn("⚠️ [AxiosClient] Non authentifié");
-      // Ne pas rediriger automatiquement ici si vous utilisez un context
+
+    // ------------------------------------
+    // Cas 2 : Timeout / Réseau (Mode Hors Ligne)
+    // ------------------------------------
+    if (error.code === "ECONNABORTED" || error.code === "ERR_NETWORK") {
+      console.error("❌ [AxiosClient] Erreur réseau ou timeout");
+      const msg = "Connexion instable ou serveur injoignable.";
+      if (authHandlers?.notify) authHandlers.notify("error", msg);
+      
+      // Ici tu pourrais retourner des données en cache si tu utilises React Query ou similar
     }
-    
-    // CORS
-    if (error.message.includes("CORS")) {
-      console.error("❌ [AxiosClient] CORS bloqué");
-      error.userMessage = "Erreur de configuration serveur.";
+
+    // ------------------------------------
+    // Cas 3 : Erreurs Serveur (5xx)
+    // ------------------------------------
+    if (error.response?.status >= 500) {
+      console.error("❌ [AxiosClient] Erreur Serveur");
+      if (authHandlers?.notify) authHandlers.notify("error", "Le serveur rencontre un problème momentané.");
     }
-    
+
     return Promise.reject(error);
   }
 );

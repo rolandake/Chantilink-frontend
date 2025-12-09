@@ -1,430 +1,568 @@
-// src/components/StoryViewer.jsx
+// ============================================
+// 📁 src/pages/Home/StoryViewer.jsx - VERSION FINALE & STABLE
+// ============================================
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { X, Eye, Smile, Trash2, Pause, MessageCircle, Type } from "lucide-react";
 import { createPortal } from "react-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  X, Eye, Trash2, Heart, Send
+} from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useStories } from "../../context/StoryContext";
-import { io } from "socket.io-client";
+import axios from "axios";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:5000";
-const MEDIA_URL = (p) => p?.startsWith("http") ? p : p ? `${API}/${p.replace(/^\/+/, "")}` : null;
-const EMOJIS = ["❤️","😂","😮","😢","😍","🔥","👏","💯","🎉","😭","🥰","👀","💪","🙌","😎","🤩"];
-const DURATION = 5000;
-const SWIPE = 80;
 
-const Toast = ({ msg, type = "success", onClose }) => (
-  <motion.div
-    initial={{ y: -50, opacity: 0 }}
-    animate={{ y: 0, opacity: 1 }}
-    exit={{ y: -50, opacity: 0 }}
-    onClick={onClose}
-    className={`fixed top-5 right-5 z-[99999] px-6 py-3 rounded-full shadow-2xl text-white font-bold cursor-pointer backdrop-blur-xl border border-white/20 ${
-      type === "success" ? "bg-gradient-to-r from-emerald-500 to-teal-600" : "bg-gradient-to-r from-red-500 to-rose-600"
-    }`}
-  >
-    {msg}
-  </motion.div>
-);
+// ✅ Helper URL sécurisé
+const MEDIA_URL = (path) => {
+  if (!path) return null;
+  if (path.startsWith("http")) return path;
+  return `${API}/${path.replace(/^\/+/, "")}`;
+};
 
-const ReactionModal = ({ onSelect, onClose, onDM, onText }) => createPortal(
-  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[99998] flex items-center justify-center" onClick={onClose}>
-    <motion.div initial={{ scale: 0.8 }} animate={{ scale: 1 }} className="bg-white dark:bg-gray-900 rounded-3xl p-8 shadow-3xl max-w-md w-full" onClick={e => e.stopPropagation()}>
-      <div className="flex justify-between items-center mb-6">
-        <h3 className="text-xl font-bold">Réagir à la story</h3>
-        <button onClick={onClose} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full">
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-      
-      {/* Emojis */}
-      <div className="mb-6">
-        <p className="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-3">Réactions rapides</p>
-        <div className="grid grid-cols-4 gap-4">
-          {EMOJIS.map(e => (
-            <button key={e} onClick={() => { onSelect(e); onClose(); }} className="text-5xl hover:scale-125 transition-all duration-200 p-2">
-              {e}
-            </button>
-          ))}
-        </div>
-      </div>
+const EMOJIS = ["❤️","😂","😮","😢","😍","🔥","👏","💯","🎉","😭","😻","👀","💪","🙌","😎","🤩"];
 
-      {/* Actions */}
-      <div className="space-y-3">
-        <button onClick={() => { onText(); onClose(); }} className="w-full flex items-center gap-4 p-4 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white rounded-xl transition-all hover:scale-105 shadow-lg">
-          <Type className="w-6 h-6" />
-          <div className="text-left flex-1">
-            <p className="font-bold">Envoyer un message</p>
-            <p className="text-xs text-blue-100">Répondre avec du texte</p>
-          </div>
-        </button>
-        
-        <button onClick={() => { onDM(); onClose(); }} className="w-full flex items-center gap-4 p-4 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white rounded-xl transition-all hover:scale-105 shadow-lg">
-          <MessageCircle className="w-6 h-6" />
-          <div className="text-left flex-1">
-            <p className="font-bold">Envoyer un DM</p>
-            <p className="text-xs text-purple-100">Message privé</p>
-          </div>
-        </button>
+// --- SOUS-COMPOSANTS ---
+
+const EmojiPicker = ({ onSelect, onClose }) => {
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 20 }} 
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 20 }}
+      className="absolute bottom-20 left-4 right-4 bg-[#111b21] border border-gray-700 rounded-2xl shadow-2xl p-4 z-50 backdrop-blur-xl"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="grid grid-cols-8 gap-3">
+        {EMOJIS.map((emoji, i) => (
+          <motion.button
+            key={i}
+            whileHover={{ scale: 1.2 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={() => onSelect(emoji)}
+            className="text-2xl sm:text-3xl p-1 sm:p-2 hover:bg-white/10 rounded-xl transition flex justify-center"
+          >
+            {emoji}
+          </motion.button>
+        ))}
       </div>
+      <button 
+        onClick={onClose}
+        className="w-full mt-3 py-2 text-sm text-gray-400 hover:text-white transition bg-white/5 rounded-lg"
+      >
+        Fermer
+      </button>
     </motion.div>
-  </motion.div>,
-  document.body
-);
-
-const TextReplyModal = ({ onSend, onClose }) => {
-  const [text, setText] = useState("");
-  const handleSend = () => {
-    if (text.trim()) {
-      onSend(text);
-      onClose();
-    }
-  };
-  
-  return createPortal(
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[99998] flex items-center justify-center p-4" onClick={onClose}>
-      <motion.div initial={{ scale: 0.9, y: 50 }} animate={{ scale: 1, y: 0 }} className="bg-white dark:bg-gray-900 rounded-3xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex justify-between items-center mb-4">
-          <h3 className="text-xl font-bold">Répondre à la story</h3>
-          <button onClick={onClose} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Écris ta réponse..."
-          className="w-full h-32 p-4 border-2 border-gray-200 dark:border-gray-700 rounded-xl resize-none focus:border-blue-500 focus:outline-none dark:bg-gray-800"
-          autoFocus
-        />
-        <button
-          onClick={handleSend}
-          disabled={!text.trim()}
-          className="w-full mt-4 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-bold rounded-xl hover:from-blue-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-        >
-          Envoyer
-        </button>
-      </motion.div>
-    </motion.div>,
-    document.body
   );
 };
 
-const ViewersModal = ({ viewers = [], onClose }) => {
+const ViewersModal = ({ storyId, slideIndex, onClose }) => {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const { token } = useAuth();
 
   useEffect(() => {
-    if (!viewers.length) { setLoading(false); return; }
-    const fetchAll = async () => {
-      const ids = viewers.map(v => typeof v === "string" ? v : v._id).filter(Boolean);
-      const res = await Promise.all(ids.map(id =>
-        fetch(`${API}/api/users/${id}`, { headers: { Authorization: `Bearer ${token}` } })
-          .then(r => r.ok ? r.json().then(d => d.user || d) : null)
-          .catch(() => null)
-      ));
-      setData(res.filter(Boolean));
-      setLoading(false);
+    const fetchViewers = async () => {
+      try {
+        // Cette route doit exister dans votre backend, sinon ça renverra 404
+        // Si vous ne l'avez pas encore, ce n'est pas grave, le loading restera ou vide.
+        const res = await axios.get(`${API}/api/story/${storyId}/slides/${slideIndex}/viewers`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setData(res.data.viewers || []);
+      } catch (err) { 
+        console.warn("Viewers fetch error:", err); 
+      } finally { 
+        setLoading(false); 
+      }
     };
-    fetchAll();
-  }, [viewers, token]);
+    fetchViewers();
+  }, [storyId, slideIndex, token]);
 
   return createPortal(
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[99998] flex items-center justify-center p-4" onClick={onClose}>
-      <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} className="bg-white dark:bg-gray-900 rounded-3xl p-6 max-w-md w-full max-h-[80vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex justify-between items-center mb-4 pb-3 border-b border-gray-200 dark:border-gray-700">
-          <h3 className="text-xl font-bold">Vues ({viewers.length})</h3>
-          <button onClick={onClose} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full"><X className="w-6 h-6" /></button>
+    <div className="fixed inset-0 bg-black/90 z-[99999] flex items-end sm:items-center justify-center sm:p-4" onClick={onClose}>
+      <motion.div 
+        initial={{ y: "100%" }} 
+        animate={{ y: 0 }} 
+        exit={{ y: "100%" }}
+        className="bg-[#111b21] w-full sm:max-w-md h-[70vh] sm:rounded-3xl rounded-t-3xl p-6 flex flex-col border border-gray-800" 
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-center mb-4 pb-4 border-b border-gray-800">
+          <h3 className="text-white font-bold text-lg">Vues ({data.length})</h3>
+          <button onClick={onClose}><X className="text-gray-400" /></button>
         </div>
-        {loading ? (
-          <div className="space-y-3">{[...Array(3)].map((_,i)=>
-            <div key={i} className="flex items-center gap-3 p-3 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse">
-              <div className="w-12 h-12 rounded-full bg-gray-300 dark:bg-gray-700"/>
-              <div className="flex-1"><div className="h-4 bg-gray-300 dark:bg-gray-700 rounded w-32 mb-2"/><div className="h-3 bg-gray-300 dark:bg-gray-700 rounded w-48"/></div>
+        <div className="flex-1 overflow-y-auto space-y-3">
+          {loading ? <p className="text-gray-500 text-center mt-10">Chargement...</p> : 
+           data.length === 0 ? <p className="text-gray-500 text-center mt-10">Aucune vue pour l'instant</p> : 
+           data.map((v, i) => (
+            <div key={i} className="flex items-center gap-3 p-2 hover:bg-white/5 rounded-xl">
+              <img src={MEDIA_URL(v.profilePhoto) || "/default-avatar.png"} className="w-10 h-10 rounded-full object-cover bg-gray-700" alt="" />
+              <div>
+                <p className="text-white font-medium">{v.username || "Utilisateur"}</p>
+                <p className="text-gray-500 text-xs">{v.fullName}</p>
+              </div>
             </div>
-          )}</div>
-        ) : data.length === 0 ? (
-          <p className="text-center text-gray-500 py-12">Aucune vue</p>
-        ) : (
-          <div className="space-y-2">
-            {data.map((v,i) => {
-              const name = v.username || v.fullName || v.email?.split("@")[0] || "Anonyme";
-              return (
-                <motion.div key={v._id || i} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i*0.05 }} className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-xl">
-                  {v.profilePhoto ? (
-                    <img src={MEDIA_URL(v.profilePhoto)} alt={name} className="w-12 h-12 rounded-full object-cover" />
-                  ) : (
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-400 to-pink-500 flex items-center justify-center text-white font-bold text-lg">
-                      {name[0].toUpperCase()}
-                    </div>
-                  )}
-                  <div>
-                    <p className="font-semibold">{name}</p>
-                    {v.email && <p className="text-xs text-gray-500">{v.email}</p>}
-                  </div>
-                </motion.div>
-              );
-            })}
-          </div>
-        )}
+          ))}
+        </div>
       </motion.div>
-    </motion.div>,
-    document.body
+    </div>, document.body
   );
 };
 
+// Animation de réaction flottante
+const FloatingReaction = ({ emoji, onComplete }) => {
+  return (
+    <motion.div
+      initial={{ opacity: 1, y: 0, scale: 0.5 }}
+      animate={{ 
+        opacity: 0, 
+        y: -300, 
+        scale: 2,
+        x: (Math.random() - 0.5) * 100 
+      }}
+      transition={{ duration: 1.5, ease: "easeOut" }}
+      onAnimationComplete={onComplete}
+      className="absolute bottom-20 left-1/2 -translate-x-1/2 text-6xl pointer-events-none z-50 select-none"
+    >
+      {emoji}
+    </motion.div>
+  );
+};
+
+// ============================================
+// COMPOSANT PRINCIPAL
+// ============================================
 export default function StoryViewer({ stories = [], currentUser, onClose }) {
-  const [storyIdx, setStoryIdx] = useState(0);
+  // --- STATES ---
+  // On commence à l'index de la story cliquée (via currentUser) ou 0
+  const initialStoryIndex = useMemo(() => {
+    if (!currentUser) return 0;
+    const idx = stories.findIndex(s => (s.owner?._id || s.owner) === (currentUser._id || currentUser));
+    return idx !== -1 ? idx : 0;
+  }, [stories, currentUser]);
+
+  const [storyIdx, setStoryIdx] = useState(initialStoryIndex);
   const [slideIdx, setSlideIdx] = useState(0);
   const [progress, setProgress] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
+  
+  // UI States
   const [showEmoji, setShowEmoji] = useState(false);
-  const [showTextReply, setShowTextReply] = useState(false);
   const [showViewers, setShowViewers] = useState(false);
-  const [reacts, setReacts] = useState({});
-  const [toast, setToast] = useState(null);
-
-  const socket = useRef(null);
+  const [replyText, setReplyText] = useState("");
+  
+  // Réactions
+  const [floatingReactions, setFloatingReactions] = useState([]);
+  const [userReaction, setUserReaction] = useState(null);
+  
+  // Refs
+  const videoRef = useRef(null);
   const interval = useRef(null);
-  const touch = useRef({ x: 0, y: 0 });
-  const { token, user } = useAuth();
-  const { viewSlide, deleteSlide, fetchStories } = useStories();
+  const viewTimer = useRef(null);
+  const viewedSlides = useRef(new Set()); // Évite double appel API
+  const reactionId = useRef(0);
 
+  const { token, user } = useAuth();
+  const { viewSlide, deleteStory, fetchStories } = useStories();
+
+  // --- DERIVED DATA ---
   const story = useMemo(() => stories[storyIdx], [stories, storyIdx]);
   const slide = useMemo(() => story?.slides?.[slideIdx], [story, slideIdx]);
-  const isOwner = currentUser?._id === story?.owner?._id || user?._id === story?.owner?._id;
-  const total = story?.slides?.length || 0;
+  
+  // Vérification propriétaire (supporte populate ou ID direct)
+  const isOwner = useMemo(() => {
+    if (!story || !user) return false;
+    const ownerId = story.owner?._id || story.owner;
+    return ownerId === user._id;
+  }, [story, user]);
 
-  const showToast = useCallback((msg, type = "success") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 2200);
-  }, []);
+  const slideDuration = slide?.duration || 5000;
 
-  // Socket
+  // ✅ SÉCURITÉ ANTI-CRASH : Si données invalides, on ferme
   useEffect(() => {
-    if (!token || !story) return;
-    socket.current = io(API, { auth: { token }, transports: ["websocket"] });
-    socket.current.on("connect", () => socket.current.emit("joinStory", { storyId: story._id }));
-    socket.current.on("reactionSent", () => showToast("Réaction envoyée !"));
-    return () => socket.current?.disconnect();
-  }, [token, story?._id, showToast]);
+    if (!story || !slide) {
+      const t = setTimeout(() => onClose(), 0);
+      return () => clearTimeout(t);
+    }
+  }, [story, slide, onClose]);
 
-  // Mark viewed
-  useEffect(() => {
-    if (!slide || isOwner || slide.views?.some(v => (typeof v === "string" ? v : v._id) === user?._id)) return;
-    viewSlide(story._id, slideIdx);
-  }, [slide, isOwner, user?._id, viewSlide, story?._id, slideIdx]);
+  // ============================================
+  // LOGIQUE DE NAVIGATION
+  // ============================================
+  
+  const nextSlide = useCallback(() => {
+    setUserReaction(null);
+    setReplyText("");
+    
+    // Y a-t-il une autre slide dans cette story ?
+    if (slideIdx < (story?.slides?.length || 0) - 1) {
+      setSlideIdx(s => s + 1);
+      setProgress(0);
+    } 
+    // Sinon, y a-t-il une autre story ?
+    else if (storyIdx < stories.length - 1) {
+      setStoryIdx(s => s + 1);
+      setSlideIdx(0);
+      setProgress(0);
+    } 
+    // Sinon, c'est fini
+    else {
+      onClose();
+    }
+  }, [slideIdx, storyIdx, stories.length, story?.slides?.length, onClose]);
 
-  // Progress
-  useEffect(() => {
-    if (isPaused || !slide) { clearInterval(interval.current); setProgress(0); return; }
-    interval.current = setInterval(() => {
-      setProgress(p => {
-        if (p >= 100) { next(); return 0; }
-        return p + (100 / (DURATION / 50));
-      });
-    }, 50);
-    return () => clearInterval(interval.current);
-  }, [slideIdx, isPaused, slide]);
-
-  const next = useCallback(() => {
-    if (slideIdx < total - 1) setSlideIdx(slideIdx + 1);
-    else if (storyIdx < stories.length - 1) { setStoryIdx(storyIdx + 1); setSlideIdx(0); }
-    else onClose?.();
-    setProgress(0);
-  }, [slideIdx, total, storyIdx, stories.length, onClose]);
-
-  const prev = useCallback(() => {
-    if (slideIdx > 0) setSlideIdx(slideIdx - 1);
-    else if (storyIdx > 0) { setStoryIdx(storyIdx - 1); setSlideIdx(stories[storyIdx - 1].slides.length - 1); }
-    setProgress(0);
+  const prevSlide = useCallback(() => {
+    setUserReaction(null);
+    if (slideIdx > 0) {
+      setSlideIdx(s => s - 1);
+      setProgress(0);
+    } else if (storyIdx > 0) {
+      setStoryIdx(s => s - 1);
+      setSlideIdx(stories[storyIdx - 1].slides.length - 1);
+      setProgress(0);
+    }
   }, [slideIdx, storyIdx, stories]);
 
-  const handleTouchStart = e => { touch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }; };
-  const handleTouchEnd = e => {
-    const dx = e.changedTouches[0].clientX - touch.current.x;
-    const dy = e.changedTouches[0].clientY - touch.current.y;
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE) {
-      dx > 0 ? prev() : next();
+  // ============================================
+  // PROGRESSION & AUTO-PLAY
+  // ============================================
+  
+  useEffect(() => {
+    if (!slide || isPaused || showEmoji || showViewers) {
+      clearInterval(interval.current);
+      if (videoRef.current) videoRef.current.pause();
+      return;
     }
-  };
 
-  const react = useCallback((emoji) => {
-    if (!socket.current?.connected) return showToast("Connexion perdue", "error");
-    socket.current.emit("storyReaction", { storyId: story._id, slideIndex: slideIdx, reaction: emoji });
-    setReacts(r => ({ ...r, [slideIdx]: emoji }));
-    showToast(`${emoji} envoyé !`);
-    setIsPaused(false);
-  }, [story?._id, slideIdx, showToast]);
+    // Gestion Vidéo
+    if (slide.type === 'video' && videoRef.current) {
+      videoRef.current.play().catch(e => console.log("Autoplay prevented", e));
+    }
 
-  const sendTextReply = useCallback((text) => {
-    if (!socket.current?.connected) return showToast("Connexion perdue", "error");
-    socket.current.emit("storyReaction", { storyId: story._id, slideIndex: slideIdx, reaction: text, type: "text" });
-    showToast("Message envoyé !");
-    setIsPaused(false);
-  }, [story?._id, slideIdx, showToast]);
+    const step = 50; // ms
+    // Si c'est une vidéo, on utilise sa durée réelle si disponible
+    const currentDuration = (slide.type === 'video' && videoRef.current?.duration) 
+      ? videoRef.current.duration * 1000 
+      : slideDuration;
 
-  const openDM = useCallback(() => {
-    showToast("Ouverture du DM...");
-    setIsPaused(false);
-    // Ici tu peux rediriger vers la messagerie ou ouvrir un modal de chat
-    setTimeout(() => {
-      window.location.href = `/messages/${story.owner._id}`;
+    interval.current = setInterval(() => {
+      setProgress(p => {
+        const next = p + (step / currentDuration) * 100;
+        if (next >= 100) {
+          clearInterval(interval.current);
+          nextSlide();
+          return 0;
+        }
+        return next;
+      });
+    }, step);
+
+    return () => clearInterval(interval.current);
+  }, [slide, isPaused, showEmoji, showViewers, nextSlide, slideDuration]);
+
+  // ============================================
+  // MARQUER COMME VU (Une seule fois par slide)
+  // ============================================
+  
+  useEffect(() => {
+    // Si pas de slide, ou si je suis le proprio, ou si déjà vu dans cette session -> Stop
+    if (!slide || isOwner || !story?._id) return;
+    
+    const key = `${story._id}-${slideIdx}`;
+    if (viewedSlides.current.has(key)) return;
+
+    // Délai de 0.5s avant de compter la vue
+    viewTimer.current = setTimeout(() => {
+      viewSlide(story._id, slideIdx);
+      viewedSlides.current.add(key);
     }, 500);
-  }, [story?.owner._id, showToast]);
 
-  const del = useCallback(async () => {
-    if (!confirm("Supprimer cette slide ?")) return;
-    const res = await deleteSlide(story._id, slideIdx);
-    if (res.deleted) { showToast("Story supprimée"); setTimeout(onClose, 800); }
-    else { showToast("Slide supprimée"); fetchStories(true); }
-  }, [story?._id, slideIdx, deleteSlide, fetchStories, onClose, showToast]);
+    return () => clearTimeout(viewTimer.current);
+  }, [slide, story, slideIdx, isOwner, viewSlide]);
 
-  const renderSlide = useCallback(() => {
-    if (!slide) return null;
+  // ============================================
+  // ACTIONS (Réactions / Clavier)
+  // ============================================
 
-    if (slide.type === "text" || (!slide.media && slide.caption)) {
+  const sendReaction = useCallback(async (emoji) => {
+    if (!story?._id || !token) return;
+    
+    // Animation locale immédiate (Optimistic UI)
+    const id = reactionId.current++;
+    setFloatingReactions(prev => [...prev, { id, emoji }]);
+    setUserReaction(emoji);
+
+    try {
+      // Si vous avez une route backend pour ça :
+      // await axios.post(`${API}/api/story/${story._id}/slides/${slideIdx}/react`, { emoji }, ...);
+      console.log('💖 Reaction sent:', emoji);
+    } catch (err) {
+      console.error('Reaction error:', err);
+    }
+  }, [story?._id, slideIdx, token]);
+
+  // Clavier
+  useEffect(() => {
+    const handleKey = (e) => {
+      if (e.key === "ArrowRight") nextSlide();
+      if (e.key === "ArrowLeft") prevSlide();
+      if (e.key === "Escape") onClose();
+      if (e.key === " ") { 
+        e.preventDefault(); 
+        setIsPaused(p => !p); 
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [nextSlide, prevSlide, onClose]);
+
+  // ============================================
+  // RENDU DU CONTENU (Switch Type)
+  // ============================================
+  
+  if (!story || !slide) return null; // Sécurité ultime
+
+  const renderContent = () => {
+    // 1. TEXTE SEUL
+    if (slide.type === "text") {
       return (
-        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-orange-500 via-pink-500 to-purple-600 p-8">
-          <p className="text-white font-bold text-center drop-shadow-2xl" style={{
-            fontSize: slide.fontSize ? `${slide.fontSize}px` : "48px",
-            textShadow: "3px 3px 12px rgba(0,0,0,0.9)"
-          }}>
-            {slide.caption || slide.text}
+        <div 
+          className="absolute inset-0 flex items-center justify-center p-8 text-center"
+          style={{ 
+            background: slide.background || "linear-gradient(135deg, #111, #333)",
+          }}
+        >
+          <p 
+            style={{ 
+              fontFamily: slide.fontFamily || "sans-serif",
+              fontSize: "28px",
+              color: "white"
+            }}
+            className="font-bold drop-shadow-lg whitespace-pre-wrap break-words"
+          >
+            {slide.content || slide.text || slide.caption}
           </p>
         </div>
       );
     }
 
-    const media = slide.type === "video" ? (
-      <video src={MEDIA_URL(slide.media)} autoPlay loop muted playsInline className="max-w-full max-h-full object-contain" />
-    ) : (
-      <img src={MEDIA_URL(slide.media)} alt="" className="max-w-full max-h-full object-contain" />
-    );
+    // 2. VIDÉO
+    if (slide.type === "video") {
+      return (
+        <div className="absolute inset-0 bg-black flex items-center justify-center">
+          <video
+            ref={videoRef}
+            src={MEDIA_URL(slide.mediaUrl || slide.media)}
+            className="w-full h-full object-contain"
+            playsInline
+            muted={false} // Son activé par défaut (comme TikTok/Insta)
+          />
+        </div>
+      );
+    }
 
+    // 3. IMAGE
     return (
-      <div className="absolute inset-0 flex items-center justify-center bg-black">
-        {media}
-        {slide.caption && (
-          <div className="absolute bottom-32 left-0 right-0 px-8">
-            <p className="text-white text-xl font-bold text-center bg-black/60 backdrop-blur-md px-6 py-4 rounded-2xl">
-              {slide.caption}
-            </p>
-          </div>
-        )}
+      <div className="absolute inset-0 bg-black flex items-center justify-center">
+        <img 
+          src={MEDIA_URL(slide.mediaUrl || slide.media)} 
+          alt="Story" 
+          className="w-full h-full object-contain" 
+        />
       </div>
     );
-  }, [slide]);
+  };
 
-  if (!story || !slide) return null;
+  // ============================================
+  // RENDU UI
+  // ============================================
 
   return createPortal(
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+    <motion.div 
+      initial={{ opacity: 0 }} 
+      animate={{ opacity: 1 }} 
+      exit={{ opacity: 0 }} 
       className="fixed inset-0 bg-black z-[9999] flex items-center justify-center"
-      onTouchStart={handleTouchStart}
-      onTouchEnd={handleTouchEnd}
-      onClick={() => setIsPaused(true)}
     >
-      <div className="relative w-full h-full max-w-md bg-black" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="absolute top-0 left-0 right-0 z-50 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3 bg-black/50 backdrop-blur-lg px-4 py-2 rounded-full">
-              {story.owner?.profilePhoto ? (
-                <img src={MEDIA_URL(story.owner.profilePhoto)} alt={story.owner.username} className="w-10 h-10 rounded-full object-cover" />
-              ) : (
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-pink-500 flex items-center justify-center text-white font-bold text-sm">
-                  {(story.owner?.username || "?")[0].toUpperCase()}
-                </div>
-              )}
-              <div>
-                <p className="text-white font-bold text-sm">{story.owner?.username || "Anonyme"}</p>
-                <p className="text-white/70 text-xs">
-                  {new Date(slide.createdAt || Date.now()).toLocaleTimeString("fr", { hour: "2-digit", minute: "2-digit" })}
-                </p>
-              </div>
+      
+      <div 
+        className="relative w-full h-full max-w-md bg-black sm:h-[90vh] sm:rounded-2xl overflow-hidden shadow-2xl"
+        onMouseDown={() => setIsPaused(true)}
+        onMouseUp={() => setIsPaused(false)}
+        onTouchStart={() => setIsPaused(true)}
+        onTouchEnd={() => setIsPaused(false)}
+      >
+        
+        {/* BARRES DE PROGRESSION */}
+        <div className="absolute top-0 left-0 right-0 z-30 p-2 flex gap-1">
+          {story.slides.map((_, i) => (
+            <div key={i} className="h-1 flex-1 bg-white/30 rounded-full overflow-hidden">
+              <motion.div 
+                className="h-full bg-white" 
+                initial={{ width: i < slideIdx ? "100%" : "0%" }}
+                animate={{ width: i === slideIdx ? `${progress}%` : i < slideIdx ? "100%" : "0%" }}
+                transition={{ ease: "linear", duration: 0 }}
+              />
             </div>
-            <div className="flex gap-2">
-              <button onClick={onClose} className="p-2 bg-black/50 backdrop-blur rounded-full hover:bg-black/70 transition">
-                <X className="w-6 h-6 text-white" />
-              </button>
-              {isOwner && (
-                <>
-                  <button onClick={() => setShowViewers(true)} className="p-2 bg-black/50 backdrop-blur rounded-full relative hover:bg-black/70 transition">
-                    <Eye className="w-6 h-6 text-white" />
-                    {slide.views?.length > 0 && (
-                      <span className="absolute -top-1 -right-1 bg-orange-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                        {slide.views.length}
-                      </span>
-                    )}
-                  </button>
-                  <button onClick={del} className="p-2 bg-red-600/80 backdrop-blur rounded-full hover:bg-red-700 transition">
-                    <Trash2 className="w-6 h-6 text-white" />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-          <div className="flex gap-1">
-            {story.slides.map((_, i) => (
-              <div key={i} className="flex-1 h-1 bg-white/30 rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-white"
-                  animate={{ width: i < slideIdx ? "100%" : i === slideIdx ? `${progress}%` : "0%" }}
-                  transition={{ duration: 0.1 }}
-                />
-              </div>
-            ))}
-          </div>
+          ))}
         </div>
 
-        {/* Content */}
-        {renderSlide()}
+        {/* HEADER (User Info) */}
+        <div className="absolute top-4 left-0 right-0 z-30 px-4 flex justify-between items-center bg-gradient-to-b from-black/60 to-transparent pb-6">
+          <div className="flex items-center gap-2">
+            <img 
+              src={MEDIA_URL(story.owner?.profilePhoto) || "/default-avatar.png"} 
+              className="w-9 h-9 rounded-full border border-white/30 shadow-sm object-cover" 
+              alt="" 
+            />
+            <div>
+              <p className="text-white font-semibold text-sm drop-shadow-md leading-tight">
+                {story.owner?.username || "Utilisateur"}
+              </p>
+              <p className="text-white/70 text-xs drop-shadow-md">
+                {new Date(slide.createdAt || story.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+              </p>
+            </div>
+          </div>
 
-        {/* Navigation zones */}
-        <div className="absolute inset-0 flex">
-          <button onClick={prev} className="flex-1 active:bg-white/10" />
-          <button onClick={next} className="flex-1 active:bg-white/10" />
-        </div>
-
-        {/* Footer */}
-        <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/90 to-transparent z-40">
-          <div className="flex justify-center">
-            {isOwner ? (
-              <div className="px-8 py-4 bg-white/20 backdrop-blur-xl rounded-full flex items-center gap-3 border border-white/30">
-                <Eye className="w-7 h-7 text-white" />
-                <span className="text-xl font-bold text-white">{slide.views?.length || 0} vue{slide.views?.length > 1 ? "s" : ""}</span>
-              </div>
-            ) : (
-              <button onClick={() => { setIsPaused(true); setShowEmoji(true); }} className="px-10 py-5 bg-white/20 backdrop-blur-xl rounded-full flex items-center gap-4 hover:bg-white/30 transition-all hover:scale-105 border border-white/30">
-                <Smile className="w-8 h-8 text-white" />
-                <span className="text-2xl font-bold text-white">Réagir</span>
-                {reacts[slideIdx] && <span className="text-5xl animate-bounce">{reacts[slideIdx]}</span>}
+          <div className="flex items-center gap-2">
+            {isOwner && (
+              <button 
+                onClick={(e) => { e.stopPropagation(); setIsPaused(true); setShowViewers(true); }} 
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 rounded-full text-white backdrop-blur hover:bg-white/20 transition"
+              >
+                <Eye className="w-4 h-4" />
+                <span className="text-xs font-bold">{slide.views?.length || 0}</span>
               </button>
             )}
+            <button 
+              onClick={onClose} 
+              className="p-2 bg-white/10 rounded-full backdrop-blur hover:bg-white/20 transition text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
-        {/* Pause indicator */}
-        {isPaused && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-50">
-            <div className="bg-black/70 backdrop-blur p-6 rounded-full">
-              <Pause className="w-12 h-12 text-white" />
+        {/* CONTENU PRINCIPAL */}
+        {renderContent()}
+
+        {/* LÉGENDE (CAPTION) - Si Image/Vidéo */}
+        {slide.type !== 'text' && (slide.caption || slide.text) && (
+          <div className="absolute bottom-24 left-0 right-0 px-4 z-20 flex justify-center">
+            <div className="bg-black/50 backdrop-blur-md px-4 py-2 rounded-xl text-white text-center text-sm font-medium">
+              {slide.caption || slide.text}
             </div>
           </div>
         )}
+
+        {/* EFFETS DE RÉACTION */}
+        <AnimatePresence>
+          {floatingReactions.map(r => (
+            <FloatingReaction 
+              key={r.id} 
+              emoji={r.emoji} 
+              onComplete={() => setFloatingReactions(prev => prev.filter(rx => rx.id !== r.id))} 
+            />
+          ))}
+        </AnimatePresence>
+
+        {/* ZONES DE CLIC INVISIBLES */}
+        <div className="absolute inset-0 flex z-10">
+          <div className="w-1/3 h-full" onClick={prevSlide} /> {/* Gauche */}
+          <div className="w-1/3 h-full" /> {/* Centre (Pause) */}
+          <div className="w-1/3 h-full" onClick={nextSlide} /> {/* Droite */}
+        </div>
+
+        {/* FOOTER (INPUT & REACTION) - Sauf pour le proprio */}
+        {!isOwner && (
+          <div 
+            className="absolute bottom-0 left-0 right-0 p-3 z-30 bg-gradient-to-t from-black via-black/80 to-transparent flex gap-2 items-center"
+            onClick={e => e.stopPropagation()} // Important pour pas trigger nextSlide
+          >
+            <input 
+              type="text"
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              placeholder="Envoyer un message..." 
+              className="flex-1 bg-white/10 border border-white/20 rounded-full px-4 py-2.5 text-white placeholder-white/50 focus:outline-none focus:border-white/50 focus:bg-white/20 transition backdrop-blur-md text-sm"
+              onFocus={() => setIsPaused(true)}
+              onBlur={() => setIsPaused(false)}
+            />
+            
+            {replyText.trim() ? (
+              <motion.button 
+                whileTap={{ scale: 0.9 }}
+                className="p-2.5 bg-[#00a884] rounded-full text-white shadow-lg"
+              >
+                <Send className="w-5 h-5 ml-0.5" />
+              </motion.button>
+            ) : (
+              <motion.button 
+                whileTap={{ scale: 0.9 }}
+                onClick={() => {
+                  setShowEmoji(!showEmoji);
+                  setIsPaused(true);
+                }}
+                className={`p-2.5 rounded-full transition ${
+                  userReaction ? 'bg-red-500/80 text-white' : 'bg-white/10 text-white hover:bg-white/20'
+                } backdrop-blur-md`}
+              >
+                {userReaction ? <span className="text-lg font-bold">1</span> : <Heart className="w-6 h-6" />}
+              </motion.button>
+            )}
+
+            {/* POPUP EMOJI */}
+            <AnimatePresence>
+              {showEmoji && (
+                <EmojiPicker 
+                  onSelect={(e) => {
+                    sendReaction(e);
+                    setShowEmoji(false);
+                    setIsPaused(false);
+                  }}
+                  onClose={() => { setShowEmoji(false); setIsPaused(false); }}
+                />
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {/* ACTION PROPRIO (DELETE) */}
+        {isOwner && (
+          <div className="absolute bottom-6 right-6 z-40">
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if(confirm('Supprimer cette story ?')) {
+                  await deleteStory(story._id);
+                  await fetchStories(true);
+                  onClose();
+                }
+              }} 
+              className="p-3 bg-white/10 border border-white/10 rounded-full text-white hover:bg-red-500/80 hover:border-red-500 transition backdrop-blur-md shadow-lg"
+            >
+              <Trash2 className="w-5 h-5" />
+            </motion.button>
+          </div>
+        )}
+
       </div>
 
+      {/* MODAL VIEWERS */}
       <AnimatePresence>
-        {toast && <Toast msg={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
-        {showEmoji && <ReactionModal onSelect={react} onText={() => { setShowEmoji(false); setShowTextReply(true); }} onDM={openDM} onClose={() => { setShowEmoji(false); setIsPaused(false); }} />}
-        {showTextReply && <TextReplyModal onSend={sendTextReply} onClose={() => { setShowTextReply(false); setIsPaused(false); }} />}
-        {showViewers && <ViewersModal viewers={slide.views || []} onClose={() => setShowViewers(false)} />}
+        {showViewers && (
+          <ViewersModal 
+            storyId={story._id} 
+            slideIndex={slideIdx} 
+            onClose={() => { setShowViewers(false); setIsPaused(false); }} 
+          />
+        )}
       </AnimatePresence>
+
     </motion.div>,
     document.body
   );

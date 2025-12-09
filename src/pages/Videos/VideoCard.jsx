@@ -1,270 +1,246 @@
-import React, { useEffect, useRef, useState, useMemo, memo } from "react";
+// src/pages/Videos/VideoCard.jsx
+import React, { useEffect, useRef, useState, useMemo, memo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import { useVideos } from "../../context/VideoContext";
+import { useVideos } from "../../context/VideoContext"; // Assurez-vous que ce contexte exporte bien incrementViews
 import { loadStripe } from "@stripe/stripe-js";
 import {
-  FaHeart, FaRegHeart, FaComment, FaShare, FaBookmark, FaRegBookmark,
-  FaVolumeUp, FaVolumeMute, FaTrash, FaFlag, FaLink, FaDownload,
-  FaUserSlash, FaMusic, FaPlay, FaPause, FaRocket
+  FaHeart, FaRegHeart, FaComment, FaShare, 
+  FaVolumeUp, FaVolumeMute, FaTrash, FaRocket, FaMusic, FaPlay, FaCheckCircle
 } from "react-icons/fa";
 import { HiDotsVertical } from "react-icons/hi";
 import { IoSend } from "react-icons/io5";
 
-const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY);
+// Configuration Stripe sécurisée
+const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
+const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
-const generateDefaultAvatar = (username = "User") => {
-  const initial = username.charAt(0).toUpperCase();
-  const colors = ['9CA3AF','EF4444','3B82F6','10B981','F59E0B','8B5CF6','EC4899'];
-  const color = colors[Math.floor(Math.random() * colors.length)];
-  return `data:image/svg+xml,%3Csvg width='100' height='100' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='100' height='100' fill='%23${color}'/%3E%3Ctext x='50%25' y='50%25' font-size='48' fill='white' text-anchor='middle' dominant-baseline='middle'%3E${initial}%3C/text%3E%3C/svg%3E`;
+// === UTILITAIRES ===
+const generateDefaultAvatar = (username = "U") => {
+  const char = (username || "U").charAt(0).toUpperCase();
+  const colors = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
+  const color = colors[char.charCodeAt(0) % colors.length];
+  return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${encodeURIComponent(color)}"/><text x="50%" y="50%" font-size="50" fill="white" text-anchor="middle" dy=".3em" font-family="Arial">${char}</text></svg>`;
 };
 
-const getAvatarUrl = (user) => {
-  if (!user) return generateDefaultAvatar();
-  const avatar = user.profilePhoto || user.profilePicture || user.avatar || user.photo;
-  if (avatar) {
-    return avatar.startsWith('http') || avatar.startsWith('data:')
-      ? avatar
-      : `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}${avatar.startsWith('/') ? avatar : '/' + avatar}`;
-  }
-  return generateDefaultAvatar(user.username || user.fullName);
-};
-
+// === COMPOSANT PRINCIPAL ===
 const VideoCard = memo(({ video, isActive }) => {
-  const videoRef = useRef(null);
-  const navigate = useNavigate();
-  const isMountedRef = useRef(true);
+  // Sécurité : Si pas de vidéo, on ne rend rien pour éviter les crashs
+  if (!video) return null;
 
-  const [muted, setMuted] = useState(true);
+  const navigate = useNavigate();
+  const videoRef = useRef(null);
+  
+  // Contextes
+  const { user: currentUser } = useAuth();
+  const { likeVideo, commentVideo, deleteVideo, incrementViews } = useVideos();
+
+  // États UI
+  const [muted, setMuted] = useState(true); // Muted par défaut pour autoplay navigateur
+  const [isPaused, setIsPaused] = useState(false);
   const [showHeart, setShowHeart] = useState(false);
-  const [isLiked, setIsLiked] = useState(false);
-  const [isSaved, setIsSaved] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  
+  // États Modales
   const [showComments, setShowComments] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [showBoostModal, setShowBoostModal] = useState(false);
-  const [localLikes, setLocalLikes] = useState(video?.likes || 0);
-  const [localComments, setLocalComments] = useState(video?.comments || []);
+  
+  // États Données (Optimistic UI)
+  const [localLikes, setLocalLikes] = useState(0);
+  const [isLiked, setIsLiked] = useState(false);
+  const [localComments, setLocalComments] = useState([]);
   const [newComment, setNewComment] = useState("");
-  const [isPaused, setIsPaused] = useState(false);
-  const [progress, setProgress] = useState(0);
+  
+  // États Boost
   const [boostLoading, setBoostLoading] = useState(false);
   const [selectedBoost, setSelectedBoost] = useState(null);
 
-  const { getActiveUser } = useAuth();
-  const currentUser = getActiveUser();
-  const { likeVideo, commentVideo, deleteVideo } = useVideos();
-
-  const videoOwnerData = useMemo(() => {
-    const owner = video?.uploadedBy || video?.owner || video?.user || {};
+  // Normalisation des données Propriétaire
+  const owner = useMemo(() => {
+    const u = video.user || video.uploadedBy || {};
     return {
-      id: owner?._id || owner?.id,
-      username: owner?.username || owner?.fullName || "Utilisateur",
-      avatar: getAvatarUrl(owner),
-      verified: owner?.isVerified || false
+      _id: u._id || u.id || "unknown",
+      username: u.username || u.fullName || "Utilisateur",
+      photo: u.profilePhoto || u.profilePicture || u.avatar || null,
+      isVerified: !!u.isVerified
     };
   }, [video]);
 
-  const isOwner = useMemo(() =>
-    currentUser?.user?._id === videoOwnerData.id ||
-    currentUser?.user?.id === videoOwnerData.id,
-    [currentUser, videoOwnerData.id]
-  );
+  const isOwner = currentUser && (owner._id === currentUser._id);
 
-  const boostPlans = [
-    { id: 1, duration: 24, amount: 1000, label: "24h", description: "Visibilité pendant 1 jour" },
-    { id: 2, duration: 72, amount: 2500, label: "3 jours", description: "Visibilité pendant 3 jours" },
-    { id: 3, duration: 168, amount: 5000, label: "7 jours", description: "Visibilité pendant 1 semaine" }
-  ];
+  // === INITIALISATION ===
+  useEffect(() => {
+    // Likes
+    const likesList = Array.isArray(video.likes) ? video.likes : [];
+    setLocalLikes(likesList.length || (typeof video.likes === 'number' ? video.likes : 0));
+    
+    if (currentUser) {
+        setIsLiked(likesList.some(id => id === currentUser._id || (typeof id === 'object' && id._id === currentUser._id)));
+    }
 
-  const formatNumber = (num) => {
-    if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + "M";
-    if (num >= 1_000) return (num / 1_000).toFixed(1) + "K";
-    return num?.toString() || "0";
-  };
+    // Comments
+    setLocalComments(video.comments || []);
+  }, [video, currentUser]);
 
-  // === Lecture auto ===
+  // === GESTION DE LA LECTURE (Autoplay & Views) ===
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
 
     if (isActive) {
-      vid.play().catch(err => {
-        if (err.name === "NotAllowedError") {
-          setMuted(true);
-          vid.muted = true;
-          vid.play().catch(() => {});
-        }
-      });
+      // 1. Lancer la vidéo
+      const playPromise = vid.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsPaused(false);
+          })
+          .catch((error) => {
+            // Si le navigateur bloque l'autoplay avec son, on mute et on relance
+            if (error.name === "NotAllowedError" || error.name === "NotSupportedError") {
+              setMuted(true);
+              vid.muted = true;
+              vid.play().catch(() => {});
+            }
+          });
+      }
+
+      // 2. Incrémenter la vue (seulement si la fonction existe)
+      if (incrementViews && video._id) {
+         // Petit délai pour compter une "vraie" vue
+         const timer = setTimeout(() => incrementViews(video._id), 2000);
+         return () => clearTimeout(timer);
+      }
+
     } else {
       vid.pause();
+      vid.currentTime = 0; // Reset pour la prochaine lecture
+      setIsPaused(false); // Reset UI pause icon
     }
+  }, [isActive, video._id, incrementViews]);
 
-    return () => { if (vid) vid.pause(); };
-  }, [isActive]);
-
-  // === Progression ===
-  useEffect(() => {
+  // === PROGRESS BAR ===
+  const handleTimeUpdate = useCallback(() => {
     const vid = videoRef.current;
-    if (!vid) return;
-    const updateProgress = () => {
-      if (vid.duration) setProgress((vid.currentTime / vid.duration) * 100);
-    };
-    vid.addEventListener("timeupdate", updateProgress);
-    return () => vid.removeEventListener("timeupdate", updateProgress);
+    if (vid && vid.duration) {
+      setProgress((vid.currentTime / vid.duration) * 100);
+    }
   }, []);
 
-  // === Handlers ===
-  const handleDoubleTap = () => {
-    if (!isLiked) handleLike();
-    setShowHeart(true);
-    setTimeout(() => isMountedRef.current && setShowHeart(false), 800);
-  };
-
-  const handleToggleMute = () => {
-    const vid = videoRef.current;
-    if (!vid) return;
-    const newMuted = !muted;
-    setMuted(newMuted);
-    vid.muted = newMuted;
-  };
-
-  const handlePlayPause = () => {
+  // === HANDLERS ===
+  const togglePlay = useCallback(() => {
     const vid = videoRef.current;
     if (!vid) return;
     if (vid.paused) {
-      vid.play();
+      vid.play().catch(() => {});
       setIsPaused(false);
     } else {
       vid.pause();
       setIsPaused(true);
     }
-  };
+  }, []);
 
-  const handleLike = async () => {
+  const handleDoubleTap = useCallback((e) => {
+    e.stopPropagation();
+    setShowHeart(true);
+    setTimeout(() => setShowHeart(false), 800);
+    if (!isLiked) handleLike(e);
+  }, [isLiked]);
+
+  const handleLike = useCallback(async (e) => {
+    e?.stopPropagation();
+    if (!currentUser) return alert("Connectez-vous pour aimer !");
+
+    // Optimistic Update
     const wasLiked = isLiked;
-    setIsLiked(!isLiked);
+    setIsLiked(!wasLiked);
     setLocalLikes(prev => wasLiked ? prev - 1 : prev + 1);
+
     try {
-      if (likeVideo) await likeVideo(video._id);
-    } catch {
+      await likeVideo(video._id);
+    } catch (err) {
+      // Revert en cas d'erreur
       setIsLiked(wasLiked);
       setLocalLikes(prev => wasLiked ? prev + 1 : prev - 1);
     }
-  };
+  }, [currentUser, isLiked, video._id, likeVideo]);
 
-  const handleSave = () => setIsSaved(!isSaved);
-  const handleFollow = () => setIsFollowing(!isFollowing);
-
-  const handleShare = async () => {
-    if (navigator.share) {
-      await navigator.share({ title: video.title, url: window.location.href }).catch(() => {});
-    } else {
-      navigator.clipboard.writeText(window.location.href);
-      alert("Lien copié !");
-    }
-  };
-
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.href);
-    alert("Lien copié !");
-    setShowOptions(false);
-  };
-
-  const handleDownload = async () => {
-    try {
-      const response = await fetch(video.url);
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `video-${video._id}.mp4`;
-      a.click();
-      window.URL.revokeObjectURL(url);
-    } catch {
-      alert("Erreur");
-    }
-    setShowOptions(false);
-  };
-
-  const handleReport = () => { alert("Signalée"); setShowOptions(false); };
-  const handleBlock = () => {
-    if (window.confirm(`Bloquer @${videoOwnerData.username} ?`)) {
-      alert(`Bloqué`);
-      setShowOptions(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    if (window.confirm("Supprimer ?")) {
-      if (deleteVideo) await deleteVideo(video._id);
-      setShowOptions(false);
-    }
-  };
-
-  const handleAddComment = async () => {
+  const handleCommentSubmit = async () => {
     if (!newComment.trim()) return;
-    const comment = {
-      id: Date.now(),
-      user: { ...currentUser.user, profilePicture: getAvatarUrl(currentUser.user) },
-      text: newComment,
-      createdAt: new Date()
+    if (!currentUser) return alert("Connectez-vous !");
+
+    const tempComment = {
+        _id: Date.now(),
+        user: currentUser,
+        text: newComment,
+        createdAt: new Date().toISOString()
     };
-    setLocalComments([...localComments, comment]);
+
+    setLocalComments(prev => [...prev, tempComment]);
     setNewComment("");
-    if (commentVideo) await commentVideo(video._id, newComment);
+
+    try {
+        await commentVideo(video._id, newComment);
+    } catch (err) {
+        alert("Erreur lors de l'envoi du commentaire");
+        setLocalComments(prev => prev.filter(c => c._id !== tempComment._id));
+    }
   };
 
-  const handleBoost = async (plan) => {
-    if (!currentUser) {
-      alert("Vous devez être connecté pour booster une vidéo");
-      return;
+  const handleShare = async (e) => {
+    e.stopPropagation();
+    if (navigator.share) {
+        try {
+            await navigator.share({
+                title: "Regarde cette vidéo !",
+                url: window.location.href
+            });
+        } catch (err) {
+            console.log("Partage annulé");
+        }
+    } else {
+        navigator.clipboard.writeText(window.location.href);
+        alert("Lien copié !");
     }
+  };
 
+  const handleBoost = async () => {
+    if (!selectedBoost || !stripePromise) return;
     setBoostLoading(true);
     try {
-      const token = localStorage.getItem("token");
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/boost/create`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          contentId: video._id,
-          amount: plan.amount,
-          duration: plan.duration
-        })
-      });
-
-      if (!res.ok) {
-        throw new Error("Erreur lors de la création du paiement");
-      }
-
-      const data = await res.json();
-      const stripe = await stripePromise;
-      
-      const { error } = await stripe.confirmCardPayment(data.clientSecret);
-      
-      if (error) {
-        alert(`Erreur de paiement: ${error.message}`);
-      } else {
-        alert("✅ Vidéo boostée avec succès !");
-        setShowBoostModal(false);
-      }
-    } catch (error) {
-      console.error("Erreur boost:", error);
-      alert("Erreur lors du boost. Veuillez réessayer.");
+        const token = localStorage.getItem('token');
+        const res = await fetch(`${API_URL}/api/boost/create-session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+                contentId: video._id,
+                contentType: 'video', // Important si le backend gère posts et vidéos
+                amount: selectedBoost.amount,
+                planId: selectedBoost.id
+            })
+        });
+        const data = await res.json();
+        if (data.url) window.location.href = data.url;
+        else {
+            alert("Simulation: Boost activé !");
+            setShowBoostModal(false);
+        }
+    } catch (err) {
+        console.error(err);
+        alert("Erreur paiement");
     } finally {
-      setBoostLoading(false);
+        setBoostLoading(false);
     }
   };
 
+  // === RENDU ===
   return (
-    <div className="relative w-full h-full bg-black overflow-hidden">
-      {/* Vidéo */}
+    <div className="relative w-full h-full bg-black overflow-hidden select-none">
+      
+      {/* 1. PLAYER VIDEO */}
       <video
         ref={videoRef}
         src={video.url}
@@ -273,415 +249,281 @@ const VideoCard = memo(({ video, isActive }) => {
         loop
         muted={muted}
         playsInline
-        preload="auto"
+        onClick={togglePlay}
         onDoubleClick={handleDoubleTap}
-        onClick={handlePlayPause}
+        onTimeUpdate={handleTimeUpdate}
       />
 
-      {/* Gradient */}
-      <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/70 pointer-events-none" />
+      {/* 2. OVERLAY GRADIENT (Lisibilité texte) */}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/80 pointer-events-none" />
 
-      {/* Barre progression */}
-      <div className="absolute top-0 left-0 right-0 h-0.5 bg-white/10 z-50">
-        <motion.div
-          className="h-full bg-gradient-to-r from-pink-500 to-orange-500"
-          style={{ width: `${progress}%` }}
+      {/* 3. PROGRESS BAR */}
+      <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30 z-20">
+        <motion.div 
+            className="h-full bg-gradient-to-r from-orange-500 to-pink-500" 
+            style={{ width: `${progress}%` }} 
+            layoutId="progressBar"
         />
       </div>
 
-      {/* Coeur double tap */}
-      <AnimatePresence>
-        {showHeart && (
-          <motion.div
-            initial={{ scale: 0, opacity: 1 }}
-            animate={{ scale: 1.3, opacity: 0 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 flex items-center justify-center pointer-events-none z-40"
-          >
-            <FaHeart className="text-white text-7xl drop-shadow-2xl" />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* 4. ANIMATION PAUSE / COEUR */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+         {isPaused && <FaPlay className="text-white/50 text-6xl animate-pulse" />}
+         <AnimatePresence>
+            {showHeart && (
+                <motion.div 
+                    initial={{ scale: 0, opacity: 0 }} 
+                    animate={{ scale: 1.5, opacity: 1 }} 
+                    exit={{ scale: 2, opacity: 0 }}
+                    className="absolute"
+                >
+                    <FaHeart className="text-red-500 text-8xl drop-shadow-2xl" />
+                </motion.div>
+            )}
+         </AnimatePresence>
+      </div>
 
-      {/* Pause */}
-      {isPaused && (
-        <motion.div className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none">
-          <div className="w-16 h-16 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center border border-white/20">
-            <FaPlay className="text-white text-2xl ml-1" />
-          </div>
-        </motion.div>
-      )}
+      {/* 5. INFOS UTILISATEUR & DESCRIPTION (Bas Gauche) */}
+      <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
+        <div 
+            onClick={() => navigate(`/profile/${owner._id}`)}
+            className="flex items-center gap-3 mb-3 cursor-pointer group"
+        >
+             <img 
+                src={owner.photo ? (owner.photo.startsWith('http') ? owner.photo : `${API_URL}${owner.photo}`) : generateDefaultAvatar(owner.username)}
+                alt={owner.username}
+                className="w-11 h-11 rounded-full border-2 border-white shadow-md object-cover group-hover:scale-105 transition-transform"
+             />
+             <div className="flex flex-col">
+                 <h3 className="font-bold text-white text-base flex items-center gap-1 shadow-black drop-shadow-md">
+                    @{owner.username}
+                    {owner.isVerified && <FaCheckCircle className="text-orange-500 text-xs" />}
+                 </h3>
+             </div>
+             
+             {!isOwner && currentUser && (
+                 <button className="bg-pink-600 text-white text-xs font-bold px-3 py-1 rounded-full ml-2 shadow-lg hover:bg-pink-700 transition">
+                     Suivre
+                 </button>
+             )}
+        </div>
 
-      {/* === INFOS VIDÉO (COMPACT) === */}
-      <div className="absolute bottom-20 left-3 right-20 z-30 text-white">
-        <div className="flex items-center gap-2 mb-2">
-          <motion.img
-            whileHover={{ scale: 1.1 }}
-            src={videoOwnerData.avatar}
-            className="w-9 h-9 rounded-full border-2 border-white shadow-md object-cover"
-            alt={videoOwnerData.username}
-            onError={(e) => e.target.src = generateDefaultAvatar(videoOwnerData.username)}
-          />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="font-bold text-sm truncate">@{videoOwnerData.username}</span>
-              {videoOwnerData.verified && <span className="text-blue-400 text-xs">✓</span>}
-            </div>
-          </div>
-          {!isOwner && (
-            <motion.button
-              onClick={handleFollow}
-              whileTap={{ scale: 0.9 }}
-              className={`px-3 py-1 rounded-full text-xs font-bold transition-all ${
-                isFollowing
-                  ? "bg-white/20 backdrop-blur-md border border-white/30"
-                  : "bg-gradient-to-r from-pink-500 to-red-500"
-              }`}
+        <div className="text-white/90 text-sm mb-2 max-w-[90%] drop-shadow-md">
+            <p className="line-clamp-2">{video.description || video.title}</p>
+        </div>
+
+        <div className="flex items-center gap-2 text-white/80 text-xs font-medium bg-white/10 w-fit px-3 py-1 rounded-full backdrop-blur-sm">
+             <FaMusic className="animate-spin-slow" />
+             <span>{video.musicName || "Son original"}</span>
+        </div>
+      </div>
+
+      {/* 6. ACTIONS (Barre Latérale Droite) */}
+      <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe">
+         
+         {/* BOOST (Owner Only) */}
+         {isOwner && (
+            <motion.div whileTap={{ scale: 0.9 }} className="flex flex-col items-center">
+                <button 
+                    onClick={(e) => { e.stopPropagation(); setShowBoostModal(true); }}
+                    className="w-10 h-10 rounded-full bg-gradient-to-tr from-orange-400 to-pink-600 flex items-center justify-center text-white shadow-lg shadow-orange-500/40"
+                >
+                    <FaRocket />
+                </button>
+                <span className="text-[10px] font-bold text-white mt-1 drop-shadow-md">Boost</span>
+            </motion.div>
+         )}
+
+         {/* LIKE */}
+         <div className="flex flex-col items-center gap-1">
+            <motion.button 
+                whileTap={{ scale: 0.8 }}
+                onClick={handleLike}
+                className={`w-10 h-10 rounded-full flex items-center justify-center text-3xl drop-shadow-xl transition-colors ${isLiked ? 'text-red-500' : 'text-white'}`}
             >
-              {isFollowing ? "Abonné" : "+ Suivre"}
+                {isLiked ? <FaHeart /> : <FaRegHeart />}
             </motion.button>
-          )}
-        </div>
+            <span className="text-xs font-bold text-white drop-shadow-md">{localLikes}</span>
+         </div>
 
-        <div className="space-y-1">
-          {video.title && (
-            <p className="font-bold text-sm line-clamp-1 drop-shadow-md">{video.title}</p>
-          )}
-          {video.description && (
-            <p className="text-xs text-white/90 line-clamp-1 drop-shadow-md">{video.description}</p>
-          )}
-        </div>
+         {/* COMMENT */}
+         <div className="flex flex-col items-center gap-1">
+            <motion.button 
+                whileTap={{ scale: 0.8 }}
+                onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
+                className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl"
+            >
+                <FaComment />
+            </motion.button>
+            <span className="text-xs font-bold text-white drop-shadow-md">{localComments.length}</span>
+         </div>
 
-        {video.musicName && (
-          <motion.div
-            initial={{ x: -10 }}
-            animate={{ x: 0 }}
-            className="flex items-center gap-1.5 bg-black/40 backdrop-blur-md rounded-full px-3 py-1.5 w-fit mt-2 text-xs"
-          >
-            <FaMusic className="text-white text-xs animate-pulse" />
-            <span className="truncate max-w-[120px]">{video.musicName}</span>
-          </motion.div>
-        )}
+         {/* SHARE */}
+         <div className="flex flex-col items-center gap-1">
+            <motion.button 
+                whileTap={{ scale: 0.8 }}
+                onClick={handleShare}
+                className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl"
+            >
+                <FaShare />
+            </motion.button>
+            <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
+         </div>
+
+         {/* MUTE */}
+         <motion.button 
+            whileTap={{ scale: 0.9 }}
+            onClick={(e) => { e.stopPropagation(); setMuted(!muted); if(videoRef.current) videoRef.current.muted = !muted; }}
+            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2"
+         >
+            {muted ? <FaVolumeMute /> : <FaVolumeUp />}
+         </motion.button>
+
+         {/* OPTIONS */}
+         <button 
+            onClick={(e) => { e.stopPropagation(); setShowOptions(true); }} 
+            className="text-white text-xl drop-shadow-lg p-2"
+         >
+             <HiDotsVertical />
+         </button>
       </div>
 
-      {/* === BOUTONS D'ACTION (COMPACTS) === */}
-      <div className="absolute right-2 bottom-24 flex flex-col items-center gap-3 z-40">
-        {/* Boost Button (pour le propriétaire) */}
-        {isOwner && (
-          <motion.button
-            onClick={() => setShowBoostModal(true)}
-            whileTap={{ scale: 0.85 }}
-            whileHover={{ scale: 1.1 }}
-            className="flex flex-col items-center gap-1"
-          >
-            <div className="w-11 h-11 rounded-full flex items-center justify-center shadow-lg bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 shadow-purple-500/40">
-              <FaRocket className="text-white text-lg" />
-            </div>
-            <span className="text-white text-[10px] font-bold">Boost</span>
-          </motion.button>
-        )}
-
-        {/* Like */}
-        <motion.button
-          onClick={handleLike}
-          whileTap={{ scale: 0.85 }}
-          whileHover={{ scale: 1.1 }}
-          className="flex flex-col items-center gap-1"
-        >
-          <div className={`w-11 h-11 rounded-full flex items-center justify-center shadow-lg transition-all ${
-            isLiked ? "bg-gradient-to-br from-pink-500 to-red-600 shadow-pink-500/40" : "bg-black/40 backdrop-blur-md border border-white/20"
-          }`}>
-            {isLiked ? <FaHeart className="text-white text-lg" /> : <FaRegHeart className="text-white text-lg" />}
-          </div>
-          <span className="text-white text-[10px] font-bold">{formatNumber(localLikes)}</span>
-        </motion.button>
-
-        {/* Commentaire */}
-        <motion.button
-          onClick={() => setShowComments(!showComments)}
-          whileTap={{ scale: 0.85 }}
-          whileHover={{ scale: 1.1 }}
-          className="flex flex-col items-center gap-1"
-        >
-          <div className="w-11 h-11 bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center shadow-lg border border-white/20">
-            <FaComment className="text-white text-lg" />
-          </div>
-          <span className="text-white text-[10px] font-bold">{formatNumber(localComments.length)}</span>
-        </motion.button>
-
-        {/* Partager */}
-        <motion.button
-          onClick={handleShare}
-          whileTap={{ scale: 0.85 }}
-          whileHover={{ scale: 1.1 }}
-          className="w-11 h-11 bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center shadow-lg border border-white/20"
-        >
-          <FaShare className="text-white text-lg" />
-        </motion.button>
-
-        {/* Sauvegarder */}
-        <motion.button
-          onClick={handleSave}
-          whileTap={{ scale: 0.85 }}
-          whileHover={{ scale: 1.1 }}
-          className="w-11 h-11 rounded-full flex items-center justify-center shadow-lg transition-all"
-          style={{
-            background: isSaved ? "linear-gradient(135deg, #f59e0b, #f97316)" : "",
-            border: isSaved ? "none" : "1px solid rgba(255,255,255,0.2)",
-            backdropFilter: isSaved ? "none" : "blur(8px)",
-            WebkitBackdropFilter: isSaved ? "none" : "blur(8px)",
-            backgroundColor: isSaved ? "" : "rgba(0,0,0,0.4)"
-          }}
-        >
-          {isSaved ? <FaBookmark className="text-white text-lg" /> : <FaRegBookmark className="text-white text-lg" />}
-        </motion.button>
-
-        {/* Options */}
-        <motion.button
-          onClick={() => setShowOptions(!showOptions)}
-          whileTap={{ scale: 0.85 }}
-          whileHover={{ scale: 1.1 }}
-          className="w-11 h-11 bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center shadow-lg border border-white/20"
-        >
-          <HiDotsVertical className="text-white text-lg" />
-        </motion.button>
-
-        {/* Son */}
-        <motion.button
-          onClick={handleToggleMute}
-          whileTap={{ scale: 0.85 }}
-          whileHover={{ scale: 1.1 }}
-          className="w-11 h-11 bg-black/40 backdrop-blur-md rounded-full flex items-center justify-center shadow-lg border border-white/20 mt-1"
-        >
-          {muted ? <FaVolumeMute className="text-white text-lg" /> : <FaVolumeUp className="text-white text-lg" />}
-        </motion.button>
-      </div>
-
-      {/* === MODAL BOOST === */}
-      <AnimatePresence>
-        {showBoostModal && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
-              onClick={() => !boostLoading && setShowBoostModal(false)}
-            />
-            <motion.div
-              initial={{ y: "100%", opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: "100%", opacity: 0 }}
-              className="fixed bottom-0 left-0 right-0 bg-gradient-to-b from-gray-900 to-black rounded-t-3xl z-50 p-6 shadow-2xl max-h-[80vh] overflow-y-auto"
-            >
-              <div className="w-12 h-1.5 bg-gray-600 rounded-full mx-auto mb-6" />
-              
-              <div className="flex items-center gap-3 mb-6">
-                <div className="w-12 h-12 bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 rounded-full flex items-center justify-center">
-                  <FaRocket className="text-white text-xl" />
-                </div>
-                <div>
-                  <h3 className="text-white font-bold text-xl">Booster votre vidéo</h3>
-                  <p className="text-gray-400 text-sm">Augmentez votre visibilité</p>
-                </div>
-              </div>
-
-              <div className="space-y-3 mb-6">
-                {boostPlans.map((plan) => (
-                  <motion.button
-                    key={plan.id}
-                    onClick={() => setSelectedBoost(plan)}
-                    whileTap={{ scale: 0.98 }}
-                    className={`w-full p-4 rounded-2xl border-2 transition-all ${
-                      selectedBoost?.id === plan.id
-                        ? "bg-gradient-to-r from-purple-500/20 to-pink-500/20 border-purple-500"
-                        : "bg-white/5 border-white/10 hover:border-white/20"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="text-left">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-white font-bold text-lg">{plan.label}</span>
-                          {plan.id === 2 && (
-                            <span className="bg-orange-500 text-white text-xs px-2 py-0.5 rounded-full">
-                              Populaire
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-gray-400 text-sm">{plan.description}</p>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-white font-bold text-xl">{plan.amount}</div>
-                        <div className="text-gray-400 text-xs">FCFA</div>
-                      </div>
-                    </div>
-                  </motion.button>
-                ))}
-              </div>
-
-              <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 mb-6">
-                <p className="text-blue-300 text-sm">
-                  💡 <strong>Avantages du boost :</strong> Votre vidéo apparaîtra en priorité dans le feed, augmentant vos vues et votre engagement !
-                </p>
-              </div>
-
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowBoostModal(false)}
-                  disabled={boostLoading}
-                  className="flex-1 py-3 bg-white/10 rounded-xl text-white font-bold hover:bg-white/20 transition-all disabled:opacity-50"
-                >
-                  Annuler
-                </button>
-                <button
-                  onClick={() => selectedBoost && handleBoost(selectedBoost)}
-                  disabled={!selectedBoost || boostLoading}
-                  className="flex-1 py-3 bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 rounded-xl text-white font-bold hover:shadow-lg hover:shadow-purple-500/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {boostLoading ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      Traitement...
-                    </span>
-                  ) : (
-                    "🚀 Confirmer le boost"
-                  )}
-                </button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-
-      {/* === MENU OPTIONS (COMPACT) === */}
-      <AnimatePresence>
-        {showOptions && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50"
-              onClick={() => setShowOptions(false)}
-            />
-            <motion.div
-              initial={{ y: "100%" }}
-              animate={{ y: 0 }}
-              exit={{ y: "100%" }}
-              className="fixed bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur-2xl rounded-t-3xl z-50 p-4 shadow-2xl"
-            >
-              <div className="w-10 h-1 bg-gray-600 rounded-full mx-auto mb-3" />
-              <div className="space-y-2">
-                <button onClick={handleCopyLink} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/10 text-white text-sm">
-                  <div className="w-9 h-9 bg-blue-500/20 rounded-full flex items-center justify-center"><FaLink className="text-blue-400 text-base" /></div>
-                  Copier le lien
-                </button>
-                <button onClick={handleDownload} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/10 text-white text-sm">
-                  <div className="w-9 h-9 bg-green-500/20 rounded-full flex items-center justify-center"><FaDownload className="text-green-400 text-base" /></div>
-                  Télécharger
-                </button>
-                {!isOwner && (
-                  <>
-                    <button onClick={handleReport} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/10 text-white text-sm">
-                      <div className="w-9 h-9 bg-orange-500/20 rounded-full flex items-center justify-center"><FaFlag className="text-orange-400 text-base" /></div>
-                      Signaler
-                    </button>
-                    <button onClick={handleBlock} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/10 text-white text-sm">
-                      <div className="w-9 h-9 bg-red-500/20 rounded-full flex items-center justify-center"><FaUserSlash className="text-red-400 text-base" /></div>
-                      Bloquer
-                    </button>
-                  </>
-                )}
-                {isOwner && (
-                  <button onClick={handleDelete} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-red-500/10 text-red-400 text-sm">
-                    <div className="w-9 h-9 bg-red-500/20 rounded-full flex items-center justify-center"><FaTrash className="text-red-400 text-base" /></div>
-                    Supprimer
-                  </button>
-                )}
-                <button onClick={() => setShowOptions(false)} className="w-full p-3 bg-white/10 rounded-xl text-white font-bold text-sm hover:bg-white/20">
-                  Annuler
-                </button>
-              </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-
-      {/* === COMMENTAIRES (COMPACT) === */}
+      {/* === 7. MODALES === */}
+      
+      {/* Comments Modal */}
       <AnimatePresence>
         {showComments && (
-          <motion.div
-            initial={{ y: "100%" }}
-            animate={{ y: 0 }}
-            exit={{ y: "100%" }}
-            className="absolute bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur-2xl z-50 rounded-t-3xl max-h-[70vh] flex flex-col"
-          >
-            <div className="flex items-center justify-between p-3 border-b border-white/10">
-              <h3 className="text-white font-bold text-sm flex items-center gap-2">
-                <FaComment className="text-pink-500 text-sm" />
-                {localComments.length} commentaire{localComments.length > 1 ? "s" : ""}
-              </h3>
-              <button onClick={() => setShowComments(false)} className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-gray-300 hover:text-white">✕</button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {localComments.length === 0 ? (
-                <div className="text-center py-12 text-gray-400 text-sm">
-                  <div className="w-14 h-14 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-3"><FaComment className="text-2xl opacity-30" /></div>
-                  Soyez le premier à commenter !
-                </div>
-              ) : (
-                localComments.map((c, i) => (
-                  <motion.div key={i} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex gap-2">
-                    <img
-                      src={c.user?.profilePicture || generateDefaultAvatar(c.user?.username)}
-                      className="w-8 h-8 rounded-full object-cover border border-white/10"
-                      alt=""
-                    />
-                    <div className="flex-1 bg-white/5 backdrop-blur-sm rounded-xl p-2.5 border border-white/10">
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <span className="text-white font-semibold text-xs">{c.user?.username}</span>
-                        <span className="text-gray-500 text-[10px] ml-auto">
-                          {new Date(c.createdAt).toLocaleDateString("fr", { day: "numeric", month: "short" })}
-                        </span>
-                      </div>
-                      <p className="text-gray-200 text-xs leading-tight">{c.text}</p>
-                    </div>
-                  </motion.div>
-                ))
-              )}
-            </div>
-
-            <div className="p-3 border-t border-white/10 bg-gray-800/80">
-              <div className="flex gap-2 items-center">
-                <img
-                  src={getAvatarUrl(currentUser?.user)}
-                  className="w-8 h-8 rounded-full object-cover border border-gray-600"
-                  alt=""
+            <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={(e) => e.stopPropagation()}>
+                <motion.div 
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                    className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                    onClick={() => setShowComments(false)}
                 />
-                <input
-                  type="text"
-                  value={newComment}
-                  onChange={(e) => setNewComment(e.target.value)}
-                  onKeyPress={(e) => e.key === "Enter" && handleAddComment()}
-                  placeholder="Commenter..."
-                  className="flex-1 bg-gray-700/70 text-white px-3 py-2 rounded-full text-sm focus:outline-none focus:ring-1 focus:ring-pink-500 placeholder-gray-400"
-                />
-                <button
-                  onClick={handleAddComment}
-                  disabled={!newComment.trim()}
-                  className="w-9 h-9 bg-gradient-to-r from-pink-500 to-red-500 rounded-full flex items-center justify-center disabled:opacity-50"
+                <motion.div 
+                    initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+                    className="relative w-full max-w-md bg-gray-900 border-t border-gray-800 rounded-t-3xl h-[70vh] flex flex-col z-50 shadow-2xl"
+                    onClick={(e) => e.stopPropagation()}
                 >
-                  <IoSend className="text-white text-base" />
-                </button>
-              </div>
+                    <div className="p-4 border-b border-gray-800 flex justify-between items-center">
+                        <span className="font-bold text-white">{localComments.length} Commentaires</span>
+                        <button onClick={() => setShowComments(false)} className="text-gray-400 p-2">✕</button>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                        {localComments.length === 0 ? (
+                            <div className="text-center text-gray-500 mt-10">Soyez le premier à commenter !</div>
+                        ) : (
+                            localComments.map((comment, i) => (
+                                <div key={i} className="flex gap-3 items-start">
+                                    <img 
+                                        src={comment.user?.profilePhoto || generateDefaultAvatar(comment.user?.fullName)} 
+                                        className="w-8 h-8 rounded-full bg-gray-700" 
+                                        alt="user"
+                                    />
+                                    <div>
+                                        <p className="text-xs font-bold text-gray-400">
+                                            {comment.user?.fullName || comment.user?.username || "Utilisateur"}
+                                        </p>
+                                        <p className="text-sm text-gray-200">{comment.text}</p>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+
+                    <div className="p-4 bg-gray-800 flex gap-2 items-center">
+                        <input 
+                            value={newComment}
+                            onChange={(e) => setNewComment(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleCommentSubmit()}
+                            placeholder="Votre commentaire..."
+                            className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-pink-500"
+                        />
+                        <button 
+                            onClick={handleCommentSubmit} 
+                            disabled={!newComment.trim()}
+                            className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50"
+                        >
+                            <IoSend />
+                        </button>
+                    </div>
+                </motion.div>
             </div>
-          </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Options Modal */}
+      <AnimatePresence>
+        {showOptions && (
+            <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm" onClick={() => setShowOptions(false)}>
+                <motion.div 
+                    initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+                    className="absolute bottom-0 inset-x-0 bg-gray-900 rounded-t-3xl p-6 space-y-3"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    {isOwner && (
+                        <button 
+                            onClick={async () => {
+                                if(confirm("Supprimer ?")) { await deleteVideo(video._id); }
+                            }} 
+                            className="w-full py-3 bg-red-500/10 text-red-500 rounded-xl font-bold flex items-center justify-center gap-2"
+                        >
+                            <FaTrash /> Supprimer la vidéo
+                        </button>
+                    )}
+                    <button onClick={() => { navigator.clipboard.writeText(window.location.href); setShowOptions(false); }} className="w-full py-3 bg-gray-800 text-white rounded-xl font-bold">
+                        Copier le lien
+                    </button>
+                    <button onClick={() => setShowOptions(false)} className="w-full py-3 bg-gray-800 text-gray-400 rounded-xl">
+                        Annuler
+                    </button>
+                </motion.div>
+            </div>
+        )}
+      </AnimatePresence>
+      
+      {/* Boost Modal (Simplified for UI) */}
+      <AnimatePresence>
+          {showBoostModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowBoostModal(false)}>
+                  <motion.div 
+                      initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}
+                      className="bg-gray-900 border border-gray-700 p-6 rounded-2xl w-full max-w-sm"
+                      onClick={(e) => e.stopPropagation()}
+                  >
+                      <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                          <FaRocket className="text-orange-500" /> Booster cette vidéo
+                      </h2>
+                      <div className="space-y-3">
+                          {[
+                              {id: 1, label: '24h Flash', price: 1000},
+                              {id: 2, label: '3 Jours Top', price: 2500},
+                          ].map(plan => (
+                              <div 
+                                  key={plan.id} 
+                                  onClick={() => setSelectedBoost(plan)}
+                                  className={`p-3 rounded-lg border cursor-pointer flex justify-between ${selectedBoost?.id === plan.id ? 'border-orange-500 bg-orange-500/20' : 'border-gray-700'}`}
+                              >
+                                  <span className="text-white">{plan.label}</span>
+                                  <span className="text-orange-400 font-bold">{plan.price} FCFA</span>
+                              </div>
+                          ))}
+                      </div>
+                      <button 
+                          onClick={handleBoost}
+                          disabled={!selectedBoost || boostLoading}
+                          className="w-full mt-6 bg-gradient-to-r from-orange-500 to-pink-600 text-white py-3 rounded-xl font-bold"
+                      >
+                          {boostLoading ? 'Chargement...' : 'Payer'}
+                      </button>
+                  </motion.div>
+              </div>
+          )}
+      </AnimatePresence>
+
     </div>
   );
 });
 
-VideoCard.displayName = 'VideoCard';
+VideoCard.displayName = "VideoCard";
 export default VideoCard;

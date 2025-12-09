@@ -1,13 +1,16 @@
-// src/components/CallManager.jsx - VERSION CORRIGÉE
+// src/components/CallManager.jsx - VERSION FINALE (CORRIGÉE)
 import React, { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Phone, Video, Mic, MicOff, Camera, CameraOff, X, PhoneOff } from "lucide-react";
-import { useChatSocket } from "../hooks/useChatSocket";
+import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 
 const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
-  const { socket } = useChatSocket();
+  
+  // ✅ Récupération du socket stable depuis AuthContext
+  const { socket } = useAuth();
   const { showToast } = useToast();
+  
   const [stream, setStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
   const localVideoRef = useRef(null);
@@ -16,18 +19,22 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
 
   const ICE_SERVERS = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-  // Vérification du socket
+  // Debug : Vérifier si le socket arrive bien
   useEffect(() => {
-    if (!socket) {
-      console.warn('[CallManager] Socket non disponible');
+    if (socket && socket.connected) {
+      console.log("✅ [CallManager] Socket global détecté et connecté :", socket.id);
     }
   }, [socket]);
 
+  // 1. DÉMARRAGE DE L'APPEL
   useEffect(() => {
-    if (!call.on || call.isIncoming || !socket) return;
+    // Sécurité : On ne fait rien tant que le socket n'est pas prêt ou qu'on n'est pas en appel
+    if (!socket || !socket.connected) return;
+    if (!call.on || call.isIncoming) return;
 
     const startCall = async () => {
       try {
+        console.log("📞 [CallManager] Démarrage des médias...");
         const mediaStream = await navigator.mediaDevices.getUserMedia({
           video: call.video,
           audio: true,
@@ -41,6 +48,7 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
         mediaStream.getTracks().forEach(t => pc.addTrack(t, mediaStream));
 
         pc.ontrack = e => {
+          console.log("📡 [CallManager] Flux distant reçu !");
           setRemoteStream(e.streams[0]);
           if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
         };
@@ -52,15 +60,14 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
         };
 
         if (call.type === "outgoing") {
+          console.log("📤 [CallManager] Création de l'offre...");
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          if (socket) {
-            socket.emit("call-offer", { offer, to: call.friend.id, type: call.video ? "video" : "audio" });
-          }
+          socket.emit("call-offer", { offer, to: call.friend.id, type: call.video ? "video" : "audio" });
         }
       } catch (err) {
         console.error('[CallManager] Erreur démarrage appel:', err);
-        showToast("Accès refusé", "error");
+        showToast("Impossible d'accéder à la caméra/micro", "error");
         onEndCall();
       }
     };
@@ -78,22 +85,47 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
     };
   }, [call.on, call.friend, call.video, call.type, call.isIncoming, onEndCall, showToast, socket]);
 
-  // Signaux WebRTC
+  // 2. GESTION DES SIGNAUX WEBRTC
   useEffect(() => {
     if (!socket) return;
 
     const handleOffer = async ({ offer, from }) => {
       if (from !== call.friend.id) return;
-      const pc = peerConnectionRef.current;
-      if (!pc) return;
       
+      if (!peerConnectionRef.current) {
+        const pc = new RTCPeerConnection(ICE_SERVERS);
+        peerConnectionRef.current = pc;
+        
+        try {
+           const mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: call.video,
+            audio: true,
+          });
+          setStream(mediaStream);
+          if (localVideoRef.current) localVideoRef.current.srcObject = mediaStream;
+          mediaStream.getTracks().forEach(t => pc.addTrack(t, mediaStream));
+          
+          pc.ontrack = e => {
+            setRemoteStream(e.streams[0]);
+            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+          };
+          
+           pc.onicecandidate = e => {
+            if (e.candidate) {
+              socket.emit("ice-candidate", { candidate: e.candidate, to: from });
+            }
+          };
+        } catch (e) {
+          console.error("Erreur média réponse", e);
+        }
+      }
+
+      const pc = peerConnectionRef.current;
       try {
         await pc.setRemoteDescription(offer);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        if (socket) {
-          socket.emit("call-answer", { answer, to: from });
-        }
+        socket.emit("call-answer", { answer, to: from });
       } catch (err) {
         console.error('[CallManager] Erreur handleOffer:', err);
       }
@@ -101,7 +133,7 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
 
     const handleAnswer = async ({ answer }) => {
       const pc = peerConnectionRef.current;
-      if (pc && !pc.remoteDescription) {
+      if (pc && !pc.currentRemoteDescription) {
         try {
           await pc.setRemoteDescription(answer);
         } catch (err) {
@@ -138,35 +170,25 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
       socket.off("ice-candidate", handleIce);
       socket.off("call-ended", handleEnd);
     };
-  }, [call.friend?.id, onEndCall, socket]);
+  }, [call.friend?.id, onEndCall, socket, call.video]);
 
-  // ⚠️ FIX PRINCIPAL : Vérification du socket avant d'émettre
   const endCall = () => {
-    console.log('[CallManager] endCall appelé, socket:', socket ? 'disponible' : 'undefined');
+    console.log('[CallManager] Raccrochage manuel...');
     
-    // Nettoyer la connexion peer
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
     
-    // Arrêter les streams
     if (stream) {
       stream.getTracks().forEach(t => t.stop());
     }
     
-    // Émettre signal de fin seulement si socket est disponible
+    // On émet l'événement de fin seulement si le socket est là
     if (socket && socket.connected) {
-      try {
-        socket.emit("call-ended", { to: call.friend.id });
-      } catch (err) {
-        console.error('[CallManager] Erreur lors de l\'émission call-ended:', err);
-      }
-    } else {
-      console.warn('[CallManager] Socket non disponible pour émettre call-ended');
+      socket.emit("call-ended", { to: call.friend.id });
     }
     
-    // Appeler le callback parent
     onEndCall();
   };
 
@@ -174,12 +196,13 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
 
   return (
     <motion.div
-      initial={{ scale: 0.8 }} 
-      animate={{ scale: 1 }} 
-      exit={{ scale: 0.8 }}
+      initial={{ scale: 0.8, opacity: 0 }} 
+      animate={{ scale: 1, opacity: 1 }} 
+      exit={{ scale: 0.8, opacity: 0 }}
       className="fixed inset-0 bg-black/90 z-[200] flex items-center justify-center p-4"
     >
-      <div className="relative w-full max-w-4xl h-full max-h-[600px] bg-gray-900 rounded-3xl overflow-hidden">
+      <div className="relative w-full max-w-4xl h-full max-h-[600px] bg-gray-900 rounded-3xl overflow-hidden border border-gray-700 shadow-2xl">
+        {/* Vidéo Distante */}
         <div className="absolute inset-0">
           {remoteStream ? (
             <video 
@@ -189,66 +212,73 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
               className="w-full h-full object-cover" 
             />
           ) : (
-            <div className="flex items-center justify-center h-full bg-gradient-to-br from-orange-600 to-pink-600">
-              <div className="w-32 h-32 rounded-full bg-white/20 flex items-center justify-center text-6xl font-bold text-white">
+            <div className="flex flex-col items-center justify-center h-full bg-gradient-to-br from-gray-800 to-gray-900">
+              <div className="w-32 h-32 rounded-full bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center text-5xl font-bold text-white shadow-lg animate-pulse">
                 {call.friend?.fullName?.[0] || '?'}
               </div>
+              <p className="mt-6 text-white text-xl font-medium animate-bounce">Connexion en cours...</p>
             </div>
           )}
         </div>
 
+        {/* Vidéo Locale */}
         {call.video && stream && (
-          <div className="absolute top-4 right-4 w-48 h-36 rounded-2xl overflow-hidden border-4 border-white/30">
+          <motion.div 
+            drag
+            dragConstraints={{ left: 0, right: 200, top: 0, bottom: 200 }}
+            className="absolute top-4 right-4 w-32 sm:w-48 h-24 sm:h-36 rounded-2xl overflow-hidden border-2 border-white/50 shadow-lg bg-black cursor-grab active:cursor-grabbing z-10"
+          >
             <video 
               ref={localVideoRef} 
               autoPlay 
               muted 
               playsInline 
-              className="w-full h-full object-cover" 
+              className="w-full h-full object-cover transform scale-x-[-1]"
             />
-          </div>
+          </motion.div>
         )}
 
-        <div className="absolute top-0 left-0 right-0 p-6 text-center">
-          <h3 className="text-2xl font-bold text-white">
-            {call.friend?.fullName || 'Inconnu'}
-          </h3>
-          <p className="text-sm text-gray-300">
-            Appel {call.video ? "vidéo" : "audio"}
-          </p>
+        {/* Info */}
+        <div className="absolute top-0 left-0 right-0 p-6 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
+          <div className="text-center">
+            <h3 className="text-2xl font-bold text-white drop-shadow-md">
+              {call.friend?.fullName || 'Utilisateur'}
+            </h3>
+            <p className="text-sm text-gray-300 drop-shadow-md">
+              {remoteStream ? "En communication" : "Appel en cours..."}
+            </p>
+          </div>
         </div>
 
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex gap-4 bg-black/50 backdrop-blur px-6 py-4 rounded-full">
+        {/* Contrôles */}
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-6 bg-black/60 backdrop-blur-md px-8 py-5 rounded-full border border-white/10 shadow-2xl">
           <button 
             onClick={onToggleMute} 
-            className={`p-4 rounded-full transition-colors ${call.mute ? "bg-red-600" : "bg-gray-700 hover:bg-gray-600"}`}
+            className={`p-4 rounded-full transition-all duration-300 ${
+              call.mute ? "bg-white text-black" : "bg-gray-700/80 text-white hover:bg-gray-600"
+            }`}
           >
-            {call.mute ? <MicOff className="w-6 h-6 text-white" /> : <Mic className="w-6 h-6 text-white" />}
+            {call.mute ? <MicOff size={24} /> : <Mic size={24} />}
           </button>
           
           {call.video && (
             <button 
               onClick={onToggleVideo} 
-              className={`p-4 rounded-full transition-colors ${!call.video ? "bg-red-600" : "bg-gray-700 hover:bg-gray-600"}`}
+              className={`p-4 rounded-full transition-all duration-300 ${
+                !call.video ? "bg-white text-black" : "bg-gray-700/80 text-white hover:bg-gray-600"
+              }`}
             >
-              {!call.video ? <CameraOff className="w-6 h-6 text-white" /> : <Camera className="w-6 h-6 text-white" />}
+              {!call.video ? <CameraOff size={24} /> : <Camera size={24} />}
             </button>
           )}
           
           <button 
             onClick={endCall} 
-            className="p-4 bg-red-600 hover:bg-red-700 rounded-full transition-colors"
+            className="p-5 bg-red-600 hover:bg-red-700 text-white rounded-full transition-all duration-300 transform hover:scale-110 shadow-lg hover:shadow-red-600/50"
           >
-            <PhoneOff className="w-6 h-6 text-white" />
+            <PhoneOff size={28} />
           </button>
         </div>
-
-        <button 
-          onClick={endCall} 
-          className="absolute top-4 left-4 p-2 bg-black/50 hover:bg-black/70 rounded-full transition-colors"
-        >
-          <X className="w-5 h-5 text-white" />
-        </button>
       </div>
     </motion.div>
   );

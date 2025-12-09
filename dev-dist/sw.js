@@ -67,7 +67,7 @@ if (!self.define) {
     });
   };
 }
-define(['./workbox-c04959e1'], (function (workbox) { 'use strict';
+define(['./workbox-9fcb3f6b'], (function (workbox) { 'use strict';
 
   self.skipWaiting();
   workbox.clientsClaim();
@@ -82,7 +82,7 @@ define(['./workbox-c04959e1'], (function (workbox) { 'use strict';
     "revision": "3ca0b8505b4bec776b69afdba2768812"
   }, {
     "url": "index.html",
-    "revision": "0.e7n86jr7b48"
+    "revision": "0.86q5lv79qlg"
   }], {});
   workbox.cleanupOutdatedCaches();
   workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("index.html"), {
@@ -93,22 +93,26 @@ define(['./workbox-c04959e1'], (function (workbox) { 'use strict';
   }) => request.destination === "image", new workbox.CacheFirst({
     "cacheName": "images-cache",
     plugins: [new workbox.ExpirationPlugin({
-      maxEntries: 120,
+      maxEntries: 150,
       maxAgeSeconds: 2592000
     })]
   }), 'GET');
   workbox.registerRoute(({
     request
-  }) => ["script", "style"].includes(request.destination), new workbox.StaleWhileRevalidate({
+  }) => ["style", "script", "font"].includes(request.destination), new workbox.StaleWhileRevalidate({
     "cacheName": "assets-cache",
     plugins: []
   }), 'GET');
-  workbox.registerRoute(/^https:\/\/api\.chantilink\.ci\/.*/i, new workbox.NetworkFirst({
+  workbox.registerRoute(({
+    url
+  }) => url.pathname.startsWith("/api"), new workbox.NetworkFirst({
     "cacheName": "api-cache",
-    "networkTimeoutSeconds": 8,
+    "networkTimeoutSeconds": 5,
     plugins: [new workbox.ExpirationPlugin({
-      maxEntries: 100,
+      maxEntries: 50,
       maxAgeSeconds: 300
+    }), new workbox.CacheableResponsePlugin({
+      statuses: [0, 200]
     })]
   }), 'GET');
 

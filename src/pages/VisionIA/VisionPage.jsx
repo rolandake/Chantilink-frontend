@@ -1,428 +1,309 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
-import { useAuth } from "../../context/AuthContext.jsx";
-import { useDarkMode } from "../../context/DarkModeContext.jsx";
-import { useVisionIA } from "../../hooks/useVisionIA.js";
+import { 
+  Send, Paperclip, Bot, User, Sparkles, 
+  FileText, Calculator, Lock, ArrowLeft, X, CheckCircle
+} from "lucide-react";
+import { useAuth } from "../../context/AuthContext";
+import { useVisionIA } from "../../hooks/useVisionIA";
+import EliteCheckout from "../../components/EliteCheckout";
 
-// ⬇️ NOUVEAU: Remplacer CheckoutButton par EliteCheckout
-import EliteCheckout from "../../components/EliteCheckout.jsx";
+// --- WIDGET DE CALCUL ---
+const CalculationWidget = ({ data }) => (
+  <div className="my-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2">
+    <div className="flex items-center gap-2 mb-3 border-b border-gray-200 dark:border-gray-700 pb-2">
+      <Calculator className="w-4 h-4 text-purple-500" />
+      <span className="font-bold text-sm text-gray-700 dark:text-gray-200">Résultat Technique</span>
+    </div>
+    <div className="grid grid-cols-2 gap-4 text-sm">
+      {Object.entries(data).map(([key, val], i) => (
+        <div key={i} className="flex flex-col">
+          <span className="text-xs text-gray-500 uppercase">{key.replace(/_/g, ' ')}</span>
+          <span className="font-mono font-medium text-gray-900 dark:text-white">{val}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+);
 
-import PlanManager from "./components/PlanManager.jsx";
-import ChatWindow from "./components/ChatWindow.jsx";
-import VoiceButton from "./components/VoiceButton.jsx";
-import CalculationEngine from "./components/CalculationEngine.jsx";
+// --- FICHIER ATTACHÉ ---
+const FileAttachment = ({ file }) => (
+  <div className="flex items-center gap-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800/50 max-w-sm mb-2">
+    <div className="p-2 bg-white dark:bg-blue-900 rounded-lg">
+      <FileText className="w-5 h-5 text-blue-500" />
+    </div>
+    <div className="overflow-hidden">
+      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{file.name}</p>
+      <p className="text-xs text-gray-500">Prêt pour analyse</p>
+    </div>
+  </div>
+);
 
-export default function VisionPage() {
-  const { user, updateUser } = useAuth(); // ⬅️ AJOUT: updateUser pour refresh
-  const { isDarkMode } = useDarkMode();
+// =========================================================
+// MAIN COMPONENT
+// =========================================================
+export default function EngineerChat() {
+  const { user } = useAuth();
   const navigate = useNavigate();
-
-  const [projectType, setProjectType] = useState("tp");
-  const [engineerMode, setEngineerMode] = useState("structural");
-  const [projectPhase, setProjectPhase] = useState("conception");
-  const [localMessages, setLocalMessages] = useState([]);
-  const [currentPlanSummary, setCurrentPlanSummary] = useState("");
-  const [activePlan, setActivePlan] = useState(null);
-  const [extractedData, setExtractedData] = useState(null);
-  const [calculations, setCalculations] = useState({});
-  const [inputValue, setInputValue] = useState("");
-  const [showCheckout, setShowCheckout] = useState(false);
-
+  const fileInputRef = useRef(null);
+  const chatEndRef = useRef(null);
   const chatContainerRef = useRef(null);
-  
-  // 🔥 FIX CRITIQUE : useRef pour éviter les closures stales avec WebSocket
-  const messagesRef = useRef([]);
-  const processedIdsRef = useRef(new Set());
 
-  // Hook VisionIA
-  const {
-    connected: visionConnected,
-    typing: visionTyping,
-    currentProvider,
-    messages: socketMessages,
-    sendMessage: sendVisionMessage
-  } = useVisionIA(user?._id, projectType, engineerMode);
+  // States UI
+  const [inputValue, setInputValue] = useState("");
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [activeFile, setActiveFile] = useState(null);
 
-  // 🔥 MODE IMMERSIF: Bloquer tout scroll et navigation externe
+  // Hook IA
+  const { 
+    messages,        // Liste des messages confirmés (historique)
+    streamContent,   // 🔥 Le bout de texte en train d'être écrit (IMPORTANT)
+    sendMessage, 
+    connected, 
+    typing,
+  } = useVisionIA(user?._id);
+
+  // 1. SCROLL AUTO (Stabilisé)
+  // On scroll à chaque fois que l'historique change OU que le stream avance
   useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    document.body.style.position = 'fixed';
-    document.body.style.width = '100%';
-    document.body.style.height = '100%';
-    
-    const preventBackButton = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-    };
-    
-    window.history.pushState(null, '', window.location.href);
-    window.addEventListener('popstate', preventBackButton);
-    
-    return () => {
-      document.body.style.overflow = '';
-      document.body.style.position = '';
-      document.body.style.width = '';
-      document.body.style.height = '';
-      window.removeEventListener('popstate', preventBackButton);
-    };
-  }, []);
-
-  // ✅ Synchroniser messagesRef avec localMessages
-  useEffect(() => {
-    messagesRef.current = localMessages;
-  }, [localMessages]);
-
-  // 🔥 FUSION ET PERSISTANCE des messages socket → local
-  useEffect(() => {
-    if (!socketMessages || socketMessages.length === 0) return;
-
-    socketMessages.forEach(socketMsg => {
-      // Vérifier si déjà traité
-      if (processedIdsRef.current.has(socketMsg.id)) return;
-      
-      // Marquer comme traité
-      processedIdsRef.current.add(socketMsg.id);
-      
-      // Ajouter au state local pour persistance
-      setLocalMessages(prev => {
-        // Double vérification dans le state
-        const exists = prev.some(m => m.id === socketMsg.id);
-        if (exists) return prev;
-        
-        return [...prev, socketMsg].sort((a, b) => 
-          (a.timestamp || 0) - (b.timestamp || 0)
-        );
-      });
-    });
-  }, [socketMessages]);
-
-  // ✅ Messages finaux (fusion local + socket)
-  const allMessages = React.useMemo(() => {
-    const combined = [...localMessages];
-    
-    socketMessages.forEach(socketMsg => {
-      const exists = combined.some(m => m.id === socketMsg.id);
-      if (!exists) {
-        combined.push(socketMsg);
-      }
-    });
-    
-    return combined.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-  }, [localMessages, socketMessages]);
-
-  // ✅ Scroll automatique
-  useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [allMessages, visionTyping]);
+  }, [messages, streamContent, typing]);
 
-  const handleAddMessage = useCallback((msg) => {
-    const newMsg = { 
-      ...msg, 
-      id: msg.id || `local-${Date.now()}-${Math.random()}`,
-      timestamp: msg.timestamp || Date.now()
-    };
-    
-    processedIdsRef.current.add(newMsg.id);
-    setLocalMessages(prev => [...prev, newMsg]);
-  }, []);
+  // 2. GESTION NAVIGATION (RETOUR)
+  const handleExit = () => {
+    // On peut naviguer vers le dashboard ou la page précédente
+    navigate(-1); 
+  };
 
-  const send = useCallback(() => {
-    if (!inputValue.trim() || !visionConnected) return;
-    
-    const userMsg = { 
-      role: "user", 
-      content: inputValue,
-      timestamp: Date.now()
-    };
-    
-    handleAddMessage(userMsg);
-    
-    sendVisionMessage(inputValue, { 
-      planData: extractedData, 
-      calculations, 
-      phase: projectPhase 
-    });
-    
+  // 3. GESTION UPLOAD (PAYWALL)
+  const handleAttachmentClick = () => {
+    if (!user?.isPremium) {
+      setShowPaywall(true); 
+    } else {
+      fileInputRef.current.click();
+    }
+  };
+
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) setActiveFile(file);
+  };
+
+  // 4. ENVOI MESSAGE
+  const handleSend = () => {
+    if (!inputValue.trim() && !activeFile) return;
+
+    // Détection basique pour inciter au premium sur les calculs complexes sans fichier
+    const isComplex = /calcul|dimension|poutre|charge/i.test(inputValue);
+    if (isComplex && !user?.isPremium && !activeFile) {
+       // Optionnel: afficher une alerte ou laisser passer
+    }
+
+    sendMessage(inputValue, { file: activeFile });
     setInputValue("");
-  }, [inputValue, visionConnected, extractedData, calculations, projectPhase, handleAddMessage, sendVisionMessage]);
-
-  // ✅ Sauvegarde automatique toutes les 30s
-  useEffect(() => {
-    if (!user?._id) return;
-    
-    const interval = setInterval(async () => {
-      try {
-        await fetch("/api/projects/save", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${localStorage.getItem("token")}`
-          },
-          body: JSON.stringify({
-            userId: user._id,
-            projectId: `vision-${user._id}-${projectType}-${engineerMode}`,
-            name: `Projet ${new Date().toLocaleDateString()}`,
-            type: projectType,
-            phase: projectPhase,
-            plans: [],
-            calculations,
-            messages: messagesRef.current // Utiliser ref pour avoir la dernière version
-          })
-        });
-      } catch (err) {
-        console.error("[VisionPage] Erreur sauvegarde:", err);
-      }
-    }, 30000);
-    
-    return () => clearInterval(interval);
-  }, [user?._id, projectType, engineerMode, projectPhase, calculations]);
-
-  // 💎 NOUVEAU: Fonction pour recharger les données utilisateur
-  const fetchUserData = useCallback(async () => {
-    try {
-      const token = localStorage.getItem("token");
-      const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/me`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (response.ok) {
-        const userData = await response.json();
-        
-        // Mettre à jour le contexte Auth si vous avez une fonction updateUser
-        if (updateUser) {
-          updateUser(userData);
-        }
-        
-        console.log("[VisionPage] Données utilisateur mises à jour:", userData);
-        return userData;
-      }
-    } catch (error) {
-      console.error("[VisionPage] Erreur rechargement user:", error);
-    }
-  }, [updateUser]);
-
-  // 💎 NOUVEAU: Handler pour le succès du paiement
-  const handlePaymentSuccess = useCallback(async () => {
-    console.log("[VisionPage] 🎉 Paiement Elite réussi !");
-    
-    // Fermer le modal
-    setShowCheckout(false);
-    
-    // Recharger les données utilisateur
-    await fetchUserData();
-    
-    // Afficher un message de succès (optionnel)
-    // Vous pouvez ajouter un toast/notification ici
-    
-    // Optionnel: Afficher une alerte temporaire
-    setTimeout(() => {
-      alert("🎉 Félicitations ! Vous êtes maintenant Elite !\n\nToutes les fonctionnalités premium sont débloquées.");
-    }, 500);
-  }, [fetchUserData]);
+    setActiveFile(null);
+  };
 
   return (
-    <>
-      {/* 🔥 OVERLAY BLOQUANT TOUT LE RESTE DE L'APP */}
-      <div className="fixed inset-0 z-[9999] bg-black" style={{ isolation: 'isolate' }}>
-        <div className={`w-full h-full flex flex-col ${isDarkMode ? 'bg-black' : 'bg-gray-100'} text-white overflow-hidden`}>
-          
-          {/* HEADER AVEC BOUTON RETOUR */}
-          <div className="relative p-4 bg-gradient-to-r from-purple-900 to-indigo-900 shadow-2xl flex-shrink-0">
-            <button
-              onClick={() => {
-                document.body.style.overflow = '';
-                document.body.style.position = '';
-                document.body.style.width = '';
-                document.body.style.height = '';
-                navigate(-1);
-              }}
-              className="absolute left-4 top-1/2 -translate-y-1/2 p-2 rounded-full bg-white/10 hover:bg-white/20 transition-all backdrop-blur-sm z-10 group"
-              aria-label="Retour"
-            >
-              <ArrowLeft className="w-6 h-6 text-white group-hover:scale-110 transition-transform" />
-            </button>
-
-            <div className="flex items-center justify-between pl-14">
-              <div>
-                <h1 className="text-2xl md:text-3xl font-black bg-clip-text text-transparent bg-gradient-to-r from-yellow-400 to-pink-500">
-                  VISIONIA — BUREAU D'ÉTUDE IA
-                </h1>
-                <p className="text-xs md:text-sm text-gray-300">Grok-3 Vision • Analyse Plans • Calculs Temps Réel</p>
-              </div>
-              
-              <div className="flex items-center gap-2 md:gap-4">
-                <span className={`px-3 md:px-4 py-1 md:py-2 rounded-full text-xs md:text-sm font-bold transition-all ${
-                  visionConnected 
-                    ? 'bg-green-500/20 text-green-400 ring-2 ring-green-500/50' 
-                    : 'bg-red-500/20 text-red-400 ring-2 ring-red-500/50'
-                }`}>
-                  {visionConnected ? '🟢 EN LIGNE' : '🔴 HORS LIGNE'}
-                </span>
-                
-                {currentProvider && (
-                  <span className="hidden md:inline-block px-3 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-full border border-blue-500/30">
-                    🤖 {currentProvider}
-                  </span>
-                )}
-                
-                {/* 💎 AFFICHAGE CONDITIONNEL DU BOUTON ELITE */}
-                {user?.isPremium ? (
-                  <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 rounded-xl border border-yellow-500/50">
-                    <span className="text-yellow-400 text-lg">👑</span>
-                    <span className="text-xs font-bold text-yellow-300">ELITE</span>
-                    {user.premiumDaysRemaining && (
-                      <span className="text-xs text-yellow-400/70">
-                        ({user.premiumDaysRemaining}j)
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <button 
-                    onClick={() => setShowCheckout(true)} 
-                    className="hidden md:block px-4 md:px-6 py-1 md:py-2 bg-gradient-to-r from-yellow-500 to-orange-600 rounded-xl font-bold text-xs md:text-sm hover:scale-105 transition-transform shadow-lg hover:shadow-yellow-500/50"
-                  >
-                    ⭐ PASSER ÉLITE
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* 💎 NOUVEAU: Modal EliteCheckout */}
-          {showCheckout && (
-            <EliteCheckout 
-              onClose={() => setShowCheckout(false)}
-              onSuccess={handlePaymentSuccess}
-              user={user}
-            />
-          )}
-
-          <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0">
-            
-            {/* SIDEBAR GAUCHE - Plans */}
-            <div className="w-full md:w-80 p-4 bg-gray-900/50 border-b md:border-r md:border-b-0 overflow-y-auto flex-shrink-0">
-              <PlanManager
-                projectType={projectType}
-                setCurrentPlanSummary={setCurrentPlanSummary}
-                setActivePlan={setActivePlan}
-                handleAddMessage={handleAddMessage}
-                user={user}
-                setExtractedData={setExtractedData}
-                setCalculations={setCalculations}
-              />
-              
-              {currentPlanSummary && (
-                <div className="mt-4 p-3 bg-purple-900/30 rounded-lg border border-purple-500">
-                  <p className="text-xs text-purple-300">📐 Plan actif :</p>
-                  <p className="text-sm font-medium text-purple-100 truncate">{currentPlanSummary}</p>
-                </div>
-              )}
-            </div>
-
-            {/* ZONE CENTRALE - Chat */}
-            <div className="flex-1 flex flex-col min-w-0 min-h-0">
-              <div 
-                ref={chatContainerRef} 
-                className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4"
-              >
-                {allMessages.length === 0 && !visionTyping && (
-                  <div className="flex items-center justify-center h-full text-gray-500">
-                    <div className="text-center max-w-md px-4">
-                      <div className="text-5xl md:text-6xl mb-4">🏗️</div>
-                      <p className="text-lg md:text-xl mb-2 text-white">Bienvenue dans VISIONIA</p>
-                      <p className="text-xs md:text-sm text-gray-400">
-                        Bureau d'étude intelligent propulsé par Grok-3
-                      </p>
-                      <div className="mt-6 space-y-2 text-left bg-gray-800 p-4 rounded-lg">
-                        <p className="text-xs text-gray-400">✅ Charger un plan</p>
-                        <p className="text-xs text-gray-400">✅ Poser une question technique</p>
-                        <p className="text-xs text-gray-400">✅ Obtenir des calculs instantanés</p>
-                      </div>
-
-                      {/* 💎 NOUVEAU: Promotion Elite pour nouveaux users */}
-                      {!user?.isPremium && (
-                        <div className="mt-6 p-4 bg-gradient-to-r from-yellow-900/30 to-orange-900/30 rounded-xl border border-yellow-500/30">
-                          <p className="text-sm text-yellow-300 font-bold mb-2">
-                            🌟 Passez Elite pour débloquer :
-                          </p>
-                          <ul className="text-xs text-gray-300 space-y-1 text-left">
-                            <li>⚡ Analyse automatique des plans</li>
-                            <li>📊 Calculs illimités</li>
-                            <li>🎯 Priorité absolue</li>
-                          </ul>
-                          <button 
-                            onClick={() => setShowCheckout(true)}
-                            className="mt-3 w-full px-4 py-2 bg-gradient-to-r from-yellow-500 to-orange-600 rounded-lg font-bold text-sm hover:scale-105 transition-transform"
-                          >
-                            Découvrir Elite →
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                
-                <ChatWindow messages={allMessages} activePlan={activePlan} />
-                
-                {visionTyping && (
-                  <div className="flex items-center gap-2 text-purple-400 p-4 bg-purple-900/20 rounded-lg border border-purple-500/30">
-                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></div>
-                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                    <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
-                    <span className="ml-2 text-sm md:text-base">🤖 {currentProvider || 'Grok-3'} réfléchit...</span>
-                  </div>
-                )}
-              </div>
-
-              {/* INPUT ZONE */}
-              <div className="p-3 md:p-4 bg-gray-900/80 border-t border-gray-700 flex-shrink-0">
-                <div className="flex gap-2 md:gap-3">
-                  <textarea
-                    value={inputValue}
-                    onChange={(e) => setInputValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        send();
-                      }
-                    }}
-                    placeholder={visionConnected ? "💬 Posez votre question technique..." : "⚠️ Connexion en cours..."}
-                    className="flex-1 p-3 md:p-4 rounded-xl bg-gray-800 text-white placeholder-gray-500 focus:ring-4 focus:ring-purple-500 outline-none resize-none text-sm md:text-base"
-                    rows="2"
-                    disabled={!visionConnected}
-                  />
-                  
-                  <button
-                    onClick={send}
-                    disabled={!inputValue.trim() || visionTyping || !visionConnected}
-                    className="px-3 md:px-6 py-3 md:py-4 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl font-bold text-sm md:text-base disabled:opacity-50 disabled:cursor-not-allowed hover:scale-105 transition-transform"
-                  >
-                    📤
-                  </button>
-                  
-                  <VoiceButton onTranscript={setInputValue} />
-                </div>
-              </div>
-            </div>
-
-            {/* SIDEBAR DROITE - Calculs */}
-            {extractedData && Object.keys(calculations).length > 0 && (
-              <div className="w-full md:w-96 p-4 md:p-6 bg-gray-900/50 border-t md:border-l md:border-t-0 overflow-y-auto flex-shrink-0">
-                <CalculationEngine 
-                  planData={extractedData} 
-                  calculations={calculations} 
-                />
-              </div>
-            )}
+    <div className="flex flex-col h-screen bg-white dark:bg-gray-950 font-sans text-gray-900 dark:text-gray-100 overflow-hidden relative">
+      
+      {/* ================= HEADER (BARRE SUPÉRIEURE) ================= */}
+      <header className="h-16 border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-950/80 backdrop-blur-md flex items-center justify-between px-4 z-20 shrink-0">
+        
+        {/* Gauche: Info IA */}
+        <div className="flex items-center gap-3">
+          <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+          <div>
+            <h1 className="font-bold text-lg flex items-center gap-2">
+              Vision IA <span className="text-xs px-2 py-0.5 bg-purple-100 dark:bg-purple-900/50 text-purple-600 dark:text-purple-300 rounded-full">BETA</span>
+            </h1>
+            <p className="text-xs text-gray-500">Expert BTP & Génie Civil</p>
           </div>
         </div>
+
+        {/* Droite: Bouton Quitter */}
+        <button 
+          onClick={handleExit}
+          className="p-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors"
+          title="Fermer la discussion"
+        >
+          <X className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+        </button>
+      </header>
+
+      {/* ================= ZONE DE CHAT ================= */}
+      <div 
+        ref={chatContainerRef}
+        className="flex-1 overflow-y-auto p-4 md:p-6 custom-scrollbar"
+      >
+        <div className="max-w-3xl mx-auto space-y-6 pb-4">
+          
+          {/* État Vide */}
+          {messages.length === 0 && !typing && (
+            <div className="text-center py-20 opacity-60 animate-in fade-in zoom-in duration-500">
+              <div className="w-16 h-16 bg-gray-100 dark:bg-gray-800 rounded-2xl mx-auto flex items-center justify-center mb-4 rotate-3">
+                <Sparkles className="w-8 h-8 text-purple-500" />
+              </div>
+              <h2 className="text-2xl font-bold mb-2">Bureau d'Étude Virtuel</h2>
+              <p className="text-sm text-gray-500 max-w-xs mx-auto">
+                Posez une question technique ou importez un plan pour commencer l'analyse.
+              </p>
+            </div>
+          )}
+
+          {/* 1. MESSAGES DE L'HISTORIQUE (Confirmés) */}
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              
+              {msg.role !== 'user' && (
+                <div className="w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shrink-0 mt-1">
+                  <Bot className="w-5 h-5 text-purple-600" />
+                </div>
+              )}
+
+              <div className={`max-w-[85%] md:max-w-[75%] space-y-2`}>
+                <div className={`p-4 rounded-2xl shadow-sm ${
+                  msg.role === 'user' 
+                    ? 'bg-blue-600 text-white rounded-br-none' 
+                    : 'bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-gray-800 dark:text-gray-100 rounded-tl-none'
+                }`}>
+                  <p className="whitespace-pre-wrap leading-relaxed text-sm md:text-base">
+                    {msg.content}
+                  </p>
+                </div>
+
+                {/* Widgets inclus dans l'historique */}
+                {msg.calculations && <CalculationWidget data={msg.calculations} />}
+                {msg.planData && (
+                    <div className="text-xs text-green-500 flex items-center gap-1 mt-1">
+                      <CheckCircle className="w-3 h-3"/> Plan analysé
+                    </div>
+                )}
+              </div>
+
+              {msg.role === 'user' && (
+                  <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center shrink-0 mt-1">
+                    <User className="w-5 h-5 text-gray-500" />
+                  </div>
+              )}
+            </div>
+          ))}
+
+          {/* 2. MESSAGE EN COURS D'ÉCRITURE (Streaming) */}
+          {/* C'est ICI la correction : on affiche ce qui arrive en temps réel */}
+          {typing && (
+            <div className="flex gap-4 justify-start">
+              <div className="w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shrink-0 mt-1">
+                <Bot className="w-5 h-5 text-purple-600" />
+              </div>
+              <div className="max-w-[85%] md:max-w-[75%]">
+                <div className="p-4 rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-tl-none text-gray-800 dark:text-gray-100 shadow-sm">
+                  {streamContent ? (
+                    <p className="whitespace-pre-wrap leading-relaxed text-sm md:text-base animate-pulse-fast">
+                      {streamContent}
+                      <span className="inline-block w-2 h-4 ml-1 bg-purple-500 align-middle animate-blink"/>
+                    </p>
+                  ) : (
+                    /* Indicateur de chargement si le texte n'a pas encore commencé */
+                    <div className="flex gap-1 h-6 items-center">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"/>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]"/>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.4s]"/>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {/* Ancre invisible pour le scroll */}
+          <div ref={chatEndRef} className="h-1" />
+        </div>
       </div>
-    </>
+
+      {/* ================= ZONE DE SAISIE (INPUT) ================= */}
+      <div className="p-4 bg-white dark:bg-gray-950 border-t border-gray-200 dark:border-gray-800 z-20 shrink-0">
+        <div className="max-w-3xl mx-auto">
+          
+          {/* Fichier actif */}
+          {activeFile && (
+              <div className="mb-2 relative inline-block animate-in slide-in-from-bottom-2">
+                <FileAttachment file={activeFile} />
+                <button 
+                  onClick={() => setActiveFile(null)}
+                  className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs hover:scale-110 transition shadow-sm"
+                >
+                  ×
+                </button>
+              </div>
+          )}
+
+          <div className="relative flex items-end gap-2 bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-2xl p-2 focus-within:ring-2 focus-within:ring-purple-500/50 focus-within:border-purple-500 transition-all shadow-sm">
+            
+            {/* Bouton Upload / Paywall */}
+            <button
+              onClick={handleAttachmentClick}
+              className={`p-3 rounded-xl transition-colors shrink-0 ${
+                  user?.isPremium 
+                  ? 'hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-500' 
+                  : 'text-yellow-500 hover:bg-yellow-500/10'
+              }`}
+              title={user?.isPremium ? "Ajouter un plan" : "Fonctionnalité Premium"}
+            >
+              {user?.isPremium ? <Paperclip className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+            </button>
+            
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileChange} 
+              accept=".pdf,image/*" 
+              className="hidden" 
+            />
+
+            <textarea
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder={activeFile ? "Instructions pour ce fichier..." : "Posez votre question technique..."}
+              className="flex-1 max-h-32 min-h-[44px] py-3 bg-transparent border-none outline-none resize-none text-sm md:text-base custom-scrollbar"
+              rows={1}
+            />
+
+            <button
+              onClick={handleSend}
+              disabled={(!inputValue.trim() && !activeFile) || typing}
+              className={`p-3 rounded-xl transition-all shrink-0 ${
+                (inputValue.trim() || activeFile) && !typing
+                  ? 'bg-purple-600 hover:bg-purple-700 text-white shadow-md hover:scale-105'
+                  : 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              <Send className="w-5 h-5" />
+            </button>
+          </div>
+          
+          <p className="text-center text-[10px] text-gray-400 mt-2">
+            IA Générative - Vérifiez les calculs critiques. Appuyez sur Entrée pour envoyer.
+          </p>
+        </div>
+      </div>
+
+      {/* MODAL PAIEMENT */}
+      {showPaywall && (
+        <EliteCheckout 
+          onClose={() => setShowPaywall(false)}
+          onSuccess={() => setShowPaywall(false)}
+          user={user}
+        />
+      )}
+    </div>
   );
 }

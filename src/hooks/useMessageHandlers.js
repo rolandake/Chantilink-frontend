@@ -16,6 +16,7 @@ export const useMessageHandlers = ({
   stopTyping,
   showToast,
   setData,
+  setUi,
   setPendingMessages,
   setErr,
   processedMessagesRef,

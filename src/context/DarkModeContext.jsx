@@ -1,4 +1,4 @@
-// src/context/DarkModeContext.jsx - FIX ADMIN VISIBILITY
+// src/context/DarkModeContext.jsx
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 
 const DarkModeContext = createContext();
@@ -10,15 +10,22 @@ export const useDarkMode = () => {
 };
 
 export const DarkModeProvider = ({ children }) => {
+  // 1. Initialisation (élégante et sans erreur hook)
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    const saved = localStorage.getItem('chantilink_darkMode');
-    return saved !== null ? JSON.parse(saved) : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    try {
+      const saved = localStorage.getItem('chantilink_darkMode');
+      if (saved !== null) return JSON.parse(saved);
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } catch (e) {
+      return false; // Fallback sécurité
+    }
   });
 
-  // === ÉCOUTEUR SYSTÈME ===
+  // 2. Écouteur changement système (OS)
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     const handleChange = (e) => {
+      // On ne change que si l'utilisateur n'a pas forcé une préférence manuelle
       if (localStorage.getItem('chantilink_darkMode') === null) {
         setIsDarkMode(e.matches);
       }
@@ -27,56 +34,69 @@ export const DarkModeProvider = ({ children }) => {
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
 
-  // === APPLICATION THÈME ===
+  // 3. Application du Thème (Le Cœur du Fix)
   useEffect(() => {
     const root = document.documentElement;
     const body = document.body;
 
     const applyTheme = () => {
       if (isDarkMode) {
+        // === MODE SOMBRE (Optimisé pour Admin) ===
         root.classList.add('dark');
-        
-        // ✅ FIX: Gradient plus visible avec meilleur contraste
-        body.style.background = 'linear-gradient(to bottom, #0f0f0f, #1a1a1a)';
-        body.style.color = '#f5f5f5';
+        root.style.colorScheme = 'dark'; // ✅ Force les scrollbars et inputs en sombre
+
+        // Fond légèrement moins noir pur pour éviter le ghosting sur mobile, mais très sombre
+        body.style.background = '#0a0a0a'; 
+        body.style.color = '#ededed';
 
         const vars = {
-          '--bg-primary': '#0f0f0f',
-          '--bg-secondary': '#1a1a1a',
-          '--bg-tertiary': '#242424',
-          '--text-primary': '#f5f5f5',
-          '--text-secondary': '#b0b0b0',
-          '--border-color': 'rgba(255, 255, 255, 0.1)',
-          '--shadow': 'rgba(0, 0, 0, 0.8)',
+          '--bg-primary': '#0a0a0a',     // Fond principal
+          '--bg-secondary': '#171717',   // Sidebar / Cards (plus clair)
+          '--bg-tertiary': '#262626',    // Hover / Inputs
+          '--bg-input': '#1f1f1f',       // Spécifique pour les formulaires admin
+          
+          '--text-primary': '#ededed',   // Blanc cassé (moins agressif)
+          '--text-secondary': '#a3a3a3', // Gris neutre
+          '--text-muted': '#525252',     // Texte désactivé
+
+          '--border-color': '#262626',   // Bordures subtiles
+          '--shadow': '0 4px 6px -1px rgba(0, 0, 0, 0.5)',
         };
         Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
-        updateMetaThemeColor('#0f0f0f');
+        updateMetaThemeColor('#0a0a0a');
+
       } else {
+        // === MODE CLAIR ===
         root.classList.remove('dark');
-        body.style.background = 'linear-gradient(to bottom, #ffffff, #fafafa)';
-        body.style.color = '#111111';
+        root.style.colorScheme = 'light';
+
+        body.style.background = '#ffffff';
+        body.style.color = '#171717';
 
         const vars = {
           '--bg-primary': '#ffffff',
-          '--bg-secondary': '#fafafa',
-          '--bg-tertiary': '#f0f0f0',
-          '--text-primary': '#111111',
-          '--text-secondary': '#666666',
-          '--border-color': 'rgba(0, 0, 0, 0.1)',
-          '--shadow': 'rgba(0, 0, 0, 0.1)',
+          '--bg-secondary': '#f5f5f5',   // Sidebar léger gris
+          '--bg-tertiary': '#e5e5e5',
+          '--bg-input': '#ffffff',
+          
+          '--text-primary': '#171717',
+          '--text-secondary': '#525252',
+          '--text-muted': '#a3a3a3',
+
+          '--border-color': '#e5e5e5',
+          '--shadow': '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
         };
         Object.entries(vars).forEach(([k, v]) => root.style.setProperty(k, v));
         updateMetaThemeColor('#ffffff');
       }
 
-      body.style.transition = 'background 0.3s ease, color 0.3s ease';
       localStorage.setItem('chantilink_darkMode', JSON.stringify(isDarkMode));
     };
 
     applyTheme();
   }, [isDarkMode]);
 
-  // === META THEME COLOR ===
+  // Helper pour la barre de statut mobile
   const updateMetaThemeColor = useCallback((color) => {
     let meta = document.querySelector('meta[name="theme-color"]');
     if (!meta) {
@@ -87,8 +107,8 @@ export const DarkModeProvider = ({ children }) => {
     meta.content = color;
   }, []);
 
-  // === ACTIONS ===
   const toggleDarkMode = useCallback(() => setIsDarkMode(prev => !prev), []);
+  
   const resetDarkMode = useCallback(() => {
     localStorage.removeItem('chantilink_darkMode');
     setIsDarkMode(window.matchMedia('(prefers-color-scheme: dark)').matches);

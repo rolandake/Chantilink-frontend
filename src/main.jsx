@@ -23,6 +23,7 @@ import { CalculationProvider } from "./context/CalculationContext";
 console.group("%c[App Bootstrap]", "color:#00aaff;font-weight:bold;");
 console.log("✅ React version:", React.version);
 console.log("✅ Environment:", import.meta.env.MODE);
+console.log("✅ API URL:", import.meta.env.VITE_API_URL || "http://localhost:5000/api");
 console.groupEnd();
 
 // Stripe
@@ -46,18 +47,29 @@ if (!window.__REACT_ROOT__) {
 
 const root = window.__REACT_ROOT__;
 
+// ✅ HIÉRARCHIE CORRECTE DES PROVIDERS
+// L'ordre est crucial pour éviter les erreurs de dépendances
 root.render(
   <React.StrictMode>
     <BrowserRouter>
       <Elements stripe={stripePromise}>
+        {/* 1️⃣ DarkMode - Indépendant */}
         <DarkModeProvider>
+          {/* 2️⃣ Auth - Fournit user, token, socket */}
           <AuthProvider>
-            <SocketProvider>
-              <ToastProvider>
+            {/* 3️⃣ Toast - Peut utiliser Auth */}
+            <ToastProvider>
+              {/* 4️⃣ Socket - Wrapper autour du socket d'Auth (optionnel) */}
+              <SocketProvider>
+                {/* 5️⃣ Premium - Utilise Auth */}
                 <PremiumProvider>
+                  {/* 6️⃣ Posts - Utilise Auth et Socket */}
                   <PostsProvider>
+                    {/* 7️⃣ Story - Utilise Auth et Socket */}
                     <StoryProvider>
+                      {/* 8️⃣ Videos - Utilise Auth et Socket */}
                       <VideosProvider>
+                        {/* 9️⃣ Calculation - Utilise Auth */}
                         <CalculationProvider>
                           <App />
                         </CalculationProvider>
@@ -65,8 +77,8 @@ root.render(
                     </StoryProvider>
                   </PostsProvider>
                 </PremiumProvider>
-              </ToastProvider>
-            </SocketProvider>
+              </SocketProvider>
+            </ToastProvider>
           </AuthProvider>
         </DarkModeProvider>
       </Elements>
@@ -83,8 +95,17 @@ setTimeout(() => {
   }
 }, 800);
 
-// HMR
+// HMR - Hot Module Replacement
 if (import.meta.hot) {
   import.meta.hot.accept();
   console.log("🔥 HMR activé");
 }
+
+// Error Boundary Global (optionnel mais recommandé)
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('❌ [Global] Promesse non gérée:', event.reason);
+});
+
+window.addEventListener('error', (event) => {
+  console.error('❌ [Global] Erreur non capturée:', event.error);
+});

@@ -1,4 +1,4 @@
-// src/context/StoryContext.jsx - VERSION OPTIMISÉE POUR PERFORMANCE
+// src/context/StoryContext.jsx - VERSION CORRIGÉE
 import React, {
   createContext,
   useContext,
@@ -8,102 +8,83 @@ import React, {
   useRef,
   useMemo
 } from 'react';
+import axios from 'axios';
 import { useAuth } from './AuthContext';
-import { useSocket } from './SocketContext';
+// ❌ SUPPRIMÉ : import { useSocket } from './SocketContext';
 
-const StoryContext = createContext();
+const StoryContext = createContext(null);
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export function StoryProvider({ children }) {
-  const { token, user } = useAuth();
-  const { socket } = useSocket();
+  // ✅ CORRECTION : Récupérer socket directement depuis AuthContext
+  const { token, user, socket } = useAuth();
+  // ❌ SUPPRIMÉ : const { socket } = useSocket();
 
   const [stories, setStories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [uploadProgress, setUploadProgress] = useState(0);
-  
+
   const abortControllerRef = useRef(null);
-  const fetchTimeoutRef = useRef(null);
-  const lastFetchRef = useRef(0);
+  const viewingRef = useRef(new Set());
   const isFetchingRef = useRef(false);
 
-  // ════════════════════════════════════════════════════════
-  // 🔧 DEBUG LOGGING - AVEC DÉPENDANCES FIXES
-  // ════════════════════════════════════════════════════════
-  useEffect(() => {
-    console.log('%c[StoryProvider] Mounted/Updated', 'color: #00ffff; font-weight: bold;', {
-      token: !!token,
-      userId: user?._id,
-      storiesLength: stories.length,
-      loading
-    });
-  }, [token, user?._id, stories.length, loading]); // ✅ Dépendances explicites
-
-  // ════════════════════════════════════════════════════════
-  // 🚀 FETCH STORIES - AVEC DEBOUNCE & DEDUPLICATION
-  // ════════════════════════════════════════════════════════
+  // ✅ Fonction fetchStories avec meilleure gestion d'erreurs
   const fetchStories = useCallback(async (force = false) => {
-    if (!token) return;
-
-    // ✅ Éviter les appels simultanés
-    if (isFetchingRef.current && !force) {
-      console.log('%c[fetchStories] Already fetching, skipped', 'color: #ff9900;');
+    if (!token) {
+      setStories([]);
+      setLoading(false);
       return;
     }
 
-    // ✅ Debounce : max 1 appel toutes les 2 secondes
-    const now = Date.now();
-    const timeSinceLastFetch = now - lastFetchRef.current;
-    if (timeSinceLastFetch < 2000 && !force) {
-      console.log('%c[fetchStories] Debounced (too soon)', 'color: #ff9900;', {
-        timeSinceLastFetch: `${timeSinceLastFetch}ms`
-      });
-      return;
+    if (isFetchingRef.current && !force) return;
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
-
-    console.log('%c[fetchStories] Starting...', 'color: #ffa500; font-weight: bold;', { force });
-
-    // Annuler la précédente requête
-    abortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
 
     isFetchingRef.current = true;
-    lastFetchRef.current = now;
-    setLoading(true);
-    setError(null);
+    if (force) setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/api/story`, {
+      console.log('📡 [Story] Fetching from:', `${API_URL}/api/story/feed`);
+      
+      const response = await axios.get(`${API_URL}/api/story/feed`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: abortControllerRef.current.signal
       });
 
-      if (!res.ok) throw new Error('Failed to load stories');
-      const data = await res.json();
-      const newStories = data.stories ?? [];
+      console.log('✅ [Story] Response:', response.data);
 
-      // ✅ Comparaison stricte pour éviter les re-renders inutiles
-      setStories(prev => {
-        const prevIds = prev.map(s => s._id).sort().join(',');
-        const newIds = newStories.map(s => s._id).sort().join(',');
-        const changed = prevIds !== newIds || JSON.stringify(prev) !== JSON.stringify(newStories);
-        
-        if (!changed) {
-          console.log('%c[fetchStories] No changes detected', 'color: #00ff00;');
-          return prev; // ✅ Retourner la même référence si pas de changement
-        }
-        
-        console.log('%c[fetchStories] Stories updated', 'color: #00ff00;', {
-          prevCount: prev.length,
-          newCount: newStories.length
-        });
-        return newStories;
-      });
+      // ✅ Gérer les deux formats possibles de réponse
+      let newStories;
+      if (Array.isArray(response.data)) {
+        newStories = response.data;
+      } else if (response.data.stories && Array.isArray(response.data.stories)) {
+        newStories = response.data.stories;
+      } else {
+        console.warn('⚠️ [Story] Format de réponse inattendu:', response.data);
+        newStories = [];
+      }
+      
+      console.log(`✅ [Story] ${newStories.length} stories chargées`);
+      setStories(newStories);
+      setError(null);
+      
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('[fetchStories] ❌ Error:', err.message);
-        setError(err.message);
+      if (axios.isCancel(err)) {
+        console.log('🛑 [Story] Fetch annulé');
+      } else {
+        console.error('❌ [Story] Fetch Error:', err);
+        console.error('❌ [Story] Error details:', {
+          message: err.message,
+          response: err.response?.data,
+          status: err.response?.status,
+          url: err.config?.url
+        });
+        
+        if (force) setError(err.message);
       }
     } finally {
       isFetchingRef.current = false;
@@ -111,249 +92,262 @@ export function StoryProvider({ children }) {
     }
   }, [token]);
 
-  // ════════════════════════════════════════════════════════
-  // 📡 INITIAL FETCH - UNE SEULE FOIS
-  // ════════════════════════════════════════════════════════
+  // ✅ Charger les stories au montage
   useEffect(() => {
     if (token) {
-      console.log('%c[StoryProvider] Initial fetch', 'color: #00ff88;');
       fetchStories(true);
+    } else {
+      setStories([]);
+      setLoading(false);
     }
-  }, [token]); // ✅ Seulement au changement de token
+  }, [token, fetchStories]);
 
-  // ════════════════════════════════════════════════════════
-  // 🔌 SOCKET LISTENERS - OPTIMISÉS
-  // ════════════════════════════════════════════════════════
+  // ✅ Gestion des événements Socket
   useEffect(() => {
     if (!socket || !token) return;
 
-    console.log('%c[StoryProvider] Socket listeners setup', 'color: #ffd700;');
+    const handleNewStory = () => {
+      console.log('⚡ [Socket] Nouvelle story reçue');
+      fetchStories(false);
+    };
 
-    const handlers = {
-      newStory: () => {
-        console.log('%c[Socket] New story event', 'color: #0f0;');
-        // ✅ Debounced refresh
-        clearTimeout(fetchTimeoutRef.current);
-        fetchTimeoutRef.current = setTimeout(() => fetchStories(true), 500);
-      },
-      storyDeleted: data => {
-        console.log('%c[Socket] Story deleted', 'color: #ff4444;', data);
-        // ✅ Mise à jour locale immédiate (pas de refetch)
-        setStories(prev => prev.filter(s => s._id !== data.storyId));
-      },
-      slideViewed: data => {
-        console.log('%c[Socket] Slide viewed', 'color: #1e90ff;', data);
-        // ✅ Mise à jour locale uniquement
-        setStories(prev =>
-          prev.map(s => {
-            if (s._id === data.storyId && s.slides?.[data.slideIndex]) {
-              const views = s.slides[data.slideIndex].views || [];
-              if (!views.some(v => (typeof v === 'string' ? v : v._id) === data.userId)) {
-                const updated = [...s.slides];
-                updated[data.slideIndex] = {
-                  ...updated[data.slideIndex],
-                  views: [...views, data.userId]
-                };
-                return { ...s, slides: updated };
-              }
-            }
-            return s;
-          })
-        );
+    const handleStoryDeleted = ({ storyId }) => {
+      if (storyId) {
+        console.log('⚡ [Socket] Story supprimée:', storyId);
+        setStories(prev => prev.filter(s => s._id !== storyId));
       }
     };
 
-    Object.entries(handlers).forEach(([event, handler]) => socket.on(event, handler));
-    
-    return () => {
-      Object.entries(handlers).forEach(([event, handler]) => socket.off(event, handler));
-      clearTimeout(fetchTimeoutRef.current);
-    };
-  }, [socket, token]); // ✅ fetchStories retiré des dépendances
+    const handleSlideViewed = ({ storyId, slideIndex, userId }) => {
+      if (!storyId || slideIndex === undefined || !userId) return;
+      
+      const viewerId = typeof userId === 'object' ? userId._id : userId;
 
-  // ════════════════════════════════════════════════════════
-  // 📤 CREATE STORY
-  // ════════════════════════════════════════════════════════
-  const createStory = useCallback(async formData => {
-    console.log('%c[createStory] Uploading...', 'color: #ff00ff;');
-    const res = await fetch(`${API_URL}/api/story`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData
-    });
-    if (!res.ok) throw new Error('Failed to create story');
-    
-    // ✅ Refetch après création avec un délai
-    setTimeout(() => fetchStories(true), 500);
-    return res.json();
+      setStories(prev => prev.map(story => {
+        if (story._id !== storyId) return story;
+
+        const slides = [...(story.slides || [])];
+        const slide = slides[slideIndex];
+
+        if (!slide || slide.views?.some(v => (typeof v === 'object' ? v._id : v) === viewerId)) {
+          return story;
+        }
+
+        slides[slideIndex] = {
+          ...slide,
+          views: [...(slide.views || []), viewerId]
+        };
+
+        return { ...story, slides };
+      }));
+    };
+
+    socket.on('newStory', handleNewStory);
+    socket.on('storyDeleted', handleStoryDeleted);
+    socket.on('slideViewed', handleSlideViewed);
+
+    return () => {
+      socket.off('newStory', handleNewStory);
+      socket.off('storyDeleted', handleStoryDeleted);
+      socket.off('slideViewed', handleSlideViewed);
+    };
+  }, [socket, token, fetchStories]);
+
+  // ✅ Créer une story
+  const createStory = useCallback(async (formData) => {
+    if (!token) throw new Error("Vous n'êtes pas connecté");
+
+    console.log("📤 [Story] Envoi vers:", `${API_URL}/api/story`);
+    console.log("📤 [Story] Données FormData :");
+    for (let [key, value] of formData.entries()) {
+      console.log(`   - ${key}:`, value instanceof File ? `Fichier: ${value.name} (${value.size} octets)` : value);
+    }
+
+    try {
+      setUploadProgress(0);
+      
+      const response = await axios.post(`${API_URL}/api/story`, formData, {
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setUploadProgress(percent);
+            console.log(`📊 [Story] Upload: ${percent}%`);
+          }
+        }
+      });
+      
+      console.log("✅ [Story] Création réussie :", response.data);
+      
+      await fetchStories(true);
+      setUploadProgress(0);
+      return response.data;
+
+    } catch (err) {
+      setUploadProgress(0);
+
+      console.error("❌ [Story] Erreur création");
+      console.error("   Message:", err.message);
+      console.error("   Response:", err.response?.data);
+      console.error("   Status:", err.response?.status);
+
+      if (err.response) {
+        const serverMessage = err.response.data.message 
+          || err.response.data.error 
+          || JSON.stringify(err.response.data);
+        throw new Error(serverMessage);
+      } else if (err.request) {
+        throw new Error("Le serveur ne répond pas. Vérifiez votre connexion.");
+      } else {
+        throw new Error(err.message);
+      }
+    }
   }, [token, fetchStories]);
 
-  // ════════════════════════════════════════════════════════
-  // 🗑️ DELETE STORY
-  // ════════════════════════════════════════════════════════
-  const deleteStory = useCallback(async id => {
-    console.log('%c[deleteStory]', 'color: #ff2222;', id);
-    await fetch(`${API_URL}/api/story/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` }
-    });
+  // ✅ Supprimer une story
+  const deleteStory = useCallback(async (storyId) => {
+    if (!token) return;
     
-    // ✅ Mise à jour locale immédiate
-    setStories(prev => prev.filter(s => s._id !== id));
-  }, [token]);
-
-  // ════════════════════════════════════════════════════════
-  // 👁️ VIEW SLIDE
-  // ════════════════════════════════════════════════════════
-  const viewSlide = useCallback(async (storyId, slideIndex) => {
-    if (!token || !user) {
-      console.warn('[viewSlide] ⚠️ Non authentifié');
-      return;
-    }
+    const oldStories = [...stories];
+    setStories(prev => prev.filter(s => s._id !== storyId));
 
     try {
-      console.log('%c[viewSlide] Marking as viewed', 'color: #00bfff;', { storyId, slideIndex });
-      
-      const res = await fetch(`${API_URL}/api/story/${storyId}/slides/${slideIndex}/view`, {
-        method: 'POST',
-        headers: { 
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
+      await axios.delete(`${API_URL}/api/story/${storyId}`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
-
-      if (!res.ok) throw new Error('Failed to mark slide as viewed');
-
-      const data = await res.json();
-      console.log('%c[viewSlide] ✅ Success', 'color: #00ff00;', data);
-
-      // ✅ Mise à jour locale si pas déjà vue
-      if (!data.alreadyViewed) {
-        setStories(prev => prev.map(story => {
-          if (story._id === storyId && story.slides?.[slideIndex]) {
-            const updatedSlides = [...story.slides];
-            updatedSlides[slideIndex] = {
-              ...updatedSlides[slideIndex],
-              views: [...(updatedSlides[slideIndex].views || []), user._id]
-            };
-            return { ...story, slides: updatedSlides };
-          }
-          return story;
-        }));
-      }
-
-      return data;
+      console.log("✅ [Story] Supprimée:", storyId);
     } catch (err) {
-      console.error('[viewSlide] ❌ Error:', err.message);
+      console.error("❌ [Story] Delete Error:", err);
+      setStories(oldStories);
+      throw err;
     }
-  }, [token, user]);
+  }, [token, stories]);
 
-  // ════════════════════════════════════════════════════════
-  // 🗑️ DELETE SLIDE
-  // ════════════════════════════════════════════════════════
+  // ✅ Supprimer un slide (AJOUTÉ pour App.jsx)
   const deleteSlide = useCallback(async (storyId, slideIndex) => {
-    if (!token) throw new Error('Non authentifié');
+    if (!token) return;
 
     try {
-      console.log('%c[deleteSlide] Deleting...', 'color: #ff4444;', { storyId, slideIndex });
-      
-      const res = await fetch(`${API_URL}/api/story/${storyId}/slides/${slideIndex}`, {
-        method: 'DELETE',
-        headers: { 
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
+      await axios.delete(`${API_URL}/api/story/${storyId}/slides/${slideIndex}`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
 
-      if (!res.ok) throw new Error('Failed to delete slide');
+      setStories(prev => prev.map(story => {
+        if (story._id !== storyId) return story;
+        return {
+          ...story,
+          slides: story.slides.filter((_, idx) => idx !== slideIndex)
+        };
+      }).filter(story => story.slides.length > 0));
 
-      const data = await res.json();
-      console.log('%c[deleteSlide] ✅ Success', 'color: #00ff00;', data);
+      console.log("✅ [Story] Slide supprimé:", { storyId, slideIndex });
+    } catch (err) {
+      console.error("❌ [Story] Delete Slide Error:", err);
+      throw err;
+    }
+  }, [token]);
 
-      // ✅ Mise à jour locale immédiate
-      if (data.deleted) {
-        setStories(prev => prev.filter(s => s._id !== storyId));
-      } else {
+  // ✅ Voir un slide
+  const viewSlide = useCallback(async (storyId, slideIndex) => {
+    if (!token || !user?._id) return { success: false, error: 'Auth required' };
+
+    const key = `${storyId}-${slideIndex}`;
+    
+    if (viewingRef.current.has(key)) return { success: false, already: true };
+    viewingRef.current.add(key);
+
+    try {
+      const response = await axios.post(
+        `${API_URL}/api/story/${storyId}/slides/${slideIndex}/view`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const data = response.data;
+      if (!data.isOwner && !data.alreadyViewed) {
         setStories(prev => prev.map(story => {
-          if (story._id === storyId) {
-            const updatedSlides = [...story.slides];
-            updatedSlides.splice(slideIndex, 1);
-            return { ...story, slides: updatedSlides };
+          if (story._id !== storyId) return story;
+          const newSlides = [...story.slides];
+          if (newSlides[slideIndex]) {
+            const currentViews = newSlides[slideIndex].views || [];
+            if (!currentViews.includes(user._id)) {
+               newSlides[slideIndex] = {
+                 ...newSlides[slideIndex],
+                 views: [...currentViews, user._id]
+               };
+            }
           }
-          return story;
+          return { ...story, slides: newSlides };
         }));
       }
 
-      return data;
-    } catch (err) {
-      console.error('[deleteSlide] ❌ Error:', err.message);
-      throw err;
-    }
-  }, [token]);
+      return { success: true, ...data };
 
-  // ════════════════════════════════════════════════════════
-  // 📊 GET ANALYTICS
-  // ════════════════════════════════════════════════════════
+    } catch (err) {
+      const status = err.response?.status;
+      const errorMsg = err.response?.data?.error || err.message;
+
+      if (status === 403) console.warn('⚠️ [View] Accès refusé');
+      else if (status === 410) console.warn('⚠️ [View] Story expirée');
+      else if (status === 404) console.warn('⚠️ [View] Introuvable');
+      else console.error('❌ [View] Erreur:', errorMsg);
+
+      return { success: false, error: errorMsg, status };
+    } finally {
+      setTimeout(() => viewingRef.current.delete(key), 2000);
+    }
+  }, [token, user?._id]);
+
+  // ✅ Obtenir les analytics
   const getAnalytics = useCallback(async (storyId) => {
-    if (!token) throw new Error('Non authentifié');
-
+    if (!token) return null;
     try {
-      console.log('%c[getAnalytics] Fetching...', 'color: #ffaa00;', storyId);
-      
-      const res = await fetch(`${API_URL}/api/story/${storyId}/analytics`, {
-        headers: { 
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
+      const res = await axios.get(`${API_URL}/api/story/${storyId}/analytics`, {
+        headers: { Authorization: `Bearer ${token}` }
       });
-
-      if (!res.ok) throw new Error('Failed to fetch analytics');
-
-      const data = await res.json();
-      console.log('%c[getAnalytics] ✅ Success', 'color: #00ff00;', data);
-
-      return data;
+      return res.data;
     } catch (err) {
-      console.error('[getAnalytics] ❌ Error:', err.message);
-      throw err;
+      console.error("❌ [Analytics] Error:", err);
+      return null;
     }
   }, [token]);
 
-  // ════════════════════════════════════════════════════════
-  // 📦 MEMOIZED VALUE
-  // ════════════════════════════════════════════════════════
+  // ✅ Mes stories (useMemo pour performance)
+  const myStories = useMemo(() => {
+    if (!user?._id) return [];
+    return stories.filter(s => 
+      (s.owner?._id || s.owner) === user._id
+    );
+  }, [stories, user?._id]);
+
+  // ✅ Valeur du contexte (useMemo pour éviter re-renders inutiles)
   const value = useMemo(() => ({
-    stories,
+    stories,        
+    myStories,      
     loading,
     error,
     uploadProgress,
-    setUploadProgress,
     fetchStories,
     createStory,
     deleteStory,
+    deleteSlide,  // ✅ AJOUTÉ
     viewSlide,
-    deleteSlide,
     getAnalytics
-  }), [
-    stories, 
-    loading, 
-    error, 
-    uploadProgress, 
-    fetchStories, 
-    createStory, 
-    deleteStory, 
-    viewSlide, 
-    deleteSlide,
-    getAnalytics
-  ]);
+  }), [stories, myStories, loading, error, uploadProgress, fetchStories, createStory, deleteStory, deleteSlide, viewSlide, getAnalytics]);
 
   return <StoryContext.Provider value={value}>{children}</StoryContext.Provider>;
 }
 
-export const StoriesProvider = StoryProvider;
-
+// ✅ Hook personnalisé avec vérification
 export const useStories = () => {
   const context = useContext(StoryContext);
-  if (!context) throw new Error('useStories must be used within StoryProvider');
+  if (!context) {
+    throw new Error('useStories doit être utilisé à l\'intérieur de StoryProvider');
+  }
   return context;
 };
+
+export default StoryProvider;
