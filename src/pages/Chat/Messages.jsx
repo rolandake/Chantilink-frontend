@@ -1,10 +1,10 @@
 // ============================================
-// 📁 src/pages/Chat/Messages.jsx - VERSION FINALE
+// 📁 src/pages/Chat/Messages.jsx - VERSION FULL SCREEN / 2 ETAPES
 // ============================================
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, X } from "lucide-react"; // Ajout de X si besoin, mais ArrowLeft suffit
 
 // === CONTEXTS ===
 import { useAuth } from "../../context/AuthContext";
@@ -21,7 +21,7 @@ import { ContactSidebar } from "./ContactSidebar";
 import { ChatHeader } from "./components/ChatHeader";
 import { MessagesList } from "./components/MessagesList";
 import { ChatInput } from "./components/ChatInput";
-import { EmptyState } from "./components/EmptyState";
+import { EmptyState } from "./components/EmptyState"; // Moins utilisé ici, mais gardé au cas où
 import { AddContactModal } from "./AddContactModal";
 import { PendingMessagesModal } from "./PendingMessagesModal";
 
@@ -38,6 +38,24 @@ import { MSG } from "../../utils/messageConstants";
 // Configuration
 const CFG = { MAX_LEN: 5000 };
 
+// Animation Variants pour les transitions fluides
+const pageVariants = {
+  initial: (direction) => ({
+    x: direction > 0 ? 1000 : -1000,
+    opacity: 0
+  }),
+  animate: {
+    x: 0,
+    opacity: 1,
+    transition: { type: "spring", stiffness: 300, damping: 30 }
+  },
+  exit: (direction) => ({
+    x: direction < 0 ? 1000 : -1000,
+    opacity: 0,
+    transition: { duration: 0.2 }
+  })
+};
+
 export default function Messages() {
   const { user, token, socket } = useAuth();
   const { showToast } = useToast();
@@ -48,7 +66,7 @@ export default function Messages() {
   const [typingUsers, setTypingUsers] = useState([]);
   const connected = socket?.connected || false;
 
-  // === SOCKET EMITTERS (Shim Layer) ===
+  // === SOCKET EMITTERS ===
   const sendMessage = useCallback((data) => {
     if (socket?.connected) {
       socket.emit("sendMessage", data);
@@ -91,9 +109,7 @@ export default function Messages() {
     const handleTyping = (data) => setTypingUsers(prev => [...prev, data.senderId]);
     const handleStopTyping = (data) => setTypingUsers(prev => prev.filter(id => id !== data.senderId));
     
-    // Écouteur pour la suppression temps réel
     const handleMessageDeleted = ({ messageId }) => {
-      console.log("🗑️ Message supprimé par le correspondant:", messageId);
       setData(p => ({
         ...p,
         msg: p.msg.filter(m => m._id !== messageId)
@@ -104,7 +120,7 @@ export default function Messages() {
     socket.on("onlineUsers", handleOnlineUsers);
     socket.on("typing", handleTyping);
     socket.on("stopTyping", handleStopTyping);
-    socket.on("messageDeleted", handleMessageDeleted); // Nouveau listener
+    socket.on("messageDeleted", handleMessageDeleted);
 
     return () => {
       socket.off("getOnlineUsers", handleOnlineUsers);
@@ -113,7 +129,7 @@ export default function Messages() {
       socket.off("stopTyping", handleStopTyping);
       socket.off("messageDeleted", handleMessageDeleted);
     };
-  }, [socket]); // Pas besoin de dépendance setData ici car utilisée via fonction update
+  }, [socket]);
 
   // === CUSTOM HOOKS ===
   const {
@@ -145,36 +161,17 @@ export default function Messages() {
   const typeRef = useRef(null);
   const processedMessagesRef = useRef(new Set());
 
-  // === SOCKET HANDLERS (Gestion des messages entrants) ===
+  // === SOCKET HANDLERS ===
   useSocketHandlers({
-    connected,
-    on,
-    off,
-    getUnreadCounts,
-    markAsRead,
-    acceptCall,
-    rejectCall,
-    socketEndCall,
-    user,
-    sel,
-    data,
-    setData,
-    setUi, 
-    setIncomingCall,
-    setMissedCallNotification,
-    showToast,
-    processedMessagesRef,
-    cleanupCallRingtone,
-    sendMessage
+    connected, on, off, getUnreadCounts, markAsRead, acceptCall, rejectCall, socketEndCall,
+    user, sel, data, setData, setUi, setIncomingCall, setMissedCallNotification,
+    showToast, processedMessagesRef, cleanupCallRingtone, sendMessage
   });
 
-  // =========================================================
-  // 📥 CHARGEMENT CONVERSATION (Mode Hybride HTTP)
-  // =========================================================
+  // === CHARGEMENT CONVERSATION ===
   const loadConversation = useCallback(async (withId) => {
     setUi(p => ({ ...p, load: true }));
     try {
-      console.log("📥 [API] Chargement conversation:", withId);
       const result = await API.getMessages(token, withId);
       const messages = Array.isArray(result) ? result : (result.messages || []);
       
@@ -182,7 +179,6 @@ export default function Messages() {
       markAsRead(withId);
       setData(p => ({ ...p, unread: { ...p.unread, [withId]: 0 } }));
     } catch (error) {
-      console.error("❌ Erreur chargement messages:", error);
       showToast("Erreur lors du chargement des messages", "error");
     } finally {
       setUi(p => ({ ...p, load: false }));
@@ -190,56 +186,51 @@ export default function Messages() {
   }, [token, markAsRead, setData, setUi, showToast]);
 
   const pick = useCallback((f) => {
-    if (!f?.id || sel.friend?.id === f.id) return;
+    if (!f?.id) return;
+    // Si on clique sur le même ami, on ne fait rien ou on recharge ? Ici on laisse fluide.
     processedMessagesRef.current.clear();
     setSel({ friend: f, msg: null });
     setData(p => ({ ...p, msg: [] }));
     loadConversation(f.id);
-  }, [loadConversation, sel.friend?.id, setSel, setData]);
+  }, [loadConversation, setSel, setData]);
 
-  // =========================================================
-  // 🗑️ SUPPRESSION DE MESSAGE
-  // =========================================================
+  // Fonction pour retourner à la liste des contacts
+  const handleBackToList = () => {
+    setSel({ friend: null, msg: null });
+    setData(p => ({ ...p, msg: [] }));
+  };
+
+  // Gestion intelligente du bouton Retour principal
+  const handleMainBack = () => {
+    if (sel.friend) {
+      handleBackToList();
+    } else {
+      navigate("/");
+    }
+  };
+
+  // === SUPPRESSION & ENVOI ===
   const handleDeleteMessage = useCallback(async (msgId) => {
     if (!window.confirm("Supprimer ce message pour tout le monde ?")) return;
-
     try {
-      // 1. Suppression optimiste (Immédiat)
-      setData(p => ({
-        ...p,
-        msg: p.msg.filter(m => m._id !== msgId)
-      }));
-
-      // 2. Appel API
+      setData(p => ({ ...p, msg: p.msg.filter(m => m._id !== msgId) }));
       await API.deleteMessage(token, msgId);
-
-      // 3. Prévenir le correspondant via Socket
       if (socket?.connected && sel.friend) {
-        socket.emit("deleteMessage", { 
-          messageId: msgId, 
-          recipientId: sel.friend.id 
-        });
+        socket.emit("deleteMessage", { messageId: msgId, recipientId: sel.friend.id });
       }
-
       showToast("Message supprimé", "success");
     } catch (err) {
-      console.error("Erreur suppression:", err);
       showToast("Impossible de supprimer le message", "error");
-      // Recharger pour remettre l'état correct si erreur
       loadConversation(sel.friend.id);
     }
   }, [token, socket, sel.friend, setData, showToast, loadConversation]);
 
-  // =========================================================
-  // ✉️ ENVOI DE MESSAGES (Texte, Fichier, Audio)
-  // =========================================================
-  
   const type = useCallback(e => {
     const v = e.target.value;
     setInput(v);
     if (txtRef.current) {
-      txtRef.current.style.height = 'auto';
-      txtRef.current.style.height = txtRef.current.scrollHeight + 'px';
+        txtRef.current.style.height = 'auto';
+        txtRef.current.style.height = txtRef.current.scrollHeight + 'px';
     }
     if (!sel.friend || !connected) return;
     startTyping(sel.friend.id);
@@ -249,7 +240,6 @@ export default function Messages() {
 
   const send = useCallback(() => {
     if (!sel.friend || !input.trim() || input.length > CFG.MAX_LEN || !connected) return;
-
     const tempId = `temp-${Date.now()}-${Math.random()}`;
     const tempMessage = {
       _id: tempId,
@@ -260,15 +250,8 @@ export default function Messages() {
       status: 'sending',
       type: 'text'
     };
-
     setData(p => ({ ...p, msg: [...p.msg, tempMessage] }));
-
-    const sent = sendMessage({
-      recipientId: sel.friend.id,
-      content: input.trim(),
-      type: 'text'
-    });
-
+    const sent = sendMessage({ recipientId: sel.friend.id, content: input.trim(), type: 'text' });
     if (sent) {
       setInput("");
       stopTyping(sel.friend.id);
@@ -279,192 +262,143 @@ export default function Messages() {
     }
   }, [sel.friend, input, connected, sendMessage, stopTyping, showToast, user.id, setData]);
 
-  // 📎 Upload Fichier
+  // Uploads (File & Audio) - Simplified for brevity (Logique identique à l'original)
   const upload = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !sel.friend) return;
-
     setUi(p => ({ ...p, up: true }));
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('recipientId', sel.friend.id);
-
       const response = await API.uploadFile(token, formData);
-
-      sendMessage({
-        recipientId: sel.friend.id,
-        content: "",
-        type: response.type || "file",
-        file: response.url // ✅ Clé correcte pour MessagesList
-      });
-
+      sendMessage({ recipientId: sel.friend.id, content: "", type: response.type || "file", file: response.url });
       setData(p => ({
-        ...p,
-        msg: [...p.msg, {
-          _id: `temp-${Date.now()}`,
-          sender: { _id: user.id },
-          recipient: sel.friend.id,
-          content: "",
-          file: response.url, // ✅ Clé correcte
-          type: response.type || "file",
-          timestamp: new Date().toISOString(),
-          status: "sending"
+        ...p, msg: [...p.msg, {
+          _id: `temp-${Date.now()}`, sender: { _id: user.id }, recipient: sel.friend.id, content: "",
+          file: response.url, type: response.type || "file", timestamp: new Date().toISOString(), status: "sending"
         }]
       }));
-
       showToast('Fichier envoyé', 'success');
-    } catch (err) {
-      console.error('Erreur upload:', err);
-      showToast('Erreur envoi fichier', 'error');
-    } finally {
-      setUi(p => ({ ...p, up: false }));
-      if (fileRef.current) fileRef.current.value = '';
-    }
+    } catch (err) { showToast('Erreur envoi fichier', 'error'); } 
+    finally { setUi(p => ({ ...p, up: false })); if (fileRef.current) fileRef.current.value = ''; }
   };
 
-  // 🎤 Envoi Audio
   const sendAudio = async () => {
     if (!audioBlob || !sel.friend) return;
-
     try {
       const formData = new FormData();
-      formData.append('file', audioBlob, 'recording.wav'); // ✅ Clé 'file' requise par Multer
+      formData.append('file', audioBlob, 'recording.wav');
       formData.append('recipientId', sel.friend.id);
-
       const response = await API.uploadFile(token, formData);
-
-      sendMessage({
-        recipientId: sel.friend.id,
-        content: "",
-        type: "audio",
-        file: response.url // ✅ Clé correcte
-      });
-
+      sendMessage({ recipientId: sel.friend.id, content: "", type: "audio", file: response.url });
       setData(p => ({
-        ...p,
-        msg: [...p.msg, {
-          _id: `temp-${Date.now()}`,
-          sender: { _id: user.id },
-          recipient: sel.friend.id,
-          content: "",
-          file: response.url, // ✅ Clé correcte
-          type: "audio",
-          timestamp: new Date().toISOString(),
-          status: "sending"
+        ...p, msg: [...p.msg, {
+          _id: `temp-${Date.now()}`, sender: { _id: user.id }, recipient: sel.friend.id, content: "",
+          file: response.url, type: "audio", timestamp: new Date().toISOString(), status: "sending"
         }]
       }));
-
       cancelAudio();
       showToast('Message vocal envoyé', 'success');
-    } catch (err) {
-      console.error('Erreur envoi audio:', err);
-      showToast('Erreur envoi message vocal', 'error');
-    }
+    } catch (err) { showToast('Erreur envoi message vocal', 'error'); }
   };
 
   // === CALCULS UI ===
   const filt = useMemo(() => {
     let filtered = ui.search
-      ? (data.conn || []).filter(c =>
-          c?.fullName?.toLowerCase().includes(ui.search.toLowerCase()) ||
-          c?.phone?.includes(ui.search)
-        )
+      ? (data.conn || []).filter(c => c?.fullName?.toLowerCase().includes(ui.search.toLowerCase()) || c?.phone?.includes(ui.search))
       : data.conn;
-
-    if (ui.contactFilter === 'chantilink') {
-      filtered = filtered.filter(c => c?.isOnChantilink);
-    } else if (ui.contactFilter === 'other') {
-      filtered = filtered.filter(c => !c?.isOnChantilink);
-    }
+    if (ui.contactFilter === 'chantilink') filtered = filtered.filter(c => c?.isOnChantilink);
+    else if (ui.contactFilter === 'other') filtered = filtered.filter(c => !c?.isOnChantilink);
     return filtered;
   }, [data.conn, ui.search, ui.contactFilter]);
 
   const sorted = useMemo(() =>
-    [...filt].sort((a, b) =>
-      ((data.unread[b?.id] || 0) - (data.unread[a?.id] || 0)) ||
-      (onlineUsers.includes(b?.id) ? 1 : 0) - (onlineUsers.includes(a?.id) ? 1 : 0)
-    ),
+    [...filt].sort((a, b) => ((data.unread[b?.id] || 0) - (data.unread[a?.id] || 0)) || (onlineUsers.includes(b?.id) ? 1 : 0) - (onlineUsers.includes(a?.id) ? 1 : 0)),
     [filt, data.unread, onlineUsers]
   );
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [data.msg]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [data.msg]);
 
-  // Acceptation demande de contact
   const handleAcceptRequest = async (request) => {
     try {
-      const newContact = {
-        id: request.sender._id,
-        _id: request.sender._id,
-        fullName: request.sender.fullName,
-        username: request.sender.username,
-        phone: request.sender.phone,
-        isOnChantilink: true,
-        profilePhoto: request.sender.profilePhoto
-      };
-
       await API.acceptMessageRequest(token, request._id);
-
-      setData(p => {
-        const exists = p.conn.some(c => c.id === newContact.id);
-        if (exists) return { ...p, pendingRequests: p.pendingRequests.filter(r => r._id !== request._id) };
-        return {
-          ...p,
-          conn: [...p.conn, newContact],
-          pendingRequests: p.pendingRequests.filter(r => r._id !== request._id),
-          stats: { ...p.stats, total: p.stats.total + 1, onChantilink: p.stats.onChantilink + 1 },
-          unread: { ...p.unread, [newContact.id]: 0 }
-        };
-      });
-
+      const newContact = { id: request.sender._id, _id: request.sender._id, fullName: request.sender.fullName, username: request.sender.username, phone: request.sender.phone, isOnChantilink: true, profilePhoto: request.sender.profilePhoto };
+      setData(p => ({
+        ...p, conn: [...p.conn, newContact], pendingRequests: p.pendingRequests.filter(r => r._id !== request._id),
+        stats: { ...p.stats, total: p.stats.total + 1, onChantilink: p.stats.onChantilink + 1 }, unread: { ...p.unread, [newContact.id]: 0 }
+      }));
       setUi(p => ({ ...p, showPending: false }));
       setTimeout(() => pick(newContact), 100);
       showToast(`${newContact.fullName} ajouté`, "success");
-    } catch (err) {
-      showToast("Erreur acceptation", "error");
-    }
+    } catch (err) { showToast("Erreur acceptation", "error"); }
   };
+
+  // Direction de l'animation (positive = vers le chat, négative = vers la liste)
+  const direction = sel.friend ? 1 : -1;
 
   return (
     <>
+      {/* BOUTON RETOUR INTELLIGENT (Fixé en haut à gauche) */}
       <motion.button
-        initial={{ opacity: 0, x: -50 }}
-        animate={{ opacity: 1, x: 0 }}
-        onClick={() => navigate("/")}
-        className="fixed top-4 left-4 z-[100] p-3 bg-gradient-to-r from-orange-500 to-pink-500 text-white rounded-full shadow-2xl hover:scale-110"
+        initial={{ opacity: 0, scale: 0.8 }}
+        animate={{ opacity: 1, scale: 1 }}
+        whileHover={{ scale: 1.1 }}
+        whileTap={{ scale: 0.9 }}
+        onClick={handleMainBack}
+        className="fixed top-4 left-4 z-[200] p-3 bg-gradient-to-r from-orange-500 to-pink-500 text-white rounded-full shadow-2xl backdrop-blur-sm"
       >
         <ArrowLeft className="w-6 h-6" />
       </motion.button>
 
-      <div className="fixed inset-0 flex bg-gradient-to-br from-gray-900 to-gray-800">
-        <div className="w-1/3 flex-shrink-0 border-r border-gray-700">
-          <ContactSidebar
-            contacts={sorted}
-            stats={data.stats}
-            searchQuery={ui.search}
-            onSearchChange={(q) => setUi(p => ({ ...p, search: q }))}
-            filter={ui.contactFilter}
-            onFilterChange={(f) => setUi(p => ({ ...p, contactFilter: f }))}
-            onContactSelect={pick}
-            onAddContact={() => setUi(p => ({ ...p, showAddContact: true }))}
-            onSyncContacts={() => API.syncContacts(token, []).then(load)}
-            onDeleteContact={async (id) => { await API.deleteContact(token, id); await load(); }}
-            onInviteContact={async (c) => { await API.inviteContact(token, { phoneNumber: c.phone, fullName: c.fullName }); }}
-            onShowPending={() => setUi(p => ({ ...p, showPending: true }))}
-            unreadCounts={data.unread}
-            onlineUsers={onlineUsers}
-            pendingCount={data.pendingRequests?.length || 0}
-            connected={connected}
-            reconnecting={recon}
-            error={err.load}
-          />
-        </div>
-
-        <section className="flex-1 flex flex-col overflow-hidden">
-          {sel.friend ? (
-            <>
+      {/* CONTENEUR PRINCIPAL PLEIN ÉCRAN */}
+      <div className="fixed inset-0 bg-gray-900 overflow-hidden">
+        <AnimatePresence initial={false} custom={direction} mode="wait">
+          
+          {/* STEP 1: CONTACT SIDEBAR (LISTE) */}
+          {!sel.friend ? (
+            <motion.div
+              key="contact-list"
+              custom={direction}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="absolute inset-0 w-full h-full bg-gray-900"
+            >
+              <ContactSidebar
+                contacts={sorted}
+                stats={data.stats}
+                searchQuery={ui.search}
+                onSearchChange={(q) => setUi(p => ({ ...p, search: q }))}
+                filter={ui.contactFilter}
+                onFilterChange={(f) => setUi(p => ({ ...p, contactFilter: f }))}
+                onContactSelect={pick}
+                onAddContact={() => setUi(p => ({ ...p, showAddContact: true }))}
+                onSyncContacts={() => API.syncContacts(token, []).then(load)}
+                onDeleteContact={async (id) => { await API.deleteContact(token, id); await load(); }}
+                onInviteContact={async (c) => { await API.inviteContact(token, { phoneNumber: c.phone, fullName: c.fullName }); }}
+                onShowPending={() => setUi(p => ({ ...p, showPending: true }))}
+                unreadCounts={data.unread}
+                onlineUsers={onlineUsers}
+                pendingCount={data.pendingRequests?.length || 0}
+                connected={connected}
+                reconnecting={recon}
+                error={err.load}
+              />
+            </motion.div>
+          ) : (
+            
+            /* STEP 2: CHAT INTERFACE (CONVERSATION) */
+            <motion.div
+              key="chat-interface"
+              custom={direction}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="absolute inset-0 w-full h-full flex flex-col bg-gray-900"
+            >
               <ChatHeader
                 friend={sel.friend}
                 typingUsers={typingUsers}
@@ -472,6 +406,8 @@ export default function Messages() {
                 connected={connected}
                 onVideoCall={() => startCall('video')}
                 onAudioCall={() => startCall('audio')}
+                // On peut ajouter une petite marge à gauche du header pour ne pas cacher le nom derrière le bouton retour
+                className="pl-16" 
               />
 
               <MessagesList
@@ -479,7 +415,7 @@ export default function Messages() {
                 loading={ui.load}
                 currentUserId={user?.id}
                 onSelectMessage={(m) => setSel(p => ({ ...p, msg: m }))}
-                onDeleteMessage={handleDeleteMessage} // 👈 NOUVEAU
+                onDeleteMessage={handleDeleteMessage}
                 endRef={endRef}
               />
 
@@ -507,20 +443,12 @@ export default function Messages() {
                 txtRef={txtRef}
                 fileRef={fileRef}
               />
-            </>
-          ) : (
-            <EmptyState
-              totalPendingCount={data.pendingRequests?.length || 0}
-              onShowPending={() => setUi(p => ({ ...p, showPending: true }))}
-              onSyncContacts={() => API.syncContacts(token, []).then(load)}
-              onAddContact={() => setUi(p => ({ ...p, showAddContact: true }))}
-              hasContacts={data.conn.length > 0}
-            />
+            </motion.div>
           )}
-        </section>
+        </AnimatePresence>
       </div>
 
-      {/* MODALS & NOTIFICATIONS */}
+      {/* MODALS & NOTIFICATIONS (Restent au-dessus de tout) */}
       {call.on && !call.isIncoming && (
         <CallManager
           call={call}
@@ -538,21 +466,13 @@ export default function Messages() {
             onAccept={() => {
               acceptCall({ to: incomingCall.callId });
               setCall({
-                on: true,
-                type: incomingCall.type,
-                friend: incomingCall.friend,
-                mute: false,
-                video: incomingCall.type === "video",
-                isIncoming: true,
-                callId: incomingCall.callId
+                on: true, type: incomingCall.type, friend: incomingCall.friend,
+                mute: false, video: incomingCall.type === "video", isIncoming: true, callId: incomingCall.callId
               });
               setIncomingCall(null);
               incomingCall.cleanup?.();
             }}
-            onReject={() => {
-              rejectCall({ to: incomingCall.callId });
-              setIncomingCall(null);
-            }}
+            onReject={() => { rejectCall({ to: incomingCall.callId }); setIncomingCall(null); }}
           />
         )}
         
@@ -587,10 +507,7 @@ export default function Messages() {
           <AddContactModal
             isOpen={ui.showAddContact}
             onClose={() => setUi(p => ({ ...p, showAddContact: false }))}
-            onAdd={async (data) => {
-              await API.addContact(token, data);
-              await load();
-            }}
+            onAdd={async (data) => { await API.addContact(token, data); await load(); }}
           />
         )}
         
@@ -604,9 +521,7 @@ export default function Messages() {
                 await API.rejectMessageRequest(token, requestId);
                 setData(p => ({ ...p, pendingRequests: p.pendingRequests.filter(r => r._id !== requestId) }));
                 showToast("Demande rejetée", "info");
-              } catch (err) {
-                showToast("Erreur lors du rejet", "error");
-              }
+              } catch (err) { showToast("Erreur lors du rejet", "error"); }
             }}
           />
         )}

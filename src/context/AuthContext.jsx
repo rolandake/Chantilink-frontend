@@ -5,8 +5,36 @@ import { io } from "socket.io-client";
 import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
 
-const AuthContext = createContext();
-export const useAuth = () => useContext(AuthContext);
+// ✅ FIX: Fournir une valeur par défaut pour éviter undefined
+const AuthContext = createContext({
+  users: new Map(),
+  activeUserId: null,
+  user: null,
+  token: null,
+  socket: null,
+  loading: false,
+  ready: false,
+  notifications: [],
+  login: async () => ({ success: false, message: 'Auth not ready' }),
+  logout: async () => {},
+  register: async () => ({ success: false, message: 'Auth not ready' }),
+  getToken: async () => null,
+  updateUserProfile: async () => {},
+  verifyAdminToken: async () => null,
+  isAdmin: () => false,
+  addNotification: () => {},
+  isLockedOut: () => false,
+  getActiveUser: () => null,
+  getUserById: () => null,
+});
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth doit être utilisé dans un AuthProvider');
+  }
+  return context;
+};
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const SOCKET_URL = API_URL.replace('/api', '');
@@ -344,7 +372,7 @@ export function AuthProvider({ children }) {
     socketRef.current = newSocket;
 
     return () => { cleanupSocket(); };
-  }, [activeUserId, users]);
+  }, [activeUserId, users, cleanupSocket]);
 
   // === ADMIN VÉRIFICATION ===
   const verifyAdminToken = useCallback(async () => {
@@ -497,7 +525,7 @@ export function AuthProvider({ children }) {
     }
   }, [users, persistUsers, addNotification]);
 
-  // ✅✅✅ AJOUT: LA FONCTION MANQUANTE updateUserProfile ✅✅✅
+  // === MISE À JOUR DU PROFIL ===
   const updateUserProfile = useCallback(async (userId, updates) => {
     if (!userId) return;
 
@@ -506,16 +534,10 @@ export function AuthProvider({ children }) {
       const currentUserData = newMap.get(userId);
 
       if (currentUserData) {
-        // Fusionner les données existantes avec les mises à jour
         const updatedUser = { ...currentUserData.user, ...updates };
-        
-        // Mettre à jour la Map
         newMap.set(userId, { ...currentUserData, user: updatedUser });
-        
-        // Sauvegarder dans LocalStorage et IDB
         persistUsers(newMap, activeUserId);
         syncUserToIDB(userId, updatedUser);
-        
         console.log("✅ [AuthContext] Profil mis à jour localement pour", userId);
       }
       return newMap;
@@ -563,7 +585,7 @@ export function AuthProvider({ children }) {
       logout,
       register,
       getToken,
-      updateUserProfile, // ✅ Maintenant elle est définie au-dessus
+      updateUserProfile,
       verifyAdminToken,
       isAdmin,
       addNotification,
@@ -574,7 +596,7 @@ export function AuthProvider({ children }) {
   }, [
     users, activeUserId, loading, ready, notifications,
     login, logout, register, getToken, 
-    updateUserProfile, // ✅ Dépendance correcte
+    updateUserProfile,
     verifyAdminToken,
     addNotification, isLockedOut, getActiveUser, getUserById
   ]);
