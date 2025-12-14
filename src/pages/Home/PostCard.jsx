@@ -17,6 +17,7 @@ import ErrorBoundary from "../../components/ErrorBoundary";
 
 // === CONFIGURATION ===
 const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
+// On ne charge Stripe que si la clé est présente pour éviter erreur console
 const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
@@ -27,6 +28,7 @@ const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 // === UTILITAIRES ===
 const getCloudinaryUrl = (id, opts = {}) => {
   if (!id) return null;
+  if (typeof id !== 'string') return null; // Sécurité supplémentaire
   if (id.startsWith('http')) return id;
   if (id.startsWith('/uploads/') || id.startsWith('uploads/')) {
     return `${API_URL}/${id.replace(/^\/+/, '')}`;
@@ -68,12 +70,15 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
     return colors[Math.abs(hash) % colors.length];
   }, [username]);
 
-  const url = photo ? getCloudinaryUrl(photo, { width: size * 2, height: size * 2, crop: 'thumb', gravity: 'face' }) : null;
+  // URL sécurisée
+  const url = useMemo(() => {
+    return photo ? getCloudinaryUrl(photo, { width: size * 2, height: size * 2, crop: 'thumb', gravity: 'face' }) : null;
+  }, [photo, size]);
 
   if (error || !url) {
     return (
       <div 
-        className="rounded-full flex items-center justify-center text-white font-bold select-none shadow-sm"
+        className="rounded-full flex items-center justify-center text-white font-bold select-none shadow-sm flex-shrink-0"
         style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}
       >
         {initials}
@@ -85,7 +90,7 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
     <img 
       src={url} 
       alt={username} 
-      className="rounded-full object-cover shadow-sm bg-gray-200"
+      className="rounded-full object-cover shadow-sm bg-gray-200 flex-shrink-0"
       style={{ width: size, height: size }} 
       onError={() => setError(true)}
       loading="lazy"
@@ -95,30 +100,32 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
 
 // === POST CARD PRINCIPALE ===
 const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
-  // Sécurité anti-crash si le post est undefined
-  if (!post) return null;
+  // Sécurité anti-crash : si pas de post, on ne rend rien
+  if (!post || !post._id) return null;
 
   const { user: currentUser, getToken } = useAuth();
-  // const { deletePost } = usePosts(); // Décommenter si besoin de suppression
   const { isDarkMode } = useDarkMode();
   const navigate = useNavigate();
   const cardRef = useRef(null);
 
-  // Normalisation des données utilisateur (Memoized)
-  const postUser = useMemo(() => ({
-    _id: post.user?._id || post.userId || post.user || "unknown",
-    fullName: post.user?.fullName || post.fullName || "Utilisateur Inconnu",
-    profilePhoto: post.user?.profilePhoto || post.userProfilePhoto || null,
-    isVerified: !!(post.user?.isVerified || post.isVerified),
-    isPremium: !!(post.user?.isPremium || post.isPremium)
-  }), [post]);
+  // Normalisation des données utilisateur (Memoized & Sécurisé)
+  const postUser = useMemo(() => {
+    const u = post.user || {};
+    return {
+      _id: u._id || post.userId || "unknown",
+      fullName: u.fullName || post.fullName || "Utilisateur Inconnu",
+      profilePhoto: u.profilePhoto || post.userProfilePhoto || null,
+      isVerified: !!(u.isVerified || post.isVerified),
+      isPremium: !!(u.isPremium || post.isPremium)
+    };
+  }, [post]);
 
   // États locaux
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
+  // Initialisation sécurisée des commentaires (toujours un tableau)
   const [comments, setComments] = useState([]);
   const [commentsCount, setCommentsCount] = useState(0);
-  const [sharesCount, setSharesCount] = useState(0);
   const [isBoosted, setIsBoosted] = useState(!!post.isBoosted);
   
   // États UI
@@ -151,34 +158,53 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
 
   // === INIT & SYNC ===
   useEffect(() => {
-    setLikesCount(Array.isArray(post.likes) ? post.likes.length : post.likes || 0);
-    setCommentsCount(Array.isArray(post.comments) ? post.comments.length : post.commentsCount || 0);
-    setSharesCount(Array.isArray(post.shares) ? post.shares.length : post.sharesCount || 0);
+    setLikesCount(Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0));
+    
+    // Initialisation des commentaires : on prend le tableau s'il existe, sinon 0
+    if (Array.isArray(post.comments)) {
+        setComments(post.comments);
+        setCommentsCount(post.comments.length);
+    } else {
+        setCommentsCount(post.commentsCount || 0);
+    }
+    
     setIsBoosted(!!post.isBoosted);
 
     if (currentUser && Array.isArray(post.likes)) {
-      setLiked(post.likes.some(id => id === currentUser._id || (typeof id === 'object' && id._id === currentUser._id)));
+      // Vérification robuste des likes (supporte ID string ou objet User)
+      setLiked(post.likes.some(like => {
+          const likeId = typeof like === 'object' ? like._id : like;
+          return likeId === currentUser._id;
+      }));
     }
     
-    // Check local storage / user profile pour follow status
+    // Check follow status
     if (currentUser?.following?.includes(postUser._id)) {
       setIsFollowing(true);
     }
   }, [post, currentUser, postUser._id]);
 
-  // === VIDEO AUTOPLAY ===
+  // === VIDEO AUTOPLAY (Optimisé) ===
   useEffect(() => {
     if (!cardRef.current) return;
+    
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         const video = entry.target;
-        if (entry.isIntersecting && !video.paused) return;
-        entry.isIntersecting ? video.play().catch(() => {}) : video.pause();
+        // On ne joue que si visible à 70% pour éviter surcharge
+        if (entry.isIntersecting) {
+            if (video.paused) video.play().catch(() => {}); // catch silencieux
+        } else {
+            if (!video.paused) video.pause();
+        }
       });
-    }, { threshold: 0.6 });
+    }, { threshold: 0.7 });
 
     const videos = cardRef.current.querySelectorAll('video');
-    videos.forEach(v => { v.muted = true; observer.observe(v); });
+    videos.forEach(v => { 
+        v.muted = true; // Obligatoire pour autoplay mobile
+        observer.observe(v); 
+    });
 
     return () => observer.disconnect();
   }, []);
@@ -208,7 +234,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
       // Revert en cas d'erreur
       setLiked(prevLiked);
       setLikesCount(prevCount);
-      console.error(err);
     } finally {
       setLoadingLike(false);
       setTimeout(() => setAnimateHeart(false), 800);
@@ -266,14 +291,12 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
       if (data.url) {
         window.location.href = data.url;
       } else {
-        // Fallback simulation
         setIsBoosted(true);
         showToast?.("🚀 Post boosté avec succès !", "success");
         setShowBoostModal(false);
       }
 
     } catch (err) {
-      console.error(err);
       showToast?.(err.message || "Erreur de paiement", "error");
     } finally {
       setBoostLoading(false);
@@ -290,12 +313,10 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     ), [post.media]);
 
   const formattedDate = useMemo(() => {
-    if (!post.createdAt) return "À l'instant";
+    if (!post.createdAt) return "";
     try {
         return new Date(post.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-    } catch (e) {
-        return "";
-    }
+    } catch (e) { return ""; }
   }, [post.createdAt]);
 
   return (
@@ -311,7 +332,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
         <div className="absolute top-0 right-0 z-10 p-2">
             <motion.div 
                 initial={{ scale: 0 }} animate={{ scale: 1 }}
-                className="flex items-center gap-1 bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-xl shadow-lg"
+                className="flex items-center gap-1 bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-xl shadow-lg select-none"
             >
                 <RocketLaunchIcon className="w-3 h-3" /> SPONSORISÉ
             </motion.div>
@@ -334,14 +355,12 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
             <div className="flex items-center gap-1.5 flex-wrap">
               <span 
                 onClick={() => navigate(`/profile/${postUser._id}`)}
-                className={`font-bold text-sm cursor-pointer hover:underline ${isDarkMode ? 'text-white' : 'text-gray-900'}`}
+                className={`font-bold text-sm cursor-pointer hover:underline truncate max-w-[150px] ${isDarkMode ? 'text-white' : 'text-gray-900'}`}
               >
                 {postUser.fullName}
               </span>
               
-              {/* --- MODIFICATION ICI : Certification en ORANGE --- */}
               {postUser.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500" />}
-              
             </div>
             <span className="text-xs text-gray-500">
                {formattedDate}
@@ -376,9 +395,9 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
         </div>
       </div>
 
-      {/* CONTENU */}
+      {/* CONTENU TEXTE */}
       <div className="px-4 py-1">
-        <p className={`whitespace-pre-line text-[15px] leading-relaxed ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+        <p className={`whitespace-pre-line text-[15px] leading-relaxed break-words ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
             {displayContent}
         </p>
         {shouldTruncate && (
@@ -391,7 +410,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
         )}
       </div>
 
-      {/* MEDIA */}
+      {/* MEDIA (IMAGES/VIDEOS) */}
       {mediaUrls.length > 0 && (
           <div className="mt-2">
              <PostMedia mediaUrls={mediaUrls} />
@@ -444,9 +463,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
                       className={`w-full max-w-md rounded-3xl p-6 shadow-2xl overflow-hidden relative ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white'}`}
                       onClick={(e) => e.stopPropagation()}
                   >
-                      <button onClick={() => setShowBoostModal(false)} className="absolute top-4 right-4 text-gray-500 hover:text-red-500 p-2">
-                          ✕
-                      </button>
+                      <button onClick={() => setShowBoostModal(false)} className="absolute top-4 right-4 text-gray-500 hover:text-red-500 p-2">✕</button>
 
                       <div className="text-center mb-6">
                           <div className="w-16 h-16 bg-gradient-to-br from-orange-400 to-pink-600 rounded-full flex items-center justify-center mx-auto mb-3 shadow-lg shadow-orange-500/30">
@@ -514,12 +531,22 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
                     postId={post._id}
                     comments={comments}
                     setComments={(newComments) => {
-                        setComments(newComments);
-                        setCommentsCount(newComments.length);
+                        // Supporte callback ou valeur directe pour compatibilité maximale
+                        if (typeof newComments === 'function') {
+                            setComments(prev => {
+                                const next = newComments(prev);
+                                setCommentsCount(next.length);
+                                return next;
+                            });
+                        } else {
+                            setComments(newComments);
+                            setCommentsCount(newComments.length);
+                        }
                     }}
                     currentUser={currentUser}
                     getToken={getToken}
                     showToast={showToast}
+                    navigate={navigate}
                 />
             </ErrorBoundary>
           </motion.div>

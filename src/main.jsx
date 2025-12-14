@@ -1,4 +1,4 @@
-// src/main.jsx - VERSION FINALE OPTIMISÉE
+// src/main.jsx - VERSION CORRIGÉE
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
@@ -33,43 +33,35 @@ if (!STRIPE_KEY) {
 }
 const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : Promise.resolve(null);
 
-// Root - 🔥 PROTECTION CONTRE DOUBLE CREATEROOT
+// Root Element
 const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("❌ Élément #root introuvable dans index.html !");
 }
 
-// 🔥 Vérifier si root existe déjà (pour HMR)
-if (!window.__REACT_ROOT__) {
-  window.__REACT_ROOT__ = ReactDOM.createRoot(rootElement);
+// 🔥 FIX: Éviter la double création du root lors du HMR
+let root;
+if (window.__REACT_ROOT__) {
+  root = window.__REACT_ROOT__;
+} else {
+  root = ReactDOM.createRoot(rootElement);
+  window.__REACT_ROOT__ = root;
   console.log("✅ React Root créé");
 }
 
-const root = window.__REACT_ROOT__;
-
-// ✅ HIÉRARCHIE CORRECTE DES PROVIDERS
-// L'ordre est crucial pour éviter les erreurs de dépendances
+// ✅ HIÉRARCHIE CORRECTE - BrowserRouter doit être LE PLUS HAUT POSSIBLE
 root.render(
   <React.StrictMode>
     <BrowserRouter>
       <Elements stripe={stripePromise}>
-        {/* 1️⃣ DarkMode - Indépendant */}
         <DarkModeProvider>
-          {/* 2️⃣ Auth - Fournit user, token, socket */}
           <AuthProvider>
-            {/* 3️⃣ Toast - Peut utiliser Auth */}
             <ToastProvider>
-              {/* 4️⃣ Socket - Wrapper autour du socket d'Auth (optionnel) */}
               <SocketProvider>
-                {/* 5️⃣ Premium - Utilise Auth */}
                 <PremiumProvider>
-                  {/* 6️⃣ Posts - Utilise Auth et Socket */}
                   <PostsProvider>
-                    {/* 7️⃣ Story - Utilise Auth et Socket */}
                     <StoryProvider>
-                      {/* 8️⃣ Videos - Utilise Auth et Socket */}
                       <VideosProvider>
-                        {/* 9️⃣ Calculation - Utilise Auth */}
                         <CalculationProvider>
                           <App />
                         </CalculationProvider>
@@ -95,17 +87,23 @@ setTimeout(() => {
   }
 }, 800);
 
-// HMR - Hot Module Replacement
+// HMR
 if (import.meta.hot) {
   import.meta.hot.accept();
   console.log("🔥 HMR activé");
 }
 
-// Error Boundary Global (optionnel mais recommandé)
+// Error Boundary Global
 window.addEventListener('unhandledrejection', (event) => {
   console.error('❌ [Global] Promesse non gérée:', event.reason);
+  event.preventDefault(); // Empêche le log par défaut
 });
 
 window.addEventListener('error', (event) => {
   console.error('❌ [Global] Erreur non capturée:', event.error);
+  event.preventDefault();
 });
+
+// Désactiver le mode strict en DEV si trop de logs
+// (React 18 monte/démonte 2x en StrictMode)
+// Pour désactiver: enlever <React.StrictMode> ci-dessus

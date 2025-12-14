@@ -1,3 +1,4 @@
+// src/pages/Home/PostShareSection.jsx
 import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -7,19 +8,30 @@ import {
   LinkIcon,
   CheckIcon
 } from "@heroicons/react/24/outline";
-import { FaCheckCircle, FaCrown, FaWhatsapp, FaFacebookMessenger, FaTelegram, FaTwitter } from "react-icons/fa";
+
+// Importations sécurisées pour les icônes sociales
+import { FaWhatsapp, FaFacebookMessenger, FaTelegram, FaTwitter, FaCheckCircle, FaCrown } from "react-icons/fa";
+
 import SimpleAvatar from "./SimpleAvatar";
-import { useDarkMode } from "../../context/DarkModeContext"; // ✅ IMPORT
+import { useAuth } from "../../context/AuthContext"; // Import direct du contexte
+import { useDarkMode } from "../../context/DarkModeContext";
 
 const PostShareSection = ({
   postId,
-  currentUser,
-  getToken,
+  // On garde les props pour la flexibilité, mais on utilise le contexte en fallback
+  currentUser: propUser,
+  getToken: propGetToken,
   showToast,
   onClose,
   onShareSuccess
 }) => {
-  const { isDarkMode } = useDarkMode(); // ✅ UTILISATION
+  const { user: contextUser, getToken: contextGetToken } = useAuth();
+  const { isDarkMode } = useDarkMode();
+
+  // Priorité aux props, sinon contexte
+  const currentUser = propUser || contextUser;
+  const getToken = propGetToken || contextGetToken;
+
   const [shareTab, setShareTab] = useState("contacts");
   const [searchQuery, setSearchQuery] = useState("");
   const [allUsers, setAllUsers] = useState([]);
@@ -40,29 +52,28 @@ const PostShareSection = ({
       const token = await getToken();
       if (!token) throw new Error("Non authentifié");
 
-      const [friendsRes, followingRes] = await Promise.all([
-        fetch(`${base}/api/users/friends`, {
-          headers: { Authorization: `Bearer ${token}` },
-          credentials: "include"
-        }),
-        fetch(`${base}/api/users/following`, {
-          headers: { Authorization: `Bearer ${token}` },
-          credentials: "include"
-        })
+      // On utilise Promise.allSettled pour ne pas bloquer si une requête échoue
+      const results = await Promise.allSettled([
+        fetch(`${base}/api/users/friends`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${base}/api/users/following`, { headers: { Authorization: `Bearer ${token}` } })
       ]);
 
-      if (!friendsRes.ok || !followingRes.ok) throw new Error("Erreur chargement");
+      let friends = [];
+      let following = [];
 
-      const friendsData = await friendsRes.json();
-      const followingData = await followingRes.json();
+      if (results[0].status === 'fulfilled' && results[0].value.ok) {
+        const data = await results[0].value.json();
+        friends = Array.isArray(data) ? data : data.data || [];
+      }
 
-      const friends = Array.isArray(friendsData) ? friendsData : friendsData.data || [];
-      const following = Array.isArray(followingData) ? followingData : followingData.data || [];
+      if (results[1].status === 'fulfilled' && results[1].value.ok) {
+        const data = await results[1].value.json();
+        following = Array.isArray(data) ? data : data.data || [];
+      }
 
       const combined = [...friends, ...following];
-      const uniqueUsers = combined.filter((user, index, self) =>
-        index === self.findIndex((u) => u._id === user._id)
-      );
+      // Dédoublonnage robuste par ID
+      const uniqueUsers = Array.from(new Map(combined.map(u => [u._id, u])).values());
 
       setAllUsers(uniqueUsers);
     } catch (err) {
@@ -74,10 +85,10 @@ const PostShareSection = ({
   };
 
   useEffect(() => {
-    if (allUsers.length === 0) {
+    if (shareTab === 'contacts' && allUsers.length === 0) {
       loadUsers();
     }
-  }, []);
+  }, [shareTab]); // On charge uniquement si l'onglet contact est actif
 
   const handleShareToContacts = async () => {
     if (!currentUser) return showToast?.("Connectez-vous pour partager", "error");
@@ -98,8 +109,7 @@ const PostShareSection = ({
         body: JSON.stringify({ 
           recipients: selectedUsers.map(u => u._id),
           message: shareMessage || ""
-        }),
-        credentials: "include"
+        })
       });
 
       if (!res.ok) throw new Error(`Erreur ${res.status}`);
@@ -144,326 +154,229 @@ const PostShareSection = ({
     }
   };
 
+  // Helpers pour partage social
+  const openSocialShare = (url) => window.open(url, '_blank', 'noopener,noreferrer');
+
   const shareToWhatsApp = () => {
-    const text = `Découvrez ce post sur notre plateforme !\n\n${postLink}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    const text = `Découvrez ce post sur ChantiLink !\n\n${postLink}`;
+    openSocialShare(`https://wa.me/?text=${encodeURIComponent(text)}`);
   };
 
   const shareToMessenger = () => {
-    window.open(`https://www.facebook.com/dialog/send?link=${encodeURIComponent(postLink)}&app_id=YOUR_APP_ID&redirect_uri=${encodeURIComponent(postLink)}`, '_blank');
+    // Note: Facebook Messenger link sharing is often restricted on desktop web
+    openSocialShare(`https://www.facebook.com/dialog/send?link=${encodeURIComponent(postLink)}&app_id=YOUR_APP_ID&redirect_uri=${encodeURIComponent(postLink)}`);
   };
 
   const shareToTelegram = () => {
-    const text = 'Découvrez ce post';
-    window.open(`https://t.me/share/url?url=${encodeURIComponent(postLink)}&text=${encodeURIComponent(text)}`, '_blank');
+    const text = 'Découvrez ce post sur ChantiLink';
+    openSocialShare(`https://t.me/share/url?url=${encodeURIComponent(postLink)}&text=${encodeURIComponent(text)}`);
   };
 
   const shareToTwitter = () => {
-    const text = 'Découvrez ce post incroyable !';
-    window.open(`https://twitter.com/intent/tweet?url=${encodeURIComponent(postLink)}&text=${encodeURIComponent(text)}`, '_blank');
+    const text = 'Découvrez ce post incroyable sur ChantiLink !';
+    openSocialShare(`https://twitter.com/intent/tweet?url=${encodeURIComponent(postLink)}&text=${encodeURIComponent(text)}`);
   };
 
   const filteredUsers = useMemo(() => {
     if (!searchQuery.trim()) return allUsers;
     const query = searchQuery.toLowerCase();
     return allUsers.filter(user => 
-      user.fullName?.toLowerCase().includes(query) ||
-      user.username?.toLowerCase().includes(query)
+      (user.fullName || "").toLowerCase().includes(query) ||
+      (user.username || "").toLowerCase().includes(query)
     );
   }, [allUsers, searchQuery]);
 
   return (
     <motion.div 
-      initial={{ opacity: 0, height: 0, scale: 0.95 }} 
-      animate={{ opacity: 1, height: "auto", scale: 1 }} 
-      exit={{ opacity: 0, height: 0, scale: 0.95 }}
+      initial={{ opacity: 0, height: 0 }} 
+      animate={{ opacity: 1, height: "auto" }} 
+      exit={{ opacity: 0, height: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
-      className={`mt-2 rounded-2xl overflow-hidden shadow-lg ${
+      className={`mt-2 rounded-2xl overflow-hidden shadow-lg border ${
         isDarkMode 
-          ? 'bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900' 
-          : 'bg-gradient-to-br from-orange-50 via-red-50 to-pink-50'
+          ? 'bg-gray-800 border-gray-700' 
+          : 'bg-white border-orange-100'
       }`}
     >
       {/* Header */}
-      <div className={`flex items-center justify-between px-4 py-3 border-b backdrop-blur-sm ${
+      <div className={`flex items-center justify-between px-4 py-3 border-b ${
         isDarkMode 
-          ? 'border-gray-700 bg-gray-800/50' 
-          : 'border-orange-100 bg-white/50'
+          ? 'border-gray-700 bg-gray-800' 
+          : 'border-orange-100 bg-orange-50/50'
       }`}>
         <div className="flex items-center gap-2">
-          <div className="p-2 bg-gradient-to-br from-orange-500 to-red-500 rounded-xl">
+          <div className="p-2 bg-gradient-to-br from-orange-500 to-red-500 rounded-xl shadow-sm">
             <ShareIcon className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h3 className={`font-bold ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
+            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
               Partager ce post
             </h3>
             <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-              Choisissez comment partager
+              Choisissez une option
             </p>
           </div>
         </div>
-        <button
-          onClick={() => {
-            onClose?.();
-            setSelectedUsers([]);
-            setShareMessage("");
-            setSearchQuery("");
-            setShareTab("contacts");
-          }}
-          className={`p-2 rounded-full transition-all hover:rotate-90 duration-300 ${
-            isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-white'
-          }`}
-        >
-          <XMarkIcon className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
-        </button>
+        
+        {onClose && (
+            <button
+            onClick={() => {
+                onClose();
+                setSelectedUsers([]);
+                setShareMessage("");
+                setSearchQuery("");
+                setShareTab("contacts");
+            }}
+            className={`p-1.5 rounded-full hover:bg-black/5 dark:hover:bg-white/10 transition-colors`}
+            >
+            <XMarkIcon className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+            </button>
+        )}
       </div>
 
       {/* Tabs */}
-      <div className={`flex gap-2 px-4 pt-3 ${
-        isDarkMode ? 'bg-gray-800/30' : 'bg-white/30'
+      <div className={`flex gap-1 px-2 pt-2 border-b ${
+        isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-100'
       }`}>
-        <button
-          onClick={() => setShareTab("contacts")}
-          className={`flex-1 py-2.5 px-4 rounded-t-xl font-medium text-sm transition-all ${
-            shareTab === "contacts"
-              ? isDarkMode
-                ? "bg-gray-800 text-orange-500 shadow-md border-b-2 border-orange-500"
-                : "bg-white text-orange-600 shadow-md"
-              : isDarkMode
-                ? "text-gray-400 hover:bg-gray-800/50"
-                : "text-gray-600 hover:bg-white/50"
-          }`}
-        >
-          👥 Contacts
-        </button>
-        <button
-          onClick={() => setShareTab("social")}
-          className={`flex-1 py-2.5 px-4 rounded-t-xl font-medium text-sm transition-all ${
-            shareTab === "social"
-              ? isDarkMode
-                ? "bg-gray-800 text-orange-500 shadow-md border-b-2 border-orange-500"
-                : "bg-white text-orange-600 shadow-md"
-              : isDarkMode
-                ? "text-gray-400 hover:bg-gray-800/50"
-                : "text-gray-600 hover:bg-white/50"
-          }`}
-        >
-          🌐 Réseaux
-        </button>
-        <button
-          onClick={() => setShareTab("link")}
-          className={`flex-1 py-2.5 px-4 rounded-t-xl font-medium text-sm transition-all ${
-            shareTab === "link"
-              ? isDarkMode
-                ? "bg-gray-800 text-orange-500 shadow-md border-b-2 border-orange-500"
-                : "bg-white text-orange-600 shadow-md"
-              : isDarkMode
-                ? "text-gray-400 hover:bg-gray-800/50"
-                : "text-gray-600 hover:bg-white/50"
-          }`}
-        >
-          🔗 Lien
-        </button>
+        {[
+            { id: "contacts", label: "👥 Contacts" },
+            { id: "social", label: "🌐 Réseaux" },
+            { id: "link", label: "🔗 Lien" }
+        ].map(tab => (
+            <button
+                key={tab.id}
+                onClick={() => setShareTab(tab.id)}
+                className={`flex-1 py-2.5 rounded-t-lg font-medium text-xs sm:text-sm transition-all relative ${
+                    shareTab === tab.id
+                    ? isDarkMode
+                        ? "text-orange-400 bg-gray-700/50"
+                        : "text-orange-600 bg-orange-50"
+                    : isDarkMode
+                        ? "text-gray-400 hover:text-gray-200"
+                        : "text-gray-500 hover:text-gray-700"
+                }`}
+            >
+                {tab.label}
+                {shareTab === tab.id && (
+                    <motion.div 
+                        layoutId="activeTabIndicator"
+                        className="absolute bottom-0 left-0 right-0 h-0.5 bg-orange-500"
+                    />
+                )}
+            </button>
+        ))}
       </div>
 
       {/* Contenu des tabs */}
-      <div className={`p-4 rounded-b-2xl ${
-        isDarkMode ? 'bg-gray-800' : 'bg-white'
-      }`}>
+      <div className={`p-4 ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
         <AnimatePresence mode="wait">
           {/* Tab Contacts */}
           {shareTab === "contacts" && (
             <motion.div
               key="contacts"
-              initial={{ opacity: 0, x: -20 }}
+              initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
+              exit={{ opacity: 0, x: 10 }}
               transition={{ duration: 0.2 }}
               className="space-y-3"
             >
               {/* Barre de recherche */}
               <div className="relative">
-                <MagnifyingGlassIcon className={`absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 ${
+                <MagnifyingGlassIcon className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${
                   isDarkMode ? 'text-gray-500' : 'text-gray-400'
                 }`} />
                 <input
                   type="text"
-                  placeholder="Rechercher un ami ou abonné..."
+                  placeholder="Rechercher un ami..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className={`w-full pl-10 pr-4 py-3 border-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent transition-all ${
+                  className={`w-full pl-9 pr-4 py-2.5 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 border transition-all ${
                     isDarkMode 
-                      ? 'bg-gray-700 border-gray-600 text-gray-100 placeholder-gray-400' 
-                      : 'bg-white border-gray-200 text-gray-900 placeholder-gray-400'
+                      ? 'bg-gray-700 border-gray-600 text-gray-100 placeholder-gray-500' 
+                      : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400'
                   }`}
                 />
               </div>
 
-              {/* Utilisateurs sélectionnés */}
-              {selectedUsers.length > 0 && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  transition={{ duration: 0.2 }}
-                  className={`flex flex-wrap gap-2 p-3 rounded-xl border-2 ${
-                    isDarkMode 
-                      ? 'bg-gray-700/50 border-orange-700' 
-                      : 'bg-gradient-to-r from-orange-50 to-red-50 border-orange-200'
-                  }`}
-                >
-                  {selectedUsers.map(user => (
-                    <motion.div
-                      key={user._id}
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      exit={{ scale: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-red-500 text-white px-3 py-1.5 rounded-full text-sm font-medium shadow-md"
-                    >
-                      <SimpleAvatar 
-                        username={user.fullName} 
-                        profilePhoto={user.profilePhoto} 
-                        size={20} 
-                      />
-                      <span className="max-w-24 truncate">{user.fullName}</span>
-                      <button
-                        onClick={() => toggleUserSelection(user)}
-                        className="hover:bg-white/20 rounded-full p-0.5 transition"
-                      >
-                        <XMarkIcon className="w-4 h-4" />
-                      </button>
-                    </motion.div>
-                  ))}
-                </motion.div>
-              )}
-
               {/* Liste des utilisateurs */}
-              <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+              <div className="max-h-60 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
                 {loadingUsers ? (
-                  <div className={`flex flex-col items-center justify-center py-8 ${
-                    isDarkMode ? 'text-gray-400' : 'text-gray-500'
-                  }`}>
-                    <div className="animate-spin w-8 h-8 border-3 border-orange-500 border-t-transparent rounded-full mb-3"></div>
-                    <p className="text-sm">Chargement de vos contacts...</p>
+                  <div className="flex flex-col items-center justify-center py-8 opacity-60">
+                    <div className="animate-spin w-6 h-6 border-2 border-orange-500 border-t-transparent rounded-full mb-2"></div>
+                    <p className="text-xs">Chargement...</p>
                   </div>
                 ) : filteredUsers.length === 0 ? (
-                  <div className={`flex flex-col items-center justify-center py-8 ${
-                    isDarkMode ? 'text-gray-400' : 'text-gray-500'
-                  }`}>
-                    <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-3 ${
-                      isDarkMode ? 'bg-gray-700' : 'bg-gray-100'
-                    }`}>
-                      <MagnifyingGlassIcon className={`w-8 h-8 ${
-                        isDarkMode ? 'text-gray-500' : 'text-gray-400'
-                      }`} />
-                    </div>
-                    <p className="text-sm font-medium">{searchQuery ? "Aucun contact trouvé" : "Aucun contact disponible"}</p>
+                  <div className="text-center py-8 opacity-60">
+                    <p className="text-sm">Aucun contact trouvé</p>
                   </div>
                 ) : (
                   filteredUsers.map(user => {
                     const isSelected = selectedUsers.some(u => u._id === user._id);
                     return (
-                      <motion.button
+                      <div
                         key={user._id}
-                        whileHover={{ scale: 1.01 }}
-                        whileTap={{ scale: 0.98 }}
                         onClick={() => toggleUserSelection(user)}
-                        className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${
+                        className={`w-full flex items-center gap-3 p-2 rounded-xl cursor-pointer transition-all border ${
                           isSelected 
                             ? isDarkMode
-                              ? "bg-gray-700 border-2 border-orange-500 shadow-md"
-                              : "bg-gradient-to-r from-orange-100 to-red-100 border-2 border-orange-400 shadow-md"
-                            : isDarkMode
-                              ? "bg-gray-700/30 border-2 border-transparent hover:bg-gray-700/50 hover:shadow-sm"
-                              : "bg-gray-50 border-2 border-transparent hover:bg-gray-100 hover:shadow-sm"
+                              ? "bg-gray-700 border-orange-500/50"
+                              : "bg-orange-50 border-orange-200"
+                            : "border-transparent hover:bg-black/5 dark:hover:bg-white/5"
                         }`}
                       >
                         <SimpleAvatar 
                           username={user.fullName || user.username} 
                           profilePhoto={user.profilePhoto} 
-                          size={40} 
+                          size={36} 
                         />
-                        <div className="flex-1 text-left min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <p className={`font-semibold text-sm truncate ${
-                              isDarkMode ? 'text-gray-100' : 'text-gray-800'
-                            }`}>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1">
+                            <p className={`font-semibold text-sm truncate ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                               {user.fullName || user.username}
                             </p>
-                            {user.isVerified && (
-                              <FaCheckCircle className="text-orange-500 text-xs flex-shrink-0" />
-                            )}
-                            {user.isPremium && (
-                              <FaCrown className="text-yellow-500 text-xs flex-shrink-0" />
-                            )}
+                            {user.isVerified && <FaCheckCircle className="text-orange-500 text-[10px]" />}
                           </div>
-                          {user.username && user.fullName && (
-                            <p className={`text-xs truncate ${
-                              isDarkMode ? 'text-gray-400' : 'text-gray-500'
-                            }`}>@{user.username}</p>
-                          )}
+                          <p className={`text-xs truncate ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                             @{user.username || "utilisateur"}
+                          </p>
                         </div>
-                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
+                        
+                        <div className={`w-5 h-5 rounded-full border flex items-center justify-center transition-all ${
                           isSelected 
-                            ? "bg-gradient-to-br from-orange-500 to-red-500 border-orange-500 shadow-md" 
-                            : isDarkMode
-                              ? "border-gray-600"
-                              : "border-gray-300"
+                            ? "bg-orange-500 border-orange-500" 
+                            : isDarkMode ? "border-gray-600" : "border-gray-300"
                         }`}>
-                          {isSelected && (
-                            <motion.svg
-                              initial={{ scale: 0 }}
-                              animate={{ scale: 1 }}
-                              transition={{ duration: 0.2 }}
-                              className="w-4 h-4 text-white" 
-                              fill="none" 
-                              viewBox="0 0 24 24" 
-                              stroke="currentColor"
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                            </motion.svg>
-                          )}
+                          {isSelected && <CheckIcon className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
                         </div>
-                      </motion.button>
+                      </div>
                     );
                   })
                 )}
               </div>
 
-              {/* Message optionnel */}
-              <textarea
-                placeholder="💬 Ajouter un message (optionnel)..."
-                value={shareMessage}
-                onChange={(e) => setShareMessage(e.target.value)}
-                className={`w-full px-4 py-3 border-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none transition-all ${
-                  isDarkMode 
-                    ? 'bg-gray-700 border-gray-600 text-gray-100 placeholder-gray-400' 
-                    : 'bg-white border-gray-200 text-gray-900 placeholder-gray-400'
-                }`}
-                rows={2}
-              />
-
-              {/* Bouton de partage */}
-              <motion.button
-                whileHover={{ scale: 1.02 }}
-                whileTap={{ scale: 0.98 }}
-                onClick={handleShareToContacts}
-                disabled={loadingShare || selectedUsers.length === 0}
-                className="w-full bg-gradient-to-r from-orange-500 to-red-500 text-white py-3.5 rounded-xl font-bold hover:from-orange-600 hover:to-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 shadow-lg"
-              >
-                {loadingShare ? (
-                  <>
-                    <div className="animate-spin w-5 h-5 border-2 border-white border-t-transparent rounded-full"></div>
-                    Partage en cours...
-                  </>
-                ) : (
-                  <>
-                    <ShareIcon className="w-5 h-5" />
-                    Partager {selectedUsers.length > 0 && `avec ${selectedUsers.length} personne${selectedUsers.length > 1 ? 's' : ''}`}
-                  </>
-                )}
-              </motion.button>
+              {/* Zone Message & Bouton */}
+              {selectedUsers.length > 0 && (
+                  <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+                    <textarea
+                        placeholder="Message (optionnel)..."
+                        value={shareMessage}
+                        onChange={(e) => setShareMessage(e.target.value)}
+                        className={`w-full px-3 py-2 text-sm rounded-xl border focus:outline-none focus:ring-2 focus:ring-orange-500/30 resize-none mb-2 ${
+                        isDarkMode 
+                            ? 'bg-gray-700 border-gray-600 text-gray-100 placeholder-gray-500' 
+                            : 'bg-white border-gray-200 text-gray-900 placeholder-gray-400'
+                        }`}
+                        rows={1}
+                    />
+                    <button
+                        onClick={handleShareToContacts}
+                        disabled={loadingShare}
+                        className="w-full bg-gradient-to-r from-orange-500 to-red-500 text-white py-2.5 rounded-xl font-bold text-sm hover:shadow-lg hover:from-orange-600 hover:to-red-600 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                    >
+                        {loadingShare ? "Envoi..." : `Partager (${selectedUsers.length})`}
+                    </button>
+                  </motion.div>
+              )}
             </motion.div>
           )}
 
@@ -471,83 +384,33 @@ const PostShareSection = ({
           {shareTab === "social" && (
             <motion.div
               key="social"
-              initial={{ opacity: 0, x: -20 }}
+              initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
+              exit={{ opacity: 0, x: 10 }}
               transition={{ duration: 0.2 }}
               className="grid grid-cols-2 gap-3"
             >
-              <motion.button
-                whileHover={{ scale: 1.05, y: -2 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={shareToWhatsApp}
-                className={`flex flex-col items-center gap-3 p-4 border-2 rounded-xl hover:shadow-lg transition-all group ${
-                  isDarkMode 
-                    ? 'bg-gray-700/50 border-green-700' 
-                    : 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-200'
-                }`}
-              >
-                <div className="p-3 bg-gradient-to-br from-green-500 to-emerald-600 rounded-xl group-hover:scale-110 transition-transform shadow-md">
-                  <FaWhatsapp className="w-7 h-7 text-white" />
-                </div>
-                <span className={`font-semibold ${
-                  isDarkMode ? 'text-gray-200' : 'text-gray-700'
-                }`}>WhatsApp</span>
-              </motion.button>
-
-              <motion.button
-                whileHover={{ scale: 1.05, y: -2 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={shareToMessenger}
-                className={`flex flex-col items-center gap-3 p-4 border-2 rounded-xl hover:shadow-lg transition-all group ${
-                  isDarkMode 
-                    ? 'bg-gray-700/50 border-blue-700' 
-                    : 'bg-gradient-to-br from-blue-50 to-indigo-50 border-blue-200'
-                }`}
-              >
-                <div className="p-3 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl group-hover:scale-110 transition-transform shadow-md">
-                  <FaFacebookMessenger className="w-7 h-7 text-white" />
-                </div>
-                <span className={`font-semibold ${
-                  isDarkMode ? 'text-gray-200' : 'text-gray-700'
-                }`}>Messenger</span>
-              </motion.button>
-
-              <motion.button
-                whileHover={{ scale: 1.05, y: -2 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={shareToTelegram}
-                className={`flex flex-col items-center gap-3 p-4 border-2 rounded-xl hover:shadow-lg transition-all group ${
-                  isDarkMode 
-                    ? 'bg-gray-700/50 border-sky-700' 
-                    : 'bg-gradient-to-br from-sky-50 to-cyan-50 border-sky-200'
-                }`}
-              >
-                <div className="p-3 bg-gradient-to-br from-sky-500 to-cyan-600 rounded-xl group-hover:scale-110 transition-transform shadow-md">
-                  <FaTelegram className="w-7 h-7 text-white" />
-                </div>
-                <span className={`font-semibold ${
-                  isDarkMode ? 'text-gray-200' : 'text-gray-700'
-                }`}>Telegram</span>
-              </motion.button>
-
-              <motion.button
-                whileHover={{ scale: 1.05, y: -2 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={shareToTwitter}
-                className={`flex flex-col items-center gap-3 p-4 border-2 rounded-xl hover:shadow-lg transition-all group ${
-                  isDarkMode 
-                    ? 'bg-gray-700/50 border-gray-600' 
-                    : 'bg-gradient-to-br from-gray-50 to-slate-50 border-gray-300'
-                }`}
-              >
-                <div className="p-3 bg-gradient-to-br from-gray-800 to-slate-900 rounded-xl group-hover:scale-110 transition-transform shadow-md">
-                  <FaTwitter className="w-7 h-7 text-white" />
-                </div>
-                <span className={`font-semibold ${
-                  isDarkMode ? 'text-gray-200' : 'text-gray-700'
-                }`}>Twitter/X</span>
-              </motion.button>
+              {[
+                { name: "WhatsApp", icon: FaWhatsapp, color: "text-green-500", bg: "bg-green-100 dark:bg-green-900/30", action: shareToWhatsApp },
+                { name: "Messenger", icon: FaFacebookMessenger, color: "text-blue-500", bg: "bg-blue-100 dark:bg-blue-900/30", action: shareToMessenger },
+                { name: "Telegram", icon: FaTelegram, color: "text-sky-500", bg: "bg-sky-100 dark:bg-sky-900/30", action: shareToTelegram },
+                { name: "Twitter", icon: FaTwitter, color: "text-gray-700 dark:text-gray-300", bg: "bg-gray-100 dark:bg-gray-700/50", action: shareToTwitter }
+              ].map((social, idx) => (
+                  <button
+                    key={idx}
+                    onClick={social.action}
+                    className={`flex items-center gap-3 p-3 rounded-xl transition-all hover:scale-[1.02] active:scale-95 ${
+                        isDarkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-50 hover:bg-gray-100 border border-gray-100'
+                    }`}
+                  >
+                     <div className={`p-2 rounded-lg ${social.bg}`}>
+                        <social.icon className={`w-6 h-6 ${social.color}`} />
+                     </div>
+                     <span className={`font-medium text-sm ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                        {social.name}
+                     </span>
+                  </button>
+              ))}
             </motion.div>
           )}
 
@@ -555,71 +418,43 @@ const PostShareSection = ({
           {shareTab === "link" && (
             <motion.div
               key="link"
-              initial={{ opacity: 0, x: -20 }}
+              initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
+              exit={{ opacity: 0, x: 10 }}
               transition={{ duration: 0.2 }}
-              className="space-y-4"
+              className="space-y-4 text-center py-4"
             >
-              <div className="text-center py-4">
-                <div className="w-16 h-16 bg-gradient-to-br from-orange-500 to-red-500 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
-                  <LinkIcon className="w-8 h-8 text-white" />
-                </div>
-                <h4 className={`font-bold mb-2 ${
-                  isDarkMode ? 'text-gray-100' : 'text-gray-800'
-                }`}>Copiez le lien du post</h4>
-                <p className={`text-sm ${
-                  isDarkMode ? 'text-gray-400' : 'text-gray-500'
-                }`}>Partagez ce lien où vous voulez</p>
+              <div className="w-12 h-12 bg-orange-100 dark:bg-orange-900/30 rounded-full flex items-center justify-center mx-auto text-orange-600 dark:text-orange-400">
+                  <LinkIcon className="w-6 h-6" />
+              </div>
+              
+              <div>
+                <h4 className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Lien du post</h4>
+                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Partagez ce lien n'importe où</p>
               </div>
 
-              <div className={`flex items-center gap-2 p-3 rounded-xl border-2 ${
-                isDarkMode 
-                  ? 'bg-gray-700 border-gray-600' 
-                  : 'bg-gray-50 border-gray-200'
+              <div className={`flex items-center gap-2 p-2 rounded-xl border ${
+                isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-gray-50 border-gray-200'
               }`}>
                 <input
                   type="text"
                   value={postLink}
                   readOnly
-                  className={`flex-1 bg-transparent text-sm outline-none ${
+                  className={`flex-1 bg-transparent text-xs sm:text-sm px-2 outline-none ${
                     isDarkMode ? 'text-gray-300' : 'text-gray-600'
                   }`}
                 />
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+                <button
                   onClick={copyLink}
-                  className={`px-4 py-2 rounded-lg font-semibold transition-all flex items-center gap-2 shadow-md ${
+                  className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition-all flex items-center gap-1.5 ${
                     linkCopied
                       ? "bg-green-500 text-white"
-                      : "bg-gradient-to-r from-orange-500 to-red-500 text-white hover:from-orange-600 hover:to-red-600"
+                      : "bg-orange-500 text-white hover:bg-orange-600"
                   }`}
                 >
-                  {linkCopied ? (
-                    <>
-                      <CheckIcon className="w-5 h-5" />
-                      Copié !
-                    </>
-                  ) : (
-                    <>
-                      <LinkIcon className="w-5 h-5" />
-                      Copier
-                    </>
-                  )}
-                </motion.button>
-              </div>
-
-              <div className={`border-2 rounded-xl p-4 ${
-                isDarkMode 
-                  ? 'bg-gray-700/50 border-orange-700' 
-                  : 'bg-gradient-to-br from-orange-50 to-red-50 border-orange-200'
-              }`}>
-                <p className={`text-xs text-center ${
-                  isDarkMode ? 'text-gray-300' : 'text-gray-600'
-                }`}>
-                  💡 <span className="font-semibold">Astuce :</span> Collez ce lien dans vos messages, emails ou sur d'autres plateformes pour partager ce post
-                </p>
+                  {linkCopied ? <CheckIcon className="w-4 h-4" /> : <LinkIcon className="w-4 h-4" />}
+                  {linkCopied ? "Copié" : "Copier"}
+                </button>
               </div>
             </motion.div>
           )}

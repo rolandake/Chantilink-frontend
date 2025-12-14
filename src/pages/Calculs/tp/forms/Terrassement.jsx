@@ -1,253 +1,327 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react"; // Suppression de useCallback inutile ici
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { 
+  Pickaxe, Truck, Ruler, Save, Trash2, History, Info 
+} from "lucide-react";
+import { useCalculator } from "../../../../shared/hooks/useCalculator.js";
+// Assure-toi que le chemin est bon selon ton projet
+import { TerrassementCalculator } from "@/domains/tp/calculators/TerrassementCalculator.js";
 
-const STORAGE_KEY = "terrassement-history";
-const DENSITY_TERRE = 1.7; // t/m³
+ChartJS.register(ArcElement, Tooltip, Legend);
 
-export default function Terrassement({ currency = "XOF", onTotalChange = () => {} }) {
-  const [longueur, setLongueur] = useState("");
-  const [largeur, setLargeur] = useState("");
-  const [profondeur, setProfondeur] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
-  const [historique, setHistorique] = useState([]);
+export default function Terrassement({ currency = "XOF", onCostChange, onMateriauxChange }) {
+  const {
+    inputs,
+    results,
+    updateInput,
+    history,
+    saveToHistory,
+    deleteFromHistory,
+    clearHistory,
+  } = useCalculator(TerrassementCalculator, "terrassement", "tp");
+
   const [message, setMessage] = useState("");
 
-  // ✅ CALCULS INSTANTANÉS
-  const longueurNum = parseFloat(longueur) || 0;
-  const largeurNum = parseFloat(largeur) || 0;
-  const profondeurNum = parseFloat(profondeur) || 0;
-  const prixUnitaireNum = parseFloat(prixUnitaire) || 0;
-  const coutMainOeuvreNum = parseFloat(coutMainOeuvre) || 0;
+  // =========================================================================
+  // ✅ CORRECTION DE LA BOUCLE INFINIE
+  // On extrait les valeurs primitives (nombres) pour les dépendances
+  // =========================================================================
+  const total = results?.total ?? 0;
+  const volumeExcave = results?.volumeExcave ?? 0;
+  const volumeFoisonne = results?.volumeFoisonne ?? 0;
+  const nombreCamions = results?.nombreCamions ?? 0;
+  const coutExcavation = results?.coutTotalExcavation ?? 0;
+  const coutEvacuation = results?.coutTotalEvacuation ?? 0;
 
-  const volume = longueurNum * largeurNum * profondeurNum;
-  const poidsTonnes = volume * DENSITY_TERRE;
-  const total = volume * prixUnitaireNum + coutMainOeuvreNum;
-
-  // ✅ Notifier parent
   useEffect(() => {
-    onTotalChange(total);
-  }, [total]);
+    // On ne déclenche la mise à jour du parent QUE si les chiffres changent.
+    // On ignore les fonctions (onCostChange, etc) dans le tableau de dépendances
+    // pour éviter que le re-render du parent ne relance cet effet.
 
-  // Historique local
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try { setHistorique(JSON.parse(saved)); } catch {}
+    if (onCostChange) {
+      onCostChange(total);
     }
-  }, []);
+    
+    if (onMateriauxChange) {
+      onMateriauxChange({
+        volumeExcave,
+        volumeFoisonne,
+        camions: nombreCamions
+      });
+    }
+    
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [total, volumeExcave, volumeFoisonne, nombreCamions]); 
+  // ⬆️ Dépendances uniquement sur les valeurs primitives
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
+  const handleChange = (field) => (e) => updateInput(field, parseFloat(e.target.value) || 0);
 
-  const showMessage = (msg) => {
-    setMessage(msg);
-    setTimeout(() => setMessage(""), 2500);
+  const showMessage = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(""), 3000);
   };
 
   const handleSave = () => {
-    if (volume === 0) return alert("⚠️ Veuillez entrer des dimensions valides.");
-    const entry = {
-      id: Date.now(),
-      date: new Date().toLocaleString(),
-      longueur,
-      largeur,
-      profondeur,
-      volume: volume.toFixed(3),
-      poidsTonnes: poidsTonnes.toFixed(2),
-      prixUnitaire,
-      coutMainOeuvre,
-      total: total.toFixed(2),
-    };
-    setHistorique([entry, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
-  };
-
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-      showMessage("🗑️ Entrée supprimée !");
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
-      setHistorique([]);
-      showMessage("🧹 Historique vidé !");
-    }
+    if (!results || !results.volumeExcave) return showMessage("⚠️ Dimensions invalides", "error");
+    if (saveToHistory()) showMessage("✅ Calcul sauvegardé !", "success");
+    else showMessage("❌ Erreur sauvegarde", "error");
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 bg-gray-900 rounded-2xl shadow-xl text-gray-100 font-sans relative">
-      <h2 className="text-3xl font-extrabold text-orange-400 mb-6 text-center border-b border-gray-700 pb-2">
-        📏 Terrassement
-      </h2>
-
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {/* Toast Notification */}
       {message && (
-        <div className="fixed top-5 right-5 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50">
-          {message}
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+          message.type === "error" ? "bg-red-600 text-white" : "bg-emerald-500 text-white"
+        }`}>
+          {message.text}
         </div>
       )}
 
-      {/* Formulaire */}
-      <div className="grid grid-cols-2 gap-5 mb-6">
-        {[
-          { label: "Longueur (m)", value: longueur, setter: setLongueur, placeholder: "Ex: 100" },
-          { label: "Largeur (m)", value: largeur, setter: setLargeur, placeholder: "Ex: 5" },
-          { label: "Profondeur (m)", value: profondeur, setter: setProfondeur, placeholder: "Ex: 0.5" },
-          { label: `Prix unitaire (${currency}/m³)`, value: prixUnitaire, setter: setPrixUnitaire, placeholder: "Ex: 6000" },
-          { label: `Coût main d'œuvre (${currency})`, value: coutMainOeuvre, setter: setCoutMainOeuvre, full: true, placeholder: "Ex: 45000" },
-        ].map(({ label, value, setter, full, placeholder }, i) => (
-          <div className={full ? "col-span-2" : ""} key={i}>
-            <label className="block mb-1 font-semibold text-orange-300">{label}</label>
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={value}
-              onChange={(e) => setter(e.target.value)}
-              placeholder={placeholder}
-              className="w-full px-4 py-2 rounded-xl bg-gray-800 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-orange-400"
-            />
+      {/* Header compact */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-yellow-600/20 rounded-lg text-yellow-500">
+            <Pickaxe className="w-6 h-6" />
           </div>
-        ))}
-      </div>
-
-      {/* Résumé compact */}
-      <div className="bg-gradient-to-r from-orange-600/20 to-orange-500/20 rounded-xl p-4 mb-6 border border-orange-500/30 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-gray-300">📦 Volume:</span>
-          <span className="text-xl font-bold text-orange-400">{volume.toFixed(3)} m³</span>
-          <span className="text-gray-600">|</span>
-          <span className="text-sm text-gray-300">⚖️ Poids:</span>
-          <span className="text-xl font-bold text-green-400">{poidsTonnes.toFixed(2)} t</span>
+          <div>
+            <h2 className="text-xl font-bold text-white">Terrassement</h2>
+            <p className="text-xs text-gray-400">Excavation & Remblai</p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-lg font-semibold text-orange-300">💰</span>
-          <span className="text-2xl font-black text-orange-400">{total.toLocaleString('fr-FR')} {currency}</span>
+        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
+          <span className="text-xs text-gray-400 block">Coût Total</span>
+          <span className="text-lg font-black text-yellow-400">
+            {total.toLocaleString()} <span className="text-sm">{currency}</span>
+          </span>
         </div>
       </div>
 
-      {/* Boutons */}
-      <div className="flex flex-wrap justify-center gap-4 mb-6">
-        <button 
-          onClick={handleSave} 
-          disabled={volume === 0}
-          className="px-8 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105 disabled:scale-100"
-        >
-          💾 Sauvegarder
-        </button>
-        <button 
-          onClick={clearHistorique} 
-          disabled={historique.length === 0}
-          className="px-8 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105 disabled:scale-100"
-        >
-          🧹 Vider l'historique
-        </button>
-      </div>
-
-      {/* Historique */}
-      {historique.length > 0 && (
-        <section className="bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-2xl p-6 shadow-2xl border border-orange-500/30">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
-            <h3 className="text-2xl font-extrabold text-orange-400 flex items-center gap-3">
-              <span className="text-3xl">🕓</span>
-              Historique des calculs
-            </h3>
-            <span className="bg-orange-500/20 text-orange-400 px-4 py-2 rounded-lg font-bold">
-              {historique.length} entrée{historique.length > 1 ? 's' : ''}
-            </span>
-          </div>
+      {/* Contenu principal - Grid Layout */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
           
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {historique.map((item, index) => (
-              <div 
-                key={item.id} 
-                className="group bg-gradient-to-r from-gray-700/50 to-gray-800/50 hover:from-gray-700 hover:to-gray-800 rounded-xl p-5 transition-all duration-300 border border-gray-700/50 hover:border-orange-500/50 hover:shadow-lg transform hover:scale-[1.02]"
-              >
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 space-y-3">
-                    {/* En-tête avec date et numéro */}
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="bg-orange-500/20 text-orange-400 px-3 py-1 rounded-lg text-xs font-bold">
-                          #{historique.length - index}
-                        </span>
-                        <time className="text-sm text-gray-400 flex items-center gap-2">
-                          <span>📅</span>
-                          {item.date}
-                        </time>
-                      </div>
-                    </div>
+          {/* COLONNE GAUCHE : SAISIE */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            {/* Carte Dimensions */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-300 mb-4 uppercase tracking-wider">
+                <Ruler className="w-4 h-4 text-blue-400" /> Dimensions Fouille
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label="Longueur (m)" name="longueur" value={inputs.longueur} onChange={handleChange} />
+                <InputGroup label="Largeur (m)" name="largeur" value={inputs.largeur} onChange={handleChange} />
+                <InputGroup label="Profondeur (m)" name="profondeur" value={inputs.profondeur} onChange={handleChange} full />
+              </div>
+            </div>
 
-                    {/* Grille d'informations */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-700/50">
-                        <p className="text-xs text-gray-500 mb-1">📐 Dimensions</p>
-                        <p className="text-sm font-semibold text-gray-200">
-                          {item.longueur} × {item.largeur} × {item.profondeur} m
-                        </p>
-                      </div>
-                      
-                      <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-700/50">
-                        <p className="text-xs text-gray-500 mb-1">📦 Volume</p>
-                        <p className="text-lg font-bold text-blue-400">{item.volume} m³</p>
-                      </div>
-                      
-                      <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-700/50">
-                        <p className="text-xs text-gray-500 mb-1">⚖️ Poids estimé</p>
-                        <p className="text-lg font-bold text-green-400">{item.poidsTonnes} t</p>
-                      </div>
-                      
-                      <div className="bg-gradient-to-br from-orange-500/20 to-orange-600/20 rounded-lg p-3 border border-orange-500/50">
-                        <p className="text-xs text-orange-300 mb-1">💰 Coût total</p>
-                        <p className="text-lg font-extrabold text-orange-400">
-                          {parseFloat(item.total).toLocaleString('fr-FR')} {currency}
-                        </p>
-                      </div>
-                    </div>
+            {/* Carte Paramètres Techniques */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-300 mb-4 uppercase tracking-wider">
+                <Truck className="w-4 h-4 text-orange-400" /> Paramètres & Coûts
+              </h3>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <InputGroup 
+                    label="Foisonnement (%)" 
+                    name="foisonnement" 
+                    value={inputs.foisonnement} 
+                    onChange={handleChange} 
+                    tooltip="Augmentation du volume de terre une fois extraite (généralement 20-30%)"
+                  />
+                  <InputGroup 
+                    label="Capacité Camion (m³)" 
+                    name="capaciteCamion" 
+                    value={inputs.capaciteCamion} 
+                    onChange={handleChange} 
+                  />
+                </div>
+                <div className="h-px bg-gray-700/50 my-2" />
+                <InputGroup label={`Prix Excavation (${currency}/m³)`} name="prixExcavation" value={inputs.prixExcavation} onChange={handleChange} />
+                <InputGroup label={`Prix Évacuation (${currency}/voyage)`} name="prixEvacuation" value={inputs.prixEvacuation} onChange={handleChange} />
+              </div>
+
+              {/* Actions Rapides */}
+              <div className="mt-6 flex gap-3">
+                <button 
+                  onClick={handleSave}
+                  className="flex-1 bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white py-3 rounded-xl font-bold shadow-lg shadow-orange-900/20 active:scale-95 transition-all flex justify-center items-center gap-2"
+                >
+                  <Save className="w-5 h-5" /> Sauvegarder
+                </button>
+                <button 
+                  onClick={() => inputs.longueur && updateInput('longueur', 0)} 
+                  className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition-colors"
+                  title="Réinitialiser"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* COLONNE DROITE : RÉSULTATS */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              <ResultCard 
+                label="Volume en place" 
+                value={volumeExcave.toFixed(2)} 
+                unit="m³" 
+                color="text-blue-400" 
+                bgColor="bg-blue-500/10"
+              />
+              <ResultCard 
+                label="Volume foisonné" 
+                value={volumeFoisonne.toFixed(2)} 
+                unit="m³" 
+                color="text-orange-400" 
+                bgColor="bg-orange-500/10"
+                border
+              />
+              <ResultCard 
+                label="Camions nécessaires" 
+                value={Math.ceil(nombreCamions)} 
+                unit="voyages" 
+                color="text-emerald-400" 
+                bgColor="bg-emerald-500/10"
+              />
+            </div>
+
+            {/* Graphique */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center justify-center relative overflow-hidden">
+               <div className="absolute top-0 right-0 w-32 h-32 bg-yellow-500/5 rounded-full blur-3xl pointer-events-none" />
+
+               <div className="w-48 h-48 flex-shrink-0 relative">
+                  <Doughnut
+                    data={{
+                      labels: ["Coût Excavation", "Coût Évacuation"],
+                      datasets: [
+                        {
+                          data: [coutExcavation, coutEvacuation],
+                          backgroundColor: ["#EAB308", "#F97316"], 
+                          borderColor: "#1F2937",
+                          borderWidth: 5,
+                          hoverOffset: 4
+                        },
+                      ],
+                    }}
+                    options={{
+                      cutout: "70%",
+                      plugins: { legend: { display: false }, tooltip: { enabled: true } },
+                    }}
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center flex-col pointer-events-none">
+                    <span className="text-xs text-gray-500 font-medium">Total</span>
+                    <span className="text-sm font-bold text-white">{total.toLocaleString()}</span>
                   </div>
+               </div>
 
-                  {/* Bouton supprimer */}
-                  <button 
-                    onClick={() => handleDelete(item.id)} 
-                    className="ml-2 p-3 bg-red-600/80 hover:bg-red-600 rounded-xl text-white font-bold transition-all transform hover:scale-110 group-hover:shadow-lg"
-                    title="Supprimer"
-                  >
-                    ✖
+               <div className="flex-1 w-full space-y-4">
+                 <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Détail des coûts</h4>
+                 
+                 <div className="flex justify-between items-center group">
+                   <div className="flex items-center gap-3">
+                     <div className="w-3 h-3 rounded-full bg-yellow-500 shadow-[0_0_10px_rgba(234,179,8,0.5)]" />
+                     <span className="text-gray-300">Excavation</span>
+                   </div>
+                   <span className="font-mono font-bold text-white group-hover:text-yellow-400 transition-colors">
+                     {coutExcavation.toLocaleString()} {currency}
+                   </span>
+                 </div>
+
+                 <div className="flex justify-between items-center group">
+                   <div className="flex items-center gap-3">
+                     <div className="w-3 h-3 rounded-full bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.5)]" />
+                     <span className="text-gray-300">Évacuation</span>
+                   </div>
+                   <span className="font-mono font-bold text-white group-hover:text-orange-400 transition-colors">
+                     {coutEvacuation.toLocaleString()} {currency}
+                   </span>
+                 </div>
+               </div>
+            </div>
+
+            {/* Historique */}
+            {history.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[120px]">
+                <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-sm font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-4 h-4" /> Historique récent
+                  </h4>
+                  <button onClick={clearHistory} className="text-xs text-red-400 hover:text-red-300 underline">
+                    Tout effacer
                   </button>
                 </div>
+                <div className="overflow-y-auto max-h-[150px] p-2 space-y-2">
+                  {history.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-gray-700/40 p-3 rounded-lg hover:bg-gray-700 transition group">
+                      <div className="flex flex-col">
+                         <span className="text-xs text-gray-400">{item.date}</span>
+                         <span className="text-sm font-semibold text-white">Vol: {item.results.volumeExcave?.toFixed(1)} m³</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-bold text-yellow-500">{item.results.total?.toLocaleString()} {currency}</span>
+                        <button 
+                          onClick={() => deleteFromHistory(item.id)}
+                          className="text-gray-500 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
+            )}
           </div>
-        </section>
-      )}
-
-      <style>{`
-        @keyframes fadeinout {
-          0%, 100% { opacity: 0; }
-          10%, 90% { opacity: 1; }
-        }
-        .animate-fadeinout {
-          animation: fadeinout 2.5s ease forwards;
-        }
-        
-        /* Scrollbar personnalisée */
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(31, 41, 55, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(251, 146, 60, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(251, 146, 60, 0.8);
-        }
-      `}</style>
+        </div>
+      </div>
     </div>
   );
 }
+
+// --- Sous-composants ---
+
+const InputGroup = ({ label, name, value, onChange, full = false, tooltip }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-xs font-semibold text-gray-400 flex items-center gap-2">
+      {label}
+      {tooltip && (
+        <div className="group relative">
+          <Info className="w-3 h-3 text-gray-500 cursor-help" />
+          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-black text-xs text-white rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+            {tooltip}
+          </div>
+        </div>
+      )}
+    </label>
+    <input
+      type="number"
+      min="0"
+      step="any"
+      value={value || ""}
+      onChange={onChange(name)}
+      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 transition-all font-mono"
+      placeholder="0"
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bgColor, border = false }) => (
+  <div className={`rounded-xl p-4 flex flex-col justify-center items-center text-center ${bgColor} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-xs text-gray-400 uppercase tracking-wide mb-1">{label}</span>
+    <span className={`text-2xl font-black ${color}`}>
+      {value} <span className="text-sm font-normal text-gray-500">{unit}</span>
+    </span>
+  </div>
+);

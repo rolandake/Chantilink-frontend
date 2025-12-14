@@ -1,240 +1,188 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
+import { 
+  BrickWall, Ruler, Banknote, Save, Trash2, History, Layers, Droplets 
+} from "lucide-react";
 
-const STORAGE_KEY = "murs-history";
+ChartJS.register(ArcElement, Tooltip, Legend);
 
-export default function Murs({
-  currency = "XOF",
-  onTotalChange = () => {},
-  onMateriauxChange = () => {},
-}) {
-  const [surfaceMur, setSurfaceMur] = useState("");
-  const [epaisseur, setEpaisseur] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
+const STORAGE_KEY = "murs-batiment-history";
+
+const DOSAGE = {
+  ciment: 0.350, sable: 0.5, gravier: 0.8, acier: 0.050, eau: 180 
+};
+
+export default function Murs({ currency = "XOF", onTotalChange, onMateriauxChange }) {
+  const [inputs, setInputs] = useState({ surface: "", epaisseur: "", prixUnitaire: "", coutMainOeuvre: "" });
   const [historique, setHistorique] = useState([]);
+  const [message, setMessage] = useState(null);
 
-  // ✅ CALCULS INSTANTANÉS
-  const surface = parseFloat(surfaceMur) || 0;
-  const e = parseFloat(epaisseur) || 0;
-  const volume = surface * e;
-  const prixUnitaireNum = parseFloat(prixUnitaire) || 0;
-  const coutMainOeuvreNum = parseFloat(coutMainOeuvre) || 0;
-
-  const ratioCiment = 350;
-  const ratioSable = 0.5;
-  const ratioGravier = 0.8;
-  const ratioEau = 180;
-
-  const densiteSable = 1600;
-  const densiteGravier = 1700;
-  const densiteCiment = 1440;
-
-  const cimentKg = volume * ratioCiment;
-  const cimentT = cimentKg / 1000;
-  const cimentM3 = cimentKg / densiteCiment;
-  const cimentSacs = cimentKg / 50;
-
-  const sableM3 = volume * ratioSable;
-  const sableKg = sableM3 * densiteSable;
-  const sableT = sableKg / 1000;
-
-  const gravierM3 = volume * ratioGravier;
-  const gravierKg = gravierM3 * densiteGravier;
-  const gravierT = gravierKg / 1000;
-
-  const eauL = volume * ratioEau;
-  const eauM3 = eauL / 1000;
-
-  const acierT = volume * 0.02;
-  const acierKg = acierT * 1000;
-
-  const total = volume * prixUnitaireNum + coutMainOeuvreNum;
+  const results = useMemo(() => {
+    const S = parseFloat(inputs.surface) || 0;
+    const e = parseFloat(inputs.epaisseur) || 0;
+    const pu = parseFloat(inputs.prixUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+    const volume = S * e;
+    const cimentT = volume * DOSAGE.ciment;
+    const sableT = volume * DOSAGE.sable;
+    const gravierT = volume * DOSAGE.gravier;
+    const acierT = volume * DOSAGE.acier;
+    const eauL = volume * DOSAGE.eau;
+    const coutMateriaux = volume * pu;
+    const total = coutMateriaux + mo;
+    return { volume, cimentT, sableT, gravierT, acierT, eauL, coutMateriaux, mo, total };
+  }, [inputs]);
 
   useEffect(() => {
-    onTotalChange(total);
-  }, [total, onTotalChange]);
+    if (onTotalChange) onTotalChange(results.total);
+    if (onMateriauxChange) onMateriauxChange({ volume: results.volume, ciment: results.cimentT, acier: results.acierT });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.total]);
 
+  // Chargement Historique
   useEffect(() => {
-    onMateriauxChange({
-      Ciment: cimentT,
-      Sable: sableT,
-      Gravier: gravierT,
-      Eau: eauL,
-      Acier: acierT,
-    });
-  }, [cimentT, sableT, gravierT, eauL, acierT, onMateriauxChange]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setHistorique(JSON.parse(saved));
-      } catch {}
-    }
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
-
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+  
   const handleSave = () => {
-    if (volume <= 0) {
-      alert("⚠️ Veuillez entrer des dimensions valides.");
-      return;
-    }
-    const entry = {
-      id: Date.now(),
-      date: new Date().toLocaleString(),
-      surfaceMur,
-      epaisseur,
-      volume: volume.toFixed(3),
-      prixUnitaire,
-      coutMainOeuvre,
-      total: total.toFixed(2),
-      cimentKg: cimentKg.toFixed(0),
-      cimentT: cimentT.toFixed(3),
-      cimentM3: cimentM3.toFixed(2),
-      cimentSacs: cimentSacs.toFixed(1),
-      sableM3: sableM3.toFixed(2),
-      sableKg: sableKg.toFixed(0),
-      sableT: sableT.toFixed(3),
-      gravierM3: gravierM3.toFixed(2),
-      gravierKg: gravierKg.toFixed(0),
-      gravierT: gravierT.toFixed(3),
-      eauL: eauL.toFixed(0),
-      eauM3: eauM3.toFixed(2),
-      acierT: acierT.toFixed(3),
-      acierKg: acierKg.toFixed(0),
-    };
-    setHistorique([entry, ...historique]);
-    alert("✅ Calcul sauvegardé !");
+    if (results.volume <= 0) return; // Simple check
+    const newEntry = { id: Date.now(), date: new Date().toLocaleString(), inputs, results };
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    setMessage("Sauvegardé !");
+    setTimeout(() => setMessage(null), 2000);
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
-      setHistorique([]);
-    }
+  const chartData = {
+    labels: ["Matériaux", "Main d'œuvre"],
+    datasets: [{
+      data: [results.coutMateriaux, results.mo],
+      backgroundColor: ["#f97316", "#3b82f6"],
+      borderColor: "#1f2937",
+      borderWidth: 0,
+    }]
   };
 
   return (
-    <div className="max-w-4xl mx-auto p-4 bg-gray-900 rounded-lg shadow-lg text-gray-100 font-sans">
-      <h3 className="text-xl font-bold text-orange-400 mb-4 text-center">🧱 Murs</h3>
+    // 🛑 FIX SCROLL : Structure Flex qui prend toute la hauteur mais ne dépasse pas
+    <div className="flex flex-col h-full w-full bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {message && <div className="absolute top-4 right-4 bg-green-600 px-4 py-2 rounded-lg z-50 shadow-lg">{message}</div>}
 
-      <div className="grid grid-cols-2 gap-4 mb-4">
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Surface murs (m²)</label>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={surfaceMur}
-            onChange={(e) => setSurfaceMur(e.target.value)}
-            placeholder="ex: 50"
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700"
-          />
+      {/* Header Local (optionnel, déjà présent dans Elevations, mais utile pour le contexte) */}
+      <div className="flex-shrink-0 p-4 border-b border-gray-800 bg-gray-900/50 backdrop-blur-sm flex justify-between items-center">
+        <div className="flex items-center gap-2 text-orange-500 font-bold">
+          <BrickWall className="w-5 h-5" /> Murs
         </div>
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Épaisseur (m)</label>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={epaisseur}
-            onChange={(e) => setEpaisseur(e.target.value)}
-            placeholder="ex: 0.2"
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700"
-          />
-        </div>
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Prix unitaire ({currency}/m³)</label>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={prixUnitaire}
-            onChange={(e) => setPrixUnitaire(e.target.value)}
-            placeholder="ex: 50000"
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700"
-          />
-        </div>
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Coût main d'œuvre ({currency})</label>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={coutMainOeuvre}
-            onChange={(e) => setCoutMainOeuvre(e.target.value)}
-            placeholder="ex: 40000"
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700"
-          />
+        <div className="text-sm font-bold text-orange-400">
+          {results.total.toLocaleString()} {currency}
         </div>
       </div>
 
-      <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl p-6 mb-6 shadow-2xl border-2 border-orange-500/30">
-        <h3 className="text-xl font-bold text-orange-400 mb-3">📊 Résultats instantanés</h3>
-        <div className="space-y-2 text-sm">
-          <p>📦 Volume : <span className="text-orange-400">{volume.toFixed(3)} m³</span></p>
-          <p>🧱 Ciment : {cimentKg.toFixed(0)} kg — {cimentT.toFixed(3)} t — {cimentSacs.toFixed(1)} sacs — {cimentM3.toFixed(2)} m³</p>
-          <p>🏖️ Sable : {sableM3.toFixed(2)} m³ — {sableKg.toFixed(0)} kg — {sableT.toFixed(3)} t</p>
-          <p>🪨 Gravier : {gravierM3.toFixed(2)} m³ — {gravierKg.toFixed(0)} kg — {gravierT.toFixed(3)} t</p>
-          <p>💧 Eau : {eauL.toFixed(0)} L — {eauM3.toFixed(2)} m³</p>
-          <p>🔩 Acier : {acierKg.toFixed(0)} kg — {acierT.toFixed(3)} t</p>
-          <p className="text-lg font-bold text-orange-400 mt-3">💰 Total : {total.toLocaleString()} {currency}</p>
-        </div>
-      </div>
+      {/* 🛑 FIX SCROLL : C'est CE div qui doit avoir overflow-y-auto */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-20">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* GAUCHE : SAISIE */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-orange-400 uppercase tracking-wider mb-4">
+                <Ruler className="w-4 h-4" /> Dimensions
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col col-span-2">
+                  <label className="text-[10px] text-gray-400 uppercase font-bold mb-1">Surface (m²)</label>
+                  <input type="number" value={inputs.surface} onChange={handleChange("surface")} className="bg-gray-900 border border-gray-600 rounded-lg p-2.5 text-white focus:border-orange-500 focus:outline-none" placeholder="Ex: 50" />
+                </div>
+                <div className="flex flex-col col-span-2">
+                  <label className="text-[10px] text-gray-400 uppercase font-bold mb-1">Épaisseur (m)</label>
+                  <input type="number" value={inputs.epaisseur} onChange={handleChange("epaisseur")} className="bg-gray-900 border border-gray-600 rounded-lg p-2.5 text-white focus:border-orange-500 focus:outline-none" placeholder="Ex: 0.20" />
+                </div>
+              </div>
+            </div>
 
-      <div className="flex gap-3 justify-center mb-6 flex-wrap">
-        <button
-          onClick={handleSave}
-          disabled={volume === 0}
-          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-md font-semibold shadow"
-        >
-          💾 Enregistrer
-        </button>
-        <button
-          onClick={clearHistorique}
-          disabled={historique.length === 0}
-          className="px-5 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded-md font-semibold shadow"
-        >
-          🧹 Effacer l'historique
-        </button>
-      </div>
-
-      {historique.length > 0 && (
-        <section className="max-h-80 overflow-y-auto bg-gray-800 rounded-md p-4 shadow-inner scrollbar-thin scrollbar-thumb-orange-500 scrollbar-track-gray-700">
-          <h4 className="text-lg font-bold text-orange-400 mb-3 text-center">📜 Historique</h4>
-          {historique.map((item) => (
-            <div
-              key={item.id}
-              className="bg-gray-700 rounded-md p-3 mb-3 flex flex-col gap-1 text-sm"
-            >
-              <time className="text-xs text-gray-400">{item.date}</time>
-              <p>Surface : {item.surfaceMur} m²</p>
-              <p>Épaisseur : {item.epaisseur} m</p>
-              <p>Volume : {item.volume} m³</p>
-              <p>Ciment : {item.cimentKg} kg — {item.cimentT} t — {item.cimentSacs} sacs — {item.cimentM3} m³</p>
-              <p>Sable : {item.sableM3} m³ — {item.sableKg} kg — {item.sableT} t</p>
-              <p>Gravier : {item.gravierM3} m³ — {item.gravierKg} kg — {item.gravierT} t</p>
-              <p>Eau : {item.eauL} L — {item.eauM3} m³</p>
-              <p>Acier : {item.acierKg} kg — {item.acierT} t</p>
-              <p className="font-bold text-orange-300">Total : {item.total} {currency}</p>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="self-end px-2 py-1 bg-red-600 hover:bg-red-700 rounded-md text-white font-semibold"
-              >
-                ✖ Supprimer
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider mb-4">
+                <Banknote className="w-4 h-4" /> Coûts
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col">
+                  <label className="text-[10px] text-gray-400 uppercase font-bold mb-1">Prix Béton/m³</label>
+                  <input type="number" value={inputs.prixUnitaire} onChange={handleChange("prixUnitaire")} className="bg-gray-900 border border-gray-600 rounded-lg p-2.5 text-white focus:border-orange-500 focus:outline-none" />
+                </div>
+                <div className="flex flex-col">
+                  <label className="text-[10px] text-gray-400 uppercase font-bold mb-1">Main d'œuvre</label>
+                  <input type="number" value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} className="bg-gray-900 border border-gray-600 rounded-lg p-2.5 text-white focus:border-orange-500 focus:outline-none" />
+                </div>
+              </div>
+              <button onClick={handleSave} className="w-full mt-4 bg-orange-600 hover:bg-orange-500 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition flex justify-center gap-2">
+                <Save className="w-5 h-5" /> Sauvegarder
               </button>
             </div>
-          ))}
-        </section>
-      )}
+          </div>
+
+          {/* DROITE : RÉSULTATS */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Volume" value={results.volume.toFixed(2)} unit="m³" />
+              <ResultCard label="Ciment" value={(results.cimentT*1000/50).toFixed(1)} unit="sacs" />
+              <ResultCard label="Acier" value={(results.acierT*1000).toFixed(0)} unit="kg" />
+            </div>
+
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-6 items-center">
+               <div className="w-32 h-32 relative">
+                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
+               </div>
+               <div className="flex-1 w-full space-y-2">
+                  <MaterialRow label="Ciment" val={`${results.cimentT.toFixed(2)} t`} color="bg-orange-500" />
+                  <MaterialRow label="Sable" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-500" />
+                  <MaterialRow label="Gravier" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
+                  <div className="pt-2 border-t border-gray-700 flex justify-between text-xs">
+                    <span className="text-gray-400">Eau</span>
+                    <span className="text-white font-bold">{results.eauL.toFixed(0)} L</span>
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 p-4 max-h-[200px] overflow-y-auto">
+                <h4 className="text-xs font-bold text-gray-400 mb-3 flex items-center gap-2"><History className="w-3 h-3"/> Historique</h4>
+                {historique.map(h => (
+                   <div key={h.id} className="flex justify-between items-center text-xs p-2 bg-gray-700/30 rounded mb-2 border border-transparent hover:border-orange-500/30">
+                      <span className="text-gray-400">{h.date.split(' ')[0]}</span>
+                      <span className="text-white font-bold">{parseFloat(h.results.total).toLocaleString()} {currency}</span>
+                   </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+const ResultCard = ({ label, value, unit }) => (
+  <div className="bg-gray-800 border border-gray-700 p-3 rounded-xl text-center">
+    <div className="text-[10px] text-gray-400 uppercase font-bold mb-1">{label}</div>
+    <div className="text-xl font-black text-orange-400">{value} <span className="text-xs text-gray-500 font-normal">{unit}</span></div>
+  </div>
+);
+
+const MaterialRow = ({ label, val, color }) => (
+  <div className="flex justify-between text-xs items-center">
+    <div className="flex items-center gap-2">
+      <div className={`w-2 h-2 rounded-full ${color}`} />
+      <span className="text-gray-300">{label}</span>
+    </div>
+    <span className="font-bold text-white">{val}</span>
+  </div>
+);

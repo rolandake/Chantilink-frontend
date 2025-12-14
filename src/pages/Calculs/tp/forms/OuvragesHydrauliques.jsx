@@ -1,344 +1,449 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { 
+  Droplets, Waves, Ruler, Banknote, Save, Trash2, History, BoxSelect, Cylinder 
+} from "lucide-react";
 
-const STORAGE_KEY_DALOT = "dalot-history";
-const STORAGE_KEY_CANIVEAU = "caniveau-history";
-const STORAGE_KEY_BUSE = "buse-history";
+ChartJS.register(ArcElement, Tooltip, Legend);
 
-// Composant Dalot
-function DalotForm({ currency, onTotalChange }) {
-  const [longueur, setLongueur] = useState("");
-  const [largeur, setLargeur] = useState("");
-  const [hauteur, setHauteur] = useState("");
-  const [epaisseur, setEpaisseur] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
+// Clés de stockage pour l'historique local
+const STORAGE_KEYS = {
+  dalot: "dalot-history",
+  caniveau: "caniveau-history",
+  buse: "buse-history"
+};
+
+export default function OuvragesHydrauliques({ currency = "XOF", onCostChange, onMateriauxChange }) {
+  // === ÉTATS ===
+  const [activeTab, setActiveTab] = useState("dalot");
+  
+  const [inputs, setInputs] = useState({
+    longueur: "",
+    largeur: "",
+    largeurHaut: "",
+    largeurBas: "",
+    hauteur: "",
+    profondeur: "",
+    diametre: "",
+    epaisseur: "",
+    prixUnitaire: "",
+    coutMainOeuvre: ""
+  });
+
   const [historique, setHistorique] = useState([]);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(null);
 
-  const L = parseFloat(longueur) || 0;
-  const l = parseFloat(largeur) || 0;
-  const h = parseFloat(hauteur) || 0;
-  const e = parseFloat(epaisseur) || 0;
+  // === CONFIGURATION DYNAMIQUE ===
+  const theme = useMemo(() => {
+    switch (activeTab) {
+      case "dalot": 
+        return { 
+          color: "blue", 
+          text: "text-blue-400", 
+          bg: "bg-blue-500/10", 
+          border: "border-blue-500", 
+          ring: "focus:ring-blue-500", 
+          icon: <BoxSelect className="w-5 h-5"/> 
+        };
+      case "caniveau": 
+        return { 
+          color: "cyan", 
+          text: "text-cyan-400", 
+          bg: "bg-cyan-500/10", 
+          border: "border-cyan-500", 
+          ring: "focus:ring-cyan-500", 
+          icon: <Waves className="w-5 h-5"/> 
+        };
+      case "buse": 
+        return { 
+          color: "indigo", 
+          text: "text-indigo-400", 
+          bg: "bg-indigo-500/10", 
+          border: "border-indigo-500", 
+          ring: "focus:ring-indigo-500", 
+          icon: <Cylinder className="w-5 h-5"/> 
+        };
+      default: 
+        return { color: "gray", text: "text-gray-400", bg: "bg-gray-500/10" };
+    }
+  }, [activeTab]);
 
-  const volumeBeton = L * ((l + 2 * e) * (h + e) - l * h);
-  const cimentKg = volumeBeton * 350;
-  const cimentT = cimentKg / 1000;
-  const sableM3 = volumeBeton * 0.43;
-  const sableT = sableM3 * 1.6;
-  const gravierM3 = volumeBeton * 0.85;
-  const gravierT = gravierM3 * 1.75;
-  const eauL = volumeBeton * 175;
-  const acierKg = volumeBeton * 120;
-  const acierT = acierKg / 1000;
+  // === MOTEUR DE CALCUL ===
+  const results = useMemo(() => {
+    const L = parseFloat(inputs.longueur) || 0;
+    const e = parseFloat(inputs.epaisseur) || 0;
+    const pu = parseFloat(inputs.prixUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
 
-  const coutMateriaux = volumeBeton * (parseFloat(prixUnitaire) || 0);
-  const total = coutMateriaux + (parseFloat(coutMainOeuvre) || 0);
+    let vol = 0;
 
-  useEffect(() => { onTotalChange(total); }, [total]);
+    // Calcul du Volume selon le type
+    if (activeTab === "dalot") {
+      const l = parseFloat(inputs.largeur) || 0;
+      const h = parseFloat(inputs.hauteur) || 0;
+      // Volume = L × ((l_ext × h_ext) - (l_int × h_int))
+      vol = L * (((l + 2 * e) * (h + 2 * e)) - (l * h)); 
+    } 
+    else if (activeTab === "caniveau") {
+      const lh = parseFloat(inputs.largeurHaut) || 0;
+      const lb = parseFloat(inputs.largeurBas) || 0;
+      const p = parseFloat(inputs.profondeur) || 0;
+      // Section trapézoïdale
+      const surfInt = ((lh + lb) / 2) * p;
+      const surfExt = ((lh + 2 * e + lb + 2 * e) / 2) * (p + e); 
+      vol = L * (surfExt - surfInt);
+    } 
+    else if (activeTab === "buse") {
+      const d = parseFloat(inputs.diametre) || 0;
+      const rInt = d / 2;
+      const rExt = rInt + e;
+      vol = Math.PI * L * (Math.pow(rExt, 2) - Math.pow(rInt, 2));
+    }
+
+    // Calcul des Matériaux (Dosage standard ~350kg/m³)
+    const cimentT = vol * 0.350; 
+    const sableT = vol * 0.43 * 1.6;
+    const gravierT = vol * 0.85 * 1.75;
+    const eauL = vol * 175;
+    
+    // Ferraillage moyen estimé
+    const ratioAcier = activeTab === "dalot" ? 120 : activeTab === "buse" ? 100 : 80;
+    const acierT = (vol * ratioAcier) / 1000;
+
+    // Coût Total
+    const total = (vol * pu) + mo;
+
+    return { volume: Math.max(0, vol), cimentT, sableT, gravierT, eauL, acierT, total };
+  }, [inputs, activeTab]);
+
+  // === EFFETS ===
+  
+  // Synchronisation avec le parent
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_DALOT);
-    if (saved) { try { setHistorique(JSON.parse(saved)); } catch {} }
-  }, []);
-  useEffect(() => { localStorage.setItem(STORAGE_KEY_DALOT, JSON.stringify(historique)); }, [historique]);
+    if (onCostChange) onCostChange(results.total);
+    if (onMateriauxChange) onMateriauxChange({ ...results, type: activeTab });
+  }, [results.total, results.volume, activeTab, onCostChange, onMateriauxChange]);
 
-  const showMessage = (msg) => { setMessage(msg); setTimeout(() => setMessage(""), 2500); };
-  const handleSave = () => {
-    if (volumeBeton === 0) return alert("⚠️ Veuillez entrer des dimensions valides.");
-    setHistorique([{ id: Date.now(), date: new Date().toLocaleString(), longueur, largeur, hauteur, epaisseur, volumeBeton: volumeBeton.toFixed(3), cimentT: cimentT.toFixed(2), sableT: sableT.toFixed(2), gravierT: gravierT.toFixed(2), acierT: acierT.toFixed(2), prixUnitaire, coutMainOeuvre, total: total.toFixed(2) }, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
+  // Chargement de l'historique
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS[activeTab]);
+      setHistorique(saved ? JSON.parse(saved) : []);
+    } catch (e) { 
+      setHistorique([]); 
+    }
+  }, [activeTab]);
+
+  // === HANDLERS ===
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+
+  const showToast = (msg, type = "success") => { 
+    setMessage({ text: msg, type }); 
+    setTimeout(() => setMessage(null), 3000); 
   };
-  const handleDelete = (id) => { if (confirm("🗑️ Supprimer cette entrée ?")) { setHistorique(historique.filter((item) => item.id !== id)); showMessage("🗑️ Entrée supprimée !"); } };
-  const clearHistorique = () => { if (confirm("🧹 Vider tout l'historique ?")) { setHistorique([]); showMessage("🧹 Historique vidé !"); } };
 
+  const handleSave = () => {
+    if (results.volume <= 0) return showToast("⚠️ Dimensions invalides", "error");
+    
+    const newEntry = {
+      id: Date.now(),
+      date: new Date().toLocaleString(),
+      type: activeTab,
+      inputs: { ...inputs },
+      results: { ...results }
+    };
+    
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEYS[activeTab], JSON.stringify(newHist));
+    showToast("✅ Ouvrage sauvegardé !");
+  };
+
+  const clearHistory = () => {
+    if (window.confirm(`Vider l'historique des ${activeTab}s ?`)) {
+      setHistorique([]);
+      localStorage.removeItem(STORAGE_KEYS[activeTab]);
+      showToast("Historique vidé");
+    }
+  };
+
+  const resetFields = () => {
+    setInputs({
+      longueur: "",
+      largeur: "",
+      largeurHaut: "",
+      largeurBas: "",
+      hauteur: "",
+      profondeur: "",
+      diametre: "",
+      epaisseur: "",
+      prixUnitaire: "",
+      coutMainOeuvre: ""
+    });
+  };
+
+  // === DONNÉES GRAPHIQUE ===
+  const chartData = {
+    labels: ["Ciment", "Sable", "Gravier", "Acier"],
+    datasets: [{
+      data: [results.cimentT, results.sableT, results.gravierT, results.acierT],
+      backgroundColor: ["#10b981", "#fbbf24", "#78716c", "#ef4444"],
+      borderColor: "#1f2937",
+      borderWidth: 4,
+    }]
+  };
+
+  // === RENDU ===
   return (
-    <div>
-      {message && <div className="fixed top-5 right-5 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50">{message}</div>}
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {[{ label: "Longueur (m)", value: longueur, setter: setLongueur }, { label: "Largeur intérieure (m)", value: largeur, setter: setLargeur }, { label: "Hauteur intérieure (m)", value: hauteur, setter: setHauteur }, { label: "Épaisseur parois (m)", value: epaisseur, setter: setEpaisseur }, { label: `Prix unitaire (${currency}/m³)`, value: prixUnitaire, setter: setPrixUnitaire }, { label: `Coût main d'œuvre (${currency})`, value: coutMainOeuvre, setter: setCoutMainOeuvre }].map(({ label, value, setter }, idx) => (
-          <div key={idx}><label className="block mb-1 font-semibold text-blue-400 text-sm">{label}</label><input type="number" min="0" step="any" value={value} onInput={e => setter(e.target.value)} className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-blue-400 transition ${value <= 0 ? "bg-red-800/30" : "bg-gray-800"}`} placeholder="0" /></div>
-        ))}
-      </div>
-      <div className="bg-gradient-to-br from-gray-800 to-gray-700 rounded-xl p-5 shadow-lg border border-blue-500/30 mb-4">
-        <div className="text-center mb-4"><p className="text-sm text-gray-400">Volume de béton</p><p className="text-4xl font-bold text-blue-400">{volumeBeton.toFixed(3)} m³</p></div>
-        <div className="grid grid-cols-3 gap-3 text-sm">
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🧱 Ciment</p><p className="text-xl font-bold text-green-400">{cimentT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🏖️ Sable</p><p className="text-xl font-bold text-green-400">{sableT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🪨 Gravier</p><p className="text-xl font-bold text-green-400">{gravierT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">💧 Eau</p><p className="text-xl font-bold text-blue-400">{eauL.toFixed(0)} L</p></div>
-          <div className="bg-gray-900/50 p-3 rounded col-span-2"><p className="text-gray-400">🔩 Acier</p><p className="text-xl font-bold text-red-400">{acierT.toFixed(2)} t</p></div>
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {/* Toast Notification */}
+      {message && (
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+          message.type === "error" ? "bg-red-600" : "bg-emerald-600"
+        }`}>
+          {message.text}
         </div>
-        <div className="border-t border-gray-600 pt-4 mt-4"><p className="text-center text-3xl font-extrabold text-blue-400 animate-pulse">💰 Total : {total.toLocaleString()} {currency}</p></div>
-      </div>
-      <div className="flex flex-wrap justify-center gap-4 mb-6">
-        <button onClick={handleSave} disabled={volumeBeton === 0} className="px-8 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105">💾 Sauvegarder</button>
-        <button onClick={clearHistorique} disabled={historique.length === 0} className="px-8 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105">🧹 Vider l'historique</button>
-      </div>
-      {historique.length > 0 && (
-        <section className="bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-2xl p-6 shadow-2xl border border-blue-500/30">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
-            <h3 className="text-2xl font-extrabold text-blue-400 flex items-center gap-3"><span className="text-3xl">🕓</span>Historique Dalot</h3>
-            <span className="bg-blue-500/20 text-blue-400 px-4 py-2 rounded-lg font-bold">{historique.length} entrée{historique.length > 1 ? 's' : ''}</span>
+      )}
+
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center bg-gray-900/50 backdrop-blur-sm gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-blue-500/20 rounded-lg text-blue-500">
+            <Droplets className="w-6 h-6" />
           </div>
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {historique.map((item, index) => (
-              <div key={item.id} className="group bg-gradient-to-r from-gray-700/50 to-gray-800/50 hover:from-gray-700 hover:to-gray-800 rounded-xl p-5 transition-all duration-300 border border-gray-700/50 hover:border-blue-500/50 hover:shadow-lg">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 space-y-3">
-                    <div className="flex items-center gap-3"><span className="bg-blue-500/20 text-blue-400 px-3 py-1 rounded-lg text-xs font-bold">#{historique.length - index}</span><time className="text-sm text-gray-400">{item.date}</time></div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">📐 Dimensions</p><p className="text-sm font-semibold text-gray-200">L:{item.longueur} × l:{item.largeur} × H:{item.hauteur} × E:{item.epaisseur} m</p></div>
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">📦 Volume béton</p><p className="text-lg font-bold text-blue-400">{item.volumeBeton} m³</p></div>
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">🧱 Matériaux</p><p className="text-sm text-green-400">C:{item.cimentT}t S:{item.sableT}t G:{item.gravierT}t</p></div>
-                      <div className="bg-gradient-to-br from-blue-500/20 to-blue-600/20 rounded-lg p-3 border border-blue-500/50"><p className="text-xs text-blue-300 mb-1">💰 Coût total</p><p className="text-lg font-extrabold text-blue-400">{parseFloat(item.total).toLocaleString()} {currency}</p></div>
-                    </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Hydraulique</h2>
+            <p className="text-xs text-gray-400">Dalots, Caniveaux & Buses</p>
+          </div>
+        </div>
+
+        {/* Total Badge */}
+        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
+          <span className="text-xs text-gray-400 block">Total Estimé</span>
+          <span className={`text-lg font-black ${theme.text}`}>
+            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} 
+            <span className="text-sm ml-1 text-gray-500">{currency}</span>
+          </span>
+        </div>
+      </div>
+
+      {/* Main Content Grid */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+          
+          {/* COLONNE GAUCHE : SÉLECTION & SAISIE */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            {/* Tab Switcher */}
+            <div className="grid grid-cols-3 gap-2 bg-gray-800 p-1.5 rounded-xl border border-gray-700">
+              <TabButton id="dalot" label="Dalot" icon={BoxSelect} active={activeTab} onClick={setActiveTab} color="blue" />
+              <TabButton id="caniveau" label="Caniveau" icon={Waves} active={activeTab} onClick={setActiveTab} color="cyan" />
+              <TabButton id="buse" label="Buse" icon={Cylinder} active={activeTab} onClick={setActiveTab} color="indigo" />
+            </div>
+
+            {/* Formulaire Dynamique */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4 animate-in fade-in slide-in-from-left-4 duration-300">
+              <h3 className={`flex items-center gap-2 text-sm font-bold uppercase tracking-wider ${theme.text}`}>
+                <Ruler className="w-4 h-4" /> Dimensions ({activeTab})
+              </h3>
+              
+              <div className="grid grid-cols-2 gap-4">
+                {/* Champs Communs */}
+                <InputGroup label="Longueur (m)" value={inputs.longueur} onChange={handleChange("longueur")} theme={theme} />
+                <InputGroup label="Épaisseur (m)" value={inputs.epaisseur} onChange={handleChange("epaisseur")} theme={theme} />
+
+                {/* Spécifique DALOT */}
+                {activeTab === "dalot" && (
+                  <>
+                    <InputGroup label="Largeur Int. (m)" value={inputs.largeur} onChange={handleChange("largeur")} theme={theme} />
+                    <InputGroup label="Hauteur Int. (m)" value={inputs.hauteur} onChange={handleChange("hauteur")} theme={theme} />
+                  </>
+                )}
+
+                {/* Spécifique CANIVEAU */}
+                {activeTab === "caniveau" && (
+                  <>
+                    <InputGroup label="Largeur Haut (m)" value={inputs.largeurHaut} onChange={handleChange("largeurHaut")} theme={theme} />
+                    <InputGroup label="Largeur Bas (m)" value={inputs.largeurBas} onChange={handleChange("largeurBas")} theme={theme} />
+                    <InputGroup label="Profondeur (m)" value={inputs.profondeur} onChange={handleChange("profondeur")} theme={theme} full />
+                  </>
+                )}
+
+                {/* Spécifique BUSE */}
+                {activeTab === "buse" && (
+                  <div className="col-span-2">
+                    <InputGroup label="Diamètre Intérieur (m)" value={inputs.diametre} onChange={handleChange("diametre")} theme={theme} full />
                   </div>
-                  <button onClick={() => handleDelete(item.id)} className="p-3 bg-red-600/80 hover:bg-red-600 rounded-xl text-white font-bold transition-all transform hover:scale-110">✖</button>
+                )}
+              </div>
+
+              <div className="h-px bg-gray-700/50 my-4" />
+              
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider">
+                <Banknote className="w-4 h-4" /> Coûts
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                 <InputGroup label={`Prix Béton (${currency}/m³)`} value={inputs.prixUnitaire} onChange={handleChange("prixUnitaire")} theme={theme} />
+                 <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} theme={theme} />
+              </div>
+
+              <div className="flex gap-3 mt-auto pt-6">
+                <button 
+                  onClick={handleSave}
+                  className={`flex-1 bg-gradient-to-r from-${theme.color === 'cyan' ? 'teal' : theme.color}-600 to-${theme.color === 'cyan' ? 'teal' : theme.color}-500 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2`}
+                >
+                  <Save className="w-5 h-5" /> Calculer
+                </button>
+                <button 
+                  onClick={resetFields} 
+                  className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition-colors"
+                  title="Réinitialiser champs"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* COLONNE DROITE : RÉSULTATS */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard 
+                label="Volume Béton" 
+                value={results.volume.toFixed(2)} 
+                unit="m³" 
+                color={theme.text} 
+                bg={theme.bg} 
+                icon={theme.icon} 
+              />
+              <ResultCard 
+                label="Poids Matériaux" 
+                value={(results.cimentT + results.sableT + results.gravierT).toFixed(1)} 
+                unit="T" 
+                color="text-emerald-400" 
+                bg="bg-emerald-500/10"
+                border
+                icon="⚖️"
+              />
+              <ResultCard 
+                label="Acier Requis" 
+                value={(results.acierT * 1000).toFixed(0)} 
+                unit="kg" 
+                color="text-red-400" 
+                bg="bg-red-500/10"
+                icon="🔩"
+              />
+            </div>
+
+            {/* Graphique & Liste */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className={`absolute -bottom-10 -right-10 w-40 h-40 ${theme.bg} rounded-full blur-3xl pointer-events-none opacity-50`} />
+
+               <div className="w-40 h-40 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <span className={`text-sm font-bold ${theme.text}`}>{results.volume.toFixed(1)} m³</span>
+                  </div>
+               </div>
+
+               <div className="flex-1 w-full grid grid-cols-2 gap-x-8 gap-y-3 content-center">
+                  <MaterialRow label="Ciment" value={results.cimentT} unit="T" color="bg-emerald-500" />
+                  <MaterialRow label="Sable" value={results.sableT} unit="T" color="bg-amber-400" />
+                  <MaterialRow label="Gravier" value={results.gravierT} unit="T" color="bg-stone-500" />
+                  <MaterialRow label="Acier" value={results.acierT} unit="T" color="bg-red-500" />
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[120px]">
+                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-3 h-3" /> Historique ({activeTab})
+                  </h4>
+                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+                </div>
+                <div className="overflow-y-auto max-h-[150px] p-2 space-y-2">
+                  {historique.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-gray-600">
+                      <div className="flex flex-col">
+                         <span className="text-[10px] text-gray-500">{item.date.split(' ')[0]}</span>
+                         <span className="text-xs text-gray-300">
+                           {item.type === 'buse' ? `Ø ${item.inputs.diametre}` : `L ${item.inputs.longueur}`}m
+                         </span>
+                      </div>
+                      <span className={`text-sm font-bold ${theme.text}`}>{item.results.total.toLocaleString()} {currency}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
+            )}
           </div>
-        </section>
-      )}
-    </div>
-  );
-}
-
-// Composant Caniveau (code similaire mais avec formules caniveau)
-function CaniveauForm({ currency, onTotalChange }) {
-  const [longueur, setLongueur] = useState("");
-  const [largeurHaut, setLargeurHaut] = useState("");
-  const [largeurBas, setLargeurBas] = useState("");
-  const [profondeur, setProfondeur] = useState("");
-  const [epaisseur, setEpaisseur] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
-  const [historique, setHistorique] = useState([]);
-  const [message, setMessage] = useState("");
-
-  const L = parseFloat(longueur) || 0;
-  const lh = parseFloat(largeurHaut) || 0;
-  const lb = parseFloat(largeurBas) || 0;
-  const p = parseFloat(profondeur) || 0;
-  const e = parseFloat(epaisseur) || 0;
-
-  const volumeBeton = L * (((lh + lb) / 2) * p + e * (lh + p));
-  const cimentT = (volumeBeton * 350) / 1000;
-  const sableT = (volumeBeton * 0.43) * 1.6;
-  const gravierT = (volumeBeton * 0.85) * 1.75;
-  const eauL = volumeBeton * 175;
-  const total = volumeBeton * (parseFloat(prixUnitaire) || 0) + (parseFloat(coutMainOeuvre) || 0);
-
-  useEffect(() => { onTotalChange(total); }, [total]);
-  useEffect(() => { const saved = localStorage.getItem(STORAGE_KEY_CANIVEAU); if (saved) { try { setHistorique(JSON.parse(saved)); } catch {} } }, []);
-  useEffect(() => { localStorage.setItem(STORAGE_KEY_CANIVEAU, JSON.stringify(historique)); }, [historique]);
-
-  const showMessage = (msg) => { setMessage(msg); setTimeout(() => setMessage(""), 2500); };
-  const handleSave = () => {
-    if (volumeBeton === 0) return alert("⚠️ Veuillez entrer des dimensions valides.");
-    setHistorique([{ id: Date.now(), date: new Date().toLocaleString(), longueur, largeurHaut, largeurBas, profondeur, epaisseur, volumeBeton: volumeBeton.toFixed(3), cimentT: cimentT.toFixed(2), sableT: sableT.toFixed(2), gravierT: gravierT.toFixed(2), prixUnitaire, coutMainOeuvre, total: total.toFixed(2) }, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
-  };
-  const handleDelete = (id) => { if (confirm("🗑️ Supprimer cette entrée ?")) { setHistorique(historique.filter((item) => item.id !== id)); showMessage("🗑️ Entrée supprimée !"); } };
-  const clearHistorique = () => { if (confirm("🧹 Vider tout l'historique ?")) { setHistorique([]); showMessage("🧹 Historique vidé !"); } };
-
-  return (
-    <div>
-      {message && <div className="fixed top-5 right-5 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50">{message}</div>}
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {[{ label: "Longueur (m)", value: longueur, setter: setLongueur }, { label: "Largeur haut (m)", value: largeurHaut, setter: setLargeurHaut }, { label: "Largeur bas (m)", value: largeurBas, setter: setLargeurBas }, { label: "Profondeur (m)", value: profondeur, setter: setProfondeur }, { label: "Épaisseur (m)", value: epaisseur, setter: setEpaisseur }, { label: `Prix unitaire (${currency}/m³)`, value: prixUnitaire, setter: setPrixUnitaire }, { label: `Coût main d'œuvre (${currency})`, value: coutMainOeuvre, setter: setCoutMainOeuvre, full: true }].map(({ label, value, setter, full }, idx) => (
-          <div key={idx} className={full ? "col-span-2" : ""}><label className="block mb-1 font-semibold text-teal-400 text-sm">{label}</label><input type="number" min="0" step="any" value={value} onInput={e => setter(e.target.value)} className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-teal-400 transition ${value <= 0 ? "bg-red-800/30" : "bg-gray-800"}`} placeholder="0" /></div>
-        ))}
-      </div>
-      <div className="bg-gradient-to-br from-gray-800 to-gray-700 rounded-xl p-5 shadow-lg border border-teal-500/30 mb-4">
-        <div className="text-center mb-4"><p className="text-sm text-gray-400">Volume de béton</p><p className="text-4xl font-bold text-teal-400">{volumeBeton.toFixed(3)} m³</p></div>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🧱 Ciment</p><p className="text-xl font-bold text-green-400">{cimentT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🏖️ Sable</p><p className="text-xl font-bold text-green-400">{sableT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🪨 Gravier</p><p className="text-xl font-bold text-green-400">{gravierT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">💧 Eau</p><p className="text-xl font-bold text-blue-400">{eauL.toFixed(0)} L</p></div>
         </div>
-        <div className="border-t border-gray-600 pt-4 mt-4"><p className="text-center text-3xl font-extrabold text-teal-400 animate-pulse">💰 Total : {total.toLocaleString()} {currency}</p></div>
       </div>
-      <div className="flex flex-wrap justify-center gap-4 mb-6">
-        <button onClick={handleSave} disabled={volumeBeton === 0} className="px-8 py-3 bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-700 hover:to-teal-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105">💾 Sauvegarder</button>
-        <button onClick={clearHistorique} disabled={historique.length === 0} className="px-8 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105">🧹 Vider l'historique</button>
-      </div>
-      {historique.length > 0 && (
-        <section className="bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-2xl p-6 shadow-2xl border border-teal-500/30">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
-            <h3 className="text-2xl font-extrabold text-teal-400 flex items-center gap-3"><span className="text-3xl">🕓</span>Historique Caniveau</h3>
-            <span className="bg-teal-500/20 text-teal-400 px-4 py-2 rounded-lg font-bold">{historique.length} entrée{historique.length > 1 ? 's' : ''}</span>
-          </div>
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {historique.map((item, index) => (
-              <div key={item.id} className="group bg-gradient-to-r from-gray-700/50 to-gray-800/50 hover:from-gray-700 hover:to-gray-800 rounded-xl p-5 transition-all duration-300 border border-gray-700/50 hover:border-teal-500/50 hover:shadow-lg">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 space-y-3">
-                    <div className="flex items-center gap-3"><span className="bg-teal-500/20 text-teal-400 px-3 py-1 rounded-lg text-xs font-bold">#{historique.length - index}</span><time className="text-sm text-gray-400">{item.date}</time></div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">📐 Dimensions</p><p className="text-sm font-semibold text-gray-200">L:{item.longueur} × H:{item.largeurHaut} × B:{item.largeurBas} × P:{item.profondeur} m</p></div>
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">📦 Volume béton</p><p className="text-lg font-bold text-teal-400">{item.volumeBeton} m³</p></div>
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">🧱 Matériaux</p><p className="text-sm text-green-400">C:{item.cimentT}t S:{item.sableT}t G:{item.gravierT}t</p></div>
-                      <div className="bg-gradient-to-br from-teal-500/20 to-teal-600/20 rounded-lg p-3 border border-teal-500/50"><p className="text-xs text-teal-300 mb-1">💰 Coût total</p><p className="text-lg font-extrabold text-teal-400">{parseFloat(item.total).toLocaleString()} {currency}</p></div>
-                    </div>
-                  </div>
-                  <button onClick={() => handleDelete(item.id)} className="p-3 bg-red-600/80 hover:bg-red-600 rounded-xl text-white font-bold transition-all transform hover:scale-110">✖</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
     </div>
   );
 }
 
-// Composant Buse
-function BuseForm({ currency, onTotalChange }) {
-  const [diametre, setDiametre] = useState("");
-  const [longueur, setLongueur] = useState("");
-  const [epaisseur, setEpaisseur] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
-  const [historique, setHistorique] = useState([]);
-  const [message, setMessage] = useState("");
+// === SOUS-COMPOSANTS ===
 
-  const d = parseFloat(diametre) || 0;
-  const L = parseFloat(longueur) || 0;
-  const e = parseFloat(epaisseur) || 0;
-  const rayonExt = (d + 2 * e) / 2;
-  const rayonInt = d / 2;
-  const volumeBeton = Math.PI * L * (rayonExt ** 2 - rayonInt ** 2);
-  const cimentT = (volumeBeton * 350) / 1000;
-  const sableT = (volumeBeton * 0.43) * 1.6;
-  const gravierT = (volumeBeton * 0.85) * 1.75;
-  const eauL = volumeBeton * 175;
-  const acierT = (volumeBeton * 100) / 1000;
-  const total = volumeBeton * (parseFloat(prixUnitaire) || 0) + (parseFloat(coutMainOeuvre) || 0);
+const TabButton = ({ id, label, icon: Icon, active, onClick, color }) => (
+  <button
+    onClick={() => onClick(id)}
+    className={`flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-bold transition-all ${
+      active === id 
+        ? `bg-${color}-600 text-white shadow-lg` 
+        : "text-gray-400 hover:text-white hover:bg-gray-700"
+    }`}
+  >
+    <Icon className="w-4 h-4" />
+    <span className="hidden sm:inline">{label}</span>
+  </button>
+);
 
-  useEffect(() => { onTotalChange(total); }, [total]);
-  useEffect(() => { const saved = localStorage.getItem(STORAGE_KEY_BUSE); if (saved) { try { setHistorique(JSON.parse(saved)); } catch {} } }, []);
-  useEffect(() => { localStorage.setItem(STORAGE_KEY_BUSE, JSON.stringify(historique)); }, [historique]);
+const InputGroup = ({ label, value, onChange, full = false, theme, placeholder = "0" }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type="number"
+      min="0"
+      step="any"
+      value={value}
+      onChange={onChange}
+      className={`w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none ${theme.border} ${theme.ring} transition-all font-mono text-sm`}
+      placeholder={placeholder}
+    />
+  </div>
+);
 
-  const showMessage = (msg) => { setMessage(msg); setTimeout(() => setMessage(""), 2500); };
-  const handleSave = () => {
-    if (volumeBeton === 0) return alert("⚠️ Veuillez entrer des dimensions valides.");
-    setHistorique([{ id: Date.now(), date: new Date().toLocaleString(), diametre, longueur, epaisseur, volumeBeton: volumeBeton.toFixed(3), cimentT: cimentT.toFixed(2), sableT: sableT.toFixed(2), gravierT: gravierT.toFixed(2), acierT: acierT.toFixed(2), prixUnitaire, coutMainOeuvre, total: total.toFixed(2) }, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
-  };
-  const handleDelete = (id) => { if (confirm("🗑️ Supprimer cette entrée ?")) { setHistorique(historique.filter((item) => item.id !== id)); showMessage("🗑️ Entrée supprimée !"); } };
-  const clearHistorique = () => { if (confirm("🧹 Vider tout l'historique ?")) { setHistorique([]); showMessage("🧹 Historique vidé !"); } };
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`relative overflow-hidden rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+    </span>
+  </div>
+);
 
-  return (
-    <div>
-      {message && <div className="fixed top-5 right-5 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50">{message}</div>}
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {[{ label: "Diamètre intérieur (m)", value: diametre, setter: setDiametre }, { label: "Longueur (m)", value: longueur, setter: setLongueur }, { label: "Épaisseur paroi (m)", value: epaisseur, setter: setEpaisseur }, { label: `Prix unitaire (${currency}/m³)`, value: prixUnitaire, setter: setPrixUnitaire }, { label: `Coût main d'œuvre (${currency})`, value: coutMainOeuvre, setter: setCoutMainOeuvre, full: true }].map(({ label, value, setter, full }, idx) => (
-          <div key={idx} className={full ? "col-span-2" : ""}><label className="block mb-1 font-semibold text-indigo-400 text-sm">{label}</label><input type="number" min="0" step="any" value={value} onInput={e => setter(e.target.value)} className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-indigo-400 transition ${value <= 0 ? "bg-red-800/30" : "bg-gray-800"}`} placeholder="0" /></div>
-        ))}
-      </div>
-      <div className="bg-gradient-to-br from-gray-800 to-gray-700 rounded-xl p-5 shadow-lg border border-indigo-500/30 mb-4">
-        <div className="text-center mb-4"><p className="text-sm text-gray-400">Volume de béton</p><p className="text-4xl font-bold text-indigo-400">{volumeBeton.toFixed(3)} m³</p></div>
-        <div className="grid grid-cols-3 gap-3 text-sm">
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🧱 Ciment</p><p className="text-xl font-bold text-green-400">{cimentT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🏖️ Sable</p><p className="text-xl font-bold text-green-400">{sableT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">🪨 Gravier</p><p className="text-xl font-bold text-green-400">{gravierT.toFixed(2)} t</p></div>
-          <div className="bg-gray-900/50 p-3 rounded"><p className="text-gray-400">💧 Eau</p><p className="text-xl font-bold text-blue-400">{eauL.toFixed(0)} L</p></div>
-          <div className="bg-gray-900/50 p-3 rounded col-span-2"><p className="text-gray-400">🔩 Acier</p><p className="text-xl font-bold text-red-400">{acierT.toFixed(2)} t</p></div>
-        </div>
-        <div className="border-t border-gray-600 pt-4 mt-4"><p className="text-center text-3xl font-extrabold text-indigo-400 animate-pulse">💰 Total : {total.toLocaleString()} {currency}</p></div>
-      </div>
-      <div className="flex flex-wrap justify-center gap-4 mb-6">
-        <button onClick={handleSave} disabled={volumeBeton === 0} className="px-8 py-3 bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-700 hover:to-indigo-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105">💾 Sauvegarder</button>
-        <button onClick={clearHistorique} disabled={historique.length === 0} className="px-8 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105">🧹 Vider l'historique</button>
-      </div>
-      {historique.length > 0 && (
-        <section className="bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-2xl p-6 shadow-2xl border border-indigo-500/30">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
-            <h3 className="text-2xl font-extrabold text-indigo-400 flex items-center gap-3"><span className="text-3xl">🕓</span>Historique Buse</h3>
-            <span className="bg-indigo-500/20 text-indigo-400 px-4 py-2 rounded-lg font-bold">{historique.length} entrée{historique.length > 1 ? 's' : ''}</span>
-          </div>
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {historique.map((item, index) => (
-              <div key={item.id} className="group bg-gradient-to-r from-gray-700/50 to-gray-800/50 hover:from-gray-700 hover:to-gray-800 rounded-xl p-5 transition-all duration-300 border border-gray-700/50 hover:border-indigo-500/50 hover:shadow-lg">
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 space-y-3">
-                    <div className="flex items-center gap-3"><span className="bg-indigo-500/20 text-indigo-400 px-3 py-1 rounded-lg text-xs font-bold">#{historique.length - index}</span><time className="text-sm text-gray-400">{item.date}</time></div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">📐 Dimensions</p><p className="text-sm font-semibold text-gray-200">Ø:{item.diametre} × L:{item.longueur} × E:{item.epaisseur} m</p></div>
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">📦 Volume béton</p><p className="text-lg font-bold text-indigo-400">{item.volumeBeton} m³</p></div>
-                      <div className="bg-gray-900/50 rounded-lg p-3"><p className="text-xs text-gray-500 mb-1">🧱 Matériaux</p><p className="text-sm text-green-400">C:{item.cimentT}t S:{item.sableT}t G:{item.gravierT}t</p></div>
-                      <div className="bg-gradient-to-br from-indigo-500/20 to-indigo-600/20 rounded-lg p-3 border border-indigo-500/50"><p className="text-xs text-indigo-300 mb-1">💰 Coût total</p><p className="text-lg font-extrabold text-indigo-400">{parseFloat(item.total).toLocaleString()} {currency}</p></div>
-                    </div>
-                  </div>
-                  <button onClick={() => handleDelete(item.id)} className="p-3 bg-red-600/80 hover:bg-red-600 rounded-xl text-white font-bold transition-all transform hover:scale-110">✖</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+const MaterialRow = ({ label, value, unit, color }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/50 pb-2 last:border-0">
+    <div className="flex items-center gap-2">
+      <div className={`w-2 h-2 rounded-full ${color}`} />
+      <span className="text-gray-300 text-sm">{label}</span>
     </div>
-  );
-}
-
-// Composant principal
-export default function OuvragesHydrauliques({ currency = "XOF", onCostChange = () => {}, onMateriauxChange = () => {} }) {
-  const [type, setType] = useState("dalot");
-  const [costs, setCosts] = useState({ dalot: 0, caniveau: 0, buse: 0 });
-
-  useEffect(() => { onCostChange(costs[type] || 0); }, [costs, type]);
-
-  const handleCostChange = (ouvrageType) => (value) => {
-    setCosts((prev) => ({ ...prev, [ouvrageType]: Number(value) || 0 }));
-  };
-
-  const ouvrageTypes = [
-    { value: "dalot", label: "💧 Dalot", color: "from-blue-400 to-cyan-500", description: "Ouvrage de drainage rectangulaire" },
-    { value: "caniveau", label: "🌊 Caniveau", color: "from-teal-400 to-green-500", description: "Canal d'évacuation des eaux" },
-    { value: "buse", label: "⭕ Buse", color: "from-indigo-400 to-blue-500", description: "Conduite circulaire enterrée" },
-  ];
-
-  const currentOuvrage = ouvrageTypes.find(o => o.value === type);
-
-  return (
-    <div className="max-w-3xl mx-auto p-6 bg-gray-900 rounded-xl shadow-lg text-gray-100 font-sans animate-fade-in">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center animate-pulse">💧 Ouvrages Hydrauliques</h2>
-
-      <div className="mb-8">
-        <label className="block mb-3 font-semibold text-orange-400 text-lg">Choisissez un type d'ouvrage</label>
-        <div className="grid grid-cols-3 gap-4">
-          {ouvrageTypes.map((ouvrage) => (
-            <button key={ouvrage.value} onClick={() => setType(ouvrage.value)} className={`p-4 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 ${type === ouvrage.value ? `bg-gradient-to-r ${ouvrage.color} text-white shadow-lg scale-105` : "bg-gray-800 text-gray-300 hover:bg-gray-700"}`}>
-              <div className="text-2xl mb-2">{ouvrage.label.split(' ')[0]}</div>
-              <div className="text-sm">{ouvrage.label.split(' ')[1]}</div>
-            </button>
-          ))}
-        </div>
-        {currentOuvrage && (
-          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="mt-3 text-center text-sm text-gray-400 italic">{currentOuvrage.description}</motion.div>
-        )}
-      </div>
-
-      <AnimatePresence mode="wait">
-        <motion.div key={type} initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} transition={{ duration: 0.3 }} className="bg-gray-800/50 rounded-xl p-5 backdrop-blur-sm">
-          {type === "dalot" && <DalotForm currency={currency} onTotalChange={handleCostChange("dalot")} />}
-          {type === "caniveau" && <CaniveauForm currency={currency} onTotalChange={handleCostChange("caniveau")} />}
-          {type === "buse" && <BuseForm currency={currency} onTotalChange={handleCostChange("buse")} />}
-        </motion.div>
-      </AnimatePresence>
-
-      <style>{`
-        @keyframes fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
-        @keyframes fadeinout { 0%, 100% { opacity: 0; } 10%, 90% { opacity: 1; } }
-        .animate-fadeinout { animation: fadeinout 2.5s ease forwards; }
-        .custom-scrollbar::-webkit-scrollbar { width: 8px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(31, 41, 55, 0.5); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(96, 165, 250, 0.5); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(96, 165, 250, 0.8); }
-      `}</style>
+    <div className="text-sm font-bold text-white font-mono">
+      {value.toFixed(2)} <span className="text-xs text-gray-500">{unit}</span>
     </div>
-  );
-}
+  </div>
+);

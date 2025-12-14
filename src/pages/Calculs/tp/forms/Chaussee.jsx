@@ -1,336 +1,367 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { 
+  Layers, Ruler, Banknote, Save, Trash2, History, Truck
+} from "lucide-react";
 
-const STORAGE_KEYS = {
-  forme: "chaussee-forme-history",
-  base: "chaussee-base-history",
-  roulement: "chaussee-roulement-history",
-  fondation: "chaussee-fondation-history",
+ChartJS.register(ArcElement, Tooltip, Legend);
+
+const STORAGE_KEY = "chaussee-history";
+
+// Densités moyennes (T/m3) pour conversion Volume -> Poids
+const DENSITIES = {
+  fondation: 2.0, // GNT
+  base: 2.35,     // Grave Bitume
+  roulement: 2.35 // Béton Bitumineux
 };
 
-const COUCHES = [
-  { key: "forme", label: "Couche de forme", icon: "🏗️", color: "orange", type: "m3" },
-  { key: "base", label: "Couche de base", icon: "🔷", color: "purple", type: "m3" },
-  { key: "roulement", label: "Couche de roulement", icon: "🛣️", color: "yellow", type: "m2" },
-  { key: "fondation", label: "Couche de fondation", icon: "⚡", color: "green", type: "m3" },
-];
+export default function Chaussee({ currency = "XOF", onCostChange, onMateriauxChange }) {
+  
+  // --- ÉTATS ---
+  const [inputs, setInputs] = useState({
+    longueur: "",
+    largeur: "",
+    
+    // Épaisseurs (en cm)
+    epaisseurFondation: "", 
+    epaisseurBase: "",
+    epaisseurRoulement: "",
 
-const defaultFields = [
-  { name: "longueur", label: "Longueur (m)" },
-  { name: "largeur", label: "Largeur (m)" },
-  { name: "epaisseur", label: "Épaisseur (m)" },
-  { name: "prixUnitaire", label: "Prix unitaire", suffix: "€/m³" },
-  { name: "coutMainOeuvre", label: "Coût main d'œuvre", suffix: "€", full: true },
-];
+    // Prix Unitaires (souvent à la tonne)
+    prixFondation: "",  
+    prixBase: "",       
+    prixRoulement: "",  
+    
+    coutMainOeuvre: ""  
+  });
 
-function CoucheForm({ currency, onTotalChange, type, coucheKey }) {
-  const [fields, setFields] = useState(() =>
-    Object.fromEntries(defaultFields.map(f => [f.name, ""]))
-  );
   const [historique, setHistorique] = useState([]);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(null);
 
-  const storageKey = STORAGE_KEYS[coucheKey];
+  // --- MOTEUR DE CALCUL (Mémorisé) ---
+  const results = useMemo(() => {
+    const L = parseFloat(inputs.longueur) || 0;
+    const l = parseFloat(inputs.largeur) || 0;
+    const surface = L * l;
 
-  const handleChange = useCallback((name) => (e) => {
-    const value = e.target.value;
-    setFields(prev => ({ ...prev, [name]: value }));
+    // Conversion cm -> m
+    const eFond = (parseFloat(inputs.epaisseurFondation) || 0) / 100;
+    const eBase = (parseFloat(inputs.epaisseurBase) || 0) / 100;
+    const eRoul = (parseFloat(inputs.epaisseurRoulement) || 0) / 100;
+
+    // Volumes (m3)
+    const volFond = surface * eFond;
+    const volBase = surface * eBase;
+    const volRoul = surface * eRoul;
+
+    // Tonnages (T) = Volume * Densité
+    const tonFond = volFond * DENSITIES.fondation;
+    const tonBase = volBase * DENSITIES.base;
+    const tonRoul = volRoul * DENSITIES.roulement;
+
+    // Coûts
+    const coutFond = tonFond * (parseFloat(inputs.prixFondation) || 0);
+    const coutBase = tonBase * (parseFloat(inputs.prixBase) || 0);
+    const coutRoul = tonRoul * (parseFloat(inputs.prixRoulement) || 0);
+    const coutMO = parseFloat(inputs.coutMainOeuvre) || 0;
+
+    const total = coutFond + coutBase + coutRoul + coutMO;
+
+    return {
+      surface,
+      volFond, volBase, volRoul,
+      tonFond, tonBase, tonRoul,
+      coutFond, coutBase, coutRoul, coutMO,
+      total
+    };
+  }, [inputs]);
+
+  // --- SYNC PARENT (Anti-Loop) ---
+  useEffect(() => {
+    if (onCostChange) onCostChange(results.total);
+    
+    if (onMateriauxChange) {
+      onMateriauxChange({
+        surface: results.surface,
+        tonnageTotal: results.tonFond + results.tonBase + results.tonRoul,
+        volumeTotal: results.volFond + results.volBase + results.volRoul
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.total, results.tonRoul]); // Dépendances stables uniquement
+
+  // --- HISTORIQUE ---
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch {}
   }, []);
 
-  const volume = useMemo(() => {
-    const l = parseFloat(fields.longueur) || 0;
-    const w = parseFloat(fields.largeur) || 0;
-    const h = parseFloat(fields.epaisseur) || 0;
-    return type === "m2" ? l * w : l * w * h;
-  }, [fields, type]);
-
-  const total = useMemo(() => {
-    const prix = parseFloat(fields.prixUnitaire) || 0;
-    const mo = parseFloat(fields.coutMainOeuvre) || 0;
-    return volume * prix + mo;
-  }, [volume, fields]);
-
-  useEffect(() => onTotalChange(total), [total, onTotalChange]);
-
-  // Historique
-  useEffect(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try { setHistorique(JSON.parse(saved)); } catch {}
-    }
-  }, [storageKey]);
-
-  useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(historique));
-  }, [historique, storageKey]);
-
-  const showMessage = (msg) => {
-    setMessage(msg);
-    setTimeout(() => setMessage(""), 2500);
+  // --- HANDLERS ---
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+  
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
   };
 
   const handleSave = () => {
-    if (volume === 0) return alert("⚠️ Veuillez entrer des dimensions valides.");
-    const entry = {
+    if (results.total <= 0) return showToast("⚠️ Données incomplètes", "error");
+    
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      ...fields,
-      volume: volume.toFixed(3),
-      total: total.toFixed(2),
+      inputs: { ...inputs },
+      results: { ...results }
     };
-    setHistorique([entry, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
+
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Chaussée sauvegardée !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-      showMessage("🗑️ Entrée supprimée !");
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
+  const clearHistory = () => {
+    if (window.confirm("Vider l'historique ?")) {
       setHistorique([]);
-      showMessage("🧹 Historique vidé !");
+      localStorage.removeItem(STORAGE_KEY);
+      showToast("Historique vidé");
     }
+  };
+
+  const resetFields = () => {
+    setInputs(Object.fromEntries(Object.keys(inputs).map(k => [k, ""])));
+  };
+
+  // --- DATA CHART ---
+  const chartData = {
+    labels: ["Fondation (GNT)", "Base (GB)", "Roulement (BB)", "Main d'œuvre"],
+    datasets: [{
+      data: [results.coutFond, results.coutBase, results.coutRoul, results.coutMO],
+      backgroundColor: ["#fbbf24", "#f97316", "#a855f7", "#3b82f6"], // Amber, Orange, Purple, Blue
+      borderColor: "#1f2937",
+      borderWidth: 4,
+    }]
   };
 
   return (
-    <div>
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {/* Toast */}
       {message && (
-        <div className="fixed top-5 right-5 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50">
-          {message}
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+          message.type === "error" ? "bg-red-600" : "bg-purple-600"
+        }`}>
+          {message.text}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {defaultFields.map((f, idx) => (
-          <div key={idx} className={f.full ? "col-span-2" : ""}>
-            <label className="block mb-1 font-semibold text-orange-400 text-sm">
-              {f.label} {f.suffix || `(${currency})`}
-            </label>
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={fields[f.name]}
-              onInput={handleChange(f.name)}
-              className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 transition ${
-                fields[f.name] <= 0 ? "bg-red-800/30" : "bg-gray-800"
-              }`}
-              placeholder="0"
-            />
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-purple-500/20 rounded-lg text-purple-500">
+            <Layers className="w-6 h-6" />
           </div>
-        ))}
-      </div>
-
-      <div className="bg-gradient-to-br from-gray-800 to-gray-700 rounded-xl p-5 shadow-lg border border-orange-500/30 mb-4">
-        <div className="text-center mb-4">
-          <p className="text-sm text-gray-400">Volume / Surface</p>
-          <p className="text-4xl font-bold text-orange-400">{volume.toFixed(3)} {type}</p>
+          <div>
+            <h2 className="text-xl font-bold text-white">Chaussée</h2>
+            <p className="text-xs text-gray-400">Structure & Revêtement</p>
+          </div>
         </div>
-        <div className="border-t border-gray-600 pt-4 mt-4">
-          <p className="text-center text-3xl font-extrabold text-orange-400 animate-pulse">
-            💰 Total : {total.toLocaleString()} {currency}
-          </p>
+        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
+          <span className="text-xs text-gray-400 block">Total Estimé</span>
+          <span className="text-lg font-black text-purple-400">
+            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-sm text-gray-500">{currency}</span>
+          </span>
         </div>
       </div>
 
-      <div className="flex flex-wrap justify-center gap-4 mb-6">
-        <button 
-          onClick={handleSave} 
-          disabled={volume === 0}
-          className="px-8 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105"
-        >
-          💾 Sauvegarder
-        </button>
-        <button 
-          onClick={clearHistorique} 
-          disabled={historique.length === 0}
-          className="px-8 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105"
-        >
-          🧹 Vider l'historique
-        </button>
-      </div>
-
-      {historique.length > 0 && (
-        <section className="bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-2xl p-6 shadow-2xl border border-orange-500/30">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
-            <h3 className="text-2xl font-extrabold text-orange-400 flex items-center gap-3">
-              <span className="text-3xl">🕓</span>
-              Historique
-            </h3>
-            <span className="bg-orange-500/20 text-orange-400 px-4 py-2 rounded-lg font-bold">
-              {historique.length} entrée{historique.length > 1 ? 's' : ''}
-            </span>
-          </div>
+      {/* Main Grid */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
           
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {historique.map((item, index) => (
-              <div 
-                key={item.id} 
-                className="group bg-gradient-to-r from-gray-700/50 to-gray-800/50 hover:from-gray-700 hover:to-gray-800 rounded-xl p-5 transition-all duration-300 border border-gray-700/50 hover:border-orange-500/50 hover:shadow-lg"
-              >
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="bg-orange-500/20 text-orange-400 px-3 py-1 rounded-lg text-xs font-bold">
-                          #{historique.length - index}
-                        </span>
-                        <time className="text-sm text-gray-400">{item.date}</time>
-                      </div>
-                    </div>
+          {/* GAUCHE : SAISIE (5 cols) */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            {/* 1. Géométrie */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-purple-400 uppercase tracking-wider mb-4">
+                <Ruler className="w-4 h-4" /> Géométrie
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label="Longueur (m)" value={inputs.longueur} onChange={handleChange("longueur")} placeholder="Ex: 1000" />
+                <InputGroup label="Largeur (m)" value={inputs.largeur} onChange={handleChange("largeur")} placeholder="Ex: 7" />
+              </div>
+            </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-gray-900/50 rounded-lg p-3">
-                        <p className="text-xs text-gray-500 mb-1">📐 Dimensions</p>
-                        <p className="text-sm font-semibold text-gray-200">
-                          {item.longueur} × {item.largeur} × {item.epaisseur} m
-                        </p>
-                      </div>
-                      <div className="bg-gray-900/50 rounded-lg p-3">
-                        <p className="text-xs text-gray-500 mb-1">📦 Volume/Surface</p>
-                        <p className="text-lg font-bold text-orange-400">{item.volume} {type}</p>
-                      </div>
-                      <div className="bg-gray-900/50 rounded-lg p-3">
-                        <p className="text-xs text-gray-500 mb-1">💵 Prix unitaire</p>
-                        <p className="text-sm text-blue-400">{parseFloat(item.prixUnitaire || 0).toLocaleString()} {currency}</p>
-                      </div>
-                      <div className="bg-gradient-to-br from-orange-500/20 to-orange-600/20 rounded-lg p-3 border border-orange-500/50">
-                        <p className="text-xs text-orange-300 mb-1">💰 Coût total</p>
-                        <p className="text-lg font-extrabold text-orange-400">
-                          {parseFloat(item.total).toLocaleString()} {currency}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button 
-                    onClick={() => handleDelete(item.id)} 
-                    className="p-3 bg-red-600/80 hover:bg-red-600 rounded-xl text-white font-bold transition-all transform hover:scale-110"
-                  >
-                    ✖
-                  </button>
+            {/* 2. Structure & Prix */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-300 uppercase tracking-wider">
+                <Layers className="w-4 h-4 text-orange-400" /> Structure ({currency}/T)
+              </h3>
+              
+              {/* Couche Roulement */}
+              <div className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-xl space-y-2">
+                <span className="text-xs font-bold text-purple-300 uppercase">1. Roulement (BB)</span>
+                <div className="grid grid-cols-2 gap-3">
+                   <InputGroup label="Épaisseur (cm)" value={inputs.epaisseurRoulement} onChange={handleChange("epaisseurRoulement")} placeholder="Ex: 5" />
+                   <InputGroup label="Prix/Tonne" value={inputs.prixRoulement} onChange={handleChange("prixRoulement")} placeholder="Ex: 85000" />
                 </div>
               </div>
-            ))}
-          </div>
-        </section>
-      )}
-    </div>
-  );
-}
 
-export default function Chaussee({ currency = "FCFA", onCostChange = () => {} }) {
-  const [activeCouche, setActiveCouche] = useState("forme");
-  const [costs, setCosts] = useState(
-    Object.fromEntries(COUCHES.map(c => [c.key, 0]))
-  );
+              {/* Couche Base */}
+              <div className="p-3 bg-orange-500/10 border border-orange-500/30 rounded-xl space-y-2">
+                <span className="text-xs font-bold text-orange-300 uppercase">2. Base (GB)</span>
+                <div className="grid grid-cols-2 gap-3">
+                   <InputGroup label="Épaisseur (cm)" value={inputs.epaisseurBase} onChange={handleChange("epaisseurBase")} placeholder="Ex: 10" />
+                   <InputGroup label="Prix/Tonne" value={inputs.prixBase} onChange={handleChange("prixBase")} placeholder="Ex: 60000" />
+                </div>
+              </div>
 
-  const total = useMemo(() => Object.values(costs).reduce((a, b) => a + b, 0), [costs]);
+              {/* Couche Fondation */}
+              <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-xl space-y-2">
+                <span className="text-xs font-bold text-yellow-300 uppercase">3. Fondation (GNT)</span>
+                <div className="grid grid-cols-2 gap-3">
+                   <InputGroup label="Épaisseur (cm)" value={inputs.epaisseurFondation} onChange={handleChange("epaisseurFondation")} placeholder="Ex: 20" />
+                   <InputGroup label="Prix/Tonne" value={inputs.prixFondation} onChange={handleChange("prixFondation")} placeholder="Ex: 25000" />
+                </div>
+              </div>
 
-  useEffect(() => onCostChange(total), [total, onCostChange]);
+              <div className="h-px bg-gray-700/50 my-2" />
+              
+              <InputGroup label={`Main d'œuvre Globale (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} full />
 
-  const handleLayerCostChange = useCallback((layer) => (value) => {
-    setCosts(prev => {
-      const newValue = Math.max(0, Number(value) || 0);
-      if (prev[layer] === newValue) return prev;
-      return { ...prev, [layer]: newValue };
-    });
-  }, []);
-
-  const currentCouche = useMemo(() => COUCHES.find(c => c.key === activeCouche), [activeCouche]);
-
-  return (
-    <div className="p-6 bg-gray-900 rounded-xl shadow-xl text-gray-100 max-w-4xl mx-auto animate-fade-in">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center animate-pulse">
-        🛣️ Chaussée
-      </h2>
-
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {COUCHES.map(c => (
-          <button
-            key={c.key}
-            onClick={() => setActiveCouche(c.key)}
-            className={`p-3 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 ${
-              activeCouche === c.key
-                ? `bg-${c.color}-500 text-white shadow-lg scale-105`
-                : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-            }`}
-          >
-            <div className="text-2xl mb-1">{c.icon}</div>
-            <div className="text-xs">{c.label}</div>
-            <div className="text-sm font-bold mt-1">{costs[c.key].toLocaleString()} {currency}</div>
-          </button>
-        ))}
-      </div>
-
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeCouche}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -20 }}
-          transition={{ duration: 0.3 }}
-          className="mb-6 bg-gray-800/50 p-5 rounded-xl shadow-inner backdrop-blur-sm"
-        >
-          <h3 className="text-xl font-bold text-center mb-4 flex items-center justify-center gap-2">
-            <span className="text-2xl">{currentCouche?.icon}</span>
-            <span className="text-orange-400">{currentCouche?.label}</span>
-          </h3>
-          <CoucheForm 
-            currency={currency} 
-            onTotalChange={handleLayerCostChange(activeCouche)}
-            type={currentCouche?.type}
-            coucheKey={activeCouche}
-          />
-        </motion.div>
-      </AnimatePresence>
-
-      <div className="bg-gradient-to-br from-gray-800 to-gray-700 rounded-xl p-6 shadow-lg border border-orange-500/30">
-        <h3 className="text-center text-lg font-semibold text-gray-400 mb-4">📊 Récapitulatif des coûts</h3>
-        <div className="grid grid-cols-2 gap-3 mb-4 text-sm">
-          {COUCHES.map(c => (
-            <div key={c.key} className="bg-gray-900/50 p-3 rounded flex justify-between items-center">
-              <span className="text-gray-400">{c.icon} {c.label}</span>
-              <span className="font-bold text-green-400">{costs[c.key].toLocaleString()}</span>
+              <div className="flex gap-3 mt-auto pt-4">
+                <button 
+                  onClick={handleSave}
+                  className="flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2"
+                >
+                  <Save className="w-5 h-5" /> Calculer
+                </button>
+                <button 
+                  onClick={resetFields} 
+                  className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition-colors"
+                  title="Réinitialiser"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
             </div>
-          ))}
-        </div>
-        <div className="border-t border-gray-600 pt-4">
-          <p className="text-center text-3xl font-extrabold text-orange-400 animate-pulse">
-            💰 Total Chaussée : {total.toLocaleString()} {currency}
-          </p>
+          </div>
+
+          {/* DROITE : RÉSULTATS (7 cols) */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Surface Totale" value={results.surface.toFixed(0)} unit="m²" icon="📐" color="text-purple-400" bg="bg-purple-500/10" />
+              <ResultCard label="Tonnage Total" value={(results.tonFond + results.tonBase + results.tonRoul).toFixed(1)} unit="T" icon="⚖️" color="text-orange-400" bg="bg-orange-500/10" border />
+              <ResultCard label="Volume Total" value={(results.volFond + results.volBase + results.volRoul).toFixed(1)} unit="m³" icon="🧊" color="text-blue-400" bg="bg-blue-500/10" />
+            </div>
+
+            {/* Graphique & Détails */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+
+               <div className="w-40 h-40 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <Truck className="w-8 h-8 text-purple-500 opacity-50" />
+                  </div>
+               </div>
+
+               <div className="flex-1 w-full space-y-3">
+                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Détail par couche</h4>
+                  
+                  <LayerRow label="Roulement (BB)" thick={inputs.epaisseurRoulement} ton={results.tonRoul} cost={results.coutRoul} color="bg-purple-500" currency={currency} />
+                  <LayerRow label="Base (GB)" thick={inputs.epaisseurBase} ton={results.tonBase} cost={results.coutBase} color="bg-orange-500" currency={currency} />
+                  <LayerRow label="Fondation (GNT)" thick={inputs.epaisseurFondation} ton={results.tonFond} cost={results.coutFond} color="bg-yellow-500" currency={currency} />
+                  
+                  <div className="pt-2 border-t border-gray-700 flex justify-between items-center mt-2">
+                    <span className="text-sm text-gray-400">Main d'œuvre</span>
+                    <span className="font-bold text-white">{results.coutMO.toLocaleString()} {currency}</span>
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
+                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-3 h-3" /> Historique récent
+                  </h4>
+                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+                </div>
+                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
+                  {historique.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-purple-500/30">
+                      <div className="flex flex-col">
+                         <span className="text-[10px] text-gray-500">{item.date.split(',')[0]}</span>
+                         <span className="text-xs text-gray-300 font-bold">L={item.inputs.longueur}m x l={item.inputs.largeur}m</span>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-gray-400">Surf: {item.results.surface} m²</div>
+                        <div className="text-sm font-bold text-purple-400">{item.results.total.toLocaleString()} {currency}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
         </div>
       </div>
-
-      <style>{`
-        @keyframes fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
-        @keyframes fadeinout {
-          0%, 100% { opacity: 0; }
-          10%, 90% { opacity: 1; }
-        }
-        .animate-fadeinout {
-          animation: fadeinout 2.5s ease forwards;
-        }
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(31, 41, 55, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(251, 146, 60, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(251, 146, 60, 0.8);
-        }
-      `}</style>
     </div>
   );
 }
+
+// --- SOUS-COMPOSANTS ---
+
+const InputGroup = ({ label, value, onChange, placeholder, full = false, type = "number" }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type={type}
+      min="0"
+      step="any"
+      value={value}
+      onChange={onChange}
+      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-2 py-2 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+    </span>
+  </div>
+);
+
+const LayerRow = ({ label, thick, ton, cost, color, currency }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/50 pb-2 last:border-0 group">
+    <div className="flex items-center gap-2">
+      <div className={`w-2 h-2 rounded-full ${color}`} />
+      <div className="flex flex-col">
+        <span className="text-gray-300 text-sm font-medium">{label}</span>
+        <span className="text-[10px] text-gray-500">Ep: {thick || 0}cm • {ton.toFixed(1)} T</span>
+      </div>
+    </div>
+    <div className="text-sm font-bold text-white font-mono group-hover:text-purple-300 transition-colors">
+      {cost.toLocaleString(undefined, { maximumFractionDigits: 0 })} {currency}
+    </div>
+  </div>
+);

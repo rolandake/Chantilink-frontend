@@ -1,11 +1,9 @@
-import { defineConfig, loadEnv } from "vite"; // 1. Import loadEnv
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 
-// https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // 2. Charger les variables d'environnement (.env)
   const env = loadEnv(mode, process.cwd(), "");
   const API_URL = env.VITE_API_URL || "http://localhost:5000";
 
@@ -19,11 +17,10 @@ export default defineConfig(({ mode }) => {
       VitePWA({
         registerType: "autoUpdate",
         injectRegister: "auto",
-        devOptions: { 
-          enabled: true, // 3. Activé en dev pour tester le SW
-          type: 'module',
+        devOptions: {
+          enabled: false,
+          type: "module",
         },
-
         manifest: {
           name: "ChantiLink",
           short_name: "ChantiLink",
@@ -36,7 +33,7 @@ export default defineConfig(({ mode }) => {
           orientation: "portrait-primary",
           icons: [
             {
-              src: "/pwa-192x192.png", // Assure-toi que ces noms matchent tes fichiers
+              src: "/pwa-192x192.png",
               sizes: "192x192",
               type: "image/png",
               purpose: "any maskable",
@@ -49,40 +46,33 @@ export default defineConfig(({ mode }) => {
             },
           ],
         },
-
         workbox: {
+          navigateFallbackDenylist: [/^\/api/, /^\/@vite/, /^\/src/],
           globPatterns: ["**/*.{js,css,html,woff2,ttf,svg,png,jpg,jpeg,webp,webmanifest}"],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          // Cleanup automatique des vieux caches
-          cleanupOutdatedCaches: true, 
-
+          cleanupOutdatedCaches: true,
           runtimeCaching: [
             {
-              // Cache les images (avatars, posts)
               urlPattern: ({ request }) => request.destination === "image",
               handler: "CacheFirst",
               options: {
                 cacheName: "images-cache",
-                expiration: { maxEntries: 150, maxAgeSeconds: 60 * 60 * 24 * 30 }, // 30 jours
+                expiration: { maxEntries: 150, maxAgeSeconds: 60 * 60 * 24 * 30 },
               },
             },
             {
-              // Cache les polices et styles
-              urlPattern: ({ request }) => ["style", "script", "font"].includes(request.destination),
+              urlPattern: ({ request }) => ["font", "style"].includes(request.destination),
               handler: "StaleWhileRevalidate",
               options: { cacheName: "assets-cache" },
             },
             {
-              // Cache API intelligent (marche en Prod ET en Dev via regex souple)
-              urlPattern: ({ url }) => url.pathname.startsWith('/api'),
+              urlPattern: ({ url }) => url.pathname.startsWith("/api"),
               handler: "NetworkFirst",
               options: {
                 cacheName: "api-cache",
-                networkTimeoutSeconds: 5, // Réduit à 5s pour UX plus rapide si hors ligne
-                expiration: { maxEntries: 50, maxAgeSeconds: 60 * 5 }, // 5 min
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
+                networkTimeoutSeconds: 5,
+                expiration: { maxEntries: 50, maxAgeSeconds: 60 * 5 },
+                cacheableResponse: { statuses: [0, 200] },
               },
             },
           ],
@@ -93,39 +83,54 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "src"),
+        // ✅ DÉCOMMENTÉ - Force une seule instance de React
+        react: path.resolve(__dirname, "node_modules/react"),
+        "react-dom": path.resolve(__dirname, "node_modules/react-dom"),
+        "react/jsx-runtime": path.resolve(__dirname, "node_modules/react/jsx-runtime"),
       },
-      extensions: [".js", ".jsx", ".ts", ".tsx"],
+      extensions: [".js", ".jsx", ".ts", ".tsx", ".json"],
     },
 
     server: {
-      host: true, // 4. Permet l'accès via IP locale (ex: 192.168.1.x) pour tester sur ton téléphone
+      host: true,
       port: 5173,
       strictPort: true,
+      hmr: {
+        clientPort: 5173,
+        overlay: true,
+      },
       watch: {
-        usePolling: true, // Parfois nécessaire sur Windows/Docker pour le HMR
+        usePolling: true,
       },
       proxy: {
         "/api": {
-          target: API_URL, // Utilise la variable d'env
+          target: API_URL,
           changeOrigin: true,
           secure: false,
-          ws: true, // Indispensable pour Socket.io
+          ws: true,
+        },
+        "/socket.io": {
+          target: API_URL,
+          changeOrigin: true,
+          secure: false,
+          ws: true,
         },
       },
     },
 
     build: {
-      target: "es2015", // 5. Plus compatible que 'esnext' pour les vieux Android
+      target: "es2015",
       minify: "esbuild",
       cssMinify: "esbuild",
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
           manualChunks: {
-            // Optimisation du chargement
             vendor: ["react", "react-dom", "react-router-dom"],
             ui: ["framer-motion", "lucide-react"],
             utils: ["axios", "date-fns"],
+            media: ["emoji-picker-react"],
+            stripe: ["@stripe/stripe-js", "@stripe/react-stripe-js"],
           },
         },
       },
@@ -140,11 +145,21 @@ export default defineConfig(({ mode }) => {
       include: [
         "react",
         "react-dom",
+        "react-dom/client",
+        "react/jsx-runtime",
         "react-router-dom",
-        "framer-motion",
-        "socket.io-client", 
-        "axios"
+        "@stripe/stripe-js",
+        "@stripe/react-stripe-js",
+        "emoji-picker-react",
+        "socket.io-client",
+        "chart.js",
+        "react-chartjs-2",
       ],
+      force: true,
+      esbuildOptions: {
+        mainFields: ["module", "main"],
+        conditions: ["import", "module", "default"],
+      },
     },
   };
 });

@@ -1,367 +1,376 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { 
+  Home, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Layers 
+} from "lucide-react";
 
-const STORAGE_KEY = "toiture-history";
-const inputClass = "w-full mb-4 p-2 rounded bg-gray-800 text-white border border-gray-700";
+ChartJS.register(ArcElement, Tooltip, Legend);
 
-export default function Toiture({
-  currency = "XOF",
-  onTotalChange = () => {},
-  onMaterialsChange = () => {},
-}) {
-  const [surface, setSurface] = useState("");
+const STORAGE_KEY = "toiture-batiment-history";
+
+// Dosages Béton pour Toit Terrasse (Dalle pleine)
+const DOSAGE_BETON = {
+  ciment: 0.350,
+  sable: 0.6,
+  gravier: 0.85,
+  acier: 0.100, // 100kg/m3 pour dalle toiture
+  eau: 175
+};
+
+const TYPES_TOITURE = [
+  { id: "tuiles", label: "Tuiles", icon: <Home className="w-4 h-4"/>, unit: "u" },
+  { id: "bac_acier", label: "Bac Acier", icon: <Layers className="w-4 h-4"/>, unit: "m²" },
+  { id: "toit_terrasse", label: "Toit Terrasse", icon: <Layers className="w-4 h-4"/>, unit: "m³" },
+];
+
+export default function Toiture({ currency = "XOF", onTotalChange, onMateriauxChange }) {
+  
+  // --- ÉTATS ---
   const [typeToiture, setTypeToiture] = useState("tuiles");
-  const [epaisseur, setEpaisseur] = useState("0.15");
-  const [densiteTuiles, setDensiteTuiles] = useState(12);
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
+  const [inputs, setInputs] = useState({
+    surface: "",
+    epaisseur: "0.15", // Pour toit terrasse
+    densiteTuiles: "12", // Pour tuiles
+    prixUnitaire: "",
+    coutMainOeuvre: ""
+  });
+
   const [historique, setHistorique] = useState([]);
+  const [message, setMessage] = useState(null);
 
-  // ✅ Use refs to avoid infinite loop
-  const onTotalChangeRef = useRef(onTotalChange);
-  const onMaterialsChangeRef = useRef(onMaterialsChange);
+  // --- MOTEUR DE CALCUL ---
+  const results = useMemo(() => {
+    const S = parseFloat(inputs.surface) || 0;
+    const pu = parseFloat(inputs.prixUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+    
+    let quantiteMateriel = 0;
+    let coutMateriaux = 0;
+    let detailsMateriaux = {};
 
-  useEffect(() => {
-    onTotalChangeRef.current = onTotalChange;
-  }, [onTotalChange]);
+    if (typeToiture === "tuiles") {
+      const densite = parseFloat(inputs.densiteTuiles) || 12;
+      quantiteMateriel = S * densite;
+      coutMateriaux = quantiteMateriel * pu;
+    } else if (typeToiture === "bac_acier") {
+      quantiteMateriel = S;
+      coutMateriaux = S * pu;
+    } else if (typeToiture === "toit_terrasse") {
+      const ep = parseFloat(inputs.epaisseur) || 0.15;
+      const volume = S * ep;
+      quantiteMateriel = volume;
+      coutMateriaux = volume * pu;
 
-  useEffect(() => {
-    onMaterialsChangeRef.current = onMaterialsChange;
-  }, [onMaterialsChange]);
-
-  const surf = parseFloat(surface) || 0;
-  const ep = parseFloat(epaisseur) || 0;
-  const densite = parseFloat(densiteTuiles) || 12;
-  const pu = parseFloat(prixUnitaire) || 0;
-  const mainOeuvre = parseFloat(coutMainOeuvre) || 0;
-
-  // Calculs selon type toiture
-  const nbTuiles = (typeToiture === "tuiles" || typeToiture === "tuile_terre_cuite") ? surf * densite : 0;
-  const coutMateriauxTuiles = nbTuiles * pu;
-  const coutMateriauxBacAcier = typeToiture === "bac_acier" ? surf * pu : 0;
-
-  // Toit terrasse
-  const volumeBeton = typeToiture === "toit_terrasse" ? surf * ep : 0;
-  const densiteBeton_kg = 2400;
-  const doseAcier_kg = 100;
-  const doseCiment_kg = 350;
-  const densiteSable_kg = 1600;
-  const densiteGravier_kg = 1600;
-  const volSable_m3 = 0.6;
-  const volGravier_m3 = 0.8;
-
-  const sableM3 = volumeBeton * volSable_m3;
-  const gravierM3 = volumeBeton * volGravier_m3;
-
-  const betonKg = volumeBeton * densiteBeton_kg;
-  const acierKg = volumeBeton * doseAcier_kg;
-  const cimentKg = volumeBeton * doseCiment_kg;
-  const sableKg = sableM3 * densiteSable_kg;
-  const gravierKg = gravierM3 * densiteGravier_kg;
-
-  const betonT = betonKg / 1000;
-  const acierT = acierKg / 1000;
-  const cimentT = cimentKg / 1000;
-  const sableT = sableKg / 1000;
-  const gravierT = gravierKg / 1000;
-
-  const totalMateriaux =
-    typeToiture === "tuiles" || typeToiture === "tuile_terre_cuite"
-      ? coutMateriauxTuiles
-      : typeToiture === "bac_acier"
-      ? coutMateriauxBacAcier
-      : typeToiture === "toit_terrasse"
-      ? volumeBeton * pu
-      : 0;
-
-  const total = totalMateriaux + mainOeuvre;
-
-  // ✅ FIX: Use refs instead of callbacks in dependencies
-  useEffect(() => {
-    onTotalChangeRef.current(total);
-  }, [total]);
-
-  useEffect(() => {
-    onMaterialsChangeRef.current({
-      nbTuiles,
-      betonM3: volumeBeton,
-      betonKg,
-      betonT,
-      acierKg,
-      acierT,
-      cimentKg,
-      cimentT,
-      sableM3,
-      sableKg,
-      sableT,
-      gravierM3,
-      gravierKg,
-      gravierT,
-    });
-  }, [
-    nbTuiles,
-    volumeBeton,
-    betonKg,
-    betonT,
-    acierKg,
-    acierT,
-    cimentKg,
-    cimentT,
-    sableM3,
-    sableKg,
-    sableT,
-    gravierM3,
-    gravierKg,
-    gravierT,
-  ]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setHistorique(JSON.parse(saved));
-      } catch {}
+      // Calculs Béton
+      detailsMateriaux = {
+        cimentT: volume * DOSAGE_BETON.ciment,
+        sableT: volume * DOSAGE_BETON.sable,
+        gravierT: volume * DOSAGE_BETON.gravier,
+        acierT: volume * DOSAGE_BETON.acier,
+        eauL: volume * DOSAGE_BETON.eau
+      };
     }
+
+    const total = coutMateriaux + mo;
+
+    return {
+      quantiteMateriel,
+      coutMateriaux,
+      detailsMateriaux,
+      mo,
+      total
+    };
+  }, [inputs, typeToiture]);
+
+  // --- SYNC PARENT ---
+  useEffect(() => {
+    if (onTotalChange) onTotalChange(results.total);
+    if (onMateriauxChange && typeToiture === "toit_terrasse") {
+      onMateriauxChange({
+        volume: results.quantiteMateriel,
+        ciment: results.detailsMateriaux.cimentT,
+        acier: results.detailsMateriaux.acierT
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.total]);
+
+  // --- HISTORIQUE ---
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
-
   const handleSave = () => {
-    if (surf <= 0) {
-      alert("⚠️ Veuillez entrer une surface valide.");
-      return;
-    }
-    if (typeToiture === "toit_terrasse" && ep <= 0) {
-      alert("⚠️ Veuillez entrer une épaisseur valide pour le toit terrasse.");
-      return;
-    }
-    if ((typeToiture === "tuiles" || typeToiture === "tuile_terre_cuite") && densite <= 0) {
-      alert("⚠️ Veuillez entrer une densité valide de tuiles par m².");
-      return;
-    }
-
-    const entry = {
+    if (results.total <= 0) return showToast("⚠️ Données invalides", "error");
+    
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      surface: surf.toFixed(2),
-      typeToiture,
-      epaisseur: ep.toFixed(2),
-      densiteTuiles: densite,
-      nbTuiles: nbTuiles.toFixed(0),
-      volumeBeton: volumeBeton.toFixed(2),
-      betonKg: betonKg.toFixed(0),
-      betonT: betonT.toFixed(2),
-      acierKg: acierKg.toFixed(0),
-      acierT: acierT.toFixed(2),
-      cimentKg: cimentKg.toFixed(0),
-      cimentT: cimentT.toFixed(2),
-      sableM3: sableM3.toFixed(2),
-      sableKg: sableKg.toFixed(0),
-      sableT: sableT.toFixed(2),
-      gravierM3: gravierM3.toFixed(2),
-      gravierKg: gravierKg.toFixed(0),
-      gravierT: gravierT.toFixed(2),
-      prixUnitaire: pu.toFixed(2),
-      coutMainOeuvre: mainOeuvre.toFixed(2),
-      total: total.toFixed(2),
+      type: typeToiture,
+      inputs: { ...inputs },
+      results: { ...results }
     };
 
-    setHistorique([entry, ...historique]);
-    alert("✅ Calcul sauvegardé !");
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Toiture sauvegardée !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
+  const clearHistory = () => {
+    if (window.confirm("Vider l'historique ?")) {
       setHistorique([]);
+      localStorage.removeItem(STORAGE_KEY);
+      showToast("Historique vidé");
     }
+  };
+
+  const resetFields = () => {
+    setInputs({ surface: "", epaisseur: "0.15", densiteTuiles: "12", prixUnitaire: "", coutMainOeuvre: "" });
+  };
+
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+  
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  // --- CHART DATA ---
+  const chartData = {
+    labels: ["Matériaux", "Main d'œuvre"],
+    datasets: [{
+      data: [results.coutMateriaux, results.mo],
+      backgroundColor: ["#f97316", "#06b6d4"], // Orange, Cyan
+      borderColor: "#1f2937",
+      borderWidth: 4,
+    }]
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 bg-gray-900 rounded-lg shadow-lg text-gray-100 font-sans">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center">🏠 Toiture</h2>
-
-      <label className="block mb-2 font-semibold text-orange-400">Type de toiture :</label>
-      <select
-        value={typeToiture}
-        onChange={(e) => setTypeToiture(e.target.value)}
-        className={inputClass}
-      >
-        <option value="tuiles">Tuiles classiques</option>
-        <option value="bac_acier">Bac acier</option>
-        <option value="tuile_terre_cuite">Tuile terre cuite</option>
-        <option value="toit_terrasse">Toit terrasse (dalle béton)</option>
-        <option value="autre">Autre</option>
-      </select>
-
-      <label className="block mb-2 font-semibold text-orange-400">Surface de toiture (m²) :</label>
-      <input
-        type="number"
-        min="0"
-        step="any"
-        value={surface}
-        onChange={(e) => setSurface(e.target.value)}
-        placeholder="Ex : 120"
-        className={inputClass}
-      />
-
-      {(typeToiture === "tuiles" || typeToiture === "tuile_terre_cuite") && (
-        <label className="block mb-2 font-semibold text-orange-400">
-          Densité tuiles (nombre par m²) :
-          <input
-            type="number"
-            min="1"
-            step="1"
-            value={densiteTuiles}
-            onChange={(e) => setDensiteTuiles(e.target.value)}
-            className={`${inputClass} mt-1`}
-          />
-        </label>
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {/* Toast */}
+      {message && (
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold ${message.type === "error" ? "bg-red-600" : "bg-orange-600"}`}>
+          {message.text}
+        </div>
       )}
 
-      {typeToiture === "toit_terrasse" && (
-        <>
-          <label className="block mb-2 font-semibold text-orange-400">Épaisseur dalle béton (m) :</label>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={epaisseur}
-            onChange={(e) => setEpaisseur(e.target.value)}
-            placeholder="Ex : 0.15"
-            className={inputClass}
-          />
-        </>
-      )}
-
-      <label className="block mb-2 font-semibold text-orange-400">
-        Prix unitaire (
-        {typeToiture === "tuiles" || typeToiture === "tuile_terre_cuite"
-          ? `${currency} par tuile`
-          : `${currency} par m²`}
-        ) :
-      </label>
-      <input
-        type="number"
-        min="0"
-        step="any"
-        value={prixUnitaire}
-        onChange={(e) => setPrixUnitaire(e.target.value)}
-        placeholder={`Ex : ${typeToiture === "tuiles" || typeToiture === "tuile_terre_cuite" ? "500" : "15000"}`}
-        className={inputClass}
-      />
-
-      <label className="block mb-4 font-semibold text-orange-400">
-        Coût main d'œuvre ({currency}) :
-      </label>
-      <input
-        type="number"
-        min="0"
-        step="any"
-        value={coutMainOeuvre}
-        onChange={(e) => setCoutMainOeuvre(e.target.value)}
-        placeholder={`Ex : 50000`}
-        className={inputClass}
-      />
-
-      {/* Résultats */}
-      <div className="mb-6 bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl p-5 shadow-2xl border-2 border-orange-500/30">
-        <h3 className="text-xl font-bold text-orange-400 mb-3">📊 Résultats instantanés</h3>
-        <div className="text-sm text-orange-300 space-y-1">
-          {typeToiture === "tuiles" || typeToiture === "tuile_terre_cuite" ? (
-            <>
-              <p>Nombre de tuiles : {nbTuiles.toFixed(0)}</p>
-              <p>Coût matériaux estimé : {coutMateriauxTuiles.toLocaleString()} {currency}</p>
-            </>
-          ) : typeToiture === "bac_acier" ? (
-            <p>Coût matériaux estimé : {coutMateriauxBacAcier.toLocaleString()} {currency}</p>
-          ) : typeToiture === "toit_terrasse" ? (
-            <>
-              <p>Volume béton : {volumeBeton.toFixed(2)} m³</p>
-              <p>Béton : {betonKg.toFixed(0)} kg — {betonT.toFixed(2)} t</p>
-              <p>Acier : {acierKg.toFixed(0)} kg — {acierT.toFixed(2)} t</p>
-              <p>Ciment : {cimentKg.toFixed(0)} kg — {cimentT.toFixed(2)} t</p>
-              <p>Sable : {sableM3.toFixed(2)} m³ — {sableKg.toFixed(0)} kg — {sableT.toFixed(2)} t</p>
-              <p>Gravier : {gravierM3.toFixed(2)} m³ — {gravierKg.toFixed(0)} kg — {gravierT.toFixed(2)} t</p>
-            </>
-          ) : (
-            <p>Calcul non défini pour ce type de toiture.</p>
-          )}
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-orange-600/20 rounded-lg text-orange-500">
+            <Home className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Toiture</h2>
+            <p className="text-xs text-gray-400">Couverture & Charpente</p>
+          </div>
+        </div>
+        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
+          <span className="text-xs text-gray-400 block">Total Estimé</span>
+          <span className="text-lg font-black text-orange-400">
+            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-sm text-gray-500">{currency}</span>
+          </span>
         </div>
       </div>
 
-      <div className="text-xl font-bold text-orange-400 text-center mb-6">
-        Coût total : {total.toLocaleString()} {currency}
-      </div>
-
-      <div className="flex gap-3 justify-center mb-6 flex-wrap">
-        <button
-          onClick={handleSave}
-          disabled={surf === 0}
-          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-md font-semibold shadow"
-        >
-          💾 Enregistrer
-        </button>
-        <button
-          onClick={clearHistorique}
-          disabled={historique.length === 0}
-          className="px-5 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded-md font-semibold shadow"
-        >
-          🧹 Effacer l'historique
-        </button>
-      </div>
-
-      {historique.length > 0 && (
-        <section
-          className="max-h-80 overflow-y-auto bg-gray-800 rounded-md p-4 shadow-inner scrollbar-thin scrollbar-thumb-orange-500 scrollbar-track-gray-700"
-        >
-          <h3 className="text-lg font-bold text-orange-400 mb-3 text-center">🕓 Historique</h3>
-          {historique.map((item) => (
-            <div
-              key={item.id}
-              className="bg-gray-700 rounded-md p-3 mb-3 flex justify-between items-center text-sm"
-            >
-              <div className="space-y-1">
-                <time className="block text-xs text-gray-400">{item.date}</time>
-                <p>Surface : {item.surface} m²</p>
-                <p>Type toiture : {item.typeToiture}</p>
-                {(item.typeToiture === "tuiles" || item.typeToiture === "tuile_terre_cuite") && (
-                  <p>Densité tuiles : {item.densiteTuiles} /m²</p>
-                )}
-                {item.typeToiture === "toit_terrasse" && (
-                  <p>Épaisseur dalle : {item.epaisseur} m</p>
-                )}
-                {(item.typeToiture === "tuiles" || item.typeToiture === "tuile_terre_cuite") && (
-                  <p>Nombre tuiles : {item.nbTuiles}</p>
-                )}
-                {item.typeToiture === "toit_terrasse" && (
-                  <>
-                    <p>Volume béton : {item.volumeBeton} m³</p>
-                    <p>Béton : {item.betonKg} kg — {item.betonT} t</p>
-                    <p>Acier : {item.acierKg} kg — {item.acierT} t</p>
-                    <p>Ciment : {item.cimentKg} kg — {item.cimentT} t</p>
-                    <p>Sable : {item.sableM3} m³ — {item.sableKg} kg — {item.sableT} t</p>
-                    <p>Gravier : {item.gravierM3} m³ — {item.gravierKg} kg — {item.gravierT} t</p>
-                  </>
-                )}
-                <p className="font-bold text-orange-300">Total : {item.total} {currency}</p>
-              </div>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="ml-4 px-2 py-1 bg-red-600 hover:bg-red-700 rounded-md text-white font-semibold"
-              >
-                ✖
-              </button>
+      {/* Main Grid */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+          
+          {/* GAUCHE : SÉLECTION & INPUTS (5 cols) */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            {/* Type Selector */}
+            <div className="grid grid-cols-3 gap-2 bg-gray-800 p-1.5 rounded-xl border border-gray-700">
+              {TYPES_TOITURE.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setTypeToiture(t.id)}
+                  className={`flex items-center justify-center gap-2 py-2 rounded-lg transition-all text-xs font-bold ${
+                    typeToiture === t.id 
+                      ? "bg-orange-600 text-white shadow-lg" 
+                      : "text-gray-400 hover:text-white hover:bg-gray-700"
+                  }`}
+                >
+                  {t.icon} {t.label}
+                </button>
+              ))}
             </div>
-          ))}
-        </section>
-      )}
+
+            {/* Formulaire */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-orange-400 uppercase tracking-wider">
+                <Ruler className="w-4 h-4" /> Dimensions
+              </h3>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                   <InputGroup label="Surface Toiture (m²)" value={inputs.surface} onChange={handleChange("surface")} placeholder="Ex: 120" />
+                </div>
+
+                {typeToiture === "tuiles" && (
+                  <div className="col-span-2">
+                    <InputGroup label="Densité (u/m²)" value={inputs.densiteTuiles} onChange={handleChange("densiteTuiles")} placeholder="12" />
+                  </div>
+                )}
+
+                {typeToiture === "toit_terrasse" && (
+                  <div className="col-span-2">
+                    <InputGroup label="Épaisseur Dalle (m)" value={inputs.epaisseur} onChange={handleChange("epaisseur")} placeholder="0.15" />
+                  </div>
+                )}
+              </div>
+
+              <div className="h-px bg-gray-700/50 my-2" />
+
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider">
+                <Banknote className="w-4 h-4" /> Coûts
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup 
+                  label={`Prix Unit. (${currency}/${typeToiture === 'tuiles' ? 'u' : typeToiture === 'toit_terrasse' ? 'm³' : 'm²'})`} 
+                  value={inputs.prixUnitaire} 
+                  onChange={handleChange("prixUnitaire")} 
+                />
+                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} />
+              </div>
+
+              <div className="flex gap-3 mt-auto pt-6">
+                <button onClick={handleSave} className="flex-1 bg-gradient-to-r from-orange-600 to-red-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2">
+                  <Save className="w-5 h-5" /> Calculer
+                </button>
+                <button onClick={resetFields} className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition">
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* DROITE : RÉSULTATS (7 cols) */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard 
+                label={typeToiture === 'tuiles' ? "Nombre Tuiles" : typeToiture === 'toit_terrasse' ? "Volume Béton" : "Surface"} 
+                value={results.quantiteMateriel.toFixed(typeToiture === 'tuiles' ? 0 : 2)} 
+                unit={typeToiture === 'tuiles' ? "u" : typeToiture === 'toit_terrasse' ? "m³" : "m²"} 
+                icon="📦" 
+                color="text-orange-400" 
+                bg="bg-orange-500/10" 
+              />
+              <ResultCard label="Coût Matériaux" value={(results.coutMateriaux/1000).toFixed(1)} unit="k" icon="🧱" color="text-gray-300" bg="bg-gray-500/10" border />
+              <ResultCard label="Coût MO" value={(results.mo/1000).toFixed(1)} unit="k" icon="👷" color="text-cyan-400" bg="bg-cyan-500/10" />
+            </div>
+
+            {/* Graphique & Détails */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-orange-600/10 rounded-full blur-3xl pointer-events-none" />
+
+               <div className="w-40 h-40 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <span className="text-sm font-bold text-orange-400">Total</span>
+                  </div>
+               </div>
+
+               <div className="flex-1 w-full space-y-3">
+                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Répartition Coûts</h4>
+                  <MaterialRow label="Matériaux" val={`${results.coutMateriaux.toLocaleString()} ${currency}`} color="bg-orange-500" />
+                  <MaterialRow label="Main d'œuvre" val={`${results.mo.toLocaleString()} ${currency}`} color="bg-cyan-500" />
+                  
+                  {typeToiture === "toit_terrasse" && (
+                    <div className="pt-2 border-t border-gray-700 mt-2">
+                      <p className="text-[10px] text-gray-500 uppercase font-bold mb-2">Détail Béton</p>
+                      <div className="grid grid-cols-2 gap-2 text-xs text-gray-300">
+                        <span>Ciment: {results.detailsMateriaux.cimentT.toFixed(2)} t</span>
+                        <span>Acier: {results.detailsMateriaux.acierT.toFixed(2)} t</span>
+                      </div>
+                    </div>
+                  )}
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
+                <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-3 h-3" /> Historique récent
+                  </h4>
+                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+                </div>
+                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
+                  {historique.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-orange-500/30">
+                      <div className="flex flex-col">
+                         <span className="text-[10px] text-gray-500">{item.date.split(',')[0]}</span>
+                         <span className="text-xs text-gray-300">
+                           {item.type} ({item.inputs.surface}m²)
+                         </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-sm font-bold text-orange-400">{item.results.total.toLocaleString()} {currency}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+// --- SOUS-COMPOSANTS ---
+
+const InputGroup = ({ label, value, onChange, placeholder, full = false, type = "number" }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type={type}
+      min="0"
+      step="any"
+      value={value}
+      onChange={onChange}
+      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+    </span>
+  </div>
+);
+
+const MaterialRow = ({ label, val, color }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/50 pb-2 last:border-0 group">
+    <div className="flex items-center gap-2">
+      <div className={`w-2 h-2 rounded-full ${color}`} />
+      <span className="text-gray-300 text-sm font-medium">{label}</span>
+    </div>
+    <span className="text-sm font-bold text-white font-mono">{val}</span>
+  </div>
+);

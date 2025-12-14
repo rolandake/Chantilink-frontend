@@ -1,278 +1,359 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { 
+  Columns, Ruler, Banknote, Save, Trash2, History, Anchor, Circle, Square, Type, ScanLine
+} from "lucide-react";
 
-const STORAGE_KEY = "poteaux-history";
+ChartJS.register(ArcElement, Tooltip, Legend);
 
-export default function Poteaux({
-  currency = "XOF",
-  onTotalChange = () => {},
-  onMateriauxChange = () => {},
-}) {
+const STORAGE_KEY = "poteaux-batiment-history";
+
+const DOSAGE = {
+  ciment: 0.350, 
+  sable: 0.6,    
+  gravier: 0.85, 
+  acier: 0.080,  
+  eau: 175       
+};
+
+const TYPES_POTEAUX = [
+  { id: "rectangulaire", label: "Rectangulaire", icon: <Square className="w-5 h-5"/> },
+  { id: "circulaire", label: "Circulaire", icon: <Circle className="w-5 h-5"/> },
+  { id: "t_shape", label: "Forme en T", icon: <Type className="w-5 h-5"/> },
+  { id: "autre", label: "Autre", icon: <ScanLine className="w-5 h-5"/> },
+];
+
+export default function Poteaux({ currency = "XOF", onTotalChange, onMateriauxChange }) {
+  
+  // --- ÉTATS ---
   const [typePoteau, setTypePoteau] = useState("rectangulaire");
-  const [largeur, setLargeur] = useState("");
-  const [hauteur, setHauteur] = useState("");
-  const [diametre, setDiametre] = useState("");
-  const [sectionManuelle, setSectionManuelle] = useState("");
-  const [longueur, setLongueur] = useState("");
-  const [quantite, setQuantite] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
+  const [inputs, setInputs] = useState({
+    nombre: "1",
+    longueur: "",      // Hauteur du poteau
+    largeur: "",       // Section Rect ou Largeur T
+    epaisseur: "",     // Section Rect ou Epaisseur T
+    diametre: "",      // Section Circulaire
+    section: "",       // Section Manuelle
+    prixUnitaire: "",
+    coutMainOeuvre: ""
+  });
+
   const [historique, setHistorique] = useState([]);
+  const [message, setMessage] = useState(null);
 
-  const densiteBeton = 2.4;
+  // --- MOTEUR DE CALCUL ---
+  const results = useMemo(() => {
+    const nb = parseFloat(inputs.nombre) || 0;
+    const h = parseFloat(inputs.longueur) || 0; 
+    const pu = parseFloat(inputs.prixUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
 
-  // ✅ CALCULS INSTANTANÉS - SECTION
-  let section = 0;
-  if (typePoteau === "rectangulaire" || typePoteau === "T") {
-    const l = parseFloat(largeur) || 0;
-    const h = parseFloat(hauteur) || 0;
-    if (l > 0 && h > 0) section = l * h;
-  } else if (typePoteau === "circulaire") {
-    const d = parseFloat(diametre) || 0;
-    if (d > 0) section = Math.PI * (d / 2) ** 2;
-  } else if (typePoteau === "autre") {
-    const s = parseFloat(sectionManuelle) || 0;
-    if (s > 0) section = s;
-  }
-
-  const longueurNum = parseFloat(longueur) || 0;
-  const quantiteNum = parseInt(quantite) || 0;
-  const prixUnitaireNum = parseFloat(prixUnitaire) || 0;
-  const coutMainOeuvreNum = parseFloat(coutMainOeuvre) || 0;
-
-  const vol = longueurNum > 0 && section > 0 && quantiteNum > 0
-    ? longueurNum * section * quantiteNum
-    : 0;
-
-  const total = vol * prixUnitaireNum + coutMainOeuvreNum;
-
-  const ciment = vol * 0.3;
-  const sable = vol * 0.6;
-  const gravier = vol * 0.8;
-  const eau = vol * 150;
-
-  const acierKg = vol * 80; // 80 kg/m³ par défaut
-  const acierT = acierKg / 1000;
-
-  const masseBeton = vol * densiteBeton;
-  const masseKg = masseBeton * 1000;
-
-  useEffect(() => {
-    onTotalChange(total);
-  }, [total, onTotalChange]);
-
-  useEffect(() => {
-    onMateriauxChange({
-      Volume: vol,
-      Masse: masseBeton,
-      MasseKg: masseKg,
-      Ciment: ciment,
-      Sable: sable,
-      Gravier: gravier,
-      Eau: eau,
-      Acier: acierT,
-    });
-  }, [vol, masseBeton, masseKg, ciment, sable, gravier, eau, acierT, onMateriauxChange]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setHistorique(JSON.parse(saved));
-      } catch {}
+    let aireSection = 0;
+    if (typePoteau === "rectangulaire") {
+      const l = parseFloat(inputs.largeur) || 0;
+      const ep = parseFloat(inputs.epaisseur) || 0;
+      aireSection = l * ep;
+    } else if (typePoteau === "circulaire") {
+      const d = parseFloat(inputs.diametre) || 0;
+      aireSection = Math.PI * Math.pow(d / 2, 2);
+    } else if (typePoteau === "t_shape") {
+      const l = parseFloat(inputs.largeur) || 0; 
+      const ep = parseFloat(inputs.epaisseur) || 0; 
+      // Calcul simplifié T : (Largeur * Epaisseur) + ((Largeur - Epaisseur) * Epaisseur) -> Approximatif pour l'UX
+      // On considère Largeur Totale et Epaisseur des jambages
+      aireSection = (l * ep) + ((l * 0.6) * ep); // Estimation surface T
+    } else {
+      aireSection = parseFloat(inputs.section) || 0;
     }
+
+    const volumeUnitaire = aireSection * h;
+    const volumeTotal = volumeUnitaire * nb;
+
+    // Matériaux
+    const cimentT = volumeTotal * DOSAGE.ciment;
+    const cimentSacs = (cimentT * 1000) / 50;
+    const sableT = volumeTotal * DOSAGE.sable;
+    const gravierT = volumeTotal * DOSAGE.gravier;
+    const acierT = volumeTotal * DOSAGE.acier;
+    const eauL = volumeTotal * DOSAGE.eau;
+
+    // Coûts
+    const coutMateriaux = volumeTotal * pu;
+    const total = coutMateriaux + mo;
+
+    return {
+      aireSection,
+      volumeTotal,
+      cimentT, cimentSacs,
+      sableT, gravierT, acierT, eauL,
+      coutMateriaux, mo, total
+    };
+  }, [inputs, typePoteau]);
+
+  // --- SYNC PARENT ---
+  useEffect(() => {
+    if (onTotalChange) onTotalChange(results.total);
+    if (onMateriauxChange) {
+      onMateriauxChange({
+        volume: results.volumeTotal,
+        ciment: results.cimentT,
+        acier: results.acierT
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.total]);
+
+  // --- HISTORIQUE ---
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
-
   const handleSave = () => {
-    if (vol === 0) {
-      alert("⚠️ Veuillez saisir des valeurs valides.");
-      return;
-    }
-    const entry = {
+    if (results.volumeTotal <= 0) return showToast("⚠️ Données invalides", "error");
+    
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      typePoteau,
-      largeur,
-      hauteur,
-      diametre,
-      sectionManuelle,
-      longueur,
-      quantite,
-      prixUnitaire,
-      coutMainOeuvre,
-      section: section.toFixed(3),
-      volume: vol.toFixed(3),
-      masse: masseBeton.toFixed(3),
-      masseKg: masseKg.toFixed(0),
-      ciment: ciment.toFixed(3),
-      cimentKg: (ciment * 1000).toFixed(0),
-      sable: sable.toFixed(3),
-      sableKg: (sable * 1000).toFixed(0),
-      gravier: gravier.toFixed(3),
-      gravierKg: (gravier * 1000).toFixed(0),
-      eau: eau.toFixed(0),
-      eauM3: (eau / 1000).toFixed(3),
-      acierT: acierT.toFixed(3),
-      acierKg: acierKg.toFixed(0),
-      total: total.toFixed(2),
+      type: typePoteau,
+      inputs: { ...inputs },
+      results: { ...results }
     };
-    setHistorique([entry, ...historique]);
-    alert("✅ Calcul sauvegardé !");
+
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Poteaux sauvegardés !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
+  const clearHistory = () => {
+    if (window.confirm("Vider l'historique ?")) {
       setHistorique([]);
+      localStorage.removeItem(STORAGE_KEY);
+      showToast("Historique vidé");
     }
+  };
+
+  const resetFields = () => {
+    setInputs({ nombre: "1", longueur: "", largeur: "", epaisseur: "", diametre: "", section: "", prixUnitaire: "", coutMainOeuvre: "" });
+  };
+
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+  
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  // --- CHART DATA ---
+  const chartData = {
+    labels: ["Béton", "Main d'œuvre"],
+    datasets: [{
+      data: [results.coutMateriaux, results.mo],
+      backgroundColor: ["#3b82f6", "#f97316"],
+      borderColor: "#1f2937",
+      borderWidth: 4,
+    }]
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-4 bg-gray-900 rounded-lg shadow-lg text-gray-100 font-sans">
-      <h3 className="text-xl font-bold text-orange-400 mb-4 text-center">Poteaux</h3>
-
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Type de poteau</label>
-          <select
-            value={typePoteau}
-            onChange={(e) => setTypePoteau(e.target.value)}
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700"
-          >
-            <option value="rectangulaire">Rectangulaire</option>
-            <option value="T">Poteau en T</option>
-            <option value="circulaire">Circulaire</option>
-            <option value="autre">Autre</option>
-          </select>
-        </div>
-
-        {(typePoteau === "rectangulaire" || typePoteau === "T") && (
-          <>
-            <div>
-              <label className="block mb-1 text-orange-400">Largeur (m)</label>
-              <input
-                type="number"
-                value={largeur}
-                onChange={(e) => setLargeur(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-              />
-            </div>
-            <div>
-              <label className="block mb-1 text-orange-400">Hauteur (m)</label>
-              <input
-                type="number"
-                value={hauteur}
-                onChange={(e) => setHauteur(e.target.value)}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-              />
-            </div>
-          </>
-        )}
-
-        {typePoteau === "circulaire" && (
-          <div>
-            <label className="block mb-1 text-orange-400">Diamètre (m)</label>
-            <input
-              type="number"
-              value={diametre}
-              onChange={(e) => setDiametre(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-            />
-          </div>
-        )}
-
-        {typePoteau === "autre" && (
-          <div>
-            <label className="block mb-1 text-orange-400">Section (m²)</label>
-            <input
-              type="number"
-              value={sectionManuelle}
-              onChange={(e) => setSectionManuelle(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-            />
-          </div>
-        )}
-
-        <div>
-          <label className="block mb-1 text-orange-400">Longueur (m)</label>
-          <input
-            type="number"
-            value={longueur}
-            onChange={(e) => setLongueur(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-          />
-        </div>
-        <div>
-          <label className="block mb-1 text-orange-400">Quantité</label>
-          <input
-            type="number"
-            value={quantite}
-            onChange={(e) => setQuantite(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-          />
-        </div>
-        <div>
-          <label className="block mb-1 text-orange-400">Prix unitaire ({currency}/m³)</label>
-          <input
-            type="number"
-            value={prixUnitaire}
-            onChange={(e) => setPrixUnitaire(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-          />
-        </div>
-        <div>
-          <label className="block mb-1 text-orange-400">Main d'œuvre ({currency})</label>
-          <input
-            type="number"
-            value={coutMainOeuvre}
-            onChange={(e) => setCoutMainOeuvre(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded"
-          />
-        </div>
-      </div>
-
-      <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl p-6 mb-6 shadow-2xl border-2 border-orange-500/30">
-        <h3 className="text-xl font-bold text-orange-400 mb-3">📊 Résultats instantanés</h3>
-        <div className="space-y-2">
-          <p>📐 Section : <strong>{section.toFixed(3)} m²</strong></p>
-          <p>📦 Volume : {vol.toFixed(3)} m³</p>
-          <p>⚖ Masse béton : {masseKg.toFixed(0)} kg</p>
-          <p>🧱 Ciment : {ciment.toFixed(3)} t ({(ciment * 1000).toFixed(0)} kg)</p>
-          <p>🏖️ Sable : {sable.toFixed(3)} t</p>
-          <p>🪨 Gravier : {gravier.toFixed(3)} t</p>
-          <p>💧 Eau : {eau.toFixed(0)} L</p>
-          <p>🔩 Acier : {acierKg.toFixed(0)} kg ({acierT.toFixed(3)} t)</p>
-          <p className="text-orange-400 font-bold text-lg mt-2">💰 Total : {total.toLocaleString()} {currency}</p>
-        </div>
-      </div>
-
-      <div className="flex justify-center gap-4 mb-4">
-        <button onClick={handleSave} disabled={vol === 0} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded">💾 Enregistrer</button>
-        <button onClick={clearHistorique} disabled={historique.length === 0} className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded">🧹 Vider</button>
-      </div>
-
-      {historique.length > 0 && (
-        <div className="bg-gray-800 p-4 rounded-md max-h-96 overflow-y-auto">
-          <h4 className="text-center font-bold text-orange-400 mb-3">📜 Historique</h4>
-          {historique.map((item) => (
-            <div key={item.id} className="bg-gray-700 rounded p-3 mb-2">
-              <p className="text-sm text-gray-400">{item.date}</p>
-              <p>Type : {item.typePoteau}</p>
-              <p>Volume : {item.volume} m³ | Acier : {item.acierKg} kg</p>
-              <p className="text-orange-300 font-bold">Total : {item.total} {currency}</p>
-              <button onClick={() => handleDelete(item.id)} className="text-red-500 text-sm mt-1">✖ Supprimer</button>
-            </div>
-          ))}
+    <div className="flex flex-col h-full bg-gray-900 text-gray-100">
+      
+      {/* Toast */}
+      {message && (
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold ${message.type === "error" ? "bg-red-600" : "bg-blue-600"}`}>
+          {message.text}
         </div>
       )}
+
+      {/* Main Grid - Scrollable et Aéré */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24"> {/* pb-24 ajoute de l'espace en bas */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* GAUCHE : SÉLECTION & INPUTS (5 cols) */}
+          <div className="lg:col-span-5 flex flex-col gap-6">
+            
+            {/* Type Selector (Visibilité améliorée) */}
+            <div className="bg-gray-800 p-2 rounded-2xl border border-gray-700 shadow-md">
+              <div className="grid grid-cols-4 gap-2">
+                {TYPES_POTEAUX.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setTypePoteau(t.id)}
+                    className={`flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
+                      typePoteau === t.id 
+                        ? "bg-blue-600 text-white shadow-lg ring-2 ring-blue-400 ring-offset-2 ring-offset-gray-900" 
+                        : "text-gray-400 hover:text-white hover:bg-gray-700"
+                    }`}
+                  >
+                    {t.icon}
+                    <span className="text-[10px] mt-1 font-bold">{t.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Formulaire */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-6 shadow-lg flex flex-col gap-5">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-blue-400 uppercase tracking-wider">
+                <Ruler className="w-4 h-4" /> Géométrie ({typePoteau})
+              </h3>
+
+              <div className="grid grid-cols-2 gap-5">
+                <div className="col-span-2">
+                   <InputGroup label="Nombre de poteaux" value={inputs.nombre} onChange={handleChange("nombre")} placeholder="1" />
+                </div>
+                
+                <InputGroup label="Hauteur (m)" value={inputs.longueur} onChange={handleChange("longueur")} placeholder="Ex: 3.00" />
+                
+                {/* Champs dynamiques selon le type */}
+                {typePoteau === "rectangulaire" && (
+                  <>
+                    <InputGroup label="Largeur (m)" value={inputs.largeur} onChange={handleChange("largeur")} placeholder="Ex: 0.20" />
+                    <InputGroup label="Profondeur (m)" value={inputs.epaisseur} onChange={handleChange("epaisseur")} placeholder="Ex: 0.20" />
+                  </>
+                )}
+                {typePoteau === "circulaire" && (
+                  <InputGroup label="Diamètre (m)" value={inputs.diametre} onChange={handleChange("diametre")} placeholder="Ex: 0.30" />
+                )}
+                {typePoteau === "t_shape" && (
+                  <>
+                    <InputGroup label="Largeur Totale (m)" value={inputs.largeur} onChange={handleChange("largeur")} placeholder="Ex: 0.40" />
+                    <InputGroup label="Épaisseur (m)" value={inputs.epaisseur} onChange={handleChange("epaisseur")} placeholder="Ex: 0.15" />
+                  </>
+                )}
+                {typePoteau === "autre" && (
+                  <InputGroup label="Section (m²)" value={inputs.section} onChange={handleChange("section")} placeholder="Ex: 0.09" />
+                )}
+              </div>
+
+              <div className="h-px bg-gray-700/50 my-2" />
+
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider">
+                <Banknote className="w-4 h-4" /> Coûts
+              </h3>
+              <div className="grid grid-cols-2 gap-5">
+                <InputGroup label={`Prix Béton (${currency}/m³)`} value={inputs.prixUnitaire} onChange={handleChange("prixUnitaire")} />
+                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} />
+              </div>
+
+              <div className="flex gap-3 mt-4">
+                <button onClick={handleSave} className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:opacity-90 text-white py-3.5 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2">
+                  <Save className="w-5 h-5" /> Calculer
+                </button>
+                <button onClick={resetFields} className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition">
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* DROITE : RÉSULTATS (7 cols) */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Volume Total" value={results.volumeTotal.toFixed(2)} unit="m³" icon="🧊" color="text-blue-400" bg="bg-blue-500/10" />
+              <ResultCard label="Ciment" value={results.cimentSacs.toFixed(1)} unit="sacs" icon="🧱" color="text-gray-300" bg="bg-gray-500/10" border />
+              <ResultCard label="Acier" value={(results.acierT * 1000).toFixed(0)} unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-red-400" bg="bg-red-500/10" />
+            </div>
+
+            {/* Graphique & Détails */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+
+               <div className="w-40 h-40 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <span className="text-sm font-bold text-blue-400">Total</span>
+                  </div>
+               </div>
+
+               <div className="flex-1 w-full space-y-3">
+                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Matériaux (Dosage 350kg/m³)</h4>
+                  <MaterialRow label="Ciment" val={`${results.cimentT.toFixed(2)} t`} color="bg-blue-500" />
+                  <MaterialRow label="Sable" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-500" />
+                  <MaterialRow label="Gravier" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
+                  <MaterialRow label="Acier (80kg/m³)" val={`${results.acierT.toFixed(3)} t`} color="bg-red-500" />
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
+                <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-3 h-3" /> Historique récent
+                  </h4>
+                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+                </div>
+                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
+                  {historique.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-blue-500/30">
+                      <div className="flex flex-col">
+                         <span className="text-[10px] text-gray-500">{item.date.split(',')[0]}</span>
+                         <span className="text-xs text-gray-300">
+                           {item.inputs.nombre}x {item.type} (Vol: {item.results.volumeTotal.toFixed(1)}m³)
+                         </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-sm font-bold text-blue-400">{item.results.total.toLocaleString()} {currency}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+// --- SOUS-COMPOSANTS ---
+
+const InputGroup = ({ label, value, onChange, placeholder, full = false, type = "number" }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-2 text-[11px] font-bold text-gray-400 uppercase tracking-wide">{label}</label>
+    <input
+      type={type}
+      min="0"
+      step="any"
+      value={value}
+      onChange={onChange}
+      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+    </span>
+    <span className={`text-2xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+    </span>
+  </div>
+);
+
+const MaterialRow = ({ label, val, color }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/50 pb-2 last:border-0 group">
+    <div className="flex items-center gap-2">
+      <div className={`w-2 h-2 rounded-full ${color}`} />
+      <span className="text-gray-300 text-sm font-medium">{label}</span>
+    </div>
+    <span className="text-sm font-bold text-white font-mono">{val}</span>
+  </div>
+);

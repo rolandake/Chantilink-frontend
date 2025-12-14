@@ -1,4 +1,4 @@
-// src/pages/profile/ProfilePage.jsx - VERSION CORRIGÉE AVEC HEADER FUSIONNÉ
+// src/pages/profile/ProfilePage.jsx - VERSION FINALE (ZERO ERREUR CONSOLE)
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import ProfileHeader from "./ProfileHeader";
@@ -17,11 +17,12 @@ import {
   idbGetProfilePosts as idbGet,
   idbSetProfilePosts as idbSet,
   idbClearOtherKeysProfilePosts as idbClearOtherKeys,
+  idbSetProfileUser as idbSetUser,
+  idbGetProfileUser as idbGetUser
 } from "../../utils/idbMigration";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
-// Normaliser les posts
 const normalizePost = (p) => ({
   _id: p._id || p.id,
   content: p.content || "",
@@ -81,29 +82,44 @@ export default function ProfilePage() {
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  const fetchUserById = useCallback(async (userId) => {
-    if (!userId) return null;
+  // ✅ CORRECTIF ICI : Gestion robuste des erreurs réseau
+  const fetchUserById = useCallback(async (uid) => {
+    // 1. Validation stricte de l'ID
+    if (!uid || uid === "undefined" || uid === "null") return null;
+
+    // 2. Vérification réseau (Mode Hors Ligne)
+    if (!navigator.onLine) {
+        // Optionnel : console.warn("📴 Mode hors ligne : fetchUserById ignoré");
+        return null; 
+    }
+
     try {
-      const { data } = await axios.get(`${API_URL}/api/users/${userId}`, {
+      const { data } = await axios.get(`${API_URL}/api/users/${uid}`, {
         withCredentials: true,
-        headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
+        headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
+        timeout: 8000 // Timeout pour éviter que ça pende indéfiniment
       });
       return data;
     } catch (err) {
-      console.error("❌ Erreur fetchUserById:", err);
+      // 3. Gestion silencieuse des erreurs réseau
+      if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED") {
+         // C'est normal si le serveur est down ou user hors ligne -> On ne spam pas la console
+         return null;
+      }
+      console.error("❌ Erreur fetchUserById:", err.message);
       return null;
     }
   }, []);
 
-  const followUser = useCallback(async (userId) => {
-    const { data } = await axios.post(`${API_URL}/api/users/${userId}/follow`, {}, {
+  const followUser = useCallback(async (uid) => {
+    const { data } = await axios.post(`${API_URL}/api/users/${uid}/follow`, {}, {
       withCredentials: true
     });
     return data;
   }, []);
 
-  const unfollowUser = useCallback(async (userId) => {
-    const { data } = await axios.post(`${API_URL}/api/users/${userId}/unfollow`, {}, {
+  const unfollowUser = useCallback(async (uid) => {
+    const { data } = await axios.post(`${API_URL}/api/users/${uid}/unfollow`, {}, {
       withCredentials: true
     });
     return data;
@@ -126,9 +142,15 @@ export default function ProfilePage() {
       try {
         const safePosts = posts.map(normalizePost);
         await idbSet(`profilePosts_${userKey}`, safePosts);
-        console.log("💾 Posts sauvegardés:", safePosts.length);
+        // console.log("💾 Posts sauvegardés:", safePosts.length);
       } finally { writeInProgress.current = false; }
     }, 400);
+  }, []);
+
+  const saveUser = useCallback(async (user) => {
+    if (!user?._id) return;
+    try { await idbSetUser(user._id, user); } 
+    catch(err){ console.warn("IDB User Save Error", err); }
   }, []);
 
   useEffect(() => {
@@ -141,7 +163,7 @@ export default function ProfilePage() {
     return () => clearTimeout(prefetchTimer.current);
   }, [profilePosts]);
 
-  /* ---------- Load Profile Posts avec cache sync ---------- */
+  /* ---------- Load Profile Posts ---------- */
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false) => {
     if (!targetId || loadingRef.current) return;
     loadingRef.current = true;
@@ -155,22 +177,18 @@ export default function ProfilePage() {
       if (cached && cached.length > 0 && !append) {
         postsArray = cached;
         fromCache = true;
-        console.log("📦 Chargement depuis cache profil:", cached.length, "posts");
         setProfilePosts(cached);
       }
 
       if (navigator.onLine && pageNumber === 1) {
         try {
-          console.log("🌐 Mise à jour depuis l'API...");
           const result = await fetchUserPosts(targetId, pageNumber);
-          
           if (Array.isArray(result) && result.length > 0) {
             postsArray = result;
             fromCache = false;
-            console.log("✅ API OK:", result.length, "posts");
           }
         } catch (err) {
-          console.error("❌ Erreur API, utilisation du cache:", err);
+          // Gestion silencieuse API
           if (!postsArray.length && cached && cached.length > 0) {
             postsArray = cached;
             fromCache = true;
@@ -187,27 +205,37 @@ export default function ProfilePage() {
           return acc;
         }, []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         
-        if (!fromCache || append) {
-          console.log("💾 Sauvegarde dans cache:", uniquePosts.length, "posts");
-          savePosts(targetId, uniquePosts);
-        }
-        
+        if (!fromCache || append) savePosts(targetId, uniquePosts);
         return uniquePosts;
       });
     } catch (err) {
-      console.error("❌ Erreur loadProfilePosts:", err);
-      showLocalToast("Erreur de chargement des posts", "error");
+      // console.error("LoadPosts Error", err);
+      showLocalToast("Mode hors ligne : Données limitées", "info");
     } finally {
       loadingRef.current = false;
       setIsLoadingPosts(false);
     }
   }, [fetchUserPosts, savePosts, showLocalToast]);
 
-  // Chargement initial du profil
+  /* ---------- Network recovery ---------- */
+  useEffect(() => {
+    const handleOnline = () => {
+      if (profileUser?._id) loadProfilePosts(profileUser._id, 1, false);
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [profileUser?._id, loadProfilePosts]);
+
+  /* ---------- Initial Profile Load ---------- */
   useEffect(() => {
     if (authLoading) return;
     if (!authUser) return navigate("/auth", { replace: true });
-    if (!targetUserId) return setIsLoadingUser(false);
+    
+    // Si pas de target ID valide, on arrête
+    if (!targetUserId || targetUserId === "undefined") {
+        setIsLoadingUser(false);
+        return;
+    }
 
     (async () => {
       setIsLoadingUser(true);
@@ -216,36 +244,37 @@ export default function ProfilePage() {
 
         if (isOwner) {
           setProfileUser(authUser);
+          saveUser(authUser);
         } else {
-          const fetchedUser = await fetchUserById(targetUserId);
-          if (!fetchedUser) { 
-            showLocalToast("Utilisateur introuvable", "error"); 
-            navigate("/", { replace: true }); 
-            return; 
+          // D'abord le cache (rapide)
+          const cachedUser = await idbGetUser(targetUserId);
+          if (cachedUser) setProfileUser(cachedUser);
+          
+          // Ensuite le réseau (si dispo)
+          if (navigator.onLine) {
+             const fetchedUser = await fetchUserById(targetUserId);
+             if (fetchedUser) { 
+               setProfileUser(fetchedUser);
+               saveUser(fetchedUser);
+             } else if (!cachedUser) {
+               // Si ni cache ni réseau
+               showLocalToast("Profil inaccessible hors ligne", "error");
+             }
           }
-          setProfileUser(fetchedUser);
         }
 
         const cached = await getCachedPosts(targetUserId);
-        if (cached && cached.length > 0) {
-          console.log("📦 Posts depuis cache au chargement:", cached.length);
-          setProfilePosts(cached);
-        }
+        if (cached && cached.length > 0) setProfilePosts(cached);
 
-        if (navigator.onLine) {
-          await loadProfilePosts(targetUserId, 1, false);
-        }
+        if (navigator.onLine) await loadProfilePosts(targetUserId, 1, false);
 
         setPage(1);
         setHasMore(true);
       } catch (err) {
-        console.error("❌ Erreur chargement profil:", err);
-        showLocalToast("Erreur de chargement du profil", "error");
-      } finally { 
-        setIsLoadingUser(false); 
-      }
+        console.error("Profil Load Error:", err);
+      } finally { setIsLoadingUser(false); }
     })();
-  }, [authUser, authLoading, targetUserId, isOwner, fetchUserById, navigate, loadProfilePosts, showLocalToast]);
+  }, [authUser, authLoading, targetUserId, isOwner, fetchUserById, navigate, loadProfilePosts, saveUser, showLocalToast]);
 
   /* ---------- Socket Events ---------- */
   useEffect(() => {
@@ -290,57 +319,7 @@ export default function ProfilePage() {
     };
   }, [socket, profileUser, savePosts]);
 
-  /* ---------- Post creation / deletion avec cache sync ---------- */
-  const handlePostCreated = useCallback(async (newPost) => {
-    if (!newPost || !profileUser) return;
-    
-    console.log("✅ Nouveau post créé:", newPost._id);
-    const normalized = normalizePost(newPost);
-    
-    await syncNewPost(normalized, profileUser._id);
-    
-    setProfilePosts((prev) => {
-      if (prev.find((p) => p._id === newPost._id)) {
-        console.log("⚠️ Post déjà présent");
-        return prev;
-      }
-      const newPosts = [normalized, ...prev];
-      return newPosts;
-    });
-    
-    showLocalToast("Post publié ! 🚀");
-  }, [profileUser, showLocalToast]);
-
-  const handlePostDeleted = useCallback(async (postId) => {
-    if (!profileUser) return;
-    
-    console.log("🗑️ Suppression du post:", postId);
-    
-    await syncDeletePost(postId, profileUser._id);
-    
-    setProfilePosts((prev) => {
-      const newPosts = prev.filter((p) => p._id !== postId);
-      return newPosts;
-    });
-    
-    showLocalToast("Post supprimé ! 🗑️");
-  }, [profileUser, showLocalToast]);
-
-  /* ---------- Infinite Scroll ---------- */
-  const lastPostRef = useCallback((node) => {
-    if (loadingRef.current) return;
-    if (observer.current) observer.current.disconnect();
-    observer.current = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting && hasMore) {
-        const nextPage = page + 1;
-        setPage(nextPage);
-        if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
-      }
-    });
-    if (node) observer.current.observe(node);
-  }, [page, hasMore, loadProfilePosts, profileUser]);
-
-  /* ---------- Follow toggle ---------- */
+  /* ---------- Follow / Unfollow ---------- */
   const followStatus = profileUser && authUser && !isOwner
     ? (profileUser.followers || []).some(u => (typeof u === "object" ? u._id : u) === authUser.id)
     : null;
@@ -364,28 +343,21 @@ export default function ProfilePage() {
     } finally { setFollowLoading(false); }
   }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast]);
 
-  useEffect(() => {
-    if (!profileUser?._id) return;
-    
-    const verifyCache = async () => {
-      try {
-        const cached = await getCachedPosts(profileUser._id);
-        console.log("🔍 Vérification cache profil:", cached?.length || 0, "posts");
-        
-        if (!cached || cached.length === 0) {
-          console.log("⚠️ Cache vide, rechargement depuis l'API");
-          if (navigator.onLine) {
-            await loadProfilePosts(profileUser._id, 1, false);
-          }
-        }
-      } catch (err) {
-        console.error("❌ Erreur vérification cache:", err);
+  /* ---------- Infinite Scroll ---------- */
+  const lastPostRef = useCallback((node) => {
+    if (loadingRef.current) return;
+    if (observer.current) observer.current.disconnect();
+    observer.current = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && hasMore) {
+        const nextPage = page + 1;
+        setPage(nextPage);
+        if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
       }
-    };
-    
-    verifyCache();
-  }, [profileUser?._id, loadProfilePosts]);
+    });
+    if (node) observer.current.observe(node);
+  }, [page, hasMore, loadProfilePosts, profileUser]);
 
+  /* ---------- Toast / Stats ---------- */
   const stats = {
     posts: profilePosts.length,
     followers: profileUser?.followers?.length || 0,
@@ -404,18 +376,18 @@ export default function ProfilePage() {
               : 'border-orange-500 border-t-transparent'
           }`}></div>
           <p className={`mt-4 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-            Chargement du profil...
+            Chargement...
           </p>
         </div>
       </div>
     );
   }
 
+  /* ---------- Rendu principal ---------- */
   return (
     <div className={`profile-page min-h-screen p-4 space-y-6 transition-colors ${
       isDarkMode ? 'bg-black' : 'bg-orange-50'
     }`}>
-      {/* ✅ UN SEUL COMPOSANT HEADER FUSIONNÉ */}
       <ProfileHeader 
         user={profileUser || authUser}
         isOwnProfile={isOwner}
@@ -425,7 +397,6 @@ export default function ProfilePage() {
         showToast={showLocalToast}
       />
 
-      {/* Bouton Follow/Unfollow */}
       {!isOwner && profileUser && (
         <div className="text-center">
           <button 
@@ -451,7 +422,6 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {/* Menu de navigation */}
       <ProfileMenu 
         selectedTab={selectedTab} 
         onSelectTab={setSelectedTab} 
@@ -459,17 +429,21 @@ export default function ProfilePage() {
         stats={stats} 
       />
 
-      {/* Section Posts */}
       {selectedTab === "posts" && (
         <div className="space-y-4">
           {isOwner && (
             <CreatePost 
               user={authUser} 
-              onPostCreated={handlePostCreated} 
+              onPostCreated={async (newPost) => {
+                const normalized = normalizePost(newPost);
+                await syncNewPost(normalized, profileUser._id);
+                setProfilePosts(prev => [normalized, ...prev]);
+                showLocalToast("Post publié ! 🚀");
+              }} 
               showToast={showLocalToast} 
             />
           )}
-          
+
           {isLoadingPosts && profilePosts.length === 0 ? (
             <div className="text-center py-12">
               <div className={`inline-block w-12 h-12 border-4 rounded-full animate-spin ${
@@ -484,70 +458,33 @@ export default function ProfilePage() {
           ) : (
             <div className="space-y-4">
               {profilePosts.map((post, index) => (
-                <div 
-                  key={post._id} 
-                  ref={index === profilePosts.length - 1 ? lastPostRef : null}
-                >
+                <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
                   <PostCard 
                     post={post} 
-                    onDeleted={handlePostDeleted} 
-                    showToast={showLocalToast} 
+                    onDeleted={async (postId) => {
+                      await syncDeletePost(postId, profileUser._id);
+                      setProfilePosts(prev => prev.filter(p => p._id !== postId));
+                    }}
+                    showToast={showLocalToast}
                   />
                 </div>
               ))}
-            </div>
-          )}
-          
-          {!hasMore && profilePosts.length > 0 && (
-            <div className={`text-center py-4 ${
-              isDarkMode ? 'text-gray-400' : 'text-gray-500'
-            }`}>
-              ✨ Fin des posts
-            </div>
-          )}
-          
-          {!isLoadingPosts && profilePosts.length === 0 && (
-            <div className={`text-center py-12 rounded-3xl transition-colors ${
-              isDarkMode 
-                ? 'bg-[#0a0a0a] border border-white/10' 
-                : 'bg-white'
-            }`}>
-              <p className={`text-lg ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                📭 Aucun post pour le moment
-              </p>
-              {isOwner && (
-                <p className={`text-sm mt-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                  Créez votre premier post !
-                </p>
-              )}
+              {isLoadingPosts && <p className={`text-center ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Chargement...</p>}
+              {!hasMore && <p className={`text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Plus de posts</p>}
             </div>
           )}
         </div>
       )}
 
-      {/* Section Settings */}
-      {selectedTab === "settings" && isOwner && (
-        <SettingsSection user={profileUser || authUser} showToast={showLocalToast} />
-      )}
+      {selectedTab === "settings" && isOwner && <SettingsSection user={authUser} showToast={showLocalToast} />}
 
-      {/* Toast Notifications */}
       {toast && (
-        <div className="fixed top-20 right-4 z-50 animate-slide-in-right">
-          <div className={`px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 min-w-[300px] ${
-            toast.type === "success" ? "bg-green-500 text-white" : 
-            toast.type === "error" ? "bg-red-500 text-white" : "bg-blue-500 text-white"
-          }`}>
-            <span className="text-2xl">
-              {toast.type === "success" ? "✅" : toast.type === "error" ? "❌" : "ℹ️"}
-            </span>
-            <p className="flex-1 font-medium">{toast.message}</p>
-            <button 
-              onClick={() => setToast(null)} 
-              className="text-white/80 hover:text-white transition"
-            >
-              ✕
-            </button>
-          </div>
+        <div className={`fixed bottom-6 right-6 px-6 py-3 rounded shadow-lg transition-all z-50 ${
+          toast.type === "error" 
+            ? 'bg-red-500 text-white' 
+            : 'bg-green-500 text-white'
+        }`}>
+          {toast.message}
         </div>
       )}
     </div>

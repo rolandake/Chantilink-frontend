@@ -1,366 +1,431 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { 
+  PaintRoller, Grid3X3, Hammer, Layers, Palette, Component,
+  Save, Trash2, History, Ruler, Banknote
+} from "lucide-react";
+
+ChartJS.register(ArcElement, Tooltip, Legend);
 
 const STORAGE_KEY = "finitions-history";
 
-export default function Finitions({ currency = "XOF", onCostChange = () => {} }) {
-  const typesFinition = [
-    { value: "peinture", label: "Peinture", emoji: "🎨", color: "blue" },
-    { value: "carrelage", label: "Carrelage", emoji: "🏺", color: "amber" },
-    { value: "parquet", label: "Parquet", emoji: "🪵", color: "yellow" },
-    { value: "platre", label: "Plâtre", emoji: "🧱", color: "gray" },
-    { value: "faience", label: "Faïence", emoji: "✨", color: "cyan" },
-    { value: "autre", label: "Autre", emoji: "🔧", color: "purple" },
-  ];
+// Types de finitions avec configuration visuelle
+const FINITION_TYPES = [
+  { id: "peinture", label: "Peinture", icon: <PaintRoller className="w-5 h-5"/>, color: "violet", unit: "m²", bg: "bg-violet-500/10", text: "text-violet-400" },
+  { id: "carrelage", label: "Carrelage", icon: <Grid3X3 className="w-5 h-5"/>, color: "emerald", unit: "m²", bg: "bg-emerald-500/10", text: "text-emerald-400" },
+  { id: "parquet", label: "Parquet", icon: <Component className="w-5 h-5"/>, color: "amber", unit: "m²", bg: "bg-amber-500/10", text: "text-amber-400" },
+  { id: "platre", label: "Plâtre/Enduit", icon: <Layers className="w-5 h-5"/>, color: "gray", unit: "m²", bg: "bg-gray-500/10", text: "text-gray-400" },
+  { id: "faience", label: "Faïence", icon: <Palette className="w-5 h-5"/>, color: "cyan", unit: "m²", bg: "bg-cyan-500/10", text: "text-cyan-400" },
+  { id: "autre", label: "Autre", icon: <Hammer className="w-5 h-5"/>, color: "rose", unit: "u", bg: "bg-rose-500/10", text: "text-rose-400" },
+];
 
-  const [typeFinition, setTypeFinition] = useState("peinture");
-  const [surface, setSurface] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [couches, setCouches] = useState("");
+export default function Finitions({ currency = "XOF", onCostChange }) {
+  
+  // === ÉTATS ===
+  const [selectedType, setSelectedType] = useState("peinture");
+  
+  const [inputs, setInputs] = useState({
+    surface: "",        // Ou quantité pour "Autre"
+    prixMateriel: "",   // Prix unitaire matériaux
+    prixMainOeuvre: "", // Prix unitaire pose
+    couches: "2",       // Spécifique peinture
+  });
+
   const [historique, setHistorique] = useState([]);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(null);
 
-  const total = (parseFloat(surface) || 0) * (parseFloat(prixUnitaire) || 0);
+  // === THÈME ACTUEL ===
+  const currentTheme = useMemo(() => 
+    FINITION_TYPES.find(t => t.id === selectedType) || FINITION_TYPES[0],
+    [selectedType]
+  );
 
-  // Mise à jour du coût total
-  useEffect(() => {
-    onCostChange(total);
-  }, [total, onCostChange]);
+  // === MOTEUR DE CALCUL ===
+  const results = useMemo(() => {
+    const surf = parseFloat(inputs.surface) || 0;
+    const pm = parseFloat(inputs.prixMateriel) || 0;
+    const mo = parseFloat(inputs.prixMainOeuvre) || 0;
+    
+    // Gestion spécifique peinture : matériel multiplié par nombre de couches
+    const nbCouches = selectedType === 'peinture' ? (parseFloat(inputs.couches) || 1) : 1;
+    
+    let totalMateriaux = 0;
+    let totalMainOeuvre = 0;
 
-  // Historique
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try { setHistorique(JSON.parse(saved)); } catch {}
+    if (selectedType === 'peinture') {
+        // Peinture : Matériel * m² * couches + Main d'œuvre * m²
+        totalMateriaux = surf * pm * nbCouches;
+        totalMainOeuvre = surf * mo; 
+    } else {
+        // Autres : (Matériel + Main d'œuvre) * Quantité
+        totalMateriaux = surf * pm;
+        totalMainOeuvre = surf * mo;
     }
+
+    const total = totalMateriaux + totalMainOeuvre;
+
+    return { 
+        surface: surf, 
+        totalMateriaux, 
+        totalMainOeuvre, 
+        total,
+        nbCouches
+    };
+  }, [inputs, selectedType]);
+
+  // === EFFETS ===
+
+  // 1. Sync Parent (Anti-Loop)
+  useEffect(() => {
+    if (onCostChange) onCostChange(results.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.total]);
+
+  // 2. Chargement Historique
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch (e) { console.error("Erreur historique", e); }
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
-
-  const showMessage = (msg) => {
-    setMessage(msg);
-    setTimeout(() => setMessage(""), 2500);
+  // === HANDLERS ===
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+  
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
   };
 
   const handleSave = () => {
-    if (total === 0) return alert("⚠️ Veuillez entrer des valeurs valides.");
-    const entry = {
+    if (results.total <= 0) return showToast("⚠️ Montant nul", "error");
+    
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      type: typeFinition,
-      surface,
-      prixUnitaire,
-      couches: typeFinition === "peinture" ? couches : null,
-      total: total.toFixed(2),
+      type: selectedType,
+      inputs: { ...inputs },
+      results: { ...results }
     };
-    setHistorique([entry, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
+
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Finition sauvegardée !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-      showMessage("🗑️ Entrée supprimée !");
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
+  const clearHistory = () => {
+    if (window.confirm("Vider l'historique ?")) {
       setHistorique([]);
-      showMessage("🧹 Historique vidé !");
+      localStorage.removeItem(STORAGE_KEY);
+      showToast("Historique vidé");
     }
   };
 
-  const currentType = typesFinition.find(t => t.value === typeFinition);
+  const resetFields = () => {
+    setInputs({ surface: "", prixMateriel: "", prixMainOeuvre: "", couches: "2" });
+  };
 
+  // === DATA CHART ===
+  const chartData = {
+    labels: ["Matériaux", "Main d'œuvre"],
+    datasets: [{
+      data: [results.totalMateriaux, results.totalMainOeuvre],
+      backgroundColor: ["#8b5cf6", "#06b6d4"], // Violet, Cyan
+      borderColor: "#1f2937",
+      borderWidth: 4,
+    }]
+  };
+
+  // === RENDU ===
   return (
-    <div className="max-w-3xl mx-auto p-6 bg-gray-900 rounded-xl shadow-lg text-gray-100 font-sans animate-fade-in">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center animate-pulse">
-        🎨 Finitions
-      </h2>
-
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {/* Toast */}
       {message && (
-        <div className="fixed top-5 right-5 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50">
-          {message}
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+          message.type === "error" ? "bg-red-600" : "bg-violet-600"
+        }`}>
+          {message.text}
         </div>
       )}
 
-      {/* Sélection par boutons */}
-      <div className="mb-8">
-        <label className="block mb-3 font-semibold text-orange-400 text-lg">
-          Type de finition
-        </label>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {typesFinition.map((type) => (
-            <button
-              key={type.value}
-              onClick={() => setTypeFinition(type.value)}
-              className={`p-4 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 ${
-                typeFinition === type.value
-                  ? "bg-orange-500 text-white shadow-lg scale-105"
-                  : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-              }`}
-            >
-              <div className="text-3xl mb-2">{type.emoji}</div>
-              <div className="text-sm">{type.label}</div>
-            </button>
-          ))}
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex flex-col sm:flex-row justify-between items-center bg-gray-900/50 backdrop-blur-sm gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-violet-500/20 rounded-lg text-violet-500">
+            <PaintRoller className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Finitions</h2>
+            <p className="text-xs text-gray-400">Revêtements & Peinture</p>
+          </div>
+        </div>
+
+        {/* Total Badge */}
+        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
+          <span className="text-xs text-gray-400 block">Total Estimé</span>
+          <span className="text-lg font-black text-violet-400">
+            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} 
+            <span className="text-sm ml-1 text-gray-500">{currency}</span>
+          </span>
         </div>
       </div>
 
-      {/* Formulaire */}
-      <div className="bg-gray-800/50 rounded-xl p-5 mb-6 backdrop-blur-sm">
-        <h3 className="text-lg font-bold text-center mb-4 flex items-center justify-center gap-2">
-          <span className="text-2xl">{currentType?.emoji}</span>
-          <span className="text-orange-400">{currentType?.label}</span>
-        </h3>
+      {/* Main Grid */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+          
+          {/* COLONNE GAUCHE : SÉLECTION & INPUTS (5 cols) */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            {/* Grid Sélection */}
+            <div className="grid grid-cols-3 gap-2 bg-gray-800 p-2 rounded-2xl border border-gray-700">
+              {FINITION_TYPES.map((type) => (
+                <button
+                  key={type.id}
+                  onClick={() => setSelectedType(type.id)}
+                  className={`flex flex-col items-center justify-center gap-1 py-3 rounded-xl text-xs font-bold transition-all ${
+                    selectedType === type.id 
+                      ? "bg-violet-600 text-white shadow-lg scale-95" 
+                      : "text-gray-400 hover:text-white hover:bg-gray-700"
+                  }`}
+                >
+                  {type.icon}
+                  <span>{type.label}</span>
+                </button>
+              ))}
+            </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block mb-1 font-semibold text-orange-400 text-sm">Surface (m²)</label>
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={surface}
-              onInput={(e) => setSurface(e.target.value)}
-              className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 transition ${
-                !surface ? "bg-red-800/30" : "bg-gray-800"
-              }`}
-              placeholder="0"
-            />
+            {/* Formulaire */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4 animate-in fade-in slide-in-from-left-4 duration-300">
+              <h3 className={`flex items-center gap-2 text-sm font-bold uppercase tracking-wider ${currentTheme.text}`}>
+                <Ruler className="w-4 h-4" /> Quantités : {currentTheme.label}
+              </h3>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className={selectedType === "peinture" ? "" : "col-span-2"}>
+                   <InputGroup 
+                     label={`Surface (${currentTheme.unit})`} 
+                     value={inputs.surface} 
+                     onChange={handleChange("surface")} 
+                     placeholder="0" 
+                   />
+                </div>
+
+                {/* Champ spécifique Peinture */}
+                {selectedType === "peinture" && (
+                  <InputGroup 
+                    label="Couches" 
+                    value={inputs.couches} 
+                    onChange={handleChange("couches")} 
+                    placeholder="2" 
+                  />
+                )}
+              </div>
+
+              <div className="h-px bg-gray-700/50 my-2" />
+
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider">
+                <Banknote className="w-4 h-4" /> Prix Unitaires
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup 
+                  label={`Matériaux (${currency}/${currentTheme.unit})`} 
+                  value={inputs.prixMateriel} 
+                  onChange={handleChange("prixMateriel")} 
+                />
+                <InputGroup 
+                  label={`Pose (${currency}/${currentTheme.unit})`} 
+                  value={inputs.prixMainOeuvre} 
+                  onChange={handleChange("prixMainOeuvre")} 
+                />
+              </div>
+
+              <div className="flex gap-3 mt-auto pt-6">
+                <button 
+                  onClick={handleSave}
+                  className="flex-1 bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2"
+                >
+                  <Save className="w-5 h-5" /> Ajouter
+                </button>
+                <button 
+                  onClick={resetFields} 
+                  className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition-colors"
+                  title="Réinitialiser"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div>
-            <label className="block mb-1 font-semibold text-orange-400 text-sm">Prix unitaire ({currency}/m²)</label>
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={prixUnitaire}
-              onInput={(e) => setPrixUnitaire(e.target.value)}
-              className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 transition ${
-                !prixUnitaire ? "bg-red-800/30" : "bg-gray-800"
-              }`}
-              placeholder="0"
-            />
-          </div>
-
-          {typeFinition === "peinture" && (
-            <div className="col-span-2">
-              <label className="block mb-1 font-semibold text-orange-400 text-sm">Nombre de couches (optionnel)</label>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                value={couches}
-                onInput={(e) => setCouches(e.target.value)}
-                className="w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 bg-gray-800"
-                placeholder="Ex: 2"
+          {/* COLONNE DROITE : DASHBOARD (7 cols) */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard 
+                label="Surface" 
+                value={results.surface} 
+                unit={currentTheme.unit} 
+                icon={currentTheme.icon} 
+                color={currentTheme.text} 
+                bg={currentTheme.bg} 
+              />
+              <ResultCard 
+                label="Matériaux" 
+                value={(results.totalMateriaux / 1000).toFixed(1)} 
+                unit={`k ${currency}`} 
+                icon="🧱" 
+                color="text-blue-400" 
+                bg="bg-blue-500/10" 
+                border 
+              />
+              <ResultCard 
+                label="Main d'œuvre" 
+                value={(results.totalMainOeuvre / 1000).toFixed(1)} 
+                unit={`k ${currency}`} 
+                icon="👷" 
+                color="text-cyan-400" 
+                bg="bg-cyan-500/10" 
               />
             </div>
-          )}
-        </div>
-      </div>
 
-      {/* Résultats */}
-      <div className="bg-gradient-to-br from-gray-800 to-gray-700 rounded-xl p-5 shadow-lg border border-orange-500/30 mb-6">
-        <div className="text-center mb-4">
-          <p className="text-sm text-gray-400">Surface à traiter</p>
-          <p className="text-4xl font-bold text-orange-400">{surface || 0} m²</p>
-        </div>
+            {/* Graphique & Détails */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               {/* Deco BG */}
+               <div className={`absolute -bottom-10 -right-10 w-40 h-40 ${currentTheme.bg} rounded-full blur-3xl pointer-events-none opacity-50`} />
 
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="bg-gray-900/50 p-3 rounded">
-            <p className="text-gray-400">{currentType?.emoji} Type</p>
-            <p className="text-xl font-bold text-green-400 capitalize">{currentType?.label}</p>
-          </div>
-
-          <div className="bg-gray-900/50 p-3 rounded">
-            <p className="text-gray-400">💵 Prix/m²</p>
-            <p className="text-xl font-bold text-blue-400">{parseFloat(prixUnitaire || 0).toLocaleString()} {currency}</p>
-          </div>
-
-          {typeFinition === "peinture" && couches && (
-            <div className="bg-gray-900/50 p-3 rounded col-span-2">
-              <p className="text-gray-400">🖌️ Nombre de couches</p>
-              <p className="text-xl font-bold text-purple-400">{couches} couche{couches > 1 ? 's' : ''}</p>
-            </div>
-          )}
-        </div>
-
-        <div className="border-t border-gray-600 pt-4 mt-4">
-          <p className="text-center text-3xl font-extrabold text-orange-400 animate-pulse">
-            💰 Total : {total.toLocaleString()} {currency}
-          </p>
-        </div>
-      </div>
-
-      {/* Boutons */}
-      <div className="flex flex-wrap justify-center gap-4 mb-6">
-        <button 
-          onClick={handleSave} 
-          disabled={total === 0}
-          className="px-8 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105"
-        >
-          💾 Sauvegarder
-        </button>
-        <button 
-          onClick={clearHistorique} 
-          disabled={historique.length === 0}
-          className="px-8 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105"
-        >
-          🧹 Vider l'historique
-        </button>
-      </div>
-
-      {/* Historique */}
-      {historique.length > 0 && (
-        <section className="bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-2xl p-6 shadow-2xl border border-orange-500/30">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
-            <h3 className="text-2xl font-extrabold text-orange-400 flex items-center gap-3">
-              <span className="text-3xl">🕓</span>
-              Historique Finitions
-            </h3>
-            <span className="bg-orange-500/20 text-orange-400 px-4 py-2 rounded-lg font-bold">
-              {historique.length} entrée{historique.length > 1 ? 's' : ''}
-            </span>
-          </div>
-          
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {historique.map((item, index) => {
-              const typeInfo = typesFinition.find(t => t.value === item.type);
-              return (
-                <div 
-                  key={item.id} 
-                  className="group bg-gradient-to-r from-gray-700/50 to-gray-800/50 hover:from-gray-700 hover:to-gray-800 rounded-xl p-5 transition-all duration-300 border border-gray-700/50 hover:border-orange-500/50 hover:shadow-lg"
-                >
-                  <div className="flex justify-between items-start gap-4">
-                    <div className="flex-1 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <span className="bg-orange-500/20 text-orange-400 px-3 py-1 rounded-lg text-xs font-bold">
-                            #{historique.length - index}
-                          </span>
-                          <time className="text-sm text-gray-400">{item.date}</time>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="bg-gray-900/50 rounded-lg p-3">
-                          <p className="text-xs text-gray-500 mb-1">🎨 Type</p>
-                          <p className="text-lg font-semibold text-gray-200 capitalize flex items-center gap-2">
-                            <span className="text-2xl">{typeInfo?.emoji}</span>
-                            {typeInfo?.label}
-                          </p>
-                        </div>
-                        <div className="bg-gray-900/50 rounded-lg p-3">
-                          <p className="text-xs text-gray-500 mb-1">📐 Surface</p>
-                          <p className="text-lg font-bold text-blue-400">{item.surface} m²</p>
-                        </div>
-                        <div className="bg-gray-900/50 rounded-lg p-3">
-                          <p className="text-xs text-gray-500 mb-1">💵 Prix/m²</p>
-                          <p className="text-sm text-green-400">{parseFloat(item.prixUnitaire || 0).toLocaleString()} {currency}</p>
-                        </div>
-                        <div className="bg-gradient-to-br from-orange-500/20 to-orange-600/20 rounded-lg p-3 border border-orange-500/50">
-                          <p className="text-xs text-orange-300 mb-1">💰 Coût total</p>
-                          <p className="text-lg font-extrabold text-orange-400">
-                            {parseFloat(item.total).toLocaleString()} {currency}
-                          </p>
-                        </div>
-                      </div>
-
-                      {item.couches && (
-                        <div className="bg-gray-900/30 rounded-lg p-2 text-xs text-gray-400">
-                          <p>🖌️ Nombre de couches: {item.couches}</p>
-                        </div>
-                      )}
-                    </div>
-
-                    <button 
-                      onClick={() => handleDelete(item.id)} 
-                      className="p-3 bg-red-600/80 hover:bg-red-600 rounded-xl text-white font-bold transition-all transform hover:scale-110"
-                    >
-                      ✖
-                    </button>
+               <div className="w-40 h-40 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <span className={`text-sm font-bold ${currentTheme.text}`}>
+                       {results.total > 0 ? "Total" : "0"}
+                     </span>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
+               </div>
 
-      {/* Informations additionnelles */}
-      <div className="mt-6 bg-gray-800/30 rounded-lg p-4 border border-gray-700">
-        <h4 className="font-semibold text-orange-400 mb-2 flex items-center gap-2">
-          💡 Informations utiles
-        </h4>
-        <div className="text-sm text-gray-400 space-y-1">
-          {typeFinition === "peinture" && (
-            <>
-              <p>• Prévoir 10% de surface supplémentaire pour les pertes</p>
-              <p>• Rendement moyen : 10-12 m²/litre pour 2 couches</p>
-            </>
-          )}
-          {typeFinition === "carrelage" && (
-            <>
-              <p>• Prévoir 5-10% de carreaux supplémentaires pour les découpes</p>
-              <p>• Colle et joints non inclus dans le prix</p>
-            </>
-          )}
-          {typeFinition === "parquet" && (
-            <>
-              <p>• Prévoir 7-10% de lames supplémentaires</p>
-              <p>• Sous-couche acoustique recommandée</p>
-            </>
-          )}
-          {typeFinition === "platre" && (
-            <>
-              <p>• Rendement : environ 1 kg/m² par mm d'épaisseur</p>
-              <p>• Temps de séchage : 24-48h selon conditions</p>
-            </>
-          )}
-          {typeFinition === "faience" && (
-            <>
-              <p>• Prévoir 5-10% de carreaux supplémentaires</p>
-              <p>• Particulièrement adapté aux pièces humides</p>
-            </>
-          )}
+               <div className="flex-1 w-full space-y-4">
+                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">
+                    Répartition des Coûts
+                  </h4>
+                  <CostRow 
+                    label="Matériaux" 
+                    value={results.totalMateriaux} 
+                    currency={currency} 
+                    color="bg-violet-500" 
+                  />
+                  <CostRow 
+                    label="Main d'œuvre (Pose)" 
+                    value={results.totalMainOeuvre} 
+                    currency={currency} 
+                    color="bg-cyan-500" 
+                  />
+                  <div className="pt-3 border-t border-gray-700">
+                    <CostRow 
+                      label="TOTAL" 
+                      value={results.total} 
+                      currency={currency} 
+                      color="bg-emerald-500" 
+                      bold 
+                    />
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
+                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-3 h-3" /> Derniers ajouts
+                  </h4>
+                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">
+                    Vider
+                  </button>
+                </div>
+                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
+                  {historique.map((item) => {
+                    const theme = FINITION_TYPES.find(t => t.id === item.type);
+                    return (
+                      <div 
+                        key={item.id} 
+                        className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-gray-600"
+                      >
+                        <div className="flex items-center gap-3">
+                           <div className={`p-1.5 rounded-lg ${theme?.bg || 'bg-gray-500/20'} ${theme?.text || 'text-gray-400'}`}>
+                              {theme?.icon}
+                           </div>
+                           <div className="flex flex-col">
+                             <span className="text-xs font-bold text-gray-200">{theme?.label}</span>
+                             <span className="text-[10px] text-gray-500">{item.date.split(',')[0]}</span>
+                           </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-xs text-gray-400">{item.inputs.surface} {theme?.unit}</div>
+                          <div className={`text-sm font-bold ${theme?.text}`}>
+                            {parseFloat(item.results.total).toLocaleString()}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+          </div>
         </div>
       </div>
-
-      <style>{`
-        @keyframes fade-in {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .animate-fade-in {
-          animation: fade-in 0.5s ease-out forwards;
-        }
-        @keyframes fadeinout {
-          0%, 100% { opacity: 0; }
-          10%, 90% { opacity: 1; }
-        }
-        .animate-fadeinout {
-          animation: fadeinout 2.5s ease forwards;
-        }
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(31, 41, 55, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(251, 146, 60, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(251, 146, 60, 0.8);
-        }
-      `}</style>
     </div>
   );
 }
+
+// === SOUS-COMPOSANTS ===
+
+const InputGroup = ({ label, value, onChange, placeholder, full = false, type = "number" }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+      {label}
+    </label>
+    <input
+      type={type}
+      min={type === "number" ? "0" : undefined}
+      step={type === "number" ? "any" : undefined}
+      value={value}
+      onChange={onChange}
+      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {typeof value === 'number' ? value : value} {unit && <span className="text-xs font-normal text-gray-500">{unit}</span>}
+    </span>
+  </div>
+);
+
+const CostRow = ({ label, value, currency, color, bold = false }) => (
+  <div className="flex justify-between items-center">
+    <span className={`flex items-center gap-2 text-gray-300 text-sm ${bold ? 'font-bold' : ''}`}>
+      <div className={`w-3 h-3 rounded-full ${color}`} />
+      {label}
+    </span>
+    <span className={`font-mono text-white ${bold ? 'font-black text-lg' : 'font-bold'}`}>
+      {value.toLocaleString(undefined, { maximumFractionDigits: 0 })} {currency}
+    </span>
+  </div>
+);

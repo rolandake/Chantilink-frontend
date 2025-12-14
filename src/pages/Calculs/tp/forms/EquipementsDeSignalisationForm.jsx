@@ -1,412 +1,351 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+// ✅ CORRECTION ICI : Remplacement de TriangleAlert par AlertTriangle
+import { 
+  AlertTriangle, // <--- C'était TriangleAlert avant
+  TrafficCone, MapPin, Shield, Construction, 
+  Save, Trash2, History, Banknote, Lightbulb, Ruler
+} from "lucide-react";
+
+ChartJS.register(ArcElement, Tooltip, Legend);
 
 const STORAGE_KEY = "signalisation-history";
 
-export default function Signalisation({ currency = "FCFA", onCostChange = () => {} }) {
-  const equipementsOptions = [
-    { label: "Panneaux de signalisation", emoji: "🚸", color: "orange" },
-    { label: "Feux tricolores", emoji: "🚦", color: "red" },
-    { label: "Barrières de sécurité", emoji: "🛡️", color: "blue" },
-    { label: "Marquage au sol", emoji: "⚠️", color: "yellow" },
-    { label: "Glissières de sécurité", emoji: "🛣️", color: "green" },
-    { label: "Bornes kilométriques", emoji: "📍", color: "pink" },
-    { label: "Autres", emoji: "🔧", color: "gray" },
-  ];
+const EQUIPMENT_TYPES = [
+  { 
+    id: "panneaux", 
+    label: "Panneaux", 
+    icon: <AlertTriangle className="w-5 h-5"/>, // <--- ET ICI AUSSI
+    color: "orange", 
+    bg: "bg-orange-500/10", 
+    text: "text-orange-400" 
+  },
+  { id: "feux", label: "Feux Tricolores", icon: <Lightbulb className="w-5 h-5"/>, color: "red", bg: "bg-red-500/10", text: "text-red-400" },
+  { id: "glissieres", label: "Glissières", icon: <Shield className="w-5 h-5"/>, color: "slate", bg: "bg-slate-500/10", text: "text-slate-400" },
+  { id: "marquage", label: "Marquage Sol", icon: <Construction className="w-5 h-5"/>, color: "yellow", bg: "bg-yellow-500/10", text: "text-yellow-400" },
+  { id: "bornes", label: "Bornes", icon: <MapPin className="w-5 h-5"/>, color: "pink", bg: "bg-pink-500/10", text: "text-pink-400" },
+  { id: "divers", label: "Divers", icon: <TrafficCone className="w-5 h-5"/>, color: "green", bg: "bg-green-500/10", text: "text-green-400" },
+];
 
-  const [selectedEquipement, setSelectedEquipement] = useState("");
-  const [fields, setFields] = useState({});
-  const [totalCost, setTotalCost] = useState(0);
+export default function EquipementsDeSignalisationForm({ currency = "XOF", onCostChange }) {
+  
+  // === ÉTATS ===
+  const [selectedType, setSelectedType] = useState("panneaux");
+  
+  const [inputs, setInputs] = useState({
+    quantite: "",
+    coutUnitaire: "", // Matériel
+    coutMainOeuvre: "", // Pose
+    dimension: "",    // Spécifique Panneaux
+    longueur: "",     // Spécifique Glissières
+    surface: "",      // Spécifique Marquage
+    details: ""       // Spécifique Divers/Feux
+  });
+
   const [historique, setHistorique] = useState([]);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(null);
 
-  // Calcul automatique
-  useEffect(() => {
-    const total = (parseFloat(fields.coutUnitaire) || 0) * (parseFloat(fields.quantite) || 0);
-    setTotalCost(total);
-    onCostChange(total);
-  }, [fields]);
+  // === THÈME DYNAMIQUE ===
+  const currentTheme = useMemo(() => 
+    EQUIPMENT_TYPES.find(t => t.id === selectedType) || EQUIPMENT_TYPES[0],
+    [selectedType]
+  );
 
-  // Historique
+  // === CALCULS (Mémorisés) ===
+  const results = useMemo(() => {
+    const qte = parseFloat(inputs.quantite) || 0;
+    const cu = parseFloat(inputs.coutUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+
+    const totalMateriaux = qte * cu;
+    const totalMainOeuvre = qte * mo; 
+    const total = totalMateriaux + totalMainOeuvre;
+
+    return { qte, totalMateriaux, totalMainOeuvre, total };
+  }, [inputs]);
+
+  // === EFFETS ===
+  
+  // Synchronisation avec le parent (Anti-Loop)
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try { setHistorique(JSON.parse(saved)); } catch {}
-    }
+    if (onCostChange) onCostChange(results.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.total]);
+
+  // Chargement Historique
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
-
-  const showMessage = (msg) => {
-    setMessage(msg);
-    setTimeout(() => setMessage(""), 2500);
-  };
-
-  const handleChange = (name, value) => {
-    setFields((prev) => ({ ...prev, [name]: value }));
+  // === HANDLERS ===
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+  
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
   };
 
   const handleSave = () => {
-    if (!selectedEquipement || totalCost === 0) return alert("⚠️ Veuillez remplir les champs valides.");
-    const entry = {
+    if (results.total <= 0) return showToast("⚠️ Montant nul", "error");
+    
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      equipement: selectedEquipement,
-      ...fields,
-      total: totalCost.toFixed(2),
+      type: selectedType,
+      inputs: { ...inputs },
+      results: { ...results }
     };
-    setHistorique([entry, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
+
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Équipement sauvegardé !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-      showMessage("🗑️ Entrée supprimée !");
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
+  const clearHistory = () => {
+    if (window.confirm("Vider l'historique ?")) {
       setHistorique([]);
-      showMessage("🧹 Historique vidé !");
+      localStorage.removeItem(STORAGE_KEY);
+      showToast("Historique vidé");
     }
   };
 
-  const currentEquipment = equipementsOptions.find((e) => e.label === selectedEquipement);
+  const resetFields = () => {
+    setInputs({
+      quantite: "",
+      coutUnitaire: "",
+      coutMainOeuvre: "",
+      dimension: "",
+      longueur: "",
+      surface: "",
+      details: ""
+    });
+  };
 
-  const renderForm = () => {
-    if (!selectedEquipement) return <p className="text-center text-gray-400 py-8">👆 Choisissez un équipement</p>;
-
-    const commonFields = (
-      <>
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400 text-sm">Quantité</label>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={fields.quantite || ""}
-            onInput={(e) => handleChange("quantite", e.target.value)}
-            className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 transition ${
-              !fields.quantite ? "bg-red-800/30" : "bg-gray-800"
-            }`}
-            placeholder="0"
-          />
-        </div>
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400 text-sm">Coût unitaire ({currency})</label>
-          <input
-            type="number"
-            min="0"
-            step="any"
-            value={fields.coutUnitaire || ""}
-            onInput={(e) => handleChange("coutUnitaire", e.target.value)}
-            className={`w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 transition ${
-              !fields.coutUnitaire ? "bg-red-800/30" : "bg-gray-800"
-            }`}
-            placeholder="0"
-          />
-        </div>
-      </>
-    );
-
-    switch (selectedEquipement) {
-      case "Panneaux de signalisation":
-        return (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
-              <label className="block mb-1 font-semibold text-orange-400 text-sm">Dimensions (cm)</label>
-              <input
-                type="text"
-                value={fields.dimension || ""}
-                onInput={(e) => handleChange("dimension", e.target.value)}
-                className="w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 bg-gray-800"
-                placeholder="Ex: 80x80"
-              />
-            </div>
-            {commonFields}
-          </div>
-        );
-      case "Feux tricolores":
-        return (
-          <div className="grid grid-cols-2 gap-4">
-            {commonFields}
-            <div className="col-span-2">
-              <label className="block mb-1 font-semibold text-orange-400 text-sm">Détails techniques</label>
-              <input
-                type="text"
-                value={fields.details || ""}
-                onInput={(e) => handleChange("details", e.target.value)}
-                className="w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 bg-gray-800"
-                placeholder="Ex: LED, solaire"
-              />
-            </div>
-          </div>
-        );
-      case "Barrières de sécurité":
-      case "Glissières de sécurité":
-        return (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
-              <label className="block mb-1 font-semibold text-orange-400 text-sm">Longueur (m)</label>
-              <input
-                type="number"
-                min="0"
-                step="any"
-                value={fields.longueur || ""}
-                onInput={(e) => handleChange("longueur", e.target.value)}
-                className="w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 bg-gray-800"
-                placeholder="0"
-              />
-            </div>
-            {commonFields}
-          </div>
-        );
-      case "Marquage au sol":
-        return (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
-              <label className="block mb-1 font-semibold text-orange-400 text-sm">Surface (m²)</label>
-              <input
-                type="number"
-                min="0"
-                step="any"
-                value={fields.surface || ""}
-                onInput={(e) => handleChange("surface", e.target.value)}
-                className="w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 bg-gray-800"
-                placeholder="0"
-              />
-            </div>
-            {commonFields}
-          </div>
-        );
-      case "Bornes kilométriques":
-      case "Autres":
-        return (
-          <div className="grid grid-cols-2 gap-4">
-            {selectedEquipement === "Autres" && (
-              <div className="col-span-2">
-                <label className="block mb-1 font-semibold text-orange-400 text-sm">Description</label>
-                <input
-                  type="text"
-                  value={fields.description || ""}
-                  onInput={(e) => handleChange("description", e.target.value)}
-                  className="w-full rounded-md px-3 py-2 border border-gray-700 focus:ring-2 focus:ring-orange-400 bg-gray-800"
-                  placeholder="Décrivez l'équipement"
-                />
-              </div>
-            )}
-            {commonFields}
-          </div>
-        );
-      default:
-        return null;
-    }
+  // === DATA CHART ===
+  const chartData = {
+    labels: ["Matériel", "Pose (MO)"],
+    datasets: [{
+      data: [results.totalMateriaux, results.totalMainOeuvre],
+      backgroundColor: ["#f97316", "#3b82f6"], // Orange, Blue
+      borderColor: "#1f2937",
+      borderWidth: 4,
+    }]
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 bg-gray-900 rounded-xl shadow-lg text-gray-100 font-sans animate-fade-in">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center animate-pulse">
-        🚧 Équipements de signalisation
-      </h2>
-
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {/* Toast */}
       {message && (
-        <div className="fixed top-5 right-5 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50">
-          {message}
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${message.type === "error" ? "bg-red-600" : "bg-green-600"}`}>
+          {message.text}
         </div>
       )}
 
-      {/* Sélection par boutons visuels */}
-      <div className="mb-8">
-        <label className="block mb-3 font-semibold text-orange-400 text-lg">
-          Type d'équipement
-        </label>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {equipementsOptions.map((equip) => (
-            <button
-              key={equip.label}
-              onClick={() => {
-                setSelectedEquipement(equip.label);
-                setFields({});
-              }}
-              className={`p-3 rounded-xl font-semibold transition-all duration-300 transform hover:scale-105 ${
-                selectedEquipement === equip.label
-                  ? "bg-orange-500 text-white shadow-lg scale-105"
-                  : "bg-gray-800 text-gray-300 hover:bg-gray-700"
-              }`}
-            >
-              <div className="text-2xl mb-1">{equip.emoji}</div>
-              <div className="text-xs leading-tight">{equip.label}</div>
-            </button>
-          ))}
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-orange-500/20 rounded-lg text-orange-500">
+            <TrafficCone className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Signalisation</h2>
+            <p className="text-xs text-gray-400">Sécurité & Équipements</p>
+          </div>
+        </div>
+        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
+          <span className="text-xs text-gray-400 block">Total Estimé</span>
+          <span className="text-lg font-black text-orange-400">
+            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-sm text-gray-500">{currency}</span>
+          </span>
         </div>
       </div>
 
-      {/* Formulaire dynamique */}
-      <div className="bg-gray-800/50 rounded-xl p-5 mb-6 backdrop-blur-sm">
-        {currentEquipment && (
-          <h3 className="text-lg font-bold text-center mb-4 flex items-center justify-center gap-2">
-            <span className="text-2xl">{currentEquipment.emoji}</span>
-            <span className="text-orange-400">{currentEquipment.label}</span>
-          </h3>
-        )}
-        {renderForm()}
-      </div>
-
-      {/* Résultats */}
-      {selectedEquipement && (
-        <div className="bg-gradient-to-br from-gray-800 to-gray-700 rounded-xl p-5 shadow-lg border border-orange-500/30 mb-6">
-          <div className="text-center mb-4">
-            <p className="text-sm text-gray-400">Type d'équipement</p>
-            <p className="text-2xl font-bold text-orange-400">{currentEquipment?.emoji} {selectedEquipement}</p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 text-sm mb-4">
-            <div className="bg-gray-900/50 p-3 rounded">
-              <p className="text-gray-400">📦 Quantité</p>
-              <p className="text-xl font-bold text-green-400">{fields.quantite || 0}</p>
-            </div>
-
-            <div className="bg-gray-900/50 p-3 rounded">
-              <p className="text-gray-400">💵 Prix unitaire</p>
-              <p className="text-xl font-bold text-blue-400">{parseFloat(fields.coutUnitaire || 0).toLocaleString()} {currency}</p>
-            </div>
-          </div>
-
-          <div className="border-t border-gray-600 pt-4 mt-4">
-            <p className="text-center text-3xl font-extrabold text-orange-400 animate-pulse">
-              💰 Total : {totalCost.toLocaleString()} {currency}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Boutons */}
-      <div className="flex flex-wrap justify-center gap-4 mb-6">
-        <button 
-          onClick={handleSave} 
-          disabled={!selectedEquipement || totalCost === 0}
-          className="px-8 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105"
-        >
-          💾 Sauvegarder
-        </button>
-        <button 
-          onClick={clearHistorique} 
-          disabled={historique.length === 0}
-          className="px-8 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 disabled:from-gray-600 disabled:to-gray-700 disabled:cursor-not-allowed rounded-xl font-bold shadow-lg transition-all transform hover:scale-105"
-        >
-          🧹 Vider l'historique
-        </button>
-      </div>
-
-      {/* Historique */}
-      {historique.length > 0 && (
-        <section className="bg-gradient-to-br from-gray-800 via-gray-850 to-gray-900 rounded-2xl p-6 shadow-2xl border border-orange-500/30">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-700">
-            <h3 className="text-2xl font-extrabold text-orange-400 flex items-center gap-3">
-              <span className="text-3xl">🕓</span>
-              Historique Signalisation
-            </h3>
-            <span className="bg-orange-500/20 text-orange-400 px-4 py-2 rounded-lg font-bold">
-              {historique.length} entrée{historique.length > 1 ? 's' : ''}
-            </span>
-          </div>
+      {/* Main Grid */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
           
-          <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
-            {historique.map((item, index) => (
-              <div 
-                key={item.id} 
-                className="group bg-gradient-to-r from-gray-700/50 to-gray-800/50 hover:from-gray-700 hover:to-gray-800 rounded-xl p-5 transition-all duration-300 border border-gray-700/50 hover:border-orange-500/50 hover:shadow-lg"
-              >
-                <div className="flex justify-between items-start gap-4">
-                  <div className="flex-1 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="bg-orange-500/20 text-orange-400 px-3 py-1 rounded-lg text-xs font-bold">
-                          #{historique.length - index}
-                        </span>
-                        <time className="text-sm text-gray-400">{item.date}</time>
-                      </div>
-                    </div>
+          {/* GAUCHE : SÉLECTION & INPUTS (5 cols) */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            {/* Grid Sélection */}
+            <div className="grid grid-cols-3 gap-2 bg-gray-800 p-2 rounded-2xl border border-gray-700">
+              {EQUIPMENT_TYPES.map((type) => (
+                <button
+                  key={type.id}
+                  onClick={() => setSelectedType(type.id)}
+                  className={`flex flex-col items-center justify-center gap-1 py-3 rounded-xl text-xs font-bold transition-all ${
+                    selectedType === type.id 
+                      ? "bg-orange-600 text-white shadow-lg scale-95" 
+                      : "text-gray-400 hover:text-white hover:bg-gray-700"
+                  }`}
+                >
+                  {type.icon}
+                  <span>{type.label}</span>
+                </button>
+              ))}
+            </div>
 
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-gray-900/50 rounded-lg p-3">
-                        <p className="text-xs text-gray-500 mb-1">🚧 Équipement</p>
-                        <p className="text-sm font-semibold text-gray-200">{item.equipement}</p>
-                      </div>
-                      <div className="bg-gray-900/50 rounded-lg p-3">
-                        <p className="text-xs text-gray-500 mb-1">📦 Quantité</p>
-                        <p className="text-lg font-bold text-green-400">{item.quantite}</p>
-                      </div>
-                      <div className="bg-gray-900/50 rounded-lg p-3">
-                        <p className="text-xs text-gray-500 mb-1">💵 Prix unitaire</p>
-                        <p className="text-sm text-blue-400">{parseFloat(item.coutUnitaire || 0).toLocaleString()} {currency}</p>
-                      </div>
-                      <div className="bg-gradient-to-br from-orange-500/20 to-orange-600/20 rounded-lg p-3 border border-orange-500/50">
-                        <p className="text-xs text-orange-300 mb-1">💰 Coût total</p>
-                        <p className="text-lg font-extrabold text-orange-400">
-                          {parseFloat(item.total).toLocaleString()} {currency}
-                        </p>
-                      </div>
-                    </div>
+            {/* Formulaire */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-orange-400 uppercase tracking-wider">
+                {currentTheme.icon} Paramètres : {currentTheme.label}
+              </h3>
 
-                    {/* Détails supplémentaires */}
-                    {(item.dimension || item.longueur || item.surface || item.details || item.description) && (
-                      <div className="bg-gray-900/30 rounded-lg p-2 text-xs text-gray-400">
-                        {item.dimension && <p>📐 Dimensions: {item.dimension}</p>}
-                        {item.longueur && <p>📏 Longueur: {item.longueur} m</p>}
-                        {item.surface && <p>📐 Surface: {item.surface} m²</p>}
-                        {item.details && <p>ℹ️ Détails: {item.details}</p>}
-                        {item.description && <p>📝 Description: {item.description}</p>}
-                      </div>
-                    )}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                   <InputGroup label="Quantité" value={inputs.quantite} onChange={handleChange("quantite")} placeholder="Ex: 10" />
+                </div>
+
+                {/* Champs Dynamiques */}
+                {selectedType === "panneaux" && (
+                  <InputGroup label="Dimensions (cm)" value={inputs.dimension} onChange={handleChange("dimension")} placeholder="Ex: 80x80" full />
+                )}
+                {selectedType === "glissieres" && (
+                  <InputGroup label="Longueur (m/unité)" value={inputs.longueur} onChange={handleChange("longueur")} placeholder="Ex: 4" full />
+                )}
+                {selectedType === "marquage" && (
+                  <InputGroup label="Surface (m²)" value={inputs.surface} onChange={handleChange("surface")} full />
+                )}
+                {(selectedType === "feux" || selectedType === "divers" || selectedType === "bornes") && (
+                  <InputGroup label="Détails / Réf" value={inputs.details} onChange={handleChange("details")} placeholder="Optionnel" full />
+                )}
+              </div>
+
+              <div className="h-px bg-gray-700/50 my-2" />
+
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider">
+                <Banknote className="w-4 h-4" /> Coûts Unitaires
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label={`Prix Matériel (${currency})`} value={inputs.coutUnitaire} onChange={handleChange("coutUnitaire")} />
+                <InputGroup label={`Prix Pose (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} />
+              </div>
+
+              <div className="flex gap-3 mt-auto pt-6">
+                <button 
+                  onClick={handleSave}
+                  className="flex-1 bg-gradient-to-r from-orange-600 to-red-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2"
+                >
+                  <Save className="w-5 h-5" /> Ajouter
+                </button>
+                <button 
+                  onClick={resetFields} 
+                  className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition-colors"
+                  title="Réinitialiser"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* DROITE : DASHBOARD (7 cols) */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Type" value={currentTheme.label} unit="" icon={currentTheme.icon} color="text-orange-400" bg="bg-orange-500/10" />
+              <ResultCard label="Quantité" value={results.qte} unit="u" icon="#" color="text-blue-400" bg="bg-blue-500/10" border />
+              <ResultCard label="Total" value={(results.total / 1000).toFixed(1)} unit="k" icon="💰" color="text-green-400" bg="bg-green-500/10" />
+            </div>
+
+            {/* Graphique */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-orange-600/10 rounded-full blur-3xl pointer-events-none" />
+
+               <div className="w-40 h-40 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <span className="text-sm font-bold text-orange-400">{results.total > 0 ? "100%" : "0%"}</span>
                   </div>
+               </div>
 
-                  <button 
-                    onClick={() => handleDelete(item.id)} 
-                    className="p-3 bg-red-600/80 hover:bg-red-600 rounded-xl text-white font-bold transition-all transform hover:scale-110"
-                  >
-                    ✖
-                  </button>
+               <div className="flex-1 w-full space-y-4">
+                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Répartition des Coûts</h4>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-2 text-gray-300 text-sm"><div className="w-3 h-3 rounded-full bg-orange-500"/> Matériel</span>
+                    <span className="font-mono font-bold text-white">{results.totalMateriaux.toLocaleString()} {currency}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-2 text-gray-300 text-sm"><div className="w-3 h-3 rounded-full bg-blue-500"/> Main d'œuvre</span>
+                    <span className="font-mono font-bold text-white">{results.totalMainOeuvre.toLocaleString()} {currency}</span>
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
+                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-3 h-3" /> Derniers ajouts
+                  </h4>
+                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+                </div>
+                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
+                  {historique.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-orange-500/30">
+                      <div className="flex items-center gap-3">
+                         <div className={`p-1.5 rounded-lg ${EQUIPMENT_TYPES.find(t => t.id === item.type)?.bg || 'bg-gray-500/20'} text-orange-400`}>
+                            {EQUIPMENT_TYPES.find(t => t.id === item.type)?.icon}
+                         </div>
+                         <div className="flex flex-col">
+                           <span className="text-xs font-bold text-gray-200">{EQUIPMENT_TYPES.find(t => t.id === item.type)?.label}</span>
+                           <span className="text-[10px] text-gray-500">{item.date}</span>
+                         </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-xs text-gray-400">Qté: {item.inputs.quantite}</div>
+                        <div className="text-sm font-bold text-orange-400">{parseFloat(item.results.total).toLocaleString()}</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
-          </div>
-        </section>
-      )}
+            )}
 
-      <style>{`
-        @keyframes fade-in {
-          from { opacity: 0; transform: translateY(10px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .animate-fade-in {
-          animation: fade-in 0.5s ease-out forwards;
-        }
-        @keyframes fadeinout {
-          0%, 100% { opacity: 0; }
-          10%, 90% { opacity: 1; }
-        }
-        .animate-fadeinout {
-          animation: fadeinout 2.5s ease forwards;
-        }
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(31, 41, 55, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(251, 146, 60, 0.5);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(251, 146, 60, 0.8);
-        }
-      `}</style>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+// --- SOUS-COMPOSANTS ---
+
+const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type="number" 
+      min="0"
+      step="any"
+      value={value}
+      onChange={onChange}
+      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+      {icon} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+    </span>
+  </div>
+);

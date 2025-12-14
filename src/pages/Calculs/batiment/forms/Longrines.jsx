@@ -1,278 +1,350 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
+import { 
+  Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Link 
+} from "lucide-react";
 
-const STORAGE_KEY = "longrines-history";
+ChartJS.register(ArcElement, Tooltip, Legend);
 
+const STORAGE_KEY = "longrines-batiment-history";
+
+// Dosages Béton (Standard Longrine)
+const DOSAGE_BETON = {
+  ciment: 0.350, // 350kg/m3
+  sable: 0.6,    // T/m3
+  gravier: 0.85, // T/m3
+  eau: 175       // L/m3
+};
+
+// Types de longrines avec leur ratio d'acier spécifique
 const TYPES_LONGRINES = [
-  { value: "filante", label: "Longrine filante", acierCoef: 0.01 },
-  { value: "liaison", label: "Longrine de liaison", acierCoef: 0.012 },
-  { value: "redressement", label: "Longrine de redressement", acierCoef: 0.013 },
-  { value: "prefabriquee", label: "Longrine préfabriquée", acierCoef: 0.008 },
-  { value: "coulee", label: "Longrine coulée en place", acierCoef: 0.015 },
-  { value: "suspendue", label: "Longrine suspendue", acierCoef: 0.02 },
+  { id: "filante", label: "Filante", acierCoef: 80, desc: "Sous murs porteurs" },
+  { id: "liaison", label: "Liaison", acierCoef: 100, desc: "Entre massifs" },
+  { id: "redressement", label: "Redressement", acierCoef: 120, desc: "Excentrement" },
+  { id: "prefab", label: "Préfabriquée", acierCoef: 60, desc: "Industrielle" },
 ];
 
-export default function Longrines({
-  currency = "XOF",
-  onTotalChange = () => {},
-  onMateriauxChange = () => {},
-}) {
-  const [type, setType] = useState("filante");
-  const [longueur, setLongueur] = useState("");
-  const [largeur, setLargeur] = useState("");
-  const [hauteur, setHauteur] = useState("");
-  const [prixBeton, setPrixBeton] = useState("");
-  const [prixAcier, setPrixAcier] = useState("");
+export default function Longrines({ currency = "XOF", onTotalChange, onMateriauxChange }) {
+  
+  // --- ÉTATS ---
+  const [typeLongrine, setTypeLongrine] = useState("filante");
+  const [inputs, setInputs] = useState({
+    longueur: "",
+    largeur: "",
+    hauteur: "",
+    prixUnitaire: "",   // Prix du béton armé (matériel)
+    coutMainOeuvre: ""  // Pose et coulage
+  });
+
   const [historique, setHistorique] = useState([]);
+  const [message, setMessage] = useState(null);
 
-  // ✅ CALCULS INSTANTANÉS
-  const longueurNum = parseFloat(longueur) || 0;
-  const largeurNum = parseFloat(largeur) || 0;
-  const hauteurNum = parseFloat(hauteur) || 0;
-  const prixBetonNum = parseFloat(prixBeton) || 0;
-  const prixAcierNum = parseFloat(prixAcier) || 0;
+  // --- MOTEUR DE CALCUL ---
+  const results = useMemo(() => {
+    const L = parseFloat(inputs.longueur) || 0;
+    const l = parseFloat(inputs.largeur) || 0;
+    const h = parseFloat(inputs.hauteur) || 0;
+    const pu = parseFloat(inputs.prixUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
 
-  const volume = longueurNum * largeurNum * hauteurNum;
+    const volume = L * l * h;
 
-  const acierCoef = TYPES_LONGRINES.find((t) => t.value === type)?.acierCoef ?? 0.01;
+    // Récupération du ratio d'acier selon le type
+    const acierRatio = TYPES_LONGRINES.find(t => t.id === typeLongrine)?.acierCoef || 80;
 
-  const acierT = volume * 2400 * acierCoef;
-  const acierKg = acierT;
+    // Calculs Matériaux
+    const cimentT = volume * DOSAGE_BETON.ciment;
+    const cimentSacs = (cimentT * 1000) / 50;
+    
+    const sableT = volume * DOSAGE_BETON.sable;
+    const gravierT = volume * DOSAGE_BETON.gravier;
+    
+    const acierKg = volume * acierRatio;
+    const acierT = acierKg / 1000;
+    
+    const eauL = volume * DOSAGE_BETON.eau;
 
-  const coutBeton = volume * prixBetonNum;
-  const coutAcier = acierKg * prixAcierNum;
-  const total = coutBeton + coutAcier;
+    // Coûts
+    const coutMateriaux = volume * pu;
+    const total = coutMateriaux + mo;
 
-  const cimentT = volume * 0.3;
-  const cimentKg = cimentT * 1000;
-  const cimentSacs = cimentKg / 50;
+    return {
+      volume,
+      cimentT, cimentSacs,
+      sableT, gravierT, acierT, acierKg, eauL,
+      coutMateriaux, mo, total,
+      acierRatio
+    };
+  }, [inputs, typeLongrine]);
 
-  const sableT = volume * 0.6;
-  const sableKg = sableT * 1000;
-  const sableM3 = sableKg / 1600;
-
-  const gravierT = volume * 0.8;
-  const gravierKg = gravierT * 1000;
-  const gravierM3 = gravierKg / 1700;
-
-  const eauL = volume * 150;
-  const eauM3 = eauL / 1000;
-
+  // --- SYNC PARENT ---
   useEffect(() => {
-    onTotalChange(total);
-  }, [total, onTotalChange]);
-
-  useEffect(() => {
-    onMateriauxChange({
-      Ciment: cimentT,
-      Sable: sableT,
-      Gravier: gravierT,
-      Eau: eauL,
-      Acier: acierT,
-    });
-  }, [cimentT, sableT, gravierT, eauL, acierT, onMateriauxChange]);
-
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setHistorique(JSON.parse(saved));
-      } catch (e) {
-        console.error("Erreur parsing historique :", e);
-      }
+    if (onTotalChange) onTotalChange(results.total);
+    if (onMateriauxChange) {
+      onMateriauxChange({
+        volume: results.volume,
+        ciment: results.cimentT,
+        acier: results.acierT
+      });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results.total]);
+
+  // --- HISTORIQUE ---
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
-
   const handleSave = () => {
-    if (volume === 0) {
-      alert("⚠️ Veuillez entrer des dimensions valides.");
-      return;
-    }
-
-    const entry = {
+    if (results.volume <= 0) return showToast("⚠️ Dimensions invalides", "error");
+    
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      type,
-      longueur,
-      largeur,
-      hauteur,
-      volume: volume.toFixed(3),
-      cimentT: cimentT.toFixed(3),
-      cimentKg: cimentKg.toFixed(0),
-      cimentSacs: cimentSacs.toFixed(1),
-      sableT: sableT.toFixed(3),
-      sableKg: sableKg.toFixed(0),
-      sableM3: sableM3.toFixed(2),
-      gravierT: gravierT.toFixed(3),
-      gravierKg: gravierKg.toFixed(0),
-      gravierM3: gravierM3.toFixed(2),
-      eauL: eauL.toFixed(0),
-      eauM3: eauM3.toFixed(2),
-      acierT: acierT.toFixed(3),
-      acierKg: acierKg.toFixed(0),
-      prixBeton,
-      prixAcier,
-      total: total.toFixed(2),
+      type: typeLongrine,
+      inputs: { ...inputs },
+      results: { ...results }
     };
 
-    console.log("Enregistrement entrée:", entry);
-    setHistorique((prev) => [entry, ...prev]);
-    alert("✅ Calcul sauvegardé !");
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Longrines sauvegardées !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique((prev) => prev.filter((item) => item.id !== id));
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
+  const clearHistory = () => {
+    if (window.confirm("Vider l'historique ?")) {
       setHistorique([]);
+      localStorage.removeItem(STORAGE_KEY);
+      showToast("Historique vidé");
     }
+  };
+
+  const resetFields = () => {
+    setInputs({ longueur: "", largeur: "", hauteur: "", prixUnitaire: "", coutMainOeuvre: "" });
+  };
+
+  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
+  
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  // --- CHART DATA ---
+  const chartData = {
+    labels: ["Béton", "Main d'œuvre"],
+    datasets: [{
+      data: [results.coutMateriaux, results.mo],
+      backgroundColor: ["#10b981", "#f59e0b"], // Emerald, Amber
+      borderColor: "#1f2937",
+      borderWidth: 4,
+    }]
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-4 bg-gray-900 rounded-lg shadow-lg text-gray-100 font-sans">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center">🏗️ Longrines</h2>
-
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Type de longrine</label>
-          <select
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700 focus:ring-2 focus:ring-orange-400"
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-          >
-            {TYPES_LONGRINES.map(({ value, label }) => (
-              <option value={value} key={value}>{label}</option>
-            ))}
-          </select>
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
+      
+      {/* Toast */}
+      {message && (
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold ${message.type === "error" ? "bg-red-600" : "bg-emerald-600"}`}>
+          {message.text}
         </div>
-
-        {[
-          { label: "Longueur (m)", value: longueur, setter: setLongueur },
-          { label: "Largeur (m)", value: largeur, setter: setLargeur },
-          { label: "Hauteur (m)", value: hauteur, setter: setHauteur },
-          {
-            label: `Prix béton (${currency}/m³)`,
-            value: prixBeton,
-            setter: setPrixBeton,
-          },
-          {
-            label: `Prix acier (${currency}/kg)`,
-            value: prixAcier,
-            setter: setPrixAcier,
-          },
-        ].map(({ label, value, setter }, idx) => (
-          <div key={idx}>
-            <label className="block mb-1 font-semibold text-orange-400">{label}</label>
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={value}
-              onChange={(e) => setter(e.target.value)}
-              className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700 focus:ring-2 focus:ring-orange-400"
-              placeholder="0"
-            />
-          </div>
-        ))}
-      </div>
-
-      <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl p-6 mb-6 shadow-2xl border-2 border-orange-500/30">
-        <h3 className="text-xl font-bold text-orange-400 mb-3">📊 Résultats instantanés</h3>
-        <div className="space-y-2">
-          <p>
-            📦 Volume béton :{" "}
-            <span className="text-orange-400 font-semibold">{volume.toFixed(3)} m³</span>
-          </p>
-          <p>
-            🧱 Ciment : {cimentKg.toFixed(0)} kg - {cimentT.toFixed(3)} t - {cimentSacs.toFixed(1)} sacs
-          </p>
-          <p>
-            🏖️ Sable : {sableM3.toFixed(2)} m³ - {sableKg.toFixed(0)} kg - {sableT.toFixed(3)} t
-          </p>
-          <p>
-            🪨 Gravier : {gravierM3.toFixed(2)} m³ - {gravierKg.toFixed(0)} kg - {gravierT.toFixed(3)} t
-          </p>
-          <p>
-            💧 Eau : {eauL.toFixed(0)} L - {eauM3.toFixed(2)} m³
-          </p>
-          <p>
-            🔩 Acier estimé : {acierKg.toFixed(0)} kg - {acierT.toFixed(3)} t
-          </p>
-          <p className="text-lg font-bold text-orange-400 mt-3">
-            💰 Total : {total.toLocaleString()} {currency}
-          </p>
-        </div>
-      </div>
-
-      <div className="flex gap-3 justify-center mb-6 flex-wrap">
-        <button
-          onClick={handleSave}
-          disabled={volume === 0}
-          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-md font-semibold shadow"
-        >
-          💾 Enregistrer
-        </button>
-        <button
-          onClick={clearHistorique}
-          disabled={historique.length === 0}
-          className="px-5 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-600 rounded-md font-semibold shadow"
-        >
-          🧹 Effacer l'historique
-        </button>
-      </div>
-
-      {historique.length > 0 && (
-        <section className="max-h-80 overflow-y-auto bg-gray-800 rounded-md p-4 shadow-inner scrollbar-thin scrollbar-thumb-orange-500 scrollbar-track-gray-700">
-          <h3 className="text-lg font-bold text-orange-400 mb-3 text-center">🕓 Historique</h3>
-          {historique.map((item) => (
-            <div
-              key={item.id}
-              className="bg-gray-700 rounded-md p-3 mb-3 flex justify-between items-center text-sm"
-            >
-              <div className="space-y-1">
-                <time className="block text-xs text-gray-400">{item.date}</time>
-                <p>Type : {item.type}</p>
-                <p>Longueur : {item.longueur} m</p>
-                <p>Largeur : {item.largeur} m</p>
-                <p>Hauteur : {item.hauteur} m</p>
-                <p>Volume : {item.volume} m³</p>
-                <p>
-                  Ciment : {item.cimentKg} kg - {item.cimentT} t - {item.cimentSacs} sacs
-                </p>
-                <p>
-                  Sable : {item.sableM3} m³ - {item.sableKg} kg - {item.sableT} t
-                </p>
-                <p>
-                  Gravier : {item.gravierM3} m³ - {item.gravierKg} kg - {item.gravierT} t
-                </p>
-                <p>
-                  Eau : {item.eauL} L - {item.eauM3} m³
-                </p>
-                <p>
-                  Acier : {item.acierKg} kg - {item.acierT} t
-                </p>
-                <p className="font-bold text-orange-300">
-                  Total : {item.total} {currency}
-                </p>
-              </div>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="ml-4 px-2 py-1 bg-red-600 hover:bg-red-700 rounded-md text-white font-semibold"
-                aria-label="Supprimer l'entrée"
-              >
-                ✖
-              </button>
-            </div>
-          ))}
-        </section>
       )}
+
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-emerald-600/20 rounded-lg text-emerald-500">
+            <Link className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Longrines</h2>
+            <p className="text-xs text-gray-400">Chaînage bas & Liaison</p>
+          </div>
+        </div>
+        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
+          <span className="text-xs text-gray-400 block">Total Estimé</span>
+          <span className="text-lg font-black text-emerald-400">
+            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-sm text-gray-500">{currency}</span>
+          </span>
+        </div>
+      </div>
+
+      {/* Main Grid */}
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+          
+          {/* GAUCHE : SÉLECTION & INPUTS (5 cols) */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            {/* Type Selector */}
+            <div className="grid grid-cols-2 gap-2 bg-gray-800 p-2 rounded-xl border border-gray-700">
+              {TYPES_LONGRINES.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setTypeLongrine(t.id)}
+                  className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg transition-all ${
+                    typeLongrine === t.id 
+                      ? "bg-emerald-600 text-white shadow-lg" 
+                      : "text-gray-400 hover:text-white hover:bg-gray-700"
+                  }`}
+                >
+                  <span className="text-xs font-bold">{t.label}</span>
+                  <span className="text-[9px] opacity-70">{t.desc}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Formulaire */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-emerald-400 uppercase tracking-wider">
+                <Ruler className="w-4 h-4" /> Dimensions
+              </h3>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <InputGroup label="Longueur Totale (m)" value={inputs.longueur} onChange={handleChange("longueur")} placeholder="Ex: 50" />
+                </div>
+                <InputGroup label="Largeur (m)" value={inputs.largeur} onChange={handleChange("largeur")} placeholder="Ex: 0.20" />
+                <InputGroup label="Hauteur (m)" value={inputs.hauteur} onChange={handleChange("hauteur")} placeholder="Ex: 0.40" />
+              </div>
+
+              <div className="h-px bg-gray-700/50 my-2" />
+
+              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider">
+                <Banknote className="w-4 h-4" /> Coûts
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label={`Prix Béton (${currency}/m³)`} value={inputs.prixUnitaire} onChange={handleChange("prixUnitaire")} />
+                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} />
+              </div>
+
+              <div className="flex gap-3 mt-auto pt-6">
+                <button onClick={handleSave} className="flex-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2">
+                  <Save className="w-5 h-5" /> Calculer
+                </button>
+                <button onClick={resetFields} className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition">
+                  <Trash2 className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* DROITE : RÉSULTATS (7 cols) */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            {/* KPIs */}
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Volume Total" value={results.volume.toFixed(2)} unit="m³" icon="🧊" color="text-emerald-400" bg="bg-emerald-500/10" />
+              <ResultCard label="Ciment" value={results.cimentSacs.toFixed(1)} unit="sacs" icon="🧱" color="text-gray-300" bg="bg-gray-500/10" border />
+              <ResultCard label="Acier" value={results.acierKg.toFixed(0)} unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-red-400" bg="bg-red-500/10" />
+            </div>
+
+            {/* Graphique & Détails */}
+            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-emerald-600/10 rounded-full blur-3xl pointer-events-none" />
+
+               <div className="w-40 h-40 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                     <span className="text-sm font-bold text-emerald-400">Total</span>
+                  </div>
+               </div>
+
+               <div className="flex-1 w-full space-y-3">
+                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Matériaux (Ratio Acier: {results.acierRatio}kg/m³)</h4>
+                  <MaterialRow label="Ciment" val={`${results.cimentT.toFixed(2)} t`} color="bg-emerald-500" />
+                  <MaterialRow label="Sable" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-500" />
+                  <MaterialRow label="Gravier" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
+                  <MaterialRow label="Acier" val={`${results.acierT.toFixed(3)} t`} color="bg-red-500" />
+                  
+                  <div className="pt-2 border-t border-gray-700 flex justify-between items-center mt-2">
+                    <span className="text-xs text-gray-400 flex items-center gap-1">
+                      <Droplets className="w-3 h-3 text-blue-400" /> Eau
+                    </span>
+                    <span className="text-sm font-bold text-white">{results.eauL.toFixed(0)} L</span>
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
+                <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                    <History className="w-3 h-3" /> Historique récent
+                  </h4>
+                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+                </div>
+                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
+                  {historique.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-emerald-500/30">
+                      <div className="flex flex-col">
+                         <span className="text-[10px] text-gray-500">{item.date.split(',')[0]}</span>
+                         <span className="text-xs text-gray-300">
+                           {item.type} (Vol: {item.results.volume.toFixed(1)}m³)
+                         </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-sm font-bold text-emerald-400">{item.results.total.toLocaleString()} {currency}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+// --- SOUS-COMPOSANTS ---
+
+const InputGroup = ({ label, value, onChange, placeholder, full = false, type = "number" }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type={type}
+      min="0"
+      step="any"
+      value={value}
+      onChange={onChange}
+      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
+    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+    </span>
+  </div>
+);
+
+const MaterialRow = ({ label, val, color }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/50 pb-2 last:border-0 group">
+    <div className="flex items-center gap-2">
+      <div className={`w-2 h-2 rounded-full ${color}`} />
+      <span className="text-gray-300 text-sm font-medium">{label}</span>
+    </div>
+    <span className="text-sm font-bold text-white font-mono">{val}</span>
+  </div>
+);
