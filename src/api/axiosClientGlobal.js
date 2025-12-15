@@ -1,32 +1,63 @@
 // ============================================
 // 📁 src/api/axiosClientGlobal.js
-// ✅ VERSION FUSIONNÉE ET OPTIMISÉE - CORRIGÉE
+// ✅ VERSION FINALE - FIX ENVIRONNEMENT
 // ============================================
 import axios from "axios";
 
-// 1. Détection automatique de l'URL
-const isDevelopment = 
-  import.meta.env.DEV || 
-  window.location.hostname === 'localhost';
+// ============================================
+// 🔧 DÉTECTION ENVIRONNEMENT ROBUSTE
+// ============================================
+const getEnvironment = () => {
+  // 1. Vérifier NODE_ENV explicite
+  if (import.meta.env.VITE_NODE_ENV === 'production') return 'production';
+  if (import.meta.env.MODE === 'production') return 'production';
+  
+  // 2. Vérifier hostname
+  const hostname = window.location.hostname;
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return 'development';
+  
+  // 3. Si déployé (domaine), c'est PROD
+  return 'production';
+};
 
-// ✅ CORRECTION : On enlève /api de la baseURL car il sera ajouté dans les routes
-const API_BASE_URL = isDevelopment
-  ? (import.meta.env.VITE_API_URL_DEV || 'http://localhost:5000')
-  : (import.meta.env.VITE_API_URL_PROD || 'https://chantilink-backend.onrender.com');
+const ENV = getEnvironment();
+const isDevelopment = ENV === 'development';
 
-console.log(`🔧 [AxiosClient] Mode: ${isDevelopment ? 'DEV' : 'PROD'}`);
+// ============================================
+// 🌐 CONFIGURATION URL SELON ENVIRONNEMENT
+// ============================================
+const getApiUrl = () => {
+  if (isDevelopment) {
+    // DEV : Toujours localhost
+    return import.meta.env.VITE_API_URL_DEV || 'http://localhost:5000';
+  } else {
+    // PROD : Backend Render
+    return import.meta.env.VITE_API_URL_PROD || 
+           import.meta.env.VITE_API_URL || 
+           'https://chantilink-backend.onrender.com';
+  }
+};
+
+const API_BASE_URL = getApiUrl();
+
+// ✅ LOGS DE DEBUG
+console.log(`🔧 [AxiosClient] Environment: ${ENV}`);
 console.log(`📡 [AxiosClient] Base URL: ${API_BASE_URL}`);
+console.log(`🌍 [AxiosClient] Hostname: ${window.location.hostname}`);
 
+// ============================================
+// 📦 INSTANCE AXIOS
+// ============================================
 const axiosClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000, // 60s pour les connexions lentes en 4G
+  timeout: 60000,
   withCredentials: true,
   headers: { 
     "Content-Type": "application/json" 
   },
 });
 
-// Stockage des handlers d'authentification (injectés depuis AuthContext)
+// Stockage des handlers d'authentification
 let authHandlers = null;
 
 export const injectAuthHandlers = (handlers) => {
@@ -39,17 +70,17 @@ export const injectAuthHandlers = (handlers) => {
 // ============================================
 axiosClient.interceptors.request.use(
   async (config) => {
-    // Liste des routes qui n'ont PAS besoin de token
+    // Routes publiques (pas de token requis)
     const publicRoutes = ['/api/auth/login', '/api/auth/register', '/api/auth/refresh', '/api/health'];
     const isPublic = publicRoutes.some(r => config.url?.includes(r));
 
     if (!isPublic) {
-      // 1. Essayer via le handler injecté (le plus fiable)
+      // 1. Via AuthContext
       if (authHandlers?.getToken) {
         const token = await authHandlers.getToken();
         if (token) config.headers.Authorization = `Bearer ${token}`;
       } 
-      // 2. Fallback localStorage (si AuthContext pas encore prêt)
+      // 2. Fallback localStorage
       else {
         const token = localStorage.getItem("token");
         if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -62,19 +93,17 @@ axiosClient.interceptors.request.use(
 );
 
 // ============================================
-// 🔄 INTERCEPTEUR RESPONSE (Retry & Erreurs)
+// 🔄 INTERCEPTEUR RESPONSE
 // ============================================
 axiosClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
     
-    // ------------------------------------
-    // Cas 1 : Token Expiré (401)
-    // ------------------------------------
+    // CAS 1 : Token Expiré (401)
     if (error.response?.status === 401 && !originalRequest._retry) {
       
-      // Éviter boucle infinie sur la route de refresh elle-même
+      // Éviter boucle infinie sur refresh
       if (originalRequest.url?.includes('/api/auth/refresh')) {
         console.error("❌ [AxiosClient] Refresh token invalide - Déconnexion");
         if (authHandlers?.logout) await authHandlers.logout();
@@ -85,11 +114,9 @@ axiosClient.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        // Tenter le refresh via AuthContext
         if (authHandlers?.refreshTokenForUser) {
           const success = await authHandlers.refreshTokenForUser();
           if (success) {
-            // Récupérer le nouveau token
             const newToken = await authHandlers.getToken();
             originalRequest.headers.Authorization = `Bearer ${newToken}`;
             console.log("✅ [AxiosClient] Refresh réussi, on rejoue la requête.");
@@ -102,22 +129,18 @@ axiosClient.interceptors.response.use(
       }
     }
 
-    // ------------------------------------
-    // Cas 2 : Timeout / Réseau (Mode Hors Ligne)
-    // ------------------------------------
+    // CAS 2 : Erreur Réseau
     if (error.code === "ECONNABORTED" || error.code === "ERR_NETWORK") {
-      console.error("❌ [AxiosClient] Erreur réseau ou timeout");
-      const msg = "Connexion instable ou serveur injoignable.";
+      console.error("❌ [AxiosClient] Erreur réseau:", error.message);
+      console.error("🔍 [AxiosClient] URL tentée:", originalRequest?.url);
+      console.error("🔍 [AxiosClient] Base URL:", API_BASE_URL);
+      
       if (authHandlers?.notify) {
-        authHandlers.notify("error", msg);
-      } else {
-        console.warn("⚠️ Pas de système de notification disponible");
+        authHandlers.notify("error", "Connexion instable ou serveur injoignable.");
       }
     }
 
-    // ------------------------------------
-    // Cas 3 : Erreurs Serveur (5xx)
-    // ------------------------------------
+    // CAS 3 : Erreur Serveur (5xx)
     if (error.response?.status >= 500) {
       console.error("❌ [AxiosClient] Erreur Serveur", error.response.status);
       if (authHandlers?.notify) {
@@ -125,11 +148,9 @@ axiosClient.interceptors.response.use(
       }
     }
 
-    // ------------------------------------
-    // Cas 4 : Erreurs 404 (pour debug)
-    // ------------------------------------
+    // CAS 4 : 404
     if (error.response?.status === 404) {
-      console.error("❌ [AxiosClient] 404 - Route introuvable:", originalRequest.url);
+      console.error("❌ [AxiosClient] 404 - Route introuvable:", originalRequest?.url);
     }
 
     return Promise.reject(error);
@@ -137,22 +158,19 @@ axiosClient.interceptors.response.use(
 );
 
 // ============================================
-// 🛠️ HELPERS UTILES
+// 🛠️ HELPERS
 // ============================================
 
 /**
- * Helper pour construire des URLs avec /api automatiquement
- * Usage: buildApiUrl('/story/feed') => '/api/story/feed'
+ * Construit une URL API complète
  */
 export const buildApiUrl = (path) => {
-  // Si le path commence déjà par /api, on ne le rajoute pas
   if (path.startsWith('/api/')) return path;
-  // Sinon on l'ajoute
   return `/api${path.startsWith('/') ? '' : '/'}${path}`;
 };
 
 /**
- * Helper pour les appels API avec gestion d'erreur intégrée
+ * Wrapper pour appels API simplifiés
  */
 export const apiRequest = async (method, url, data = null, config = {}) => {
   try {
@@ -173,5 +191,10 @@ export const apiRequest = async (method, url, data = null, config = {}) => {
     };
   }
 };
+
+/**
+ * Export de l'URL pour d'autres modules
+ */
+export const API_URL = API_BASE_URL;
 
 export default axiosClient;
