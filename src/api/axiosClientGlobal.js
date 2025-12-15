@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/api/axiosClientGlobal.js
-// ✅ VERSION FINALE - FIX ENVIRONNEMENT
+// ✅ VERSION FINALE - COMPATIBLE AVEC .env
 // ============================================
 import axios from "axios";
 
@@ -28,13 +28,15 @@ const isDevelopment = ENV === 'development';
 // ============================================
 const getApiUrl = () => {
   if (isDevelopment) {
-    // DEV : Toujours localhost
-    return import.meta.env.VITE_API_URL_DEV || 'http://localhost:5000';
+    // DEV : Utilise LOCAL
+    return import.meta.env.VITE_API_URL_LOCAL || 
+           import.meta.env.VITE_API_URL_DEV || 
+           'http://localhost:5000/api';
   } else {
-    // PROD : Backend Render
+    // PROD : Utilise PROD
     return import.meta.env.VITE_API_URL_PROD || 
            import.meta.env.VITE_API_URL || 
-           'https://chantilink-backend.onrender.com';
+           'https://chantilink-backend.onrender.com/api';
   }
 };
 
@@ -44,6 +46,11 @@ const API_BASE_URL = getApiUrl();
 console.log(`🔧 [AxiosClient] Environment: ${ENV}`);
 console.log(`📡 [AxiosClient] Base URL: ${API_BASE_URL}`);
 console.log(`🌍 [AxiosClient] Hostname: ${window.location.hostname}`);
+console.log(`📋 [AxiosClient] Variables env disponibles:`, {
+  VITE_API_URL_LOCAL: import.meta.env.VITE_API_URL_LOCAL,
+  VITE_API_URL_PROD: import.meta.env.VITE_API_URL_PROD,
+  MODE: import.meta.env.MODE
+});
 
 // ============================================
 // 📦 INSTANCE AXIOS
@@ -71,7 +78,7 @@ export const injectAuthHandlers = (handlers) => {
 axiosClient.interceptors.request.use(
   async (config) => {
     // Routes publiques (pas de token requis)
-    const publicRoutes = ['/api/auth/login', '/api/auth/register', '/api/auth/refresh', '/api/health'];
+    const publicRoutes = ['/auth/login', '/auth/register', '/auth/refresh', '/health'];
     const isPublic = publicRoutes.some(r => config.url?.includes(r));
 
     if (!isPublic) {
@@ -104,7 +111,7 @@ axiosClient.interceptors.response.use(
     if (error.response?.status === 401 && !originalRequest._retry) {
       
       // Éviter boucle infinie sur refresh
-      if (originalRequest.url?.includes('/api/auth/refresh')) {
+      if (originalRequest.url?.includes('/auth/refresh')) {
         console.error("❌ [AxiosClient] Refresh token invalide - Déconnexion");
         if (authHandlers?.logout) await authHandlers.logout();
         return Promise.reject(error);
@@ -162,22 +169,15 @@ axiosClient.interceptors.response.use(
 // ============================================
 
 /**
- * Construit une URL API complète
- */
-export const buildApiUrl = (path) => {
-  if (path.startsWith('/api/')) return path;
-  return `/api${path.startsWith('/') ? '' : '/'}${path}`;
-};
-
-/**
  * Wrapper pour appels API simplifiés
+ * IMPORTANT : N'ajoute PAS /api/ car déjà dans baseURL
  */
 export const apiRequest = async (method, url, data = null, config = {}) => {
   try {
-    const fullUrl = buildApiUrl(url);
+    // Ne PAS ajouter /api car déjà dans baseURL
     const response = await axiosClient({
       method,
-      url: fullUrl,
+      url, // URL tel quel (ex: /auth/login)
       data,
       ...config
     });

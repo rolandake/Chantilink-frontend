@@ -10,15 +10,27 @@ import React, {
 } from 'react';
 import axios from 'axios';
 import { useAuth } from './AuthContext';
-// ❌ SUPPRIMÉ : import { useSocket } from './SocketContext';
 
 const StoryContext = createContext(null);
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+// ✅ CORRECTION : URLs cohérentes
+const getApiUrl = () => {
+  const hostname = window.location.hostname;
+  const isDev = hostname === 'localhost' || hostname === '127.0.0.1';
+  
+  if (isDev) {
+    return import.meta.env.VITE_API_URL_LOCAL?.replace('/api', '') || 'http://localhost:5000';
+  } else {
+    return import.meta.env.VITE_API_URL_PROD?.replace('/api', '') || 'https://chantilink-backend.onrender.com';
+  }
+};
+
+const API_URL = getApiUrl();
+
+console.log('🔧 [StoryContext] API_URL:', API_URL);
 
 export function StoryProvider({ children }) {
-  // ✅ CORRECTION : Récupérer socket directement depuis AuthContext
   const { token, user, socket } = useAuth();
-  // ❌ SUPPRIMÉ : const { socket } = useSocket();
 
   const [stories, setStories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -29,7 +41,7 @@ export function StoryProvider({ children }) {
   const viewingRef = useRef(new Set());
   const isFetchingRef = useRef(false);
 
-  // ✅ Fonction fetchStories avec meilleure gestion d'erreurs
+  // ✅ Fonction fetchStories
   const fetchStories = useCallback(async (force = false) => {
     if (!token) {
       setStories([]);
@@ -50,6 +62,7 @@ export function StoryProvider({ children }) {
     try {
       console.log('📡 [Story] Fetching from:', `${API_URL}/api/story/feed`);
       
+      // ✅ CORRECTION : /api/story/feed (API_URL = base sans /api)
       const response = await axios.get(`${API_URL}/api/story/feed`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: abortControllerRef.current.signal
@@ -57,7 +70,6 @@ export function StoryProvider({ children }) {
 
       console.log('✅ [Story] Response:', response.data);
 
-      // ✅ Gérer les deux formats possibles de réponse
       let newStories;
       if (Array.isArray(response.data)) {
         newStories = response.data;
@@ -158,10 +170,6 @@ export function StoryProvider({ children }) {
     if (!token) throw new Error("Vous n'êtes pas connecté");
 
     console.log("📤 [Story] Envoi vers:", `${API_URL}/api/story`);
-    console.log("📤 [Story] Données FormData :");
-    for (let [key, value] of formData.entries()) {
-      console.log(`   - ${key}:`, value instanceof File ? `Fichier: ${value.name} (${value.size} octets)` : value);
-    }
 
     try {
       setUploadProgress(0);
@@ -188,11 +196,7 @@ export function StoryProvider({ children }) {
 
     } catch (err) {
       setUploadProgress(0);
-
-      console.error("❌ [Story] Erreur création");
-      console.error("   Message:", err.message);
-      console.error("   Response:", err.response?.data);
-      console.error("   Status:", err.response?.status);
+      console.error("❌ [Story] Erreur création:", err);
 
       if (err.response) {
         const serverMessage = err.response.data.message 
@@ -226,7 +230,7 @@ export function StoryProvider({ children }) {
     }
   }, [token, stories]);
 
-  // ✅ Supprimer un slide (AJOUTÉ pour App.jsx)
+  // ✅ Supprimer un slide
   const deleteSlide = useCallback(async (storyId, slideIndex) => {
     if (!token) return;
 
@@ -290,11 +294,7 @@ export function StoryProvider({ children }) {
       const status = err.response?.status;
       const errorMsg = err.response?.data?.error || err.message;
 
-      if (status === 403) console.warn('⚠️ [View] Accès refusé');
-      else if (status === 410) console.warn('⚠️ [View] Story expirée');
-      else if (status === 404) console.warn('⚠️ [View] Introuvable');
-      else console.error('❌ [View] Erreur:', errorMsg);
-
+      console.error('❌ [View] Erreur:', errorMsg);
       return { success: false, error: errorMsg, status };
     } finally {
       setTimeout(() => viewingRef.current.delete(key), 2000);
@@ -315,7 +315,7 @@ export function StoryProvider({ children }) {
     }
   }, [token]);
 
-  // ✅ Mes stories (useMemo pour performance)
+  // ✅ Mes stories
   const myStories = useMemo(() => {
     if (!user?._id) return [];
     return stories.filter(s => 
@@ -323,7 +323,7 @@ export function StoryProvider({ children }) {
     );
   }, [stories, user?._id]);
 
-  // ✅ Valeur du contexte (useMemo pour éviter re-renders inutiles)
+  // ✅ Valeur du contexte
   const value = useMemo(() => ({
     stories,        
     myStories,      
@@ -333,7 +333,7 @@ export function StoryProvider({ children }) {
     fetchStories,
     createStory,
     deleteStory,
-    deleteSlide,  // ✅ AJOUTÉ
+    deleteSlide,
     viewSlide,
     getAnalytics
   }), [stories, myStories, loading, error, uploadProgress, fetchStories, createStory, deleteStory, deleteSlide, viewSlide, getAnalytics]);
@@ -341,7 +341,6 @@ export function StoryProvider({ children }) {
   return <StoryContext.Provider value={value}>{children}</StoryContext.Provider>;
 }
 
-// ✅ Hook personnalisé avec vérification
 export const useStories = () => {
   const context = useContext(StoryContext);
   if (!context) {
