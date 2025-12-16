@@ -1,10 +1,22 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Users, Crown, CheckCircle, Ban, Search, RotateCw, Mail, Settings, Brain, Trash2, Lock, AlertCircle } from 'lucide-react';
 
-// Configuration API - MÊME LOGIQUE que AuthContext
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// ✅ CORRECTION : Même logique que AuthContext
+const getApiUrl = () => {
+  const hostname = window.location.hostname;
+  const isDev = hostname === 'localhost' || hostname === '127.0.0.1';
+  
+  if (isDev) {
+    return import.meta.env.VITE_API_URL_LOCAL || 'http://localhost:5000/api';
+  } else {
+    return import.meta.env.VITE_API_URL_PROD || 'https://chantilink-backend.onrender.com/api';
+  }
+};
+
+const API_URL = getApiUrl();
 
 console.log('🔧 [AdminDashboard] API_URL:', API_URL);
+console.log('🔧 [AdminDashboard] Hostname:', window.location.hostname);
 console.log('🔧 [AdminDashboard] Mode:', import.meta.env.MODE);
 
 // Hook pour récupérer le token depuis AuthContext
@@ -13,7 +25,6 @@ const useAuthToken = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Récupère le token depuis localStorage (même logique que AuthContext)
     const getStoredToken = () => {
       try {
         const activeUserId = JSON.parse(localStorage.getItem('chantilink_active_user_v6'));
@@ -24,16 +35,15 @@ const useAuthToken = () => {
 
         const userData = users[activeUserId];
         
-        // Vérifie si le token n'est pas expiré
         if (userData.expiresAt && userData.expiresAt > Date.now()) {
-          console.log('✅ Token trouvé et valide');
+          console.log('✅ [AdminDashboard] Token trouvé et valide');
           return userData.token;
         }
         
-        console.warn('⚠️ Token expiré');
+        console.warn('⚠️ [AdminDashboard] Token expiré');
         return null;
       } catch (err) {
-        console.error('❌ Erreur lecture token:', err);
+        console.error('❌ [AdminDashboard] Erreur lecture token:', err);
         return null;
       }
     };
@@ -54,7 +64,7 @@ const useSecureRequest = (token) => {
     }
 
     try {
-      console.log(`🌐 Requête: ${endpoint}`);
+      console.log(`🌐 [AdminDashboard] Requête: ${API_URL}${endpoint}`);
       const res = await fetch(`${API_URL}${endpoint}`, {
         ...options,
         headers: {
@@ -67,15 +77,15 @@ const useSecureRequest = (token) => {
 
       if (!res.ok) {
         const error = await res.json().catch(() => ({ message: 'Erreur réseau' }));
-        console.error('❌ Erreur API:', error);
+        console.error('❌ [AdminDashboard] Erreur API:', error);
         throw new Error(error.message || error.error || 'Erreur réseau');
       }
 
       const data = await res.json();
-      console.log(`✅ Réponse: ${endpoint}`, data);
+      console.log(`✅ [AdminDashboard] Réponse:`, data);
       return data;
     } catch (err) {
-      console.error('❌ Erreur complète:', err);
+      console.error('❌ [AdminDashboard] Erreur complète:', err);
       throw err;
     }
   }, [token]);
@@ -333,7 +343,7 @@ export default function AdminDashboard() {
 
   const loadUsers = useCallback(async () => {
     if (!token) {
-      console.warn('⚠️ Pas de token disponible');
+      console.warn('⚠️ [AdminDashboard] Pas de token disponible');
       return;
     }
     
