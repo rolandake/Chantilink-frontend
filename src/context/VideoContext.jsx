@@ -1,4 +1,4 @@
-// src/context/VideoContext.jsx - VERSION CORRIGÉE
+// src/context/VideoContext.jsx
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
@@ -14,22 +14,7 @@ export const useVideos = () => {
 
 const LIMIT = 10;
 const SOCKET_NAMESPACE = '/videos';
-
-// ✅ CORRECTION : URLs cohérentes
-const getApiUrl = () => {
-  const hostname = window.location.hostname;
-  const isDev = hostname === 'localhost' || hostname === '127.0.0.1';
-  
-  if (isDev) {
-    return import.meta.env.VITE_API_URL_LOCAL?.replace('/api', '') || 'http://localhost:5000';
-  } else {
-    return import.meta.env.VITE_API_URL_PROD?.replace('/api', '') || 'https://chantilink-backend.onrender.com';
-  }
-};
-
-const API_URL = getApiUrl();
-
-console.log('🔧 [VideoContext] API_URL:', API_URL);
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export const VideosProvider = ({ children }) => {
   const { user: currentUser, getToken } = useAuth();
@@ -123,7 +108,7 @@ export const VideosProvider = ({ children }) => {
     abortController.current = new AbortController();
 
     try {
-      // ✅ CORRECTION : /api/videos (API_URL = base sans /api)
+      // Ajustement de l'URL pour correspondre à votre backend (parfois /api/videos, parfois /videos)
       const { data } = await apiClient.get(`/api/videos?page=${targetPage}&limit=${LIMIT}`, {
         signal: abortController.current.signal,
       });
@@ -162,6 +147,8 @@ export const VideosProvider = ({ children }) => {
   }, [fetchVideos]);
 
   // === ACTIONS UTILISATEUR ===
+
+  // 1. LIKE
   const likeVideo = useCallback(async (videoId) => {
     if (!currentUser) return alert("Connectez-vous !");
 
@@ -170,9 +157,14 @@ export const VideosProvider = ({ children }) => {
         const likesArr = Array.isArray(v.likes) ? v.likes : []; 
         const isLiked = likesArr.includes(currentUser._id);
         
-        let newLikes = isLiked 
-          ? likesArr.filter(id => id !== currentUser._id)
-          : [...likesArr, currentUser._id];
+        let newLikes;
+        if (Array.isArray(v.likes)) {
+             newLikes = isLiked 
+                ? v.likes.filter(id => id !== currentUser._id)
+                : [...v.likes, currentUser._id];
+        } else {
+             newLikes = isLiked ? v.likes - 1 : v.likes + 1;
+        }
 
         return { ...v, likes: newLikes, userLiked: !isLiked };
       }
@@ -189,6 +181,7 @@ export const VideosProvider = ({ children }) => {
     }
   }, [currentUser, apiClient]);
 
+  // 2. COMMENT
   const commentVideo = useCallback(async (videoId, text) => {
     if (!text?.trim()) return;
     if (!currentUser) return alert("Connectez-vous !");
@@ -231,6 +224,7 @@ export const VideosProvider = ({ children }) => {
     }
   }, [currentUser, apiClient]);
 
+  // 3. DELETE
   const deleteVideo = useCallback(async (videoId) => {
     try {
       await apiClient.delete(`/api/videos/${videoId}`);
@@ -240,16 +234,20 @@ export const VideosProvider = ({ children }) => {
     }
   }, [apiClient]);
 
+  // 4. INCREMENT VIEWS (C'est ce qui manquait !)
   const incrementViews = useCallback(async (videoId) => {
     if (!videoId) return;
 
+    // Mise à jour optimiste locale
     setVideos((prev) => prev.map(v => 
       v._id === videoId ? { ...v, views: (v.views || 0) + 1 } : v
     ));
 
     try {
+      // Appel silencieux à l'API
       await apiClient.post(`/api/videos/${videoId}/view`);
     } catch (err) {
+      // On ignore l'erreur silencieusement pour ne pas gêner l'UX
       console.warn("Erreur incrémentation vue:", err);
     }
   }, [apiClient]);
@@ -263,7 +261,7 @@ export const VideosProvider = ({ children }) => {
     likeVideo,
     commentVideo,
     deleteVideo,
-    incrementViews,
+    incrementViews, // <--- AJOUTÉ ICI POUR ÉVITER LE CRASH
     currentUser
   }), [videos, loading, hasMore, fetchVideos, likeVideo, commentVideo, deleteVideo, incrementViews, currentUser]);
 

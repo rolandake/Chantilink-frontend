@@ -12,7 +12,7 @@ export const useSocket = (namespace = "/") => {
   const socket = useMemo(() => {
     if (!user?._id || !user?.token) return null;
 
-    const url = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
+    const url = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace('/api', '');
     const fullPath = namespace.startsWith("/") ? namespace : `/${namespace}`;
 
     const newSocket = io(`${url}${fullPath}`, {

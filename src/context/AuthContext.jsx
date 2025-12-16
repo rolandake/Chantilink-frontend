@@ -1,10 +1,11 @@
-// src/context/AuthContext.jsx - VERSION CORRIGÉE
+// src/context/AuthContext.jsx - VERSION CORRIGÉE ET FINALE
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
 import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
 
+// ✅ FIX: Fournir une valeur par défaut pour éviter undefined
 const AuthContext = createContext({
   users: new Map(),
   activeUserId: null,
@@ -29,27 +30,14 @@ const AuthContext = createContext({
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) throw new Error('useAuth doit être utilisé dans un AuthProvider');
+  if (!context) {
+    throw new Error('useAuth doit être utilisé dans un AuthProvider');
+  }
   return context;
 };
 
-// ✅ CORRECTION : URLs cohérentes
-const getApiUrl = () => {
-  const hostname = window.location.hostname;
-  const isDev = hostname === 'localhost' || hostname === '127.0.0.1';
-  
-  if (isDev) {
-    return import.meta.env.VITE_API_URL_LOCAL || 'http://localhost:5000/api';
-  } else {
-    return import.meta.env.VITE_API_URL_PROD || 'https://chantilink-backend.onrender.com/api';
-  }
-};
-
-const API_URL = getApiUrl();
-const SOCKET_URL = API_URL.replace('/api', ''); // https://chantilink-backend.onrender.com
-
-console.log('🔧 [AuthContext] API_URL:', API_URL);
-console.log('🔧 [AuthContext] SOCKET_URL:', SOCKET_URL);
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const SOCKET_URL = API_URL.replace('/api', '');
 
 const CONFIG = {
   TOKEN_REFRESH_MARGIN_MS: 10 * 60 * 1000,
@@ -70,19 +58,26 @@ const STORAGE_KEYS = {
 
 // === UTILITAIRES ===
 const secureSetItem = (key, value) => {
-  try { localStorage.setItem(key, JSON.stringify(value)); } 
-  catch (err) { console.warn("localStorage.setItem échec:", err); }
+  try { 
+    localStorage.setItem(key, JSON.stringify(value)); 
+  } catch (err) { 
+    console.warn("localStorage.setItem échec:", err); 
+  }
 };
 
 const secureGetItem = (key) => {
   try { 
     const val = localStorage.getItem(key); 
     return val ? JSON.parse(val) : null; 
-  } catch { return null; }
+  } catch { 
+    return null; 
+  }
 };
 
 const secureRemoveItem = (key) => { 
-  try { localStorage.removeItem(key); } catch {} 
+  try { 
+    localStorage.removeItem(key); 
+  } catch {} 
 };
 
 // === FOURNISSEUR ===
@@ -238,7 +233,7 @@ export function AuthProvider({ children }) {
     }
   }, [activeUserId, persistUsers, addNotification, cleanupSocket]);
 
-  // === REFRESH TOKEN ===
+  // === JETON DE RAFRAÎCHISSEMENT ===
   const refreshTokenForUser = useCallback(async (userId, retryCount = 0) => {
     const now = Date.now();
     if (now - lastRefreshAttempt.current < REFRESH_COOLDOWN) {
@@ -261,14 +256,16 @@ export function AuthProvider({ children }) {
 
     isRefreshing.current = true;
     try {
-      // ✅ CORRECTION : Utiliser SOCKET_URL (sans /api)
-      const res = await axios.post(`${SOCKET_URL}/api/auth/refresh-token`, {}, {
+      const refreshAxios = axios.create({
+        baseURL: API_URL.replace('/api', ''),
         timeout: 30000,
         withCredentials: true,
         headers: { 'Content-Type': 'application/json' }
       });
 
-      if (!res.data.success || !res.data.token) {
+      const res = await refreshAxios.post('/api/auth/refresh-token');
+
+      if (res.status !== 200 || !res.data.success || !res.data.token) {
         throw new Error(res.data?.message || "Réponse invalide");
       }
 
@@ -314,7 +311,7 @@ export function AuthProvider({ children }) {
     }
   }, [users, logout, addNotification, persistUsers]);
 
-  // === OBTENIR TOKEN ===
+  // === OBTENIR UN JETON ===
   const getToken = useCallback(async (userId = activeUserId) => {
     const userData = users.get(userId);
     if (!userData?.token) return null;
@@ -369,6 +366,7 @@ export function AuthProvider({ children }) {
     
     newSocket.on("disconnect", (reason) => {
       console.log("🔌 [AuthContext] Socket Déconnecté:", reason);
+      if (reason === "io client disconnect") return;
     });
 
     socketRef.current = newSocket;
@@ -381,7 +379,6 @@ export function AuthProvider({ children }) {
     const token = await getToken();
     if (!token) return null;
     try {
-      // ✅ Déjà bon (utilise API_URL qui contient /api)
       const res = await axios.get(`${API_URL}/admin/verify`, {
         headers: { Authorization: `Bearer ${token}` },
         withCredentials: true,
@@ -400,7 +397,7 @@ export function AuthProvider({ children }) {
     }
   }, [getToken, refreshTokenForUser, activeUserId]);
 
-  // === VÉRIFICATION TOKEN STOCKÉ ===
+  // === JETON DE VÉRIFICATION STOCKÉ ===
   const verifyStoredToken = useCallback(async (userId, token) => {
     if (!token) return { valid: false };
     try {
@@ -453,26 +450,21 @@ export function AuthProvider({ children }) {
     setReady(true);
   }, [verifyStoredToken]);
 
-  // === LOGIN ===
+  // === CONNEXION ===
   const login = useCallback(async (email, password) => {
     const safeEmail = (email || "").toString().trim().toLowerCase();
     setLoading(true);
-    console.log('📤 Tentative de connexion...');
-    
     try {
-      // ✅ CORRECTION : Utiliser SOCKET_URL + /api/auth/login
-      const res = await axios.post(`${SOCKET_URL}/api/auth/login`, 
-        { email: safeEmail, password: password.toString() },
-        {
-          timeout: 60000,
-          withCredentials: true,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
+      const loginAxios = axios.create({
+        baseURL: API_URL.replace('/api', ''),
+        timeout: 60000,
+        withCredentials: true,
+        headers: { 'Content-Type': 'application/json' }
+      });
 
-      console.log('📥 Résultat connexion:', res.data);
+      const res = await loginAxios.post('/api/auth/login', { email: safeEmail, password: password.toString() });
 
-      if (!res.data.success) throw new Error(res.data?.message || "Erreur login");
+      if (res.status >= 400 || !res.data.success) throw new Error(res.data?.message || "Erreur login");
 
       const { user, token } = res.data;
       const expiresAt = Date.now() + (55 * 60 * 1000);
@@ -491,25 +483,24 @@ export function AuthProvider({ children }) {
       trackLoginAttempt(safeEmail);
       const msg = err.response?.data?.message || err.message || "Erreur connexion";
       addNotification("error", msg);
-      console.error('❌ [Login] Erreur:', msg);
       return { success: false, message: msg };
     } finally {
       setLoading(false);
     }
   }, [users, persistUsers, addNotification, trackLoginAttempt, resetLoginAttempts]);
 
-  // === REGISTER ===
+  // === INSCRIPTION ===
   const register = useCallback(async (fullName, email, password) => {
     setLoading(true);
     try {
-      const res = await axios.post(`${SOCKET_URL}/api/auth/register`, 
-        { fullName, email, password },
-        {
-          timeout: 60000,
-          withCredentials: true,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
+      const registerAxios = axios.create({
+        baseURL: API_URL.replace('/api', ''),
+        timeout: 60000,
+        withCredentials: true,
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const res = await registerAxios.post('/api/auth/register', { fullName, email, password });
 
       if (!res.data.success) throw new Error(res.data?.message || "Erreur inscription");
 
@@ -534,7 +525,7 @@ export function AuthProvider({ children }) {
     }
   }, [users, persistUsers, addNotification]);
 
-  // === MISE À JOUR PROFIL ===
+  // === MISE À JOUR DU PROFIL ===
   const updateUserProfile = useCallback(async (userId, updates) => {
     if (!userId) return;
 
@@ -573,8 +564,8 @@ export function AuthProvider({ children }) {
   }, [users, refreshTokenForUser, ready]);
 
   useEffect(() => {
-    injectAuthHandlers({ getToken, logout, refreshTokenForUser: refreshTokenForUser, notify: addNotification });
-  }, [getToken, logout, addNotification, refreshTokenForUser]);
+    injectAuthHandlers({ getToken, logout, notify: addNotification });
+  }, [getToken, logout, addNotification]);
   
   // === VALEUR DU CONTEXTE ===
   const value = useMemo(() => {

@@ -12,7 +12,7 @@ export default function VisionDebugPanel({ visionConnected, currentProvider }) {
       userEmail: user?.email || "❌ Manquant",
       token: localStorage.getItem("token") ? "✅ Présent" : "❌ Manquant",
       tokenLength: localStorage.getItem("token")?.length || 0,
-      backendUrl: import.meta.env.VITE_BACKEND_URL || "http://localhost:5000",
+      backendUrl: (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace('/api', ''),
       connected: visionConnected ? "✅ Connecté" : "❌ Déconnecté",
       provider: currentProvider || "❌ Aucun",
       timestamp: new Date().toLocaleTimeString(),
