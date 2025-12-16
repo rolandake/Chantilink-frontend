@@ -1,13 +1,37 @@
 // ============================================
 // 📁 src/api/axiosClientGlobal.js
-// ✅ VERSION FINALE CORRIGÉE
+// ✅ VERSION FINALE CORRIGÉE AVEC EXPORTS
 // ============================================
 import axios from "axios";
 
-// ✅ Utilise VITE_API_URL directement (défini dans .env)
+// ✅ Base URL et Backend URL (avec fallback intelligent)
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
+// Backend URL : utilise VITE_BACKEND_URL ou reconstruit depuis API_URL
+const BACKEND_URL_RAW = import.meta.env.VITE_BACKEND_URL 
+  || import.meta.env.VITE_BACKEND_URL_LOCAL 
+  || API_BASE_URL.replace('/api', '');
+
+export const BACKEND_URL = BACKEND_URL_RAW;
+
 console.log('🔧 [AxiosClient] Base URL:', API_BASE_URL);
+console.log('🔧 [AxiosClient] Backend URL:', BACKEND_URL);
+
+// ✅ API Endpoints
+export const API_ENDPOINTS = {
+  VIDEOS: {
+    LIST: '/videos',
+    DELETE: (id) => `/videos/${id}`,
+    LIKE: (id) => `/videos/${id}/like`,
+    COMMENT: (id) => `/videos/${id}/comment`,
+    VIEW: (id) => `/videos/${id}/view`,
+  },
+  AUTH: {
+    LOGIN: '/auth/login',
+    REGISTER: '/auth/register',
+    REFRESH: '/auth/refresh',
+  }
+};
 
 const axiosClient = axios.create({
   baseURL: API_BASE_URL,

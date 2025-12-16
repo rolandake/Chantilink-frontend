@@ -180,8 +180,8 @@ const VideoCard = memo(({ video, isActive }) => {
 
         // ✅ CORRECTION : Routes exactes de votre backend
         const endpoint = wasFollowing 
-          ? `${API_URL}/api/users/unfollow/${owner._id}`
-          : `${API_URL}/api/users/follow/${owner._id}`;
+          ? `${API_URL}/users/unfollow/${owner._id}`
+          : `${API_URL}/users/follow/${owner._id}`;
 
         console.log(`🔄 ${wasFollowing ? 'Unfollow' : 'Follow'}:`, endpoint);
 
@@ -261,7 +261,7 @@ const VideoCard = memo(({ video, isActive }) => {
     setBoostLoading(true);
     try {
         const token = await getToken();
-        const res = await fetch(`${API_URL}/api/boost/create-session`, {
+        const res = await fetch(`${API_URL}/boost/create-session`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ contentId: video._id, contentType: 'video', amount: selectedBoost.amount, planId: selectedBoost.id })

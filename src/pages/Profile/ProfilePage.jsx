@@ -94,7 +94,7 @@ export default function ProfilePage() {
     }
 
     try {
-      const { data } = await axios.get(`${API_URL}/api/users/${uid}`, {
+      const { data } = await axios.get(`${API_URL}/users/${uid}`, {
         withCredentials: true,
         headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
         timeout: 8000 // Timeout pour éviter que ça pende indéfiniment
@@ -112,14 +112,14 @@ export default function ProfilePage() {
   }, []);
 
   const followUser = useCallback(async (uid) => {
-    const { data } = await axios.post(`${API_URL}/api/users/${uid}/follow`, {}, {
+    const { data } = await axios.post(`${API_URL}/users/${uid}/follow`, {}, {
       withCredentials: true
     });
     return data;
   }, []);
 
   const unfollowUser = useCallback(async (uid) => {
-    const { data } = await axios.post(`${API_URL}/api/users/${uid}/unfollow`, {}, {
+    const { data } = await axios.post(`${API_URL}/users/${uid}/unfollow`, {}, {
       withCredentials: true
     });
     return data;

@@ -80,7 +80,7 @@ const Header = memo(function Header() {
       if (!token) return;
 
       // On limite la réponse pour éviter la surcharge réseau
-      const res = await axios.get(`${API_URL}/api/notifications?limit=15`, {
+      const res = await axios.get(`${API_URL}/notifications?limit=15`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -108,7 +108,7 @@ const Header = memo(function Header() {
     setLoadingNotifs(true);
     try {
       const token = await getToken(activeUserId);
-      await axios.patch(`${API_URL}/api/notifications/read-all`, {}, {
+      await axios.patch(`${API_URL}/notifications/read-all`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
@@ -121,7 +121,7 @@ const Header = memo(function Header() {
     e.stopPropagation();
     try {
       const token = await getToken(activeUserId);
-      await axios.delete(`${API_URL}/api/notifications/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+      await axios.delete(`${API_URL}/notifications/${id}`, { headers: { Authorization: `Bearer ${token}` } });
       setNotifications(prev => prev.filter(n => n._id !== id));
       // Petit hack UX: on ne décrémente que si c'était non lu, sans refaire d'appel API
       setUnreadCount(prev => Math.max(0, prev - 1)); 

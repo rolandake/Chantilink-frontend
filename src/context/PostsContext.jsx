@@ -46,7 +46,7 @@ export const PostsProvider = ({ children }) => {
     abortController.current = new AbortController();
 
     try {
-      const res = await fetch(`${API_URL}/api/posts?page=${pageNumber}&limit=20`, {
+      const res = await fetch(`${API_URL}/posts?page=${pageNumber}&limit=20`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: abortController.current.signal,
       });
@@ -93,7 +93,7 @@ export const PostsProvider = ({ children }) => {
     if (!token || !targetUserId) return [];
 
     try {
-      const res = await fetch(`${API_URL}/api/posts?userId=${targetUserId}&page=${pageNumber}&limit=20`, {
+      const res = await fetch(`${API_URL}/posts?userId=${targetUserId}&page=${pageNumber}&limit=20`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -130,7 +130,7 @@ export const PostsProvider = ({ children }) => {
     }
 
     try {
-      const res = await fetch(`${API_URL}/api/posts`, {
+      const res = await fetch(`${API_URL}/posts`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
@@ -165,7 +165,7 @@ export const PostsProvider = ({ children }) => {
     }
 
     try {
-      const res = await fetch(`${API_URL}/api/posts/${postId}`, {
+      const res = await fetch(`${API_URL}/posts/${postId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -212,7 +212,7 @@ export const PostsProvider = ({ children }) => {
     optimisticUpdate();
 
     try {
-      const res = await fetch(`${API_URL}/api/posts/${postId}/like`, {
+      const res = await fetch(`${API_URL}/posts/${postId}/like`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -242,7 +242,7 @@ export const PostsProvider = ({ children }) => {
     }
 
     try {
-      const res = await fetch(`${API_URL}/api/posts/${postId}/comment`, {
+      const res = await fetch(`${API_URL}/posts/${postId}/comment`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

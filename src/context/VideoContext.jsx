@@ -1,8 +1,8 @@
 // src/context/VideoContext.jsx
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import axios from 'axios';
 import { io } from 'socket.io-client';
 import { useAuth } from './AuthContext';
+import axiosClient, { BACKEND_URL, API_ENDPOINTS } from '../api/axiosClientGlobal';
 
 const VideosContext = createContext();
 
@@ -14,7 +14,6 @@ export const useVideos = () => {
 
 const LIMIT = 10;
 const SOCKET_NAMESPACE = '/videos';
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 export const VideosProvider = ({ children }) => {
   const { user: currentUser, getToken } = useAuth();
@@ -30,30 +29,6 @@ export const VideosProvider = ({ children }) => {
   const abortController = useRef(null);
   const initialFetchDone = useRef(false);
 
-  // === CLIENT AXIOS CONFIGURÉ ===
-  const apiClient = useMemo(() => {
-    const client = axios.create({
-      baseURL: API_URL,
-      timeout: 20000,
-      headers: { 'Content-Type': 'application/json' }
-    });
-
-    client.interceptors.request.use(
-      async (config) => {
-        if (getToken) {
-          const token = await getToken();
-          if (token) {
-            config.headers.Authorization = `Bearer ${token}`;
-          }
-        }
-        return config;
-      },
-      (error) => Promise.reject(error)
-    );
-
-    return client;
-  }, [getToken]);
-
   // === SOCKET.IO CONNECTION ===
   useEffect(() => {
     let socket = null;
@@ -62,7 +37,7 @@ export const VideosProvider = ({ children }) => {
       const token = getToken ? await getToken() : null;
       if (!token) return;
 
-      socket = io(`${API_URL}${SOCKET_NAMESPACE}`, {
+      socket = io(`${BACKEND_URL}${SOCKET_NAMESPACE}`, {
         auth: { token },
         transports: ['websocket'],
         reconnectionAttempts: 5,
@@ -108,8 +83,8 @@ export const VideosProvider = ({ children }) => {
     abortController.current = new AbortController();
 
     try {
-      // Ajustement de l'URL pour correspondre à votre backend (parfois /api/videos, parfois /videos)
-      const { data } = await apiClient.get(`/api/videos?page=${targetPage}&limit=${LIMIT}`, {
+      // ✅ Utilise API_ENDPOINTS.VIDEOS.LIST au lieu de construire l'URL manuellement
+      const { data } = await axiosClient.get(`${API_ENDPOINTS.VIDEOS.LIST}?page=${targetPage}&limit=${LIMIT}`, {
         signal: abortController.current.signal,
       });
 
@@ -130,13 +105,13 @@ export const VideosProvider = ({ children }) => {
       if (initialLoad) setInitialLoad(false);
 
     } catch (err) {
-      if (axios.isCancel(err)) return;
+      if (err.name === 'CanceledError') return;
       console.error('❌ [VideoContext] Erreur Fetch:', err);
     } finally {
       setLoading(false);
       fetchingRef.current = false;
     }
-  }, [page, hasMore, initialLoad, apiClient]);
+  }, [page, hasMore, initialLoad]);
 
   // Chargement Initial
   useEffect(() => {
@@ -172,14 +147,15 @@ export const VideosProvider = ({ children }) => {
     }));
 
     try {
-      const { data } = await apiClient.post(`/api/videos/${videoId}/like`);
+      // ✅ Utilise API_ENDPOINTS
+      const { data } = await axiosClient.post(`/videos/${videoId}/like`);
       setVideos(prev => prev.map(v => 
         v._id === videoId ? { ...v, likes: data.likes } : v
       ));
     } catch (err) {
       console.error("❌ Erreur Like:", err);
     }
-  }, [currentUser, apiClient]);
+  }, [currentUser]);
 
   // 2. COMMENT
   const commentVideo = useCallback(async (videoId, text) => {
@@ -200,7 +176,8 @@ export const VideosProvider = ({ children }) => {
     ));
 
     try {
-      const { data } = await apiClient.post(`/api/videos/${videoId}/comment`, { 
+      // ✅ Utilise axiosClient
+      const { data } = await axiosClient.post(`/videos/${videoId}/comment`, { 
         text: cleanText,
         content: cleanText
       });
@@ -222,19 +199,20 @@ export const VideosProvider = ({ children }) => {
         v._id === videoId ? { ...v, comments: v.comments.filter(c => c._id !== tempId) } : v
       ));
     }
-  }, [currentUser, apiClient]);
+  }, [currentUser]);
 
   // 3. DELETE
   const deleteVideo = useCallback(async (videoId) => {
     try {
-      await apiClient.delete(`/api/videos/${videoId}`);
+      // ✅ Utilise API_ENDPOINTS
+      await axiosClient.delete(API_ENDPOINTS.VIDEOS.DELETE(videoId));
       setVideos(prev => prev.filter(v => v._id !== videoId));
     } catch (err) {
       console.error("Erreur suppression:", err);
     }
-  }, [apiClient]);
+  }, []);
 
-  // 4. INCREMENT VIEWS (C'est ce qui manquait !)
+  // 4. INCREMENT VIEWS
   const incrementViews = useCallback(async (videoId) => {
     if (!videoId) return;
 
@@ -244,13 +222,12 @@ export const VideosProvider = ({ children }) => {
     ));
 
     try {
-      // Appel silencieux à l'API
-      await apiClient.post(`/api/videos/${videoId}/view`);
+      // ✅ Utilise axiosClient
+      await axiosClient.post(`/videos/${videoId}/view`);
     } catch (err) {
-      // On ignore l'erreur silencieusement pour ne pas gêner l'UX
       console.warn("Erreur incrémentation vue:", err);
     }
-  }, [apiClient]);
+  }, []);
 
   // === VALEURS EXPORTÉES ===
   const value = useMemo(() => ({
@@ -261,7 +238,7 @@ export const VideosProvider = ({ children }) => {
     likeVideo,
     commentVideo,
     deleteVideo,
-    incrementViews, // <--- AJOUTÉ ICI POUR ÉVITER LE CRASH
+    incrementViews,
     currentUser
   }), [videos, loading, hasMore, fetchVideos, likeVideo, commentVideo, deleteVideo, incrementViews, currentUser]);
 

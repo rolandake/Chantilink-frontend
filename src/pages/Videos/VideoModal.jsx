@@ -192,7 +192,7 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
 
       console.log("📤 Début upload...");
 
-      const res = await axios.post(`${API_URL}/api/videos`, formData, {
+      const res = await axios.post(`${API_URL}/videos`, formData, {
         headers: { 
             'Content-Type': 'multipart/form-data', 
             'Authorization': `Bearer ${token}` 

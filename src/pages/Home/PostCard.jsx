@@ -226,7 +226,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
 
     try {
       const token = await getToken();
-      await fetch(`${API_URL}/api/posts/${post._id}/like`, {
+      await fetch(`${API_URL}/posts/${post._id}/like`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -252,7 +252,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     try {
       const token = await getToken();
       const action = prevFollowing ? 'unfollow' : 'follow';
-      const res = await fetch(`${API_URL}/api/users/${postUser._id}/${action}`, {
+      const res = await fetch(`${API_URL}/users/${postUser._id}/${action}`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -274,7 +274,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
 
-      const res = await fetch(`${API_URL}/api/boost/create-session`, {
+      const res = await fetch(`${API_URL}/boost/create-session`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({

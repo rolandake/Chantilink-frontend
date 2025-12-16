@@ -48,9 +48,9 @@ export function StoryProvider({ children }) {
     if (force) setLoading(true);
 
     try {
-      console.log('📡 [Story] Fetching from:', `${API_URL}/api/story/feed`);
+      console.log('📡 [Story] Fetching from:', `${API_URL}/story/feed`);
       
-      const response = await axios.get(`${API_URL}/api/story/feed`, {
+      const response = await axios.get(`${API_URL}/story/feed`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: abortControllerRef.current.signal
       });
@@ -157,7 +157,7 @@ export function StoryProvider({ children }) {
   const createStory = useCallback(async (formData) => {
     if (!token) throw new Error("Vous n'êtes pas connecté");
 
-    console.log("📤 [Story] Envoi vers:", `${API_URL}/api/story`);
+    console.log("📤 [Story] Envoi vers:", `${API_URL}/story`);
     console.log("📤 [Story] Données FormData :");
     for (let [key, value] of formData.entries()) {
       console.log(`   - ${key}:`, value instanceof File ? `Fichier: ${value.name} (${value.size} octets)` : value);
@@ -166,7 +166,7 @@ export function StoryProvider({ children }) {
     try {
       setUploadProgress(0);
       
-      const response = await axios.post(`${API_URL}/api/story`, formData, {
+      const response = await axios.post(`${API_URL}/story`, formData, {
         headers: { 
           Authorization: `Bearer ${token}`,
           'Content-Type': 'multipart/form-data'
@@ -215,7 +215,7 @@ export function StoryProvider({ children }) {
     setStories(prev => prev.filter(s => s._id !== storyId));
 
     try {
-      await axios.delete(`${API_URL}/api/story/${storyId}`, {
+      await axios.delete(`${API_URL}/story/${storyId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       console.log("✅ [Story] Supprimée:", storyId);
@@ -231,7 +231,7 @@ export function StoryProvider({ children }) {
     if (!token) return;
 
     try {
-      await axios.delete(`${API_URL}/api/story/${storyId}/slides/${slideIndex}`, {
+      await axios.delete(`${API_URL}/story/${storyId}/slides/${slideIndex}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
 
@@ -261,7 +261,7 @@ export function StoryProvider({ children }) {
 
     try {
       const response = await axios.post(
-        `${API_URL}/api/story/${storyId}/slides/${slideIndex}/view`,
+        `${API_URL}/story/${storyId}/slides/${slideIndex}/view`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -305,7 +305,7 @@ export function StoryProvider({ children }) {
   const getAnalytics = useCallback(async (storyId) => {
     if (!token) return null;
     try {
-      const res = await axios.get(`${API_URL}/api/story/${storyId}/analytics`, {
+      const res = await axios.get(`${API_URL}/story/${storyId}/analytics`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       return res.data;
