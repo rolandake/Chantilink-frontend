@@ -1,120 +1,98 @@
-// ============================================
-// 📁 src/pages/Chat/components/ChatHeader.jsx
-// ============================================
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Video, Phone, MoreVertical, ArrowLeft } from 'lucide-react';
+import { Video, Phone, MoreVertical, WifiOff } from 'lucide-react';
 
 export const ChatHeader = ({ 
   friend, 
-  typingUsers, 
-  onlineUsers, 
+  typingUsers = [], 
+  onlineUsers = [], 
   connected = true,
   onVideoCall,
   onAudioCall,
-  onBack
+  className
 }) => {
-  // ✅ Vérifier que typingUsers et onlineUsers sont des tableaux
+  if (!friend) return null;
+
+  // Gestion sécurisée des tableaux
   const typingArray = Array.isArray(typingUsers) ? typingUsers : [];
   const onlineArray = Array.isArray(onlineUsers) ? onlineUsers : [];
   
-  const isOnline = onlineArray.includes(friend?.id);
-  const isTyping = typingArray.includes(friend?.id);
+  // Logique de statut
+  const isOnline = onlineArray.some(u => u.userId === friend.id);
+  const isTyping = typingArray.includes(friend.id);
 
   return (
-    <header className="bg-gray-800/50 border-b border-gray-700 p-4 flex-shrink-0">
-      <div className="flex items-center justify-between">
-        {/* Info du contact */}
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          {/* Avatar */}
-          <div className="relative flex-shrink-0">
-            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center text-white font-bold text-lg">
-              {(friend?.fullName?.[0] || friend?.username?.[0] || '?').toUpperCase()}
-            </div>
-            {isOnline && (
-              <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-gray-800" />
+    <header className={`bg-gray-900/80 backdrop-blur-md border-b border-gray-800 h-20 px-4 flex items-center justify-between z-20 ${className}`}>
+      {/* --- INFO CONTACT --- */}
+      <div className="flex items-center gap-3 overflow-hidden">
+        {/* Avatar */}
+        <div className="relative flex-shrink-0">
+          <div className="w-11 h-11 rounded-full bg-gradient-to-br from-orange-500 to-pink-600 flex items-center justify-center text-white font-bold text-lg shadow-lg">
+            {friend.avatar ? (
+              <img src={friend.avatar} alt={friend.username} className="w-full h-full rounded-full object-cover" />
+            ) : (
+              (friend.fullName?.[0] || friend.username?.[0] || '?').toUpperCase()
             )}
           </div>
-
-          {/* Nom et statut */}
-          <div className="flex-1 min-w-0">
-            <h3 className="text-white font-semibold text-lg truncate">
-              {friend?.fullName || friend?.username || "Inconnu"}
-            </h3>
-            <div className="flex items-center gap-2">
-              {isTyping ? (
-                <motion.div
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="flex items-center gap-1 text-orange-400 text-sm"
-                >
-                  <span>En train d'écrire</span>
-                  <motion.span
-                    animate={{ opacity: [1, 0.5, 1] }}
-                    transition={{ repeat: Infinity, duration: 1 }}
-                  >
-                    ...
-                  </motion.span>
-                </motion.div>
-              ) : (
-                <p className="text-sm text-gray-400">
-                  {isOnline ? 'En ligne' : 'Hors ligne'}
-                </p>
-              )}
-            </div>
-          </div>
+          {isOnline && (
+            <span className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-gray-900 rounded-full shadow-sm" />
+          )}
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-2">
-          {/* Appel vidéo */}
-          <motion.button
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={onVideoCall}
-            disabled={!connected}
-            className="p-3 bg-blue-500/20 text-blue-400 rounded-xl hover:bg-blue-500/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Appel vidéo"
-          >
-            <Video className="w-5 h-5" />
-          </motion.button>
-
-          {/* Appel audio */}
-          <motion.button
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={onAudioCall}
-            disabled={!connected}
-            className="p-3 bg-green-500/20 text-green-400 rounded-xl hover:bg-green-500/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Appel audio"
-          >
-            <Phone className="w-5 h-5" />
-          </motion.button>
-
-          {/* Menu */}
-          <motion.button
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-            className="p-3 bg-gray-700/50 text-gray-400 rounded-xl hover:bg-gray-700 transition"
-            title="Plus d'options"
-          >
-            <MoreVertical className="w-5 h-5" />
-          </motion.button>
+        {/* Textes */}
+        <div className="flex flex-col justify-center">
+          <h3 className="text-white font-bold text-base md:text-lg leading-tight truncate max-w-[150px] md:max-w-xs">
+            {friend.fullName || friend.username || "Inconnu"}
+          </h3>
+          
+          <div className="h-4 flex items-center">
+            {isTyping ? (
+              <motion.span 
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                className="text-orange-400 text-xs font-medium italic flex items-center gap-1"
+              >
+                écrit
+                <motion.span animate={{ opacity: [0, 1, 0] }} transition={{ repeat: Infinity, duration: 1.5 }}>...</motion.span>
+              </motion.span>
+            ) : (
+              <span className={`text-xs ${isOnline ? 'text-green-400 font-medium' : 'text-gray-500'}`}>
+                {isOnline ? 'En ligne' : 'Hors ligne'}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Barre de connexion */}
-      {!connected && (
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mt-3 p-2 bg-red-500/20 border border-red-500/30 rounded-lg text-center"
-        >
-          <p className="text-red-400 text-sm">
-            Connexion perdue - Reconnexion en cours...
-          </p>
-        </motion.div>
-      )}
+      {/* --- ACTIONS --- */}
+      <div className="flex items-center gap-1 md:gap-3">
+        {!connected && (
+          <WifiOff className="text-red-500 w-5 h-5 mr-2 animate-pulse" title="Connexion perdue" />
+        )}
+
+        <ActionButton onClick={onAudioCall} icon={Phone} disabled={!connected} color="green" />
+        <ActionButton onClick={onVideoCall} icon={Video} disabled={!connected} color="blue" />
+        
+        <button className="p-2 text-gray-400 hover:text-white transition hidden md:block">
+          <MoreVertical size={20} />
+        </button>
+      </div>
     </header>
   );
 };
+
+// Petit composant helper pour les boutons
+const ActionButton = ({ onClick, icon: Icon, disabled, color }) => (
+  <motion.button
+    whileHover={{ scale: 1.1 }}
+    whileTap={{ scale: 0.9 }}
+    onClick={onClick}
+    disabled={disabled}
+    className={`p-2.5 rounded-full transition-colors ${
+      disabled 
+        ? 'opacity-50 cursor-not-allowed text-gray-600 bg-gray-800' 
+        : 'text-gray-200 hover:bg-white/10 hover:text-white'
+    }`}
+  >
+    <Icon size={22} className={color === 'blue' ? 'text-blue-400' : 'text-green-400'} />
+  </motion.button>
+);
