@@ -1,5 +1,8 @@
+// ============================================
+// 📁 src/pages/Chat/components/ChatInput.jsx - AMÉLIORÉ
+// ============================================
 import React from "react";
-import { Send, Mic, Paperclip, Smile, StopCircle, X, Play, Pause, Image as ImageIcon } from "lucide-react";
+import { Send, Mic, Paperclip, Smile, StopCircle, X, Play, Pause } from "lucide-react";
 import EmojiPicker from 'emoji-picker-react';
 import { motion, AnimatePresence } from "framer-motion";
 
@@ -9,7 +12,7 @@ export const ChatInput = ({
   audioUrl, isPlaying, onPlayPreview, onPausePreview,
   showEmoji, onToggleEmoji, onEmojiSelect,
   uploading, onUpload, connected,
-  txtRef, fileRef
+  txtRef, fileRef, audioRef
 }) => {
 
   // Gestion de la touche Entrée
@@ -21,7 +24,10 @@ export const ChatInput = ({
   };
 
   // Déclencheur pour l'input file caché
-  const handleFileClick = () => fileRef.current?.click();
+  const handleFileClick = () => {
+    if (!connected || uploading || recording) return;
+    fileRef.current?.click();
+  };
 
   return (
     <div className="w-full bg-gray-900/95 backdrop-blur-xl border-t border-gray-800 p-2 md:p-4 z-30 relative">
@@ -48,16 +54,27 @@ export const ChatInput = ({
                 <motion.div 
                   className="h-full bg-gradient-to-r from-orange-500 to-pink-500"
                   animate={{ width: isPlaying ? "100%" : "0%" }}
-                  transition={{ duration: 10, ease: "linear" }} // Durée simulée ou réelle si dispo
+                  transition={{ duration: 10, ease: "linear" }}
                 />
               </div>
             </div>
 
+            {/* Audio element caché */}
+            {audioRef && <audio ref={audioRef} src={audioUrl} className="hidden" />}
+
             <div className="flex gap-2">
-              <button onClick={onCancelAudio} className="p-2 text-red-400 hover:bg-red-500/10 rounded-lg transition">
+              <button 
+                onClick={onCancelAudio} 
+                className="p-2 text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                title="Annuler"
+              >
                 <X size={20}/>
               </button>
-              <button onClick={onSendAudio} className="p-2 text-green-400 hover:bg-green-500/10 rounded-lg transition">
+              <button 
+                onClick={onSendAudio} 
+                className="p-2 text-green-400 hover:bg-green-500/10 rounded-lg transition"
+                title="Envoyer"
+              >
                 <Send size={20}/>
               </button>
             </div>
@@ -76,7 +93,12 @@ export const ChatInput = ({
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
               className="absolute bottom-20 left-0 z-50 shadow-2xl rounded-2xl overflow-hidden"
             >
-              <EmojiPicker onEmojiClick={onEmojiSelect} theme="dark" width={320} height={400} />
+              <EmojiPicker 
+                onEmojiClick={onEmojiSelect} 
+                theme="dark" 
+                width={320} 
+                height={400} 
+              />
             </motion.div>
           )}
         </AnimatePresence>
@@ -88,7 +110,7 @@ export const ChatInput = ({
             whileTap={{ scale: 0.9 }}
             onClick={handleFileClick} 
             disabled={!connected || uploading || recording}
-            className="p-2.5 hover:text-white hover:bg-gray-800 rounded-xl transition disabled:opacity-50"
+            className="p-2.5 hover:text-white hover:bg-gray-800 rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed"
             title="Joindre un fichier"
           >
             {uploading ? (
@@ -104,16 +126,19 @@ export const ChatInput = ({
             ref={fileRef} 
             className="hidden" 
             onChange={onUpload} 
-            disabled={uploading}
-            // Accepte images, vidéos, audio, pdf, doc, etc.
-            accept="image/*,video/*,audio/*,application/pdf,.doc,.docx" 
+            disabled={uploading || !connected}
+            accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.txt,.zip,.rar" 
           />
           
           <motion.button 
             whileHover={{ scale: 1.1 }}
             whileTap={{ scale: 0.9 }}
             onClick={onToggleEmoji}
-            className={`p-2.5 hover:bg-gray-800 rounded-xl transition hidden md:block ${showEmoji ? 'text-yellow-400' : 'hover:text-yellow-400'}`}
+            disabled={recording}
+            className={`p-2.5 hover:bg-gray-800 rounded-xl transition hidden md:block disabled:opacity-50 ${
+              showEmoji ? 'text-yellow-400' : 'hover:text-yellow-400'
+            }`}
+            title="Emojis"
           >
             <Smile size={22} />
           </motion.button>
@@ -127,9 +152,15 @@ export const ChatInput = ({
             onChange={onChange}
             onKeyDown={handleKeyDown}
             disabled={!connected || recording}
-            placeholder={recording ? "Enregistrement audio en cours..." : "Écrivez un message..."}
+            placeholder={
+              recording 
+                ? "Enregistrement audio en cours..." 
+                : !connected 
+                ? "Hors ligne..." 
+                : "Écrivez un message..."
+            }
             rows={1}
-            className="w-full bg-transparent text-white px-4 py-3 max-h-32 resize-none outline-none custom-scrollbar placeholder:text-gray-500"
+            className="w-full bg-transparent text-white px-4 py-3 max-h-32 resize-none outline-none custom-scrollbar placeholder:text-gray-500 disabled:cursor-not-allowed"
           />
         </div>
 
@@ -145,6 +176,7 @@ export const ChatInput = ({
                 onClick={onSend}
                 disabled={!connected || uploading}
                 className="p-3 bg-gradient-to-r from-orange-500 to-pink-600 text-white rounded-full shadow-lg shadow-orange-900/30 hover:scale-105 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Envoyer"
               >
                 <Send size={20} />
               </motion.button>
@@ -155,11 +187,13 @@ export const ChatInput = ({
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0, opacity: 0 }}
                 onClick={recording ? onStopRecording : onStartRecording}
-                className={`p-3 rounded-full shadow-lg transition-all ${
+                disabled={!connected}
+                className={`p-3 rounded-full shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                   recording 
                     ? "bg-red-500 text-white animate-pulse shadow-red-500/30" 
                     : "bg-gray-700 text-gray-300 hover:bg-gray-600 hover:text-white"
                 }`}
+                title={recording ? "Arrêter l'enregistrement" : "Enregistrer un message vocal"}
               >
                 {recording ? <StopCircle size={20} /> : <Mic size={20} />}
               </motion.button>
@@ -167,6 +201,32 @@ export const ChatInput = ({
           </AnimatePresence>
         </div>
       </div>
+
+      {/* --- INDICATEURS D'ÉTAT --- */}
+      {!connected && (
+        <div className="absolute top-1 left-1/2 transform -translate-x-1/2">
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-red-500/90 text-white text-xs px-3 py-1 rounded-full"
+          >
+            Hors ligne
+          </motion.div>
+        </div>
+      )}
+
+      {uploading && (
+        <div className="absolute top-1 left-1/2 transform -translate-x-1/2">
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-blue-500/90 text-white text-xs px-3 py-1 rounded-full flex items-center gap-2"
+          >
+            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            Envoi en cours...
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 };

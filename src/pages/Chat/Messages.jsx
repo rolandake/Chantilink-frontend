@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Chat/Messages.jsx
-// VERSION: FINAL INTEGRATED
+// VERSION: CORRIGÉE ET OPTIMISÉE
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -115,7 +115,6 @@ export default function Messages() {
     const handleTyping = ({ senderId }) => setTypingUsers(prev => [...prev, senderId]);
     const handleStopTyping = ({ senderId }) => setTypingUsers(prev => prev.filter(id => id !== senderId));
     
-    // Suppression temps réel
     const handleMessageDeleted = ({ messageId }) => {
       setData(p => ({ ...p, msg: p.msg.filter(m => m._id !== messageId) }));
     };
@@ -142,6 +141,29 @@ export default function Messages() {
     showToast, processedMessagesRef, cleanupCallRingtone, sendMessage
   });
 
+  // === AUTO-SYNC AU DÉMARRAGE (OPTIONNEL) ===
+  useEffect(() => {
+    const autoSync = async () => {
+      try {
+        const lastSync = localStorage.getItem('lastContactSync');
+        const now = Date.now();
+        
+        // Sync si jamais fait ou si > 24h
+        if (!lastSync || now - parseInt(lastSync) > 86400000) {
+          await API.syncContacts(token, []);
+          localStorage.setItem('lastContactSync', now.toString());
+          console.log("✅ Auto-sync contacts réussie");
+        }
+      } catch (err) {
+        console.warn("⚠️ Auto-sync échouée (silencieuse):", err);
+      }
+    };
+
+    if (token && user) {
+      autoSync();
+    }
+  }, [token, user]);
+
   // Chargement conversation
   const loadConversation = useCallback(async (withId) => {
     setUi(p => ({ ...p, load: true }));
@@ -151,8 +173,11 @@ export default function Messages() {
       setData(p => ({ ...p, msg: messages }));
       markAsRead(withId);
       setData(p => ({ ...p, unread: { ...p.unread, [withId]: 0 } }));
-    } catch (e) { showToast("Erreur chargement messages", "error"); }
-    finally { setUi(p => ({ ...p, load: false })); }
+    } catch (e) { 
+      showToast("Erreur chargement messages", "error"); 
+    } finally { 
+      setUi(p => ({ ...p, load: false })); 
+    }
   }, [token, markAsRead, setData, setUi, showToast]);
 
   // Sélection d'un contact
@@ -196,7 +221,6 @@ export default function Messages() {
       content: input.trim(), timestamp: new Date().toISOString(), status: 'sending', type: 'text'
     };
     
-    // UI Optimiste
     setData(p => ({ ...p, msg: [...p.msg, newMsg] }));
     
     const sent = sendMessage({ recipientId: sel.friend.id, content: input.trim(), type: 'text' });
@@ -210,57 +234,66 @@ export default function Messages() {
     }
   }, [sel.friend, input, connected, sendMessage, stopTyping, showToast, user.id, setData]);
 
-  // --- 1. GESTION UPLOAD FICHIERS (IMAGE/VIDEO/FILE) ---
+  // === UPLOAD AVEC RETRY ===
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !sel.friend) return;
 
-    // Limite 50Mo
     if (file.size > 50 * 1024 * 1024) {
       showToast("Fichier trop volumineux (>50Mo)", "error");
       return;
     }
 
     setUi(p => ({ ...p, up: true }));
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
+    
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
 
-      // Appel Service API
-      const response = await API.uploadFile(token, formData);
-      
-      if (response && response.url) {
-        // Détection Type
-        let msgType = 'file';
-        if (file.type.startsWith('image/')) msgType = 'image';
-        else if (file.type.startsWith('video/')) msgType = 'video';
-        else if (file.type.startsWith('audio/')) msgType = 'audio';
+        const response = await API.uploadFile(token, formData);
+        
+        if (response && response.url) {
+          let msgType = 'file';
+          if (file.type.startsWith('image/')) msgType = 'image';
+          else if (file.type.startsWith('video/')) msgType = 'video';
+          else if (file.type.startsWith('audio/')) msgType = 'audio';
 
-        // Envoi Socket
-        sendMessage({
-          recipientId: sel.friend.id,
-          content: response.url,
-          type: msgType,
-          fileName: file.name
-        });
+          sendMessage({
+            recipientId: sel.friend.id,
+            content: response.url,
+            type: msgType,
+            fileName: file.name
+          });
+          
+          break; // Succès
+        }
+      } catch (error) {
+        attempts++;
+        console.error(`Upload error (tentative ${attempts}/${maxAttempts}):`, error);
+        
+        if (attempts >= maxAttempts) {
+          showToast("Échec de l'upload après 3 tentatives", "error");
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
+        }
       }
-    } catch (error) {
-      console.error("Upload error:", error);
-      showToast("Erreur lors de l'envoi du fichier", "error");
-    } finally {
-      setUi(p => ({ ...p, up: false }));
-      if (fileRef.current) fileRef.current.value = ""; // Reset input
     }
+    
+    setUi(p => ({ ...p, up: false }));
+    if (fileRef.current) fileRef.current.value = "";
   };
 
-  // --- 2. GESTION ENVOI AUDIO ---
+  // === ENVOI AUDIO ===
   const sendAudio = async () => {
     if (!audioBlob || !sel.friend) return;
     
     setUi(p => ({ ...p, up: true }));
     try {
       const formData = new FormData();
-      // Nommage important pour le backend
       formData.append("file", audioBlob, "voice_message.webm");
 
       const response = await API.uploadFile(token, formData);
@@ -281,12 +314,12 @@ export default function Messages() {
     }
   };
 
-  // --- 3. GESTION SYNC CONTACTS ---
+  // === SYNC CONTACTS ===
   const handleSyncContacts = async () => {
     setUi(p => ({ ...p, load: true }));
     try {
       let contactsToSend = [];
-      // Vérifier support navigateur
+      
       if ('contacts' in navigator && 'ContactsManager' in window) {
         try {
           const props = ['name', 'tel'];
@@ -296,21 +329,19 @@ export default function Messages() {
             phone: c.tel?.[0] || ""
           }));
         } catch (err) {
-          // Annulation utilisateur ou erreur
-          console.warn("Acces contacts refusé ou annulé");
+          console.warn("Accès contacts refusé");
         }
-      } else {
-        showToast("Synchro automatique non supportée, rafraîchissement...", "info");
       }
 
-      // Appel API (Même si liste vide, pour rafraîchir les status)
       const result = await API.syncContacts(token, contactsToSend);
       
       if (result.data?.syncedContacts) {
-        // Mise à jour locale (si votre useMessagesData le permet, sinon recharger page)
-        // setData(p => ({ ...p, conn: result.connections })); // Idéalement
-        window.location.reload(); // Solution brute mais efficace pour mettre à jour la Sidebar
+        load(); // Recharger les données
       }
+      
+      // Sauvegarder timestamp
+      localStorage.setItem('lastContactSync', Date.now().toString());
+      
       showToast(result.message || "Contacts synchronisés", "success");
     } catch (e) {
       console.error(e);
@@ -329,19 +360,60 @@ export default function Messages() {
     }
   };
 
+  // === OUVERTURE CONVERSATION DEPUIS PENDING ===
+  const handleOpenPendingConversation = useCallback(async (request) => {
+    try {
+      console.log("💬 Ouverture conversation depuis pending:", request);
+      
+      // 1. Accepter automatiquement
+      await API.acceptMessageRequest(token, request._id);
+      
+      // 2. Créer objet friend
+      const sender = request.sender;
+      const friend = {
+        id: sender._id,
+        fullName: sender.fullName,
+        username: sender.username,
+        phone: sender.phone,
+        profilePhoto: sender.profilePhoto,
+        isOnChantilink: true
+      };
+      
+      // 3. Ouvrir conversation
+      pick(friend);
+      
+      // 4. Fermer modale
+      setUi(p => ({ ...p, showPending: false }));
+      
+      // 5. Recharger contacts
+      load();
+      
+      showToast(`Conversation ouverte avec ${friend.fullName}`, "success");
+    } catch (err) {
+      console.error("Erreur ouverture conversation:", err);
+      showToast("Erreur lors de l'ouverture", "error");
+    }
+  }, [token, pick, load, showToast, setUi]);
+
   // Suppression Message
   const handleDeleteMessage = useCallback(async (msgId) => {
     if (!window.confirm("Supprimer ce message ?")) return;
     try {
       setData(p => ({ ...p, msg: p.msg.filter(m => m._id !== msgId) }));
       await API.deleteMessage(token, msgId);
-      if (socket?.connected && sel.friend) socket.emit("deleteMessage", { messageId: msgId, recipientId: sel.friend.id });
-    } catch (e) { showToast("Erreur suppression", "error"); loadConversation(sel.friend.id); }
+      if (socket?.connected && sel.friend) {
+        socket.emit("deleteMessage", { messageId: msgId, recipientId: sel.friend.id });
+      }
+    } catch (e) { 
+      showToast("Erreur suppression", "error"); 
+      loadConversation(sel.friend.id); 
+    }
   }, [token, socket, sel.friend, setData, showToast, loadConversation]);
 
-
   // Scroll automatique
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [data.msg, typingUsers]);
+  useEffect(() => { 
+    endRef.current?.scrollIntoView({ behavior: 'smooth' }); 
+  }, [data.msg, typingUsers]);
 
   // Filtering Logic
   const filteredContacts = useMemo(() => {
@@ -351,12 +423,10 @@ export default function Messages() {
     return list.sort((a, b) => (data.unread[b.id] || 0) - (data.unread[a.id] || 0));
   }, [data.conn, ui.search, data.unread]);
 
-  // Direction animation
   const direction = sel.friend ? 1 : -1;
 
   return (
     <>
-      {/* BOUTON RETOUR FLOTTANT */}
       <motion.button
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
@@ -368,11 +438,9 @@ export default function Messages() {
         <ArrowLeft className="w-5 h-5" />
       </motion.button>
 
-      {/* CONTENEUR FLUIDE */}
       <div className="fixed inset-0 bg-gray-900 w-full h-full overflow-hidden font-sans">
         <AnimatePresence initial={false} custom={direction} mode="wait">
           
-          {/* VUE 1 : LISTE DES CONTACTS */}
           {!sel.friend ? (
             <motion.div
               key="contact-list"
@@ -392,21 +460,18 @@ export default function Messages() {
                   onContactSelect={pick}
                   onAddContact={() => setUi(p => ({ ...p, showAddContact: true }))}
                   onShowPending={() => setUi(p => ({ ...p, showPending: true }))}
-                  // ✅ PROPS AJOUTÉES POUR LE SERVICE
                   onSyncContacts={handleSyncContacts}
                   onInviteContact={handleInvite}
-                  // --------------------------------
                   unreadCounts={data.unread}
                   onlineUsers={onlineUsers}
                   pendingCount={data.pendingRequests?.length || 0}
                   connected={connected}
+                  loading={ui.load}
                   className="h-full w-full"
                 />
               </div>
             </motion.div>
           ) : (
-            
-            /* VUE 2 : INTERFACE DE CHAT */
             <motion.div
               key="chat-interface"
               custom={direction}
@@ -441,7 +506,6 @@ export default function Messages() {
                 input={input}
                 onChange={type}
                 onSend={send}
-                // ✅ PROPS AUDIO/UPLOAD CONNECTÉES
                 recording={recording}
                 onStartRecording={startRecording}
                 onStopRecording={stopRecording}
@@ -452,12 +516,11 @@ export default function Messages() {
                 audioRef={audioRef}
                 onPlayPreview={playPreview}
                 onPausePreview={pausePreview}
-                // Props UI
                 showEmoji={ui.showEmoji}
                 onToggleEmoji={() => setUi(p => ({ ...p, showEmoji: !p.showEmoji }))}
                 onEmojiSelect={(e) => { setInput(p => p + e.emoji); setUi(p => ({ ...p, showEmoji: false })); }}
                 uploading={ui.up}
-                onUpload={handleUpload} // Connecté à la fonction réelle
+                onUpload={handleUpload}
                 connected={connected}
                 txtRef={txtRef}
                 fileRef={fileRef}
@@ -467,8 +530,6 @@ export default function Messages() {
         </AnimatePresence>
       </div>
 
-      {/* --- MODALES & OVERLAYS --- */}
-      {/* Call UI */}
       {call.on && !call.isIncoming && (
         <CallManager
           call={call}
@@ -511,8 +572,24 @@ export default function Messages() {
         )}
 
         {ui.phone && <PhoneModal onSuccess={(u) => { setUi(p => ({...p, phone:false})); load(); }} onClose={() => setUi(p=>({...p, phone:false}))} />}
-        {ui.showAddContact && <AddContactModal isOpen={ui.showAddContact} onClose={() => setUi(p=>({...p, showAddContact:false}))} onAdd={async (d) => { await API.addContact(token, d); load(); }} />}
-        {ui.showPending && <PendingMessagesModal isOpen={ui.showPending} onClose={() => setUi(p=>({...p, showPending:false}))} onAccept={async (req) => { /* Logic accept */ load(); }} onReject={async (id) => { /* Logic reject */ }} />}
+        
+        {ui.showAddContact && (
+          <AddContactModal 
+            isOpen={ui.showAddContact} 
+            onClose={() => setUi(p=>({...p, showAddContact:false}))} 
+            onAdd={async (d) => { await API.addContact(token, d); load(); }} 
+          />
+        )}
+        
+        {ui.showPending && (
+          <PendingMessagesModal 
+            isOpen={ui.showPending} 
+            onClose={() => setUi(p=>({...p, showPending:false}))} 
+            onAccept={async (req) => { load(); }} 
+            onReject={async (id) => { load(); }}
+            onOpenConversation={handleOpenPendingConversation}
+          />
+        )}
       </AnimatePresence>
     </>
   );

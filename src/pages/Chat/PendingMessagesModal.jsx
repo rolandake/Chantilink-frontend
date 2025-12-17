@@ -1,5 +1,5 @@
 // ============================================
-// 📁 src/pages/Chat/PendingMessagesModal.jsx
+// 📁 src/pages/Chat/PendingMessagesModal.jsx - CORRIGÉ
 // ============================================
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -8,7 +8,13 @@ import { API } from "../../services/apiService";
 import { useAuth } from "../../context/AuthContext";
 import { useToast } from "../../context/ToastContext";
 
-export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOpenConversation }) => {
+export const PendingMessagesModal = ({ 
+  isOpen, 
+  onClose, 
+  onAccept, 
+  onReject, 
+  onOpenConversation 
+}) => {
   const { token } = useAuth();
   const { showToast } = useToast();
   const [pendingRequests, setPendingRequests] = useState([]);
@@ -31,23 +37,16 @@ export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOp
       
       // Gestion flexible de la réponse
       if (response) {
-        // Si response.requests existe
         if (Array.isArray(response.requests)) {
           setPendingRequests(response.requests);
           console.log(`✅ ${response.requests.length} demande(s) chargée(s)`);
-        }
-        // Si response est directement un tableau
-        else if (Array.isArray(response)) {
+        } else if (Array.isArray(response)) {
           setPendingRequests(response);
           console.log(`✅ ${response.length} demande(s) chargée(s)`);
-        }
-        // Si response.data existe
-        else if (response.data && Array.isArray(response.data)) {
+        } else if (response.data && Array.isArray(response.data)) {
           setPendingRequests(response.data);
           console.log(`✅ ${response.data.length} demande(s) chargée(s)`);
-        }
-        // Sinon, tableau vide
-        else {
+        } else {
           console.warn("⚠️ Format de réponse inattendu:", response);
           setPendingRequests([]);
         }
@@ -63,7 +62,6 @@ export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOp
         stack: error.stack
       });
       
-      // Message d'erreur plus informatif
       const errorMsg = error.response?.data?.message 
         || error.message 
         || "Erreur de chargement des demandes";
@@ -109,7 +107,6 @@ export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOp
       setPendingRequests(prev => prev.filter(r => r._id !== request._id));
       showToast("Demande rejetée", "info");
       
-      // Notifier le parent si callback existe
       if (onReject) {
         onReject(request._id);
       }
@@ -124,8 +121,11 @@ export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOp
 
   const handleOpenConversation = (request) => {
     if (onOpenConversation) {
-      console.log("💬 Ouverture de la conversation depuis le clic:", request);
+      console.log("💬 Ouverture de la conversation:", request);
       onOpenConversation(request);
+    } else {
+      console.warn("⚠️ onOpenConversation callback non fourni");
+      showToast("Fonctionnalité non disponible", "error");
     }
   };
 
@@ -196,7 +196,7 @@ export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOp
                     exit={{ opacity: 0, x: 20 }}
                     className="p-4 bg-gray-800/50 border border-gray-700 rounded-xl hover:border-purple-500/50 transition-all"
                   >
-                    {/* 🎯 Zone cliquable pour ouvrir la conversation */}
+                    {/* Zone cliquable pour ouvrir la conversation */}
                     <div 
                       onClick={() => handleOpenConversation(request)}
                       className="cursor-pointer hover:opacity-90 transition-opacity"
@@ -250,7 +250,7 @@ export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOp
                         </div>
                       </div>
 
-                      {/* 🎯 Indicateur visuel */}
+                      {/* Indicateur visuel */}
                       <div className="mb-3 pb-3 border-b border-gray-700/50">
                         <p className="text-xs text-center text-gray-400">
                           💬 Cliquez n'importe où pour ouvrir la conversation
@@ -293,7 +293,7 @@ export const PendingMessagesModal = ({ isOpen, onClose, onAccept, onReject, onOp
           {pendingRequests.length > 0 && (
             <div className="p-4 border-t border-gray-700 bg-gray-800/30">
               <p className="text-sm text-gray-400 text-center">
-                💡 Cliquer sur une demande ouvre automatiquement la conversation
+                💡 <strong>Astuce :</strong> Cliquer sur une demande ouvre automatiquement la conversation
               </p>
             </div>
           )}

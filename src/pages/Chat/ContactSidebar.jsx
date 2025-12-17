@@ -1,15 +1,17 @@
 // ============================================
-// src/pages/Chat/ContactSidebar.jsx
+// src/pages/Chat/ContactSidebar.jsx - OPTIMISÉE
 // ============================================
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Heart, UserPlus, RefreshCw, Search, Send, Trash2, 
-  Filter, AlertCircle, Users, Phone, CheckCircle
+  AlertCircle, Users, Phone, CheckCircle
 } from 'lucide-react';
 import { useToast } from "../../context/ToastContext";
+import { formatDistanceToNow } from 'date-fns';
+import { fr } from 'date-fns/locale';
 
-export const ContactSidebar = ({
+export const ContactSidebar = React.memo(({
   contacts = [],
   stats = { total: 0, onChantilink: 0, other: 0 },
   searchQuery = "",
@@ -27,10 +29,17 @@ export const ContactSidebar = ({
   pendingCount = 0,
   connected = true,
   reconnecting = false,
-  error = null
+  error = null,
+  loading = false
 }) => {
   const { showToast } = useToast();
-  const [showFilters, setShowFilters] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  // Dernière sync depuis localStorage
+  const lastSyncDate = useMemo(() => {
+    const timestamp = localStorage.getItem('lastContactSync');
+    return timestamp ? new Date(parseInt(timestamp)) : null;
+  }, []);
 
   // === FILTRE CALCULÉ (performant) ===
   const filteredContacts = useMemo(() => {
@@ -67,11 +76,14 @@ export const ContactSidebar = ({
   // === ACTIONS SÉCURISÉES ===
   const handleSync = async () => {
     if (!connected) return showToast("Hors ligne", "error");
+    setSyncing(true);
     try {
       await onSyncContacts?.();
       showToast("Contacts synchronisés !", "success");
     } catch (err) {
       showToast("Échec synchronisation", "error");
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -131,6 +143,7 @@ export const ContactSidebar = ({
               whileTap={{ scale: 0.9 }}
               onClick={onAddContact}
               className="p-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-lg"
+              title="Ajouter un contact"
             >
               <UserPlus className="w-4 h-4" />
             </motion.button>
@@ -140,15 +153,16 @@ export const ContactSidebar = ({
               whileHover={{ scale: 1.1 }}
               whileTap={{ scale: 0.9 }}
               onClick={handleSync}
-              disabled={!connected || reconnecting}
-              className="p-2 bg-gradient-to-r from-orange-500 to-pink-500 text-white rounded-lg disabled:opacity-50"
+              disabled={!connected || syncing}
+              className={`p-2 bg-gradient-to-r from-orange-500 to-pink-500 text-white rounded-lg disabled:opacity-50 ${syncing ? 'animate-pulse' : ''}`}
+              title="Synchroniser les contacts"
             >
-              <RefreshCw className={`w-4 h-4 ${reconnecting ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
             </motion.button>
           </div>
         </div>
 
-        {/* === STATS (SÉCURISÉES) === */}
+        {/* === STATS === */}
         <div className="grid grid-cols-3 gap-2">
           <div className="bg-blue-500/20 border border-blue-500/30 rounded-lg p-2 text-center">
             <p className="text-blue-300 text-[10px]">Total</p>
@@ -216,6 +230,16 @@ export const ContactSidebar = ({
           )}
         </div>
 
+        {/* === INFO DERNIÈRE SYNC === */}
+        {lastSyncDate && (
+          <div className="text-[10px] text-gray-500 text-center">
+            Dernière sync : {formatDistanceToNow(lastSyncDate, { 
+              addSuffix: true, 
+              locale: fr 
+            })}
+          </div>
+        )}
+
         {/* === RECHERCHE === */}
         <div className="relative">
           <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
@@ -231,7 +255,11 @@ export const ContactSidebar = ({
 
       {/* === LISTE DES CONTACTS === */}
       <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-orange-500">
-        {filteredContacts.length === 0 ? (
+        {loading ? (
+          <div className="flex justify-center items-center py-12">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-orange-500" />
+          </div>
+        ) : filteredContacts.length === 0 ? (
           <div className="p-8 text-center text-gray-500">
             <Users className="w-12 h-12 mx-auto mb-3 text-gray-600" />
             <p className="text-sm">Aucun contact</p>
@@ -293,6 +321,7 @@ export const ContactSidebar = ({
                           whileTap={{ scale: 0.9 }}
                           onClick={(e) => { e.stopPropagation(); handleInvite(contact); }}
                           className="p-1.5 bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30"
+                          title="Inviter sur l'app"
                         >
                           <Send className="w-3.5 h-3.5" />
                         </motion.button>
@@ -302,6 +331,7 @@ export const ContactSidebar = ({
                         whileTap={{ scale: 0.9 }}
                         onClick={(e) => { e.stopPropagation(); handleDelete(contact.id); }}
                         className="p-1.5 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30"
+                        title="Supprimer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </motion.button>
@@ -315,4 +345,16 @@ export const ContactSidebar = ({
       </div>
     </aside>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom comparison pour éviter re-renders inutiles
+  return (
+    prevProps.searchQuery === nextProps.searchQuery &&
+    prevProps.filter === nextProps.filter &&
+    prevProps.contacts.length === nextProps.contacts.length &&
+    JSON.stringify(prevProps.unreadCounts) === JSON.stringify(nextProps.unreadCounts) &&
+    prevProps.onlineUsers.length === nextProps.onlineUsers.length &&
+    prevProps.pendingCount === nextProps.pendingCount &&
+    prevProps.connected === nextProps.connected &&
+    prevProps.loading === nextProps.loading
+  );
+});

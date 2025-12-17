@@ -1,19 +1,44 @@
 // ============================================
-// 📁 src/pages/Chat/components/EmptyState.jsx
+// 📁 src/pages/Chat/components/EmptyState.jsx - AVEC LOADING
 // ============================================
 import React from 'react';
 import { motion } from 'framer-motion';
 import { 
-  MessageCircle, Heart, UserPlus, RefreshCw, ArrowRight 
+  MessageCircle, Heart, UserPlus, RefreshCw, ArrowRight, Loader2
 } from 'lucide-react';
 
 export const EmptyState = ({ 
-  totalPendingCount, 
+  loading = false,
+  totalPendingCount = 0, 
   onShowPending, 
   onSyncContacts, 
   onAddContact,
-  hasContacts 
+  hasContacts = false
 }) => {
+  
+  // État de chargement
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-8">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center"
+        >
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+            className="w-16 h-16 mx-auto mb-4"
+          >
+            <Loader2 className="w-16 h-16 text-orange-500" />
+          </motion.div>
+          <p className="text-xl text-white font-semibold mb-2">Chargement...</p>
+          <p className="text-sm text-gray-400">Préparation de vos conversations</p>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-8">
       <motion.div
