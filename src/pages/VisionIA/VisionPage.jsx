@@ -40,7 +40,7 @@ const FileAttachment = ({ file }) => (
 );
 
 // =========================================================
-// MAIN COMPONENT
+// MAIN COMPONENT - VERSION CORRIGÉE
 // =========================================================
 export default function EngineerChat() {
   const { user } = useAuth();
@@ -57,23 +57,24 @@ export default function EngineerChat() {
   // Hook IA
   const { 
     messages,        // Liste des messages confirmés (historique)
-    streamContent,   // 🔥 Le bout de texte en train d'être écrit (IMPORTANT)
+    streamContent,   // 🔥 Le bout de texte en train d'être écrit
     sendMessage, 
     connected, 
     typing,
   } = useVisionIA(user?._id);
 
-  // 1. SCROLL AUTO (Stabilisé)
-  // On scroll à chaque fois que l'historique change OU que le stream avance
+  // 1. SCROLL AUTO - 🔥 FIX: Ajout de dépendances manquantes
   useEffect(() => {
     if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+      // ✅ Utiliser requestAnimationFrame pour garantir que le DOM est mis à jour
+      requestAnimationFrame(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      });
     }
-  }, [messages, streamContent, typing]);
+  }, [messages, streamContent, typing]); // ✅ Toutes les dépendances nécessaires
 
   // 2. GESTION NAVIGATION (RETOUR)
   const handleExit = () => {
-    // On peut naviguer vers le dashboard ou la page précédente
     navigate(-1); 
   };
 
@@ -95,24 +96,29 @@ export default function EngineerChat() {
   const handleSend = () => {
     if (!inputValue.trim() && !activeFile) return;
 
-    // Détection basique pour inciter au premium sur les calculs complexes sans fichier
-    const isComplex = /calcul|dimension|poutre|charge/i.test(inputValue);
-    if (isComplex && !user?.isPremium && !activeFile) {
-       // Optionnel: afficher une alerte ou laisser passer
-    }
+    console.log("[EngineerChat] 📤 Envoi message:", inputValue);
 
     sendMessage(inputValue, { file: activeFile });
     setInputValue("");
     setActiveFile(null);
   };
 
+  // ✅ DEBUG: Log pour vérifier les changements
+  useEffect(() => {
+    console.log("[EngineerChat] 📊 État:", {
+      messagesCount: messages.length,
+      typing,
+      streamLength: streamContent?.length || 0,
+      hasStreamContent: !!streamContent
+    });
+  }, [messages, typing, streamContent]);
+
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-gray-950 font-sans text-gray-900 dark:text-gray-100 overflow-hidden relative">
       
-      {/* ================= HEADER (BARRE SUPÉRIEURE) ================= */}
+      {/* ================= HEADER ================= */}
       <header className="h-16 border-b border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-950/80 backdrop-blur-md flex items-center justify-between px-4 z-20 shrink-0">
         
-        {/* Gauche: Info IA */}
         <div className="flex items-center gap-3">
           <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
           <div>
@@ -123,7 +129,6 @@ export default function EngineerChat() {
           </div>
         </div>
 
-        {/* Droite: Bouton Quitter */}
         <button 
           onClick={handleExit}
           className="p-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors"
@@ -153,9 +158,12 @@ export default function EngineerChat() {
             </div>
           )}
 
-          {/* 1. MESSAGES DE L'HISTORIQUE (Confirmés) */}
+          {/* 1. ✅ MESSAGES DE L'HISTORIQUE (Confirmés) */}
           {messages.map((msg, idx) => (
-            <div key={idx} className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div 
+              key={msg.id || idx} 
+              className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-2`}
+            >
               
               {msg.role !== 'user' && (
                 <div className="w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shrink-0 mt-1">
@@ -191,26 +199,26 @@ export default function EngineerChat() {
             </div>
           ))}
 
-          {/* 2. MESSAGE EN COURS D'ÉCRITURE (Streaming) */}
-          {/* C'est ICI la correction : on affiche ce qui arrive en temps réel */}
+          {/* 2. ✅ MESSAGE EN COURS D'ÉCRITURE (Streaming) - CORRECTION MAJEURE */}
           {typing && (
-            <div className="flex gap-4 justify-start">
+            <div className="flex gap-4 justify-start animate-in fade-in slide-in-from-bottom-2">
               <div className="w-8 h-8 rounded-full bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center shrink-0 mt-1">
-                <Bot className="w-5 h-5 text-purple-600" />
+                <Bot className="w-5 h-5 text-purple-600 animate-pulse" />
               </div>
               <div className="max-w-[85%] md:max-w-[75%]">
                 <div className="p-4 rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-tl-none text-gray-800 dark:text-gray-100 shadow-sm">
+                  {/* ✅ FIX CRITIQUE: Afficher le contenu même s'il est vide au début */}
                   {streamContent ? (
-                    <p className="whitespace-pre-wrap leading-relaxed text-sm md:text-base animate-pulse-fast">
+                    <p className="whitespace-pre-wrap leading-relaxed text-sm md:text-base">
                       {streamContent}
-                      <span className="inline-block w-2 h-4 ml-1 bg-purple-500 align-middle animate-blink"/>
+                      <span className="inline-block w-0.5 h-4 ml-0.5 bg-purple-500 animate-pulse"/>
                     </p>
                   ) : (
-                    /* Indicateur de chargement si le texte n'a pas encore commencé */
-                    <div className="flex gap-1 h-6 items-center">
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"/>
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]"/>
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0.4s]"/>
+                    /* Indicateur de chargement initial */
+                    <div className="flex gap-1.5 items-center">
+                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"/>
+                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce [animation-delay:0.15s]"/>
+                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce [animation-delay:0.3s]"/>
                     </div>
                   )}
                 </div>
@@ -219,7 +227,7 @@ export default function EngineerChat() {
           )}
           
           {/* Ancre invisible pour le scroll */}
-          <div ref={chatEndRef} className="h-1" />
+          <div ref={chatEndRef} className="h-px" />
         </div>
       </div>
 
