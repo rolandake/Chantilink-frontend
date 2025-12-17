@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
         manifest: {
           name: "ChantiLink",
           short_name: "ChantiLink",
-          description: "Réseau social professionnel avec IA intégrée",
+          description: "Réseau social",
           theme_color: "#E67E3C",
           background_color: "#2B2D42",
           display: "standalone",
