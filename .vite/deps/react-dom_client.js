@@ -1,2 +1,0 @@
-import{a as s}from"./chunk-O2FNBEEQ.js";import"./chunk-D2OLMU3P.js";import{e as a}from"./chunk-KBFS2P5K.js";var u=a(n=>{var o=s();t=o.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED,n.createRoot=function(e,r){t.usingClientEntryPoint=!0;try{return o.createRoot(e,r)}finally{t.usingClientEntryPoint=!1}},n.hydrateRoot=function(e,r,i){t.usingClientEntryPoint=!0;try{return o.hydrateRoot(e,r,i)}finally{t.usingClientEntryPoint=!1}};var t});export default u();
-//# sourceMappingURL=react-dom_client.js.map
