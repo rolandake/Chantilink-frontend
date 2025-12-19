@@ -1,29 +1,28 @@
-
 // ============================================
-// 📁 src/Pages/chat/AddContactModal.jsx
+// 📁 src/pages/Chat/AddContactModal.jsx
+// VERSION: ÉLITE - SECURE CONTACT ADDITION
 // ============================================
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { UserPlus, X, AlertCircle, Check } from 'lucide-react';
+import { UserPlus, X, AlertCircle, Check, ShieldCheck, Phone } from 'lucide-react';
 
 export const AddContactModal = ({ isOpen, onClose, onAdd }) => {
   const [formData, setFormData] = useState({ phoneNumber: '', fullName: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // Formatage propre : +225 01 02 03 04 05
   const formatPhoneDisplay = (value) => {
     let cleaned = value.replace(/[^\d+]/g, '');
     if (!cleaned.startsWith('+')) cleaned = '+' + cleaned.replace(/^\+/, '');
     if (cleaned.length > 16) cleaned = cleaned.slice(0, 16);
     
-    if (cleaned.length > 3) {
-      const plus = '+';
-      const rest = cleaned.slice(1);
-      let formatted = plus + rest.slice(0, Math.min(3, rest.length));
-      const remaining = rest.slice(Math.min(3, rest.length));
-      const groups = remaining.match(/.{1,2}/g);
-      if (groups) formatted += ' ' + groups.join(' ');
-      return formatted;
+    // Ajoute des espaces tous les 2 chiffres après l'indicatif (simplifié)
+    if (cleaned.length > 4) {
+      const prefix = cleaned.slice(0, 4);
+      const rest = cleaned.slice(4);
+      const groups = rest.match(/.{1,2}/g);
+      return prefix + (groups ? ' ' + groups.join(' ') : '');
     }
     return cleaned;
   };
@@ -34,24 +33,13 @@ export const AddContactModal = ({ isOpen, onClose, onAdd }) => {
     setError('');
   };
 
-  const validatePhone = (phone) => {
-    const cleaned = phone.replace(/[\s\-\(\)\.]/g, '');
-    return /^\+[1-9][0-9]{6,14}$/.test(cleaned);
-  };
-
-  const handleSubmit = async () => {
+  const handleSubmit = async (e) => {
+    e.preventDefault();
     setError('');
-    const cleanedPhone = formData.phoneNumber.replace(/[\s\-\(\)\.]/g, '');
+    const cleanedPhone = formData.phoneNumber.replace(/\s/g, '');
 
-    if (!formData.fullName.trim()) {
-      setError('Le nom est requis');
-      return;
-    }
-
-    if (!validatePhone(cleanedPhone)) {
-      setError('Numéro invalide. Format : +33612345678');
-      return;
-    }
+    if (!formData.fullName.trim()) return setError('Le nom est requis');
+    if (cleanedPhone.length < 10) return setError('Numéro trop court');
 
     setLoading(true);
     try {
@@ -59,7 +47,7 @@ export const AddContactModal = ({ isOpen, onClose, onAdd }) => {
       setFormData({ phoneNumber: '', fullName: '' });
       onClose();
     } catch (err) {
-      setError(err.message || 'Erreur lors de l\'ajout');
+      setError(err.message || "Impossible d'ajouter ce contact");
     } finally {
       setLoading(false);
     }
@@ -68,102 +56,122 @@ export const AddContactModal = ({ isOpen, onClose, onAdd }) => {
   if (!isOpen) return null;
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-[60] p-4"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ scale: 0.9, y: 20 }}
-        animate={{ scale: 1, y: 0 }}
-        exit={{ scale: 0.9, y: 20 }}
-        onClick={(e) => e.stopPropagation()}
-        className="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 rounded-3xl p-8 w-full max-w-md shadow-2xl border border-gray-700"
-      >
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-            <UserPlus className="w-7 h-7 text-orange-500" />
-            Ajouter un contact
-          </h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white transition">
-            <X className="w-6 h-6" />
-          </button>
-        </div>
+    <AnimatePresence>
+      <div className="fixed inset-0 z-[300] flex items-end md:items-center justify-center p-0 md:p-4">
+        {/* Backdrop */}
+        <motion.div 
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          onClick={onClose}
+          className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+        />
 
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Nom complet *</label>
-            <input
-              type="text"
-              value={formData.fullName}
-              onChange={(e) => setFormData(prev => ({ ...prev, fullName: e.target.value }))}
-              placeholder="Ex: Jean Dupont"
-              className="w-full px-4 py-3 bg-gray-800/50 text-white placeholder-gray-500 rounded-xl border-2 border-gray-700 focus:border-orange-500 focus:outline-none transition"
-              autoFocus
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Numéro de téléphone *</label>
-            <input
-              type="tel"
-              value={formData.phoneNumber}
-              onChange={handlePhoneChange}
-              placeholder="+33612345678"
-              className="w-full px-4 py-3 bg-gray-800/50 text-white placeholder-gray-500 rounded-xl border-2 border-gray-700 focus:border-orange-500 focus:outline-none transition text-lg tracking-wide"
-            />
-          </div>
-
-          <AnimatePresence>
-            {error && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center gap-2"
-              >
-                <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
-                <span className="text-red-400 text-sm">{error}</span>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-3">
-            <p className="text-blue-300 text-xs flex items-start gap-2">
-              <span className="text-base">ℹ️</span>
-              <span>Le contact sera ajouté à votre liste et vous pourrez démarrer une conversation.</span>
-            </p>
-          </div>
-
-          <div className="flex gap-3 pt-2">
-            <button
-              onClick={onClose}
-              className="flex-1 px-4 py-3 bg-gray-700/50 text-gray-300 rounded-xl hover:bg-gray-700 transition font-medium"
-            >
-              Annuler
+        {/* Modal Container */}
+        <motion.div
+          initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+          transition={{ type: "spring", damping: 25, stiffness: 300 }}
+          onClick={(e) => e.stopPropagation()}
+          className="relative bg-[#12151a] w-full max-w-md rounded-t-[32px] md:rounded-[24px] border-t md:border border-white/10 shadow-2xl overflow-hidden flex flex-col"
+        >
+          {/* Header */}
+          <div className="p-6 border-b border-white/5 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-blue-500/10 rounded-2xl text-blue-500">
+                <UserPlus size={24} />
+              </div>
+              <div>
+                <h2 className="text-xl font-black text-white uppercase tracking-tight">Nouveau Contact</h2>
+                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest flex items-center gap-1">
+                  <ShieldCheck size={10} className="text-green-500" /> Cercle Sécurisé
+                </p>
+              </div>
+            </div>
+            <button onClick={onClose} className="p-2 bg-white/5 hover:bg-white/10 rounded-full text-gray-400">
+              <X size={20} />
             </button>
-            <button
-              onClick={handleSubmit}
-              disabled={loading}
-              className="flex-1 px-4 py-3 bg-gradient-to-r from-orange-500 to-pink-500 text-white rounded-xl hover:from-orange-600 hover:to-pink-600 disabled:opacity-50 transition font-semibold shadow-lg flex items-center justify-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-white" />
-                  <span>Ajout...</span>
-                </>
-              ) : (
-                <>
-                  <Check className="w-5 h-5" />
-                  <span>Ajouter</span>
-                </>
+          </div>
+
+          <form onSubmit={handleSubmit} className="p-6 space-y-5">
+            {/* Input Nom */}
+            <div>
+              <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Nom du collègue ou ami</label>
+              <input
+                type="text"
+                value={formData.fullName}
+                onChange={(e) => setFormData(p => ({ ...p, fullName: e.target.value }))}
+                placeholder="Ex: Marc Koffi"
+                className="w-full px-5 py-4 bg-[#0f1115] text-white rounded-2xl border border-white/5 focus:border-blue-500 outline-none transition-all placeholder:text-gray-700 font-bold"
+                autoFocus
+              />
+            </div>
+
+            {/* Input Téléphone */}
+            <div>
+              <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Numéro de téléphone</label>
+              <div className="relative">
+                <Phone size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-600" />
+                <input
+                  type="tel"
+                  value={formData.phoneNumber}
+                  onChange={handlePhoneChange}
+                  placeholder="+225 00 00 00 00 00"
+                  className="w-full pl-12 pr-5 py-4 bg-[#0f1115] text-white rounded-2xl border border-white/5 focus:border-blue-500 outline-none transition-all placeholder:text-gray-700 font-mono text-lg"
+                />
+              </div>
+            </div>
+
+            {/* Error Message */}
+            <AnimatePresence>
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+                  className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3"
+                >
+                  <AlertCircle className="text-red-500 shrink-0" size={18} />
+                  <span className="text-red-400 text-xs font-bold">{error}</span>
+                </motion.div>
               )}
-            </button>
+            </AnimatePresence>
+
+            {/* Info Confidentialité */}
+            <div className="p-4 bg-blue-500/5 rounded-2xl border border-blue-500/10">
+              <p className="text-[10px] text-blue-400/80 leading-relaxed font-medium">
+                🛡️ Ce contact sera ajouté à votre annuaire privé. S'il utilise déjà l'application, un canal de communication chiffré sera automatiquement créé.
+              </p>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-4 bg-white/5 text-gray-400 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-white/10 transition-all"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="flex-[2] py-4 bg-blue-600 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-lg shadow-blue-900/20 flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50"
+              >
+                {loading ? (
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Check size={18} /> Ajouter au cercle
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+
+          {/* Footer Security Badge */}
+          <div className="p-4 bg-black/20 text-center">
+            <span className="text-[9px] text-gray-600 font-black uppercase tracking-[0.2em]">
+              Protégé par cryptographie Chantilink
+            </span>
           </div>
-        </div>
-      </motion.div>
-    </motion.div>
+        </motion.div>
+      </div>
+    </AnimatePresence>
   );
 };

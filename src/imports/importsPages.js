@@ -1,22 +1,11 @@
-// src/imports/importsPages.js (corrigé et conforme à ta structure)
-import Home from "../pages/Home/Home.jsx";
-import Profile from "../pages/Profile/ProfilePage.jsx";
-import ChatPage from "../pages/Chat/ChatPage.jsx";
-import VideosPage from "../pages/Videos/VideosPage.jsx";
-import CalculsPage from "../pages/Calculs/CalculsPage.jsx";
-import Messages from "../pages/Chat/Messages.jsx"; 
-import VisionPage from "../pages/VisionIA/VisionPage.jsx";
-import AuthPage from "../pages/Auth/AuthPage.jsx";
-import AdminDashboard from "../pages/Admin/AdminDashboard.jsx";
+import { lazy } from "react";
 
-export { 
-  Home, 
-  Profile, 
-  ChatPage, 
-  VideosPage, 
-  CalculsPage, 
-  Messages, 
-  VisionPage, 
-  AuthPage,
-  AdminDashboard 
-};
+// Chargement à la demande (Lazy Loading) - SANS VISION
+export const Home = lazy(() => import("../pages/Home/Home.jsx"));
+export const Profile = lazy(() => import("../pages/Profile/ProfilePage.jsx"));
+export const ChatPage = lazy(() => import("../pages/Chat/ChatPage.jsx"));
+export const VideosPage = lazy(() => import("../pages/Videos/VideosPage.jsx"));
+export const CalculsPage = lazy(() => import("../pages/Calculs/CalculsPage.jsx"));
+export const Messages = lazy(() => import("../pages/Chat/Messages.jsx")); 
+export const AuthPage = lazy(() => import("../pages/Auth/AuthPage.jsx"));
+export const AdminDashboard = lazy(() => import("../pages/Admin/AdminDashboard.jsx"));

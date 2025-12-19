@@ -1,596 +1,281 @@
 // ============================================
 // 📁 src/pages/Chat/Messages.jsx
-// VERSION: CORRIGÉE ET OPTIMISÉE
+// VERSION: ÉLITE - PRIVACY, CALLS & MEDIA
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { 
+  ArrowLeft, ShieldCheck, Lock, Phone, Video, 
+  Paperclip, Mic, Send, X, MoreVertical, Zap 
+} from "lucide-react";
 
-// === CONTEXTS ===
+// === CONTEXTS & SERVICES ===
 import { useAuth } from "../../context/AuthContext";
 import { useToast } from "../../context/ToastContext";
+import { API } from "../../services/apiService";
+import MediaService from "../../services/mediaService";
 
 // === COMPONENTS ===
 import IncomingCallModal from "../../components/IncomingCallModal";
-import MissedCallNotification from "../../components/MissedCallNotification";
-import PhoneModal from "../../components/PhoneModal";
 import CallManager from "../../components/CallManager";
-
-// === CHAT MODULES ===
 import { ContactSidebar } from "./ContactSidebar";
 import { ChatHeader } from "./components/ChatHeader";
 import { MessagesList } from "./components/MessagesList";
 import { ChatInput } from "./components/ChatInput";
-import { AddContactModal } from "./AddContactModal";
-import { PendingMessagesModal } from "./PendingMessagesModal";
 
-// === HOOKS ===
+// === HOOKS PERSONNALISÉS ===
 import { useAudioRecording } from "../../hooks/useAudioRecording";
 import { useMessagesData } from "./hooks/useMessagesData";
 import { useCallManager } from "./hooks/useCallManager";
 import { useSocketHandlers } from "./hooks/useSocketHandlers";
-
-// === SERVICES & UTILS ===
-import { API } from "../../services/apiService";
-import { MSG } from "../../utils/messageConstants";
-
-// ANIMATIONS
-const pageVariants = {
-  initial: (direction) => ({
-    x: direction > 0 ? "100%" : "-100%",
-    opacity: 0,
-    scale: 0.95
-  }),
-  animate: {
-    x: 0,
-    opacity: 1,
-    scale: 1,
-    transition: { type: "spring", stiffness: 260, damping: 30 }
-  },
-  exit: (direction) => ({
-    x: direction < 0 ? "100%" : "-100%",
-    opacity: 0,
-    scale: 0.95,
-    transition: { duration: 0.2, ease: "easeInOut" }
-  })
-};
 
 export default function Messages() {
   const { user, token, socket } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
-  // --- LOCAL STATE ---
+  // --- ÉTATS LOCAUX ---
   const [input, setInput] = useState("");
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [typingUsers, setTypingUsers] = useState([]);
-  
-  // --- REFS ---
-  const endRef = useRef(null);
-  const txtRef = useRef(null);
-  const fileRef = useRef(null);
-  const typeRef = useRef(null);
   const processedMessagesRef = useRef(new Set());
-  
   const connected = socket?.connected || false;
 
-  // === SOCKET EMITTERS ===
-  const sendMessage = useCallback((data) => socket?.connected && socket.emit("sendMessage", data), [socket]);
-  const markAsRead = useCallback((senderId) => socket?.connected && socket.emit("markMessagesAsRead", { senderId }), [socket]);
-  const startTyping = useCallback((recipientId) => socket?.connected && socket.emit("typing", { recipientId }), [socket]);
-  const stopTyping = useCallback((recipientId) => socket?.connected && socket.emit("stopTyping", { recipientId }), [socket]);
-  const getUnreadCounts = useCallback(() => socket?.connected && socket.emit("getUnreadCounts"), [socket]);
-
-  // Call Emitters
-  const initiateCall = useCallback((data) => socket?.emit("call-user", data), [socket]);
-  const acceptCall = useCallback((data) => socket?.emit("call-answer", data), [socket]);
-  const rejectCall = useCallback((data) => socket?.emit("call-rejected", data), [socket]);
-  const socketEndCall = useCallback((data) => socket?.emit("call-ended", data), [socket]);
-
-  const on = useCallback((evt, fn) => socket?.on(evt, fn), [socket]);
-  const off = useCallback((evt, fn) => socket?.off(evt, fn), [socket]);
-
-  // === DATA HOOKS ===
+  // === INITIALISATION DES DONNÉES ET APPELS ===
   const { ui, setUi, data, setData, sel, setSel, load } = useMessagesData(token, showToast);
   
   const { 
-    call, setCall, incomingCall, setIncomingCall, missedCallNotification, setMissedCallNotification,
+    call, setCall, incomingCall, setIncomingCall, 
     startCall, endCall, cleanupCallRingtone 
-  } = useCallManager(sel, connected, initiateCall, socketEndCall, sendMessage, showToast);
+  } = useCallManager(sel, connected, 
+    (d) => socket?.emit("call-user", d), 
+    (d) => socket?.emit("call-ended", d), 
+    (d) => socket?.emit("sendMessage", d), 
+    showToast
+  );
 
   const {
-    recording, audioBlob, audioUrl, isPlaying, audioRef,
-    startRecording, stopRecording, cancelAudio, playPreview, pausePreview
+    recording, audioBlob, startRecording, stopRecording, cancelAudio
   } = useAudioRecording(token, showToast);
 
-  // === GLOBAL SOCKET LISTENERS ===
-  useEffect(() => {
-    if (!socket) return;
-    socket.emit("getOnlineUsers");
-    socket.emit("getUnreadCounts");
-
-    const handleOnlineUsers = (users) => setOnlineUsers(users || []);
-    const handleTyping = ({ senderId }) => setTypingUsers(prev => [...prev, senderId]);
-    const handleStopTyping = ({ senderId }) => setTypingUsers(prev => prev.filter(id => id !== senderId));
-    
-    const handleMessageDeleted = ({ messageId }) => {
-      setData(p => ({ ...p, msg: p.msg.filter(m => m._id !== messageId) }));
-    };
-
-    socket.on("getOnlineUsers", handleOnlineUsers);
-    socket.on("onlineUsers", handleOnlineUsers);
-    socket.on("typing", handleTyping);
-    socket.on("stopTyping", handleStopTyping);
-    socket.on("messageDeleted", handleMessageDeleted);
-
-    return () => {
-      socket.off("getOnlineUsers", handleOnlineUsers);
-      socket.off("onlineUsers", handleOnlineUsers);
-      socket.off("typing", handleTyping);
-      socket.off("stopTyping", handleStopTyping);
-      socket.off("messageDeleted", handleMessageDeleted);
-    };
-  }, [socket, setData]);
-
-  // === BUSINESS LOGIC HOOKS ===
+  // === GESTION DES SOCKETS (FIABILITÉ) ===
   useSocketHandlers({
-    connected, on, off, getUnreadCounts, markAsRead, acceptCall, rejectCall, socketEndCall,
-    user, sel, data, setData, setUi, setIncomingCall, setMissedCallNotification,
-    showToast, processedMessagesRef, cleanupCallRingtone, sendMessage
+    connected, 
+    on: (e, f) => socket?.on(e, f), 
+    off: (e, f) => socket?.off(e, f),
+    getUnreadCounts: () => socket?.emit("getUnreadCounts"),
+    markAsRead: (id) => socket?.emit("markMessagesAsRead", { senderId: id }),
+    acceptCall: (d) => socket?.emit("call-answer", d),
+    rejectCall: (d) => socket?.emit("call-rejected", d),
+    socketEndCall: (d) => socket?.emit("call-ended", d),
+    user, sel, data, setData, setUi, setIncomingCall,
+    showToast, processedMessagesRef, cleanupCallRingtone, 
+    sendMessage: (d) => socket?.emit("sendMessage", d)
   });
 
-  // === AUTO-SYNC AU DÉMARRAGE (OPTIONNEL) ===
-  useEffect(() => {
-    const autoSync = async () => {
-      try {
-        const lastSync = localStorage.getItem('lastContactSync');
-        const now = Date.now();
-        
-        // Sync si jamais fait ou si > 24h
-        if (!lastSync || now - parseInt(lastSync) > 86400000) {
-          await API.syncContacts(token, []);
-          localStorage.setItem('lastContactSync', now.toString());
-          console.log("✅ Auto-sync contacts réussie");
-        }
-      } catch (err) {
-        console.warn("⚠️ Auto-sync échouée (silencieuse):", err);
-      }
-    };
+  // === ACTIONS DE MESSAGERIE ===
 
-    if (token && user) {
-      autoSync();
-    }
-  }, [token, user]);
-
-  // Chargement conversation
+  // 1. Charger une conversation
   const loadConversation = useCallback(async (withId) => {
     setUi(p => ({ ...p, load: true }));
     try {
       const result = await API.getMessages(token, withId);
-      const messages = Array.isArray(result) ? result : (result.messages || []);
-      setData(p => ({ ...p, msg: messages }));
-      markAsRead(withId);
-      setData(p => ({ ...p, unread: { ...p.unread, [withId]: 0 } }));
-    } catch (e) { 
-      showToast("Erreur chargement messages", "error"); 
-    } finally { 
-      setUi(p => ({ ...p, load: false })); 
-    }
-  }, [token, markAsRead, setData, setUi, showToast]);
+      setData(p => ({ ...p, msg: Array.isArray(result) ? result : (result.messages || []) }));
+      socket?.emit("markMessagesAsRead", { senderId: withId });
+    } catch (e) {
+      showToast("Erreur de synchronisation des messages", "error");
+    } finally { setUi(p => ({ ...p, load: false })); }
+  }, [token, socket, setData, setUi, showToast]);
 
-  // Sélection d'un contact
-  const pick = useCallback((f) => {
-    if (!f?.id) return;
-    processedMessagesRef.current.clear();
-    setSel({ friend: f, msg: null });
-    setData(p => ({ ...p, msg: [] }));
-    loadConversation(f.id);
-  }, [loadConversation, setSel, setData]);
+  // 2. Sélectionner un contact (Simplifié pour Mobile)
+  const handlePickContact = useCallback((contact) => {
+    if (!contact?.id) return;
+    setSel({ friend: contact, msg: null });
+    loadConversation(contact.id);
+  }, [loadConversation, setSel]);
 
-  // Navigation Retour
-  const handleMainBack = () => {
-    if (sel.friend) {
-      setSel({ friend: null, msg: null });
-      setData(p => ({ ...p, msg: [] }));
-    } else {
-      navigate("/");
-    }
-  };
-
-  // SEND TEXT
-  const type = useCallback(e => {
-    setInput(e.target.value);
-    if (txtRef.current) {
-        txtRef.current.style.height = 'auto';
-        txtRef.current.style.height = txtRef.current.scrollHeight + 'px';
-    }
-    if (sel.friend && connected) {
-      startTyping(sel.friend.id);
-      clearTimeout(typeRef.current);
-      typeRef.current = setTimeout(() => stopTyping(sel.friend.id), 1000);
-    }
-  }, [sel.friend, connected, startTyping, stopTyping]);
-
-  const send = useCallback(() => {
+  // 3. Envoyer un message texte
+  const handleSend = useCallback(() => {
     if (!sel.friend || !input.trim() || !connected) return;
-    const tempId = `temp-${Date.now()}`;
-    const newMsg = {
-      _id: tempId, sender: { _id: user.id }, recipient: sel.friend.id,
-      content: input.trim(), timestamp: new Date().toISOString(), status: 'sending', type: 'text'
-    };
-    
-    setData(p => ({ ...p, msg: [...p.msg, newMsg] }));
-    
-    const sent = sendMessage({ recipientId: sel.friend.id, content: input.trim(), type: 'text' });
-    if (sent) {
-      setInput("");
-      if (txtRef.current) txtRef.current.style.height = 'auto';
-      stopTyping(sel.friend.id);
-    } else {
-      showToast(MSG.err.send, 'error');
-      setData(p => ({ ...p, msg: p.msg.filter(m => m._id !== tempId) }));
-    }
-  }, [sel.friend, input, connected, sendMessage, stopTyping, showToast, user.id, setData]);
+    socket.emit("sendMessage", { 
+      recipientId: sel.friend.id, 
+      content: input.trim(), 
+      type: 'text' 
+    });
+    setInput("");
+  }, [sel.friend, input, connected, socket]);
 
-  // === UPLOAD AVEC RETRY ===
-  const handleUpload = async (e) => {
+  // 4. Envoyer un fichier (Confidentialité & Fiabilité via MediaService)
+  const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !sel.friend) return;
 
-    if (file.size > 50 * 1024 * 1024) {
-      showToast("Fichier trop volumineux (>50Mo)", "error");
-      return;
-    }
-
-    setUi(p => ({ ...p, up: true }));
-    
-    let attempts = 0;
-    const maxAttempts = 3;
-    
-    while (attempts < maxAttempts) {
-      try {
-        const formData = new FormData();
-        formData.append("file", file);
-
-        const response = await API.uploadFile(token, formData);
-        
-        if (response && response.url) {
-          let msgType = 'file';
-          if (file.type.startsWith('image/')) msgType = 'image';
-          else if (file.type.startsWith('video/')) msgType = 'video';
-          else if (file.type.startsWith('audio/')) msgType = 'audio';
-
-          sendMessage({
-            recipientId: sel.friend.id,
-            content: response.url,
-            type: msgType,
-            fileName: file.name
-          });
-          
-          break; // Succès
-        }
-      } catch (error) {
-        attempts++;
-        console.error(`Upload error (tentative ${attempts}/${maxAttempts}):`, error);
-        
-        if (attempts >= maxAttempts) {
-          showToast("Échec de l'upload après 3 tentatives", "error");
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempts));
-        }
-      }
-    }
-    
-    setUi(p => ({ ...p, up: false }));
-    if (fileRef.current) fileRef.current.value = "";
-  };
-
-  // === ENVOI AUDIO ===
-  const sendAudio = async () => {
-    if (!audioBlob || !sel.friend) return;
-    
     setUi(p => ({ ...p, up: true }));
     try {
-      const formData = new FormData();
-      formData.append("file", audioBlob, "voice_message.webm");
-
-      const response = await API.uploadFile(token, formData);
-
-      if (response && response.url) {
-        sendMessage({ 
-          recipientId: sel.friend.id, 
-          content: response.url, 
-          type: "audio" 
-        });
-        cancelAudio();
-      }
-    } catch (error) {
-      console.error("Audio error:", error);
-      showToast("Erreur envoi vocal", "error");
-    } finally {
-      setUi(p => ({ ...p, up: false }));
-    }
-  };
-
-  // === SYNC CONTACTS ===
-  const handleSyncContacts = async () => {
-    setUi(p => ({ ...p, load: true }));
-    try {
-      let contactsToSend = [];
-      
-      if ('contacts' in navigator && 'ContactsManager' in window) {
-        try {
-          const props = ['name', 'tel'];
-          const contacts = await navigator.contacts.select(props, { multiple: true });
-          contactsToSend = contacts.map(c => ({
-            name: c.name?.[0] || "Sans nom",
-            phone: c.tel?.[0] || ""
-          }));
-        } catch (err) {
-          console.warn("Accès contacts refusé");
-        }
-      }
-
-      const result = await API.syncContacts(token, contactsToSend);
-      
-      if (result.data?.syncedContacts) {
-        load(); // Recharger les données
-      }
-      
-      // Sauvegarder timestamp
-      localStorage.setItem('lastContactSync', Date.now().toString());
-      
-      showToast(result.message || "Contacts synchronisés", "success");
-    } catch (e) {
-      console.error(e);
-      showToast("Erreur synchronisation", "error");
-    } finally {
-      setUi(p => ({ ...p, load: false }));
-    }
-  };
-
-  const handleInvite = async (contact) => {
-    try {
-      await API.inviteContact(token, { phoneNumber: contact.phone, fullName: contact.fullName });
-      showToast(`Invitation envoyée à ${contact.fullName}`, "success");
-    } catch (e) {
-      showToast("Erreur invitation", "error");
-    }
-  };
-
-  // === OUVERTURE CONVERSATION DEPUIS PENDING ===
-  const handleOpenPendingConversation = useCallback(async (request) => {
-    try {
-      console.log("💬 Ouverture conversation depuis pending:", request);
-      
-      // 1. Accepter automatiquement
-      await API.acceptMessageRequest(token, request._id);
-      
-      // 2. Créer objet friend
-      const sender = request.sender;
-      const friend = {
-        id: sender._id,
-        fullName: sender.fullName,
-        username: sender.username,
-        phone: sender.phone,
-        profilePhoto: sender.profilePhoto,
-        isOnChantilink: true
-      };
-      
-      // 3. Ouvrir conversation
-      pick(friend);
-      
-      // 4. Fermer modale
-      setUi(p => ({ ...p, showPending: false }));
-      
-      // 5. Recharger contacts
-      load();
-      
-      showToast(`Conversation ouverte avec ${friend.fullName}`, "success");
+      const result = await MediaService.sendMediaMessage(token, socket, {
+        file,
+        recipientId: sel.friend.id,
+        onProgress: (p) => console.log(`Upload: ${p.progress}%`)
+      });
+      if (result.success) showToast("Fichier envoyé avec succès", "success");
     } catch (err) {
-      console.error("Erreur ouverture conversation:", err);
-      showToast("Erreur lors de l'ouverture", "error");
-    }
-  }, [token, pick, load, showToast, setUi]);
+      showToast(err.message, "error");
+    } finally { setUi(p => ({ ...p, up: false })); }
+  };
 
-  // Suppression Message
-  const handleDeleteMessage = useCallback(async (msgId) => {
-    if (!window.confirm("Supprimer ce message ?")) return;
+  // 5. Envoyer un vocal
+  const handleVoiceSend = async () => {
+    if (!audioBlob || !sel.friend) return;
+    setUi(p => ({ ...p, up: true }));
     try {
-      setData(p => ({ ...p, msg: p.msg.filter(m => m._id !== msgId) }));
-      await API.deleteMessage(token, msgId);
-      if (socket?.connected && sel.friend) {
-        socket.emit("deleteMessage", { messageId: msgId, recipientId: sel.friend.id });
-      }
-    } catch (e) { 
-      showToast("Erreur suppression", "error"); 
-      loadConversation(sel.friend.id); 
-    }
-  }, [token, socket, sel.friend, setData, showToast, loadConversation]);
+      await MediaService.sendVoiceMessage(token, socket, {
+        audioBlob,
+        recipientId: sel.friend.id
+      });
+      cancelAudio();
+    } catch (err) {
+      showToast("Échec de l'envoi du message vocal", "error");
+    } finally { setUi(p => ({ ...p, up: false })); }
+  };
 
-  // Scroll automatique
-  useEffect(() => { 
-    endRef.current?.scrollIntoView({ behavior: 'smooth' }); 
-  }, [data.msg, typingUsers]);
-
-  // Filtering Logic
-  const filteredContacts = useMemo(() => {
-    let list = ui.search 
-      ? data.conn.filter(c => c?.fullName?.toLowerCase().includes(ui.search.toLowerCase())) 
-      : data.conn;
-    return list.sort((a, b) => (data.unread[b.id] || 0) - (data.unread[a.id] || 0));
-  }, [data.conn, ui.search, data.unread]);
-
-  const direction = sel.friend ? 1 : -1;
+  // ==========================================
+  // RENDU : UX MOBILE-FIRST & CONFIDENTIALITÉ
+  // ==========================================
 
   return (
-    <>
-      <motion.button
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        whileHover={{ scale: 1.1 }}
-        whileTap={{ scale: 0.9 }}
-        onClick={handleMainBack}
-        className="fixed top-4 left-4 z-[50] p-3 bg-white/10 hover:bg-white/20 text-white rounded-full shadow-lg backdrop-blur-md border border-white/10 transition-colors"
-      >
-        <ArrowLeft className="w-5 h-5" />
-      </motion.button>
+    <div className="fixed inset-0 flex bg-[#0b0d10] text-white overflow-hidden font-sans">
+      
+      {/* --- SIDEBAR : LISTE DES CONTACTS --- */}
+      <div className={`
+        flex-shrink-0 w-full md:w-[380px] lg:w-[420px] border-r border-white/5 bg-[#12151a] flex flex-col
+        transition-all duration-300 ease-in-out
+        ${sel.friend ? "-translate-x-full md:translate-x-0" : "translate-x-0"}
+      `}>
+        <div className="p-5 flex items-center justify-between bg-[#12151a]/80 backdrop-blur-xl border-b border-white/5">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-blue-500/10 rounded-2xl text-blue-500 shadow-inner">
+              <ShieldCheck size={22} strokeWidth={2.5} />
+            </div>
+            <h1 className="text-xl font-black tracking-tight">Messages</h1>
+          </div>
+          <button onClick={() => navigate("/")} className="p-2 hover:bg-white/5 rounded-full transition-colors">
+            <X size={24} />
+          </button>
+        </div>
 
-      <div className="fixed inset-0 bg-gray-900 w-full h-full overflow-hidden font-sans">
-        <AnimatePresence initial={false} custom={direction} mode="wait">
-          
-          {!sel.friend ? (
-            <motion.div
-              key="contact-list"
-              custom={direction}
-              variants={pageVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="absolute inset-0 w-full h-full flex flex-col bg-gradient-to-br from-gray-900 via-gray-800 to-black"
+        <ContactSidebar
+          contacts={data.conn}
+          searchQuery={ui.search}
+          onSearchChange={(q) => setUi(p => ({ ...p, search: q }))}
+          onContactSelect={handlePickContact}
+          unreadCounts={data.unread}
+          onlineUsers={onlineUsers}
+          loading={ui.load}
+        />
+      </div>
+
+      {/* --- ZONE DE CHAT PRINCIPALE --- */}
+      <div className={`
+        flex-1 flex flex-col relative bg-[#0b0d10]
+        transition-all duration-300 ease-in-out
+        ${sel.friend ? "translate-x-0" : "translate-x-full md:translate-x-0"}
+      `}>
+        <AnimatePresence mode="wait">
+          {sel.friend ? (
+            <motion.div 
+              key={sel.friend.id}
+              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
+              className="flex flex-col h-full"
             >
-              <div className="flex-1 w-full max-w-5xl mx-auto h-full overflow-hidden flex flex-col pt-16 md:pt-4">
-                <ContactSidebar
-                  contacts={filteredContacts}
-                  stats={data.stats}
-                  searchQuery={ui.search}
-                  onSearchChange={(q) => setUi(p => ({ ...p, search: q }))}
-                  onContactSelect={pick}
-                  onAddContact={() => setUi(p => ({ ...p, showAddContact: true }))}
-                  onShowPending={() => setUi(p => ({ ...p, showPending: true }))}
-                  onSyncContacts={handleSyncContacts}
-                  onInviteContact={handleInvite}
-                  unreadCounts={data.unread}
-                  onlineUsers={onlineUsers}
-                  pendingCount={data.pendingRequests?.length || 0}
-                  connected={connected}
-                  loading={ui.load}
-                  className="h-full w-full"
+              {/* Header Chat : Fiabilité & Appels */}
+              <div className="h-16 flex-none border-b border-white/5 px-4 flex items-center justify-between bg-[#12151a]/90 backdrop-blur-md z-30">
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setSel({ friend: null })} className="md:hidden p-2 -ml-2 text-gray-400">
+                    <ArrowLeft size={24} />
+                  </button>
+                  <ChatHeader 
+                    friend={sel.friend} 
+                    onlineUsers={onlineUsers} 
+                    onVideoCall={() => startCall('video')}
+                    onAudioCall={() => startCall('audio')}
+                  />
+                </div>
+                <div className="flex items-center gap-2 px-3 py-1 bg-green-500/5 border border-green-500/20 rounded-full">
+                  <Lock size={10} className="text-green-500" />
+                  <span className="text-[9px] text-green-500 font-black uppercase tracking-widest">Sécurisé</span>
+                </div>
+              </div>
+
+              {/* Liste des Messages (Scroll interne) */}
+              <div className="flex-1 overflow-hidden relative">
+                <div className="absolute inset-0 bg-[url('/chat-pattern.png')] opacity-[0.03] pointer-events-none" />
+                <MessagesList
+                  messages={data.msg}
+                  currentUserId={user?.id}
+                  onDeleteMessage={(id) => API.deleteMessage(token, id)}
+                />
+              </div>
+
+              {/* Input : Simplicité d'envoi de fichiers et vocaux */}
+              <div className="p-4 bg-[#12151a]/95 backdrop-blur-xl border-t border-white/5">
+                <ChatInput
+                  input={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onSend={handleSend}
+                  onUpload={handleFileUpload}
+                  recording={recording}
+                  onStartRecording={startRecording}
+                  onStopRecording={stopRecording}
+                  onSendAudio={handleVoiceSend}
+                  uploading={ui.up}
                 />
               </div>
             </motion.div>
           ) : (
-            <motion.div
-              key="chat-interface"
-              custom={direction}
-              variants={pageVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="absolute inset-0 w-full h-full flex flex-col bg-gray-900"
-            >
-              <ChatHeader
-                friend={sel.friend}
-                typingUsers={typingUsers}
-                onlineUsers={onlineUsers}
-                connected={connected}
-                onVideoCall={() => startCall('video')}
-                onAudioCall={() => startCall('audio')}
-                className="pl-16 shadow-md z-10 bg-gray-800/90 backdrop-blur"
-              />
-
-              <div className="flex-1 overflow-hidden relative">
-                <MessagesList
-                  messages={data.msg}
-                  loading={ui.load}
-                  currentUserId={user?.id}
-                  onSelectMessage={(m) => setSel(p => ({ ...p, msg: m }))}
-                  onDeleteMessage={handleDeleteMessage}
-                  endRef={endRef}
-                />
+            /* État vide : Confidentialité rappelée */
+            <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+                className="w-24 h-24 bg-blue-500/5 rounded-[40px] flex items-center justify-center mb-6 border border-blue-500/10 shadow-2xl"
+              >
+                <ShieldCheck size={48} className="text-blue-500/50" />
+              </motion.div>
+              <h2 className="text-2xl font-black mb-3">Communications Privées</h2>
+              <p className="text-gray-500 max-w-sm text-sm leading-relaxed">
+                Toutes vos conversations et fichiers partagés sont protégés par un chiffrement de niveau industriel.
+              </p>
+              <div className="mt-8 flex items-center gap-6 opacity-20">
+                <Zap size={20} /> <Lock size={20} /> <ShieldCheck size={20} />
               </div>
-
-              <ChatInput
-                input={input}
-                onChange={type}
-                onSend={send}
-                recording={recording}
-                onStartRecording={startRecording}
-                onStopRecording={stopRecording}
-                onCancelAudio={cancelAudio}
-                onSendAudio={sendAudio}
-                audioUrl={audioUrl}
-                isPlaying={isPlaying}
-                audioRef={audioRef}
-                onPlayPreview={playPreview}
-                onPausePreview={pausePreview}
-                showEmoji={ui.showEmoji}
-                onToggleEmoji={() => setUi(p => ({ ...p, showEmoji: !p.showEmoji }))}
-                onEmojiSelect={(e) => { setInput(p => p + e.emoji); setUi(p => ({ ...p, showEmoji: false })); }}
-                uploading={ui.up}
-                onUpload={handleUpload}
-                connected={connected}
-                txtRef={txtRef}
-                fileRef={fileRef}
-              />
-            </motion.div>
+            </div>
           )}
         </AnimatePresence>
       </div>
 
-      {call.on && !call.isIncoming && (
-        <CallManager
-          call={call}
-          onEndCall={endCall}
-          onToggleMute={() => setCall(p => ({ ...p, mute: !p.mute }))}
-          onToggleVideo={() => setCall(p => ({ ...p, video: !p.video }))}
-        />
-      )}
-
+      {/* --- COUCHE D'APPELS ET MODALS --- */}
       <AnimatePresence>
         {incomingCall && (
           <IncomingCallModal
-            caller={incomingCall.caller || incomingCall.friend}
+            caller={incomingCall.caller}
             type={incomingCall.type}
             onAccept={() => {
-              acceptCall({ to: incomingCall.callId });
-              setCall({
-                on: true, type: incomingCall.type, friend: incomingCall.friend,
-                mute: false, video: incomingCall.type === "video", isIncoming: true, callId: incomingCall.callId
-              });
+              socket.emit("call-answer", { to: incomingCall.callId });
+              setCall({ on: true, ...incomingCall, isIncoming: true });
               setIncomingCall(null);
             }}
-            onReject={() => { rejectCall({ to: incomingCall.callId }); setIncomingCall(null); }}
-          />
-        )}
-        
-        {missedCallNotification && (
-          <MissedCallNotification
-            caller={missedCallNotification.caller}
-            type={missedCallNotification.type}
-            timestamp={missedCallNotification.timestamp}
-            onCallBack={() => {
-              const friend = data.conn.find(c => c.id === missedCallNotification.caller.id) || missedCallNotification.caller;
-              setSel({ friend, msg: null });
-              startCall(missedCallNotification.type);
-              setMissedCallNotification(null);
+            onReject={() => {
+              socket.emit("call-rejected", { to: incomingCall.callId });
+              setIncomingCall(null);
             }}
-            onDismiss={() => setMissedCallNotification(null)}
-          />
-        )}
-
-        {ui.phone && <PhoneModal onSuccess={(u) => { setUi(p => ({...p, phone:false})); load(); }} onClose={() => setUi(p=>({...p, phone:false}))} />}
-        
-        {ui.showAddContact && (
-          <AddContactModal 
-            isOpen={ui.showAddContact} 
-            onClose={() => setUi(p=>({...p, showAddContact:false}))} 
-            onAdd={async (d) => { await API.addContact(token, d); load(); }} 
-          />
-        )}
-        
-        {ui.showPending && (
-          <PendingMessagesModal 
-            isOpen={ui.showPending} 
-            onClose={() => setUi(p=>({...p, showPending:false}))} 
-            onAccept={async (req) => { load(); }} 
-            onReject={async (id) => { load(); }}
-            onOpenConversation={handleOpenPendingConversation}
           />
         )}
       </AnimatePresence>
-    </>
+
+      {call.on && (
+        <CallManager call={call} onEndCall={endCall} />
+      )}
+    </div>
   );
 }

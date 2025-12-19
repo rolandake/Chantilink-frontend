@@ -1,13 +1,15 @@
-// ============================================ //
-// 📁 src/pages/Chat/hooks/useCallManager.js - VERSION CORRIGÉE
+// ============================================
+// 📁 src/pages/Chat/hooks/useCallManager.js
+// VERSION: ÉLITE - RÉLIABILITÉ APPELS & AUDIO
 // ============================================
 import { useState, useCallback, useRef } from "react";
 import * as Tone from "tone";
 
 export function useCallManager(sel, connected, initiateCall, socketEndCall, sendMessage, showToast) {
+  // --- 1. ÉTAT DE L'APPEL ACTIF ---
   const [call, setCall] = useState({
     on: false,
-    type: null,
+    type: null,      // 'audio' | 'video'
     friend: null,
     mute: false,
     video: true,
@@ -15,13 +17,18 @@ export function useCallManager(sel, connected, initiateCall, socketEndCall, send
     callId: null
   });
 
+  // --- 2. ÉTATS DE NOTIFICATION ---
   const [incomingCall, setIncomingCall] = useState(null);
   const [missedCallNotification, setMissedCallNotification] = useState(null);
 
+  // --- 3. REFS POUR LA GESTION AUDIO (TONE.JS) ---
   const toneIntervalRef = useRef(null);
   const toneTimeoutRef = useRef(null);
   const toneSynthRef = useRef(null);
 
+  /**
+   * 🧹 NETTOYAGE AUDIO (Crucial pour la confidentialité et la batterie)
+   */
   const cleanupCallRingtone = useCallback(() => {
     if (toneIntervalRef.current) {
       clearInterval(toneIntervalRef.current);
@@ -32,23 +39,27 @@ export function useCallManager(sel, connected, initiateCall, socketEndCall, send
       toneTimeoutRef.current = null;
     }
     if (toneSynthRef.current) {
-      toneSynthRef.current.dispose();
+      try {
+        toneSynthRef.current.dispose();
+      } catch (e) {
+        console.warn("[ToneJS] Déjà libéré");
+      }
       toneSynthRef.current = null;
     }
   }, []);
 
+  /**
+   * 📞 DÉMARRER UN APPEL SÉCURISÉ
+   */
   const startCall = useCallback((callType) => {
     if (!sel.friend || !connected) {
-      console.warn("[useCallManager] Impossible de démarrer l'appel:", { 
-        hasFriend: !!sel.friend, 
-        connected 
-      });
-      showToast("Impossible d'initier l'appel", "error");
+      showToast("Impossible d'établir la connexion", "error");
       return;
     }
 
-    console.log(`[useCallManager] 📞 Démarrage appel ${callType} vers ${sel.friend.fullName}`);
-    
+    // On active l'audio Tone sur action utilisateur (requis par les navigateurs)
+    Tone.start();
+
     const success = initiateCall(sel.friend.id, callType);
     
     if (success) {
@@ -61,16 +72,15 @@ export function useCallManager(sel, connected, initiateCall, socketEndCall, send
         isIncoming: false,
         callId: null
       });
-      console.log("[useCallManager] ✅ Appel initié avec succès");
     } else {
-      console.error("[useCallManager] ❌ Échec de l'initiation de l'appel");
-      showToast("Impossible d'initier l'appel", "error");
+      showToast("Le service d'appel est indisponible", "error");
     }
   }, [sel.friend, connected, initiateCall, showToast]);
 
+  /**
+   * 📴 TERMINER L'APPEL ET NETTOYER
+   */
   const endCall = useCallback(() => {
-    console.log("[useCallManager] 📴 Fin d'appel", { callId: call.callId });
-    
     if (call.callId) {
       socketEndCall(call.callId);
     }
@@ -88,36 +98,27 @@ export function useCallManager(sel, connected, initiateCall, socketEndCall, send
     });
   }, [call.callId, socketEndCall, cleanupCallRingtone]);
 
-  // ✅ CORRECTION MAJEURE : Envoi correct du message d'appel manqué
+  /**
+   * 📨 SIGNALEMENT APPEL MANQUÉ (Fiabilité & Trace)
+   */
   const sendMissedCallMessage = useCallback((friend, callType = "video") => {
-    if (!friend?.id) {
-      console.warn("[useCallManager] ⚠️ Impossible d'envoyer le message d'appel manqué: friend invalide");
-      return;
-    }
+    if (!friend?.id) return;
 
-    console.log(`[useCallManager] 📨 Envoi message d'appel manqué à ${friend.fullName || friend.id}`);
-
-    // ✅ FORMAT CORRECT avec type "missed-call"
     const messageData = {
       recipientId: friend.id,
-      content: `Appel ${callType === 'video' ? 'vidéo' : 'audio'} manqué`,
-      type: "missed-call",  // ✅ Type valide
+      content: `Appel ${callType === 'video' ? 'vidéo' : 'audio'} sans réponse`,
+      type: "missed-call",
       metadata: {
-        callType: callType,
-        timestamp: new Date().toISOString()
+        callType,
+        timestamp: new Date().toISOString(),
+        isPrivate: true
       }
     };
 
     try {
-      const sent = sendMessage(messageData);
-      
-      if (sent) {
-        console.log("[useCallManager] ✅ Message d'appel manqué envoyé");
-      } else {
-        console.warn("[useCallManager] ⚠️ Échec de l'envoi du message d'appel manqué");
-      }
+      sendMessage(messageData);
     } catch (error) {
-      console.error("[useCallManager] ❌ Erreur lors de l'envoi du message:", error);
+      console.error("[CallManager] Erreur notification échec:", error);
     }
   }, [sendMessage]);
 
@@ -129,7 +130,6 @@ export function useCallManager(sel, connected, initiateCall, socketEndCall, send
     missedCallNotification,
     setMissedCallNotification,
     toneIntervalRef,
-    toneTimeoutRef,
     toneSynthRef,
     startCall,
     endCall,
