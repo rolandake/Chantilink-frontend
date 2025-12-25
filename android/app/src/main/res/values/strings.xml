@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">chantilink</string>
+    <string name="title_activity_main">chantilink</string>
+    <string name="package_name">com.chantilink.app</string>
+    <string name="custom_url_scheme">com.chantilink.app</string>
+</resources>

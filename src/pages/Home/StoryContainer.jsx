@@ -1,262 +1,230 @@
 // ============================================
-// 📁 src/pages/Home/StoryContainer.jsx
+// 📁 src/pages/Home/StoryContainer.jsx - STYLE INSTAGRAM
 // ============================================
-import React, { useMemo, useCallback, memo } from "react";
-import { motion } from "framer-motion";
-import { Plus } from "lucide-react";
+import React, { useMemo, memo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Plus, Calculator, Zap, Triangle } from "lucide-react";
 import { useStories } from "../../context/StoryContext";
 import { useAuth } from "../../context/AuthContext";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const SERVER_URL = API_URL.replace('/api', '');
 
-// --- HELPER URL SÉCURISÉ ---
-const url = (path) => {
+const MEDIA_URL = (path) => {
   if (!path) return null;
   if (path.startsWith("http") || path.startsWith("blob:")) return path;
-  // Gestion propre du slash
-  return `${API}${path.startsWith('/') ? '' : '/'}${path}`;
+  return `${SERVER_URL}/${path.replace(/^\/+/, "")}`;
 };
 
 // ========================================
-// 1. SOUS-COMPOSANT MÉMOÏSÉ (Item Story)
+// STORY ITEM
 // ========================================
-const StoryItem = memo(({ owner, unviewed, latest, isDarkMode, onClick }) => {
-  // Récupération sécurisée de la dernière slide
+const StoryItem = memo(({ owner, unviewed, latest, isDarkMode, onClick, isCurrentUser = false }) => {
   const slide = latest?.slides?.at(-1);
-  
-  // Correction : Backend renvoie 'mediaUrl', on gère les deux cas
   const mediaSrc = slide?.mediaUrl || slide?.media;
+  const ownerName = owner?.username || owner?.fullName || "User";
   
-  const ownerName = owner?.username || owner?.fullName || "Utilisateur";
-  const ownerPhoto = owner?.profilePhoto;
-  const ownerInitial = ownerName[0]?.toUpperCase() || "?";
+  const isTechnical = useMemo(() => {
+    return latest?.slides?.some(s => 
+      (s.content || s.text || "").toLowerCase().includes("calcul") || 
+      s.metadata?.linkType === "calculation"
+    );
+  }, [latest]);
+
+  const isFresh = useMemo(() => {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    return new Date(latest?.createdAt) > oneHourAgo;
+  }, [latest]);
 
   return (
     <motion.button
-      className="flex flex-col items-center flex-shrink-0 group cursor-pointer"
-      whileHover={{ scale: 1.05 }}
-      whileTap={{ scale: 0.95 }}
+      className="flex flex-col items-center flex-shrink-0 group relative snap-center"
+      whileTap={{ scale: 0.92 }}
       onClick={onClick}
     >
-      {/* CERCLE DE CONTOUR */}
-      <div className={`relative w-16 h-16 rounded-full p-[3px] transition-all ${
-        unviewed 
-          ? "bg-gradient-to-tr from-yellow-400 via-orange-500 to-fuchsia-600" 
-          : "bg-gray-300 dark:bg-gray-700"
+      <div className={`relative w-[68px] h-[68px] md:w-16 md:h-16 rounded-full p-[2.5px] transition-all ${
+        isCurrentUser
+          ? "bg-gradient-to-tr from-purple-600 via-pink-500 to-orange-500 shadow-lg shadow-orange-500/30"
+          : unviewed 
+            ? "bg-gradient-to-tr from-purple-600 via-pink-500 to-orange-500 shadow-md shadow-orange-500/20" 
+            : "bg-gray-300 dark:bg-white/10"
       }`}>
         
-        {/* AVATAR / MINIATURE */}
-        <div className="w-full h-full rounded-full overflow-hidden bg-white dark:bg-black border-2 border-white dark:border-gray-900 relative">
-          {ownerPhoto ? (
-            <img 
-              src={url(ownerPhoto)} 
-              alt={ownerName} 
-              className="w-full h-full object-cover" 
-              loading="lazy"
-              onError={(e) => e.target.style.display = 'none'} 
-            />
-          ) : mediaSrc ? (
-            <img 
-              src={url(mediaSrc)} 
-              alt={ownerName} 
-              className="w-full h-full object-cover" 
-              loading="lazy"
-            />
-          ) : (
-            <div className="w-full h-full bg-gradient-to-br from-purple-400 to-pink-500 flex items-center justify-center">
-              <span className="text-white text-xl font-bold">{ownerInitial}</span>
-            </div>
-          )}
+        <div className="w-full h-full rounded-full overflow-hidden bg-white dark:bg-black border-[3px] border-white dark:border-[#0b0d10] relative">
+          <img 
+            src={MEDIA_URL(owner?.profilePhoto) || MEDIA_URL(mediaSrc)} 
+            alt={ownerName} 
+            className={`w-full h-full object-cover ${!unviewed && !isCurrentUser && 'opacity-60 grayscale-[0.3]'}`}
+            loading="lazy"
+          />
         </div>
+
+        {isTechnical && (
+          <div className="absolute -top-1 -right-1 bg-orange-600 text-white p-1 rounded-full shadow-lg border-2 border-white dark:border-[#0b0d10]">
+            <Calculator size={10} strokeWidth={3} />
+          </div>
+        )}
+
+        {isFresh && (unviewed || isCurrentUser) && (
+          <div className="absolute -bottom-1 -right-1 bg-gradient-to-tr from-yellow-400 to-orange-500 text-white p-1 rounded-full shadow-lg border-2 border-white dark:border-[#0b0d10]">
+            <Zap size={10} strokeWidth={3} fill="currentColor" />
+          </div>
+        )}
       </div>
       
-      {/* NOM UTILISATEUR */}
-      <p className={`text-xs mt-1.5 font-medium truncate w-16 text-center ${
-        isDarkMode ? "text-gray-300" : "text-gray-700"
+      <p className={`text-[10px] mt-2 font-bold tracking-tight truncate w-16 text-center ${
+        isCurrentUser
+          ? (isDarkMode ? "text-white" : "text-gray-900")
+          : unviewed 
+            ? (isDarkMode ? "text-white" : "text-gray-900") 
+            : "text-gray-500"
       }`}>
-        {ownerName}
+        {isCurrentUser ? "Votre story" : ownerName}
       </p>
     </motion.button>
   );
 });
 
-StoryItem.displayName = 'StoryItem';
-
 // ========================================
-// 2. COMPOSANT PRINCIPAL
+// CONTAINER PRINCIPAL
 // ========================================
-const StoryContainer = ({ onOpenStory, onOpenCreator, isDarkMode }) => {
-  // 1. Hooks Context
+const StoryContainer = ({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode }) => {
   const { stories = [], loading = false, myStories } = useStories();
   const { user } = useAuth();
-  
   const uid = user?._id || user?.id;
 
-  // 2. Préparer "Mes Stories" (Sécurité si myStories est undefined)
-  const my = useMemo(() => myStories || [], [myStories]);
-
-  // 3. Préparer "Stories des Autres" (Groupement + Tri)
   const others = useMemo(() => {
     if (!stories) return [];
-
-    const otherStoriesMap = {};
-
+    const map = {};
     for (const s of stories) {
-      // Ignorer mes stories et celles sans propriétaire
       if (!s.owner || (s.owner._id || s.owner) === uid) continue;
-
-      const ownerId = s.owner._id || s.owner;
-      if (!otherStoriesMap[ownerId]) {
-        otherStoriesMap[ownerId] = { owner: s.owner, stories: [] };
-      }
-      otherStoriesMap[ownerId].stories.push(s);
+      const oId = s.owner._id || s.owner;
+      if (!map[oId]) map[oId] = { owner: s.owner, stories: [] };
+      map[oId].stories.push(s);
     }
 
-    // Convertir en tableau et trier
-    return Object.values(otherStoriesMap).map(data => {
-        const userStories = data.stories;
-        
-        // Calculer s'il y a du nouveau (non vu)
-        const slides = userStories.flatMap(s => s.slides || []);
+    return Object.values(map).map(data => {
+        const slides = data.stories.flatMap(s => s.slides || []);
         const unviewed = slides.some(sl => 
             !(sl.views || []).some(v => (typeof v === "string" ? v : v._id) === uid)
         );
-
-        // Trouver la plus récente
-        const latest = userStories.reduce((last, curr) => 
-            new Date(curr.createdAt) > new Date(last.createdAt) ? curr : last
-        , userStories[0]);
-
-        return { id: data.owner._id, owner: data.owner, stories: userStories, unviewed, latest };
-    }).sort((a, b) => {
-        // Tri : Non-vus d'abord, puis par date récente
-        if (a.unviewed !== b.unviewed) return b.unviewed - a.unviewed;
-        return new Date(b.latest.createdAt) - new Date(a.latest.createdAt);
-    });
-
+        const latest = data.stories.reduce((l, c) => new Date(c.createdAt) > new Date(l.createdAt) ? c : l, data.stories[0]);
+        
+        return { 
+          id: data.owner._id, 
+          owner: data.owner, 
+          stories: data.stories, 
+          unviewed, 
+          latest
+        };
+    }).sort((a, b) => (a.unviewed === b.unviewed ? new Date(b.latest.createdAt) - new Date(a.latest.createdAt) : b.unviewed - a.unviewed));
   }, [stories, uid]);
 
-  // Vérifier si MA story a des vues (point vert)
-  const hasViews = useMemo(() => 
-    my.some(s => s.slides?.some(sl => (sl.views || []).length > 0)), 
-  [my]);
+  const unviewedCount = useMemo(() => others.filter(o => o.unviewed).length, [others]);
 
-  // Gestionnaire d'ouverture
-  const handleOpen = useCallback((list, owner) => {
-    if (onOpenStory) onOpenStory(list, owner);
-  }, [onOpenStory]);
-
-
-  // --- RENDU : LOADING ---
   if (loading && stories.length === 0) {
     return (
-      <div className="flex gap-4 px-4 overflow-x-auto pb-2 scrollbar-hide min-h-[110px] items-center">
+      <div className="flex gap-4 px-4 py-4 overflow-x-hidden">
         {[...Array(5)].map((_, i) => (
-          <div key={i} className="flex flex-col items-center flex-shrink-0 animate-pulse">
-            <div className={`w-16 h-16 rounded-full ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
-            <div className={`w-12 h-2 mt-2 rounded-full ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
-          </div>
+          <div key={i} className="w-16 h-16 rounded-full bg-gray-200 dark:bg-gray-800 animate-pulse flex-shrink-0" />
         ))}
       </div>
     );
   }
 
-  // --- RENDU : PRINCIPAL ---
   return (
-    <div className="flex gap-4 px-4 overflow-x-auto pb-2 scrollbar-hide items-start min-h-[110px]">
+    <div className="relative group w-full overflow-hidden">
       
-      {/* 1. BOUTON CRÉER */}
-      <motion.button
-        className="flex flex-col items-center flex-shrink-0 group cursor-pointer"
-        onClick={onOpenCreator}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-      >
-        <div className={`relative w-16 h-16 rounded-full overflow-hidden shadow-md border-2 ${
-          isDarkMode ? "border-gray-700" : "border-orange-100"
-        }`}>
-          {user?.profilePhoto ? (
-            <img 
-              src={url(user.profilePhoto)} 
-              alt="Moi" 
-              className="w-full h-full object-cover opacity-90"
-            />
-          ) : (
-            <div className={`w-full h-full flex items-center justify-center ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`}>
-               <Plus className="w-6 h-6 text-gray-500" />
-            </div>
-          )}
-          
-          <div className="absolute inset-0 bg-black/10 flex items-center justify-center group-hover:bg-black/20 transition-colors">
-            <div className="bg-orange-500 rounded-full p-1 shadow-lg border-2 border-white dark:border-black">
-              <Plus className="w-4 h-4 text-white" strokeWidth={3} />
-            </div>
-          </div>
-        </div>
-        <p className={`text-xs mt-1.5 font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
-          Créer
-        </p>
-      </motion.button>
-
-      {/* 2. MA STORY (Si existe) */}
-      {my.length > 0 && (
+      {/* 🟢 LISTE SCROLLABLE (Snap Scroll activé) */}
+      <div className="flex gap-4 px-4 py-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory">
+        
+        {/* 1. BOUTON AJOUTER */}
         <motion.button
-          className="flex flex-col items-center flex-shrink-0 group cursor-pointer"
-          onClick={() => handleOpen(my, user)}
-          whileHover={{ scale: 1.05 }}
+          onClick={onOpenCreator}
           whileTap={{ scale: 0.95 }}
+          className="flex flex-col items-center flex-shrink-0 snap-start"
         >
-          <div className="relative w-16 h-16 rounded-full p-[2px] shadow-md">
-            {/* Bordure */}
-            <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-blue-400 to-indigo-500" />
-            
-            <div className="w-full h-full rounded-full overflow-hidden bg-white dark:bg-black relative border-2 border-white dark:border-gray-900">
-               {/* Miniature dernière slide */}
-               {(() => {
-                 const lastMedia = my.at(-1)?.slides?.at(-1);
-                 const src = lastMedia?.mediaUrl || lastMedia?.media;
-                 
-                 if (src) {
-                   return <img src={url(src)} alt="My story" className="w-full h-full object-cover" />;
-                 }
-                 return <div className="w-full h-full bg-gradient-to-br from-blue-400 to-indigo-500" />;
-               })()}
-              
-              <div className="absolute bottom-0 w-full bg-black/60 backdrop-blur-sm text-[8px] text-white text-center py-0.5 font-bold">
-                VOUS
+          <div className="relative w-[68px] h-[68px] md:w-16 md:h-16 rounded-full bg-gradient-to-br from-gray-100 to-gray-50 dark:from-white/5 dark:to-white/10 border-2 border-dashed border-gray-300 dark:border-white/20 flex items-center justify-center hover:border-orange-500 dark:hover:border-orange-500 transition-colors">
+            {user?.profilePhoto ? (
+              <>
+                <img src={MEDIA_URL(user.profilePhoto)} className="w-full h-full rounded-full object-cover opacity-40" alt="" />
+                <div className="absolute bg-gradient-to-tr from-orange-500 to-pink-500 rounded-full p-1.5 border-[3px] border-white dark:border-[#0b0d10] bottom-0 right-0 shadow-lg">
+                  <Plus size={10} className="text-white" strokeWidth={4} />
+                </div>
+              </>
+            ) : (
+              <div className="absolute bg-gradient-to-tr from-orange-500 to-pink-500 rounded-full p-1.5 border-[3px] border-white dark:border-[#0b0d10] bottom-0 right-0 shadow-lg">
+                <Plus size={10} className="text-white" strokeWidth={4} />
               </div>
-            </div>
-            
-            {/* Point Vert (Nouvelles Vues) */}
-            {hasViews && (
-              <div className="absolute top-0 right-0 w-3.5 h-3.5 bg-green-500 border-2 border-white dark:border-gray-900 rounded-full z-20" />
             )}
           </div>
-          <p className={`text-xs mt-1.5 font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
-            Ma story
-          </p>
+          <p className="text-[10px] mt-2 font-bold text-gray-500 uppercase tracking-tighter">Votre story</p>
         </motion.button>
-      )}
 
-      {/* 3. AUTRES STORIES */}
-      {others.map((u) => (
-        <StoryItem
-          key={u.id}
-          owner={u.owner}
-          unviewed={u.unviewed}
-          latest={u.latest}
-          isDarkMode={isDarkMode}
-          onClick={() => handleOpen(u.stories, u.owner)}
-        />
-      ))}
-      
-      {/* 4. VIDE */}
-      {!loading && stories.length === 0 && my.length === 0 && (
-        <div className="flex flex-col justify-center h-16 ml-4">
-           <p className="text-xs text-gray-400 italic">Aucune story</p>
-        </div>
-      )}
+        {/* 2. MA STORY (Si elle existe) */}
+        {myStories?.length > 0 && (
+          <div className="snap-start">
+            <StoryItem 
+              owner={user} 
+              latest={myStories.at(-1)} 
+              unviewed={false} 
+              isDarkMode={isDarkMode} 
+              onClick={() => onOpenStory(myStories, user)}
+              isCurrentUser={true}
+            />
+          </div>
+        )}
 
+        {/* 3. LES AUTRES STORIES */}
+        {others.map((u) => (
+          <StoryItem
+            key={u.id}
+            owner={u.owner}
+            unviewed={u.unviewed}
+            latest={u.latest}
+            isDarkMode={isDarkMode}
+            onClick={() => onOpenStory(u.stories, u.owner)}
+            isCurrentUser={false}
+          />
+        ))}
+
+        {/* Padding final pour compenser le bouton flottant sur mobile */}
+        <div className="flex-shrink-0 w-24 md:hidden" />
+      </div>
+
+      {/* 🔴 BOUTON UNIVERS FLOTTANT (Plus petit & Orange) */}
+      <AnimatePresence>
+        {unviewedCount > 0 && (
+          <motion.button
+            initial={{ y: 50, opacity: 0, scale: 0.8 }}
+            animate={{ y: 0, opacity: 1, scale: 1 }}
+            exit={{ y: 50, opacity: 0, scale: 0.8 }}
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={onOpenPyramid}
+            className={`fixed md:absolute bottom-4 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 rounded-full flex items-center gap-2 shadow-[0_8px_24px_rgba(249,115,22,0.35)] transition-all ${
+              isDarkMode 
+                ? 'bg-gradient-to-r from-orange-600 to-pink-600 border border-white/10' 
+                : 'bg-gradient-to-r from-orange-500 to-pink-500 border border-white/50'
+            }`}
+          >
+            <div className="relative">
+              <Triangle size={12} className="text-white fill-white rotate-180" />
+              <motion.div 
+                animate={{ scale: [1, 1.4, 1], opacity: [0.6, 0, 0.6] }}
+                transition={{ duration: 2, repeat: Infinity }}
+                className="absolute inset-0 bg-white rounded-full blur-sm"
+              />
+            </div>
+            <span className="text-white text-[11px] font-black tracking-wide uppercase">
+              Univers
+            </span>
+            <div className="bg-white/20 backdrop-blur-sm rounded-full px-1.5 py-0.5 min-w-[18px] flex items-center justify-center">
+              <span className="text-white text-[10px] font-black">{unviewedCount}</span>
+            </div>
+          </motion.button>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

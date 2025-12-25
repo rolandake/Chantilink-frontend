@@ -1,4 +1,4 @@
-// src/pages/Home/PostCard.jsx
+// src/pages/Home/PostCard.jsx - FULL WIDTH ZERO MARGIN
 import React, { forwardRef, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -17,7 +17,6 @@ import ErrorBoundary from "../../components/ErrorBoundary";
 
 // === CONFIGURATION ===
 const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
-// On ne charge Stripe que si la clé est présente pour éviter erreur console
 const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
@@ -28,7 +27,7 @@ const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 // === UTILITAIRES ===
 const getCloudinaryUrl = (id, opts = {}) => {
   if (!id) return null;
-  if (typeof id !== 'string') return null; // Sécurité supplémentaire
+  if (typeof id !== 'string') return null;
   if (id.startsWith('http')) return id;
   if (id.startsWith('/uploads/') || id.startsWith('uploads/')) {
     return `${API_URL}/${id.replace(/^\/+/, '')}`;
@@ -70,7 +69,6 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
     return colors[Math.abs(hash) % colors.length];
   }, [username]);
 
-  // URL sécurisée
   const url = useMemo(() => {
     return photo ? getCloudinaryUrl(photo, { width: size * 2, height: size * 2, crop: 'thumb', gravity: 'face' }) : null;
   }, [photo, size]);
@@ -98,9 +96,8 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
   );
 });
 
-// === POST CARD PRINCIPALE ===
+// === POST CARD PRINCIPALE - FULL WIDTH ZERO MARGIN ===
 const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
-  // Sécurité anti-crash : si pas de post, on ne rend rien
   if (!post || !post._id) return null;
 
   const { user: currentUser, getToken } = useAuth();
@@ -108,7 +105,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
   const navigate = useNavigate();
   const cardRef = useRef(null);
 
-  // Normalisation des données utilisateur (Memoized & Sécurisé)
   const postUser = useMemo(() => {
     const u = post.user || {};
     return {
@@ -120,26 +116,21 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     };
   }, [post]);
 
-  // États locaux
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
-  // Initialisation sécurisée des commentaires (toujours un tableau)
   const [comments, setComments] = useState([]);
   const [commentsCount, setCommentsCount] = useState(0);
   const [isBoosted, setIsBoosted] = useState(!!post.isBoosted);
   
-  // États UI
   const [showComments, setShowComments] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [animateHeart, setAnimateHeart] = useState(false);
 
-  // États Loading
   const [loadingLike, setLoadingLike] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [loadingFollow, setLoadingFollow] = useState(false);
   
-  // États Boost
   const [showBoostModal, setShowBoostModal] = useState(false);
   const [boostLoading, setBoostLoading] = useState(false);
   const [selectedBoost, setSelectedBoost] = useState(null);
@@ -150,17 +141,14 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     { id: 3, duration: 168, amount: 5000, label: "Semaine Pro", description: "Domination totale du feed", icon: <CheckBadgeIcon className="w-5 h-5 text-purple-500"/> }
   ];
 
-  // Gestion du texte long
   const MAX_CHARS = 280;
   const content = post.content || "";
   const shouldTruncate = content.length > MAX_CHARS;
   const displayContent = shouldTruncate && !expanded ? content.substring(0, MAX_CHARS) + "..." : content;
 
-  // === INIT & SYNC ===
   useEffect(() => {
     setLikesCount(Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0));
     
-    // Initialisation des commentaires : on prend le tableau s'il existe, sinon 0
     if (Array.isArray(post.comments)) {
         setComments(post.comments);
         setCommentsCount(post.comments.length);
@@ -171,29 +159,25 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     setIsBoosted(!!post.isBoosted);
 
     if (currentUser && Array.isArray(post.likes)) {
-      // Vérification robuste des likes (supporte ID string ou objet User)
       setLiked(post.likes.some(like => {
           const likeId = typeof like === 'object' ? like._id : like;
           return likeId === currentUser._id;
       }));
     }
     
-    // Check follow status
     if (currentUser?.following?.includes(postUser._id)) {
       setIsFollowing(true);
     }
   }, [post, currentUser, postUser._id]);
 
-  // === VIDEO AUTOPLAY (Optimisé) ===
   useEffect(() => {
     if (!cardRef.current) return;
     
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         const video = entry.target;
-        // On ne joue que si visible à 70% pour éviter surcharge
         if (entry.isIntersecting) {
-            if (video.paused) video.play().catch(() => {}); // catch silencieux
+            if (video.paused) video.play().catch(() => {});
         } else {
             if (!video.paused) video.pause();
         }
@@ -202,20 +186,18 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
 
     const videos = cardRef.current.querySelectorAll('video');
     videos.forEach(v => { 
-        v.muted = true; // Obligatoire pour autoplay mobile
+        v.muted = true;
         observer.observe(v); 
     });
 
     return () => observer.disconnect();
   }, []);
 
-  // === HANDLERS ===
   const handleLike = useCallback(async (e) => {
     e?.stopPropagation();
     if (!currentUser) return showToast?.("Connectez-vous pour aimer", "info");
     if (loadingLike) return;
 
-    // UI Optimiste
     const prevLiked = liked;
     const prevCount = likesCount;
     
@@ -231,7 +213,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
         headers: { Authorization: `Bearer ${token}` }
       });
     } catch (err) {
-      // Revert en cas d'erreur
       setLiked(prevLiked);
       setLikesCount(prevCount);
     } finally {
@@ -303,7 +284,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     }
   }, [selectedBoost, getToken, post._id, showToast]);
 
-  // Propriétés calculées
   const isOwner = currentUser && (post.userId === currentUser._id || postUser._id === currentUser._id);
   const canFollow = currentUser && !isOwner && postUser._id !== 'unknown';
 
@@ -322,10 +302,11 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
   return (
     <motion.div
       ref={node => { cardRef.current = node; if (ref) ref.current = node; }}
-      initial={{ opacity: 0, y: 15 }} 
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.98 }}
-      className={`relative w-full border-b ${isDarkMode ? 'bg-black border-white/10' : 'bg-white border-gray-100'} pb-2 mb-2 transition-colors duration-300`}
+      initial={{ opacity: 0 }} 
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+      className={`relative w-full border-b ${isDarkMode ? 'bg-black border-white/10' : 'bg-white border-gray-200'}`}
     >
       {/* BADGE SPONSORISÉ */}
       {isBoosted && (
@@ -410,9 +391,9 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
         )}
       </div>
 
-      {/* MEDIA (IMAGES/VIDEOS) */}
+      {/* MEDIA (IMAGES/VIDEOS) - ZERO MARGIN - FULL WIDTH */}
       {mediaUrls.length > 0 && (
-          <div className="mt-2">
+          <div className="w-full">
              <PostMedia mediaUrls={mediaUrls} />
           </div>
       )}
@@ -517,7 +498,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
           )}
       </AnimatePresence>
 
-      {/* SECTIONS EXTENSIBLES (Commentaires & Partage) */}
+      {/* SECTIONS EXTENSIBLES */}
       <AnimatePresence>
         {showComments && (
           <motion.div 
@@ -531,7 +512,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
                     postId={post._id}
                     comments={comments}
                     setComments={(newComments) => {
-                        // Supporte callback ou valeur directe pour compatibilité maximale
                         if (typeof newComments === 'function') {
                             setComments(prev => {
                                 const next = newComments(prev);

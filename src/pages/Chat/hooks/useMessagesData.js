@@ -1,6 +1,7 @@
 // ============================================
 // 📁 src/pages/Chat/hooks/useMessagesData.js
 // VERSION: ÉLITE - FIABILITÉ & CONFIDENTIALITÉ 🔐
+// ✅ CORRIGÉ : API.getConversations + showToast sécurisé
 // ============================================
 import { useState, useEffect, useCallback, useRef } from "react";
 import { API } from "../../../services/apiService";
@@ -54,13 +55,16 @@ export function useMessagesData(token, showToast) {
 
     try {
       const [convRes, statsRes, pendingRes] = await Promise.all([
-        API.loadConversations(token).catch(e => {
+        // ✅ CORRECTION 1 : loadConversations → getConversations
+        API.getConversations(token).catch(e => {
           console.error("⚠️ Erreur Conversations:", e);
-          return { connections: [] };
+          return { conversations: [] }; // ✅ Ajusté pour correspondre à apiService
         }),
-        API.loadStats(token).catch(e => {
+        // ✅ CORRECTION : loadStats n'existe pas dans apiService
+        // Utiliser getContactsStats à la place
+        API.getContactsStats(token).catch(e => {
           console.error("⚠️ Erreur Stats:", e);
-          return { total: 0, onChantilink: 0, other: 0 };
+          return { totalContacts: 0, unreadMessages: 0, pendingRequests: 0 };
         }),
         API.getPendingMessageRequests(token).catch(e => {
           console.error("⚠️ Erreur Demandes:", e);
@@ -71,16 +75,28 @@ export function useMessagesData(token, showToast) {
       // Vérifier si le composant est toujours affiché pour éviter les fuites de mémoire
       if (!isMounted.current) return;
 
+      // ✅ CORRECTION : Adapter la structure des données reçues
       setData(prev => ({
         ...prev,
-        conn: convRes.connections || [],
-        stats: statsRes || { total: 0, onChantilink: 0, other: 0 },
+        conn: convRes.conversations || [], // ✅ conversations au lieu de connections
+        stats: {
+          total: statsRes.totalContacts || 0,
+          onChantilink: statsRes.totalContacts || 0,
+          other: 0
+        },
         pendingRequests: Array.isArray(pendingRes) ? pendingRes : (pendingRes.requests || [])
       }));
 
     } catch (globalError) {
       console.error("❌ [Critical Sync Error]:", globalError);
-      showToast("Problème de synchronisation réseau", "error");
+      
+      // ✅ CORRECTION 2 : showToast sécurisé
+      if (typeof showToast === 'function') {
+        showToast("Problème de synchronisation réseau", "error");
+      } else {
+        console.error("❌ [Messages] Problème de synchronisation réseau");
+      }
+      
       setErr(globalError.message);
     } finally {
       if (isMounted.current) setUi(prev => ({ ...prev, load: false }));

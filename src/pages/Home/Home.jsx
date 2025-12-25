@@ -1,22 +1,28 @@
-// src/pages/Home/Home.jsx - VERSION CORRIGÉE
+// ============================================
+// 📁 src/pages/Home/Home.jsx
+// VERSION ZERO MARGIN - POSTS COLLÉS ⚡
+// ============================================
 import React, { useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense } from "react";
 import { MagnifyingGlassIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
 import { AnimatePresence, motion } from "framer-motion";
 import { useDarkMode } from "../../context/DarkModeContext";
 import { useStories } from "../../context/StoryContext";
 import { usePosts } from "../../context/PostsContext";
+import { useAuth } from "../../context/AuthContext";
 
-// ✅ IMPORTS DIRECTS (Pas de lazy loading pour les composants utilisant des contexts)
+// ✅ IMPORTS DIRECTS (chargement immédiat)
 import PostCard from "./PostCard";
 import StoryContainer from "./StoryContainer";
-import StoryCreator from "./StoryCreator"; // ✅ CORRECTION: Import direct au lieu de lazy
+import StoryCreator from "./StoryCreator";
 
-// ✅ LAZY LOADING (Uniquement pour StoryViewer qui n'utilise pas de hook de contexte au mount)
+// ✅ LAZY LOADING (chargement différé)
 const StoryViewer = lazy(() => import("./StoryViewer"));
+const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
 
-// ═══════════════════════════════════════════════════════════
-// STYLES GLOBAUX
-// ═══════════════════════════════════════════════════════════
+// ✅ OPTIMISATION : Transitions ultra-rapides
+const fastTransition = { duration: 0.15, ease: "easeOut" };
+
+// ✅ OPTIMISATION : Styles globaux injectés une seule fois
 const STYLES = `
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -37,16 +43,17 @@ if (typeof document !== "undefined" && !document.getElementById("home-styles")) 
 }
 
 // ═══════════════════════════════════════════════════════════
-// COMPOSANTS UI
+// COMPOSANTS UI MÉMORISÉS
 // ═══════════════════════════════════════════════════════════
 
 const Toast = memo(({ toast }) => {
   if (!toast) return null;
   return (
     <motion.div
-      initial={{ x: 100, opacity: 0, scale: 0.9 }}
-      animate={{ x: 0, opacity: 1, scale: 1 }}
-      exit={{ x: 100, opacity: 0, scale: 0.9 }}
+      initial={{ x: 100, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: 100, opacity: 0 }}
+      transition={fastTransition}
       className="fixed top-20 right-4 z-[9998]"
     >
       <div className={`px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 min-w-[280px] backdrop-blur-xl border-2 font-bold text-white ${
@@ -63,20 +70,17 @@ const Toast = memo(({ toast }) => {
 
 const LoadingSpinner = memo(({ isDarkMode }) => (
   <div className="flex justify-center py-8">
-    <motion.div
-      animate={{ rotate: 360 }}
-      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-      className={`w-10 h-10 border-4 border-t-transparent rounded-full ${
-        isDarkMode ? "border-orange-500" : "border-orange-600"
-      }`}
-    />
+    <div className={`w-10 h-10 border-4 border-t-transparent rounded-full animate-spin ${
+      isDarkMode ? "border-orange-500" : "border-orange-600"
+    }`} />
   </div>
 ));
 
 const EmptyState = memo(({ searchQuery, isDarkMode, onRefresh }) => (
   <motion.div 
     initial={{ opacity: 0, y: 20 }} 
-    animate={{ opacity: 1, y: 0 }} 
+    animate={{ opacity: 1, y: 0 }}
+    transition={fastTransition}
     className="text-center py-24"
   >
     <div className="text-7xl mb-4">📭</div>
@@ -86,19 +90,17 @@ const EmptyState = memo(({ searchQuery, isDarkMode, onRefresh }) => (
     <p className={`text-sm mb-6 ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
       {searchQuery ? "Essayez une autre recherche" : "Revenez plus tard ou rafraîchissez"}
     </p>
-    <motion.button
+    <button
       onClick={onRefresh}
-      whileHover={{ scale: 1.05 }}
-      whileTap={{ scale: 0.95 }}
-      className="px-10 py-4 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-full font-bold shadow-xl hover:shadow-2xl transition-shadow"
+      className="px-10 py-4 bg-gradient-to-r from-orange-500 to-orange-600 text-white rounded-full font-bold shadow-xl hover:shadow-2xl hover:scale-105 active:scale-95 transition-all"
     >
       Rafraîchir le feed
-    </motion.button>
+    </button>
   </motion.div>
 ));
 
 const SearchBar = memo(({ searchQuery, onSearchChange, onRefresh, isRefreshing, isDarkMode }) => (
-  <div className={`sticky top-0 z-40 px-4 pt-3 pb-2 border-b transition-all ${
+  <div className={`sticky top-0 z-40 px-4 pt-3 pb-2 border-b transition-colors ${
     isDarkMode 
       ? "bg-black/90 border-white/10 backdrop-blur-2xl" 
       : "bg-white/90 border-gray-200/50 backdrop-blur-xl"
@@ -128,18 +130,29 @@ const SearchBar = memo(({ searchQuery, onSearchChange, onRefresh, isRefreshing, 
           </svg>
         </button>
       )}
-      <motion.button 
+      <button 
         onClick={onRefresh} 
-        disabled={isRefreshing} 
-        whileHover={{ scale: 1.1, rotate: 180 }} 
-        whileTap={{ scale: 0.9 }}
-        className="p-2 disabled:opacity-50 disabled:cursor-not-allowed"
+        disabled={isRefreshing}
+        className="p-2 disabled:opacity-50 disabled:cursor-not-allowed hover:scale-110 active:scale-90 transition-transform"
       >
         <ArrowPathIcon className={`w-5 h-5 ${isRefreshing ? "animate-spin" : ""} text-orange-500`} />
-      </motion.button>
+      </button>
     </div>
   </div>
 ));
+
+// ✅ OPTIMISATION : Wrapper de post mémorisé SANS MARGIN
+const PostWrapper = memo(({ post }) => (
+  <motion.div
+    initial={{ opacity: 0, y: 20 }}
+    animate={{ opacity: 1, y: 0 }}
+    exit={{ opacity: 0, scale: 0.95 }}
+    transition={fastTransition}
+    className="w-full" // ✅ ZERO MARGIN/PADDING
+  >
+    <PostCard post={post} />
+  </motion.div>
+), (prev, next) => prev.post._id === next.post._id);
 
 // ═══════════════════════════════════════════════════════════
 // COMPOSANT PRINCIPAL HOME
@@ -147,8 +160,9 @@ const SearchBar = memo(({ searchQuery, onSearchChange, onRefresh, isRefreshing, 
 
 const Home = ({ openStoryViewer: openStoryViewerProp }) => {
   const { isDarkMode } = useDarkMode();
-  const { fetchStories, createStory } = useStories();
+  const { fetchStories, createStory, stories = [], myStories } = useStories();
   const { posts = [], fetchNextPage, hasMore, loading: postsLoading, refetch } = usePosts() || {};
+  const { user } = useAuth();
 
   // ════════════════════════════════════════════════════════
   // STATE
@@ -159,6 +173,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
   const [viewerData, setViewerData] = useState({ stories: [], owner: null });
   const [toast, setToast] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showPyramid, setShowPyramid] = useState(false);
 
   // ════════════════════════════════════════════════════════
   // REFS
@@ -167,13 +182,22 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
   const loadingRef = useRef(false);
   const toastTimeoutRef = useRef(null);
 
-  // Sync loading state with ref
   useEffect(() => {
     loadingRef.current = postsLoading;
   }, [postsLoading]);
 
+  // ✅ OPTIMISATION : Bloquer scroll seulement si pyramide active
+  useEffect(() => {
+    if (showPyramid) {
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = 'unset';
+      };
+    }
+  }, [showPyramid]);
+
   // ════════════════════════════════════════════════════════
-  // HANDLERS - STORIES
+  // HANDLERS MÉMORISÉS
   // ════════════════════════════════════════════════════════
 
   const handleOpenStory = useCallback((stories, owner) => {
@@ -191,7 +215,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
       setToast({ message: "Story publiée avec succès !", type: "success" });
       setShowCreator(false);
       
-      // Refresh stories after creation
       setTimeout(() => fetchStories(true), 1000);
     } catch (err) {
       console.error("❌ [Home] Erreur création story:", err);
@@ -200,18 +223,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
         type: "error" 
       });
     } finally {
-      // Clear previous timeout
       if (toastTimeoutRef.current) {
         clearTimeout(toastTimeoutRef.current);
       }
-      // Set new timeout to clear toast
       toastTimeoutRef.current = setTimeout(() => setToast(null), 3000);
     }
   }, [createStory, fetchStories]);
-
-  // ════════════════════════════════════════════════════════
-  // HANDLERS - FEED
-  // ════════════════════════════════════════════════════════
 
   const handleRefresh = useCallback(async () => {
     if (isRefreshing) return;
@@ -236,8 +253,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
     }
   }, [isRefreshing, refetch, fetchNextPage, fetchStories]);
 
+  const handleClosePyramid = useCallback(() => setShowPyramid(false), []);
+  const handleOpenPyramid = useCallback(() => setShowPyramid(true), []);
+  const handleCloseCreator = useCallback(() => setShowCreator(false), []);
+  const handleOpenCreator = useCallback(() => setShowCreator(true), []);
+  const handleCloseStoryViewer = useCallback(() => setShowStoryViewer(false), []);
+
   // ════════════════════════════════════════════════════════
-  // FILTRAGE DES POSTS
+  // FILTRAGE DES POSTS MÉMORISÉ
   // ════════════════════════════════════════════════════════
 
   const filteredPosts = useMemo(() => {
@@ -256,7 +279,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
   }, [posts, searchQuery]);
 
   // ════════════════════════════════════════════════════════
-  // INFINITE SCROLL
+  // INFINITE SCROLL OPTIMISÉ
   // ════════════════════════════════════════════════════════
 
   const handleObserver = useCallback((entries) => {
@@ -300,85 +323,106 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Search Bar */}
-      <SearchBar
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        onRefresh={handleRefresh}
-        isRefreshing={isRefreshing}
-        isDarkMode={isDarkMode}
-      />
+      {/* ✅ CONTENU PRINCIPAL (caché si pyramide active) */}
+      {!showPyramid && (
+        <>
+          {/* Search Bar */}
+          <SearchBar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onRefresh={handleRefresh}
+            isRefreshing={isRefreshing}
+            isDarkMode={isDarkMode}
+          />
 
-      {/* Stories Section */}
-      <div className={`sticky top-[72px] z-30 transition-colors ${
-        isDarkMode ? "bg-black/90" : "bg-white/90"
-      } backdrop-blur-xl border-b ${
-        isDarkMode ? "border-white/10" : "border-gray-200/40"
-      }`}>
-        <div className="h-[110px] px-4 overflow-x-auto scrollbar-hide">
-          <div className="flex items-center gap-3 h-full min-w-max py-2">
-            <StoryContainer
+          {/* Stories Section */}
+          <div className={`sticky top-[72px] z-30 transition-colors ${
+            isDarkMode ? "bg-black/90" : "bg-white/90"
+          } backdrop-blur-xl border-b ${
+            isDarkMode ? "border-white/10" : "border-gray-200/40"
+          }`}>
+            <div className="h-[110px] px-4 overflow-x-auto scrollbar-hide">
+              <div className="flex items-center gap-3 h-full min-w-max py-2">
+                <StoryContainer
+                  onOpenStory={handleOpenStory}
+                  onOpenCreator={handleOpenCreator}
+                  onOpenPyramid={handleOpenPyramid}
+                  isDarkMode={isDarkMode}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* ✅ POSTS FEED - ZERO PADDING/MARGIN - FULL WIDTH */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="w-full max-w-full"> {/* ✅ ZERO PADDING, FULL WIDTH */}
+              
+              {/* ✅ POSTS COLLÉS - ZERO GAP */}
+              <AnimatePresence mode="popLayout">
+                {filteredPosts.map((post) => (
+                  <PostWrapper key={post._id} post={post} />
+                ))}
+              </AnimatePresence>
+
+              {/* Empty State */}
+              {!postsLoading && filteredPosts.length === 0 && (
+                <div className="px-4">
+                  <EmptyState 
+                    searchQuery={searchQuery} 
+                    isDarkMode={isDarkMode} 
+                    onRefresh={handleRefresh} 
+                  />
+                </div>
+              )}
+
+              {/* Infinite Scroll Trigger */}
+              <div ref={observerRef} className="h-4 w-full" />
+              
+              {/* Loading Indicator */}
+              {postsLoading && <LoadingSpinner isDarkMode={isDarkMode} />}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ✅ PYRAMIDE IMMERSIVE EN FULLSCREEN */}
+      <AnimatePresence>
+        {showPyramid && (
+          <Suspense fallback={null}>
+            <ImmersivePyramidUniverse
+              stories={stories}
+              myStories={myStories}
+              user={user}
+              onClose={handleClosePyramid}
               onOpenStory={handleOpenStory}
-              onOpenCreator={() => setShowCreator(true)}
+              onOpenCreator={() => {
+                handleClosePyramid();
+                handleOpenCreator();
+              }}
               isDarkMode={isDarkMode}
             />
-          </div>
-        </div>
-      </div>
+          </Suspense>
+        )}
+      </AnimatePresence>
 
-      {/* Posts Feed */}
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="max-w-3xl mx-auto space-y-6">
-          <AnimatePresence mode="popLayout">
-            {filteredPosts.map((post) => (
-              <motion.div
-                key={post._id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                viewport={{ once: true }}
-                transition={{ duration: 0.3 }}
-              >
-                <PostCard post={post} />
-              </motion.div>
-            ))}
-          </AnimatePresence>
-
-          {/* Empty State */}
-          {!postsLoading && filteredPosts.length === 0 && (
-            <EmptyState 
-              searchQuery={searchQuery} 
-              isDarkMode={isDarkMode} 
-              onRefresh={handleRefresh} 
-            />
-          )}
-
-          {/* Infinite Scroll Trigger */}
-          <div ref={observerRef} className="h-4 w-full" />
-          
-          {/* Loading Indicator */}
-          {postsLoading && <LoadingSpinner isDarkMode={isDarkMode} />}
-        </div>
-      </div>
-
-      {/* ✅ Story Creator Modal - Sans Suspense car import direct */}
+      {/* Story Creator Modal */}
       <AnimatePresence>
         {showCreator && (
           <StoryCreator 
-            onClose={() => setShowCreator(false)} 
+            onClose={handleCloseCreator}
             onSubmit={handleCreateStory} 
           />
         )}
       </AnimatePresence>
 
-      {/* Story Viewer Modal - Avec Suspense car lazy */}
+      {/* Story Viewer Modal */}
       <AnimatePresence>
         {showStoryViewer && !openStoryViewerProp && (
           <Suspense fallback={null}>
             <StoryViewer
               stories={viewerData.stories}
               currentUser={viewerData.owner}
-              onClose={() => setShowStoryViewer(false)}
+              onClose={handleCloseStoryViewer}
             />
           </Suspense>
         )}

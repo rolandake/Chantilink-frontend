@@ -1,14 +1,13 @@
 // ============================================
 // 📁 src/pages/Chat/Messages.jsx
-// VERSION: ÉLITE - PRIVACY, CALLS & MEDIA
+// VERSION FINALE : Modal Numéro + Synchro + Appels
 // ============================================
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { 
-  ArrowLeft, ShieldCheck, Lock, Phone, Video, 
-  Paperclip, Mic, Send, X, MoreVertical, Zap 
+  ArrowLeft, ShieldCheck, Lock, X, Zap 
 } from "lucide-react";
 
 // === CONTEXTS & SERVICES ===
@@ -20,6 +19,7 @@ import MediaService from "../../services/mediaService";
 // === COMPONENTS ===
 import IncomingCallModal from "../../components/IncomingCallModal";
 import CallManager from "../../components/CallManager";
+import { PhoneNumberModal } from "./components/PhoneNumberModal";
 import { ContactSidebar } from "./ContactSidebar";
 import { ChatHeader } from "./components/ChatHeader";
 import { MessagesList } from "./components/MessagesList";
@@ -32,7 +32,7 @@ import { useCallManager } from "./hooks/useCallManager";
 import { useSocketHandlers } from "./hooks/useSocketHandlers";
 
 export default function Messages() {
-  const { user, token, socket } = useAuth();
+  const { user, token, socket, updateUser } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
@@ -40,6 +40,7 @@ export default function Messages() {
   const [input, setInput] = useState("");
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [typingUsers, setTypingUsers] = useState([]);
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
   const processedMessagesRef = useRef(new Set());
   const connected = socket?.connected || false;
 
@@ -60,7 +61,7 @@ export default function Messages() {
     recording, audioBlob, startRecording, stopRecording, cancelAudio
   } = useAudioRecording(token, showToast);
 
-  // === GESTION DES SOCKETS (FIABILITÉ) ===
+  // === GESTION DES SOCKETS ===
   useSocketHandlers({
     connected, 
     on: (e, f) => socket?.on(e, f), 
@@ -75,9 +76,80 @@ export default function Messages() {
     sendMessage: (d) => socket?.emit("sendMessage", d)
   });
 
+  // ============================================
+  // 🔔 VÉRIFIER SI L'UTILISATEUR A UN NUMÉRO
+  // ============================================
+  useEffect(() => {
+    // Si l'user n'a pas de numéro ET n'a jamais vu la modal
+    if (user && !user.phone && !user.hasSeenPhoneModal) {
+      console.log("📱 [Messages] User sans numéro détecté, affichage modal");
+      // Attendre 1 seconde avant d'afficher (meilleure UX)
+      const timer = setTimeout(() => {
+        setShowPhoneModal(true);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [user]);
+
+  // ============================================
+  // 📞 SOUMETTRE LE NUMÉRO DE TÉLÉPHONE
+  // ============================================
+  const handlePhoneSubmit = async (phoneNumber) => {
+    try {
+      console.log(`📞 [Messages] Soumission numéro: ${phoneNumber}`);
+      
+      // Appeler l'API pour mettre à jour le téléphone
+      const response = await fetch(`${API.BASE_URL}/auth/update-phone`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ phone: phoneNumber })
+      });
+
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.message || 'Erreur lors de la mise à jour');
+      }
+
+      console.log("✅ [Messages] Numéro mis à jour:", data.user);
+
+      // Mettre à jour le contexte utilisateur
+      if (updateUser) {
+        updateUser(data.user);
+      }
+
+      // Marquer la modal comme vue
+      await fetch(`${API.BASE_URL}/users/profile`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ hasSeenPhoneModal: true })
+      });
+
+      showToast("Numéro enregistré avec succès ! 🎉", "success");
+      setShowPhoneModal(false);
+
+      // Proposer une synchro automatique
+      setTimeout(() => {
+        if (window.confirm("Voulez-vous synchroniser vos contacts maintenant ?")) {
+          // Trigger sync depuis le ContactSidebar
+          document.querySelector('[title="Synchroniser mes contacts"]')?.click();
+        }
+      }, 1500);
+
+    } catch (error) {
+      console.error("❌ [Messages] Erreur soumission numéro:", error);
+      throw error; // Le PhoneNumberModal gère l'affichage de l'erreur
+    }
+  };
+
   // === ACTIONS DE MESSAGERIE ===
 
-  // 1. Charger une conversation
   const loadConversation = useCallback(async (withId) => {
     setUi(p => ({ ...p, load: true }));
     try {
@@ -89,14 +161,12 @@ export default function Messages() {
     } finally { setUi(p => ({ ...p, load: false })); }
   }, [token, socket, setData, setUi, showToast]);
 
-  // 2. Sélectionner un contact (Simplifié pour Mobile)
   const handlePickContact = useCallback((contact) => {
     if (!contact?.id) return;
     setSel({ friend: contact, msg: null });
     loadConversation(contact.id);
   }, [loadConversation, setSel]);
 
-  // 3. Envoyer un message texte
   const handleSend = useCallback(() => {
     if (!sel.friend || !input.trim() || !connected) return;
     socket.emit("sendMessage", { 
@@ -107,7 +177,6 @@ export default function Messages() {
     setInput("");
   }, [sel.friend, input, connected, socket]);
 
-  // 4. Envoyer un fichier (Confidentialité & Fiabilité via MediaService)
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !sel.friend) return;
@@ -125,7 +194,6 @@ export default function Messages() {
     } finally { setUi(p => ({ ...p, up: false })); }
   };
 
-  // 5. Envoyer un vocal
   const handleVoiceSend = async () => {
     if (!audioBlob || !sel.friend) return;
     setUi(p => ({ ...p, up: true }));
@@ -141,7 +209,7 @@ export default function Messages() {
   };
 
   // ==========================================
-  // RENDU : UX MOBILE-FIRST & CONFIDENTIALITÉ
+  // RENDU
   // ==========================================
 
   return (
@@ -166,9 +234,9 @@ export default function Messages() {
         </div>
 
         <ContactSidebar
+          token={token}
+          user={user}
           contacts={data.conn}
-          searchQuery={ui.search}
-          onSearchChange={(q) => setUi(p => ({ ...p, search: q }))}
           onContactSelect={handlePickContact}
           unreadCounts={data.unread}
           onlineUsers={onlineUsers}
@@ -189,7 +257,7 @@ export default function Messages() {
               initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
               className="flex flex-col h-full"
             >
-              {/* Header Chat : Fiabilité & Appels */}
+              {/* Header Chat */}
               <div className="h-16 flex-none border-b border-white/5 px-4 flex items-center justify-between bg-[#12151a]/90 backdrop-blur-md z-30">
                 <div className="flex items-center gap-3">
                   <button onClick={() => setSel({ friend: null })} className="md:hidden p-2 -ml-2 text-gray-400">
@@ -208,7 +276,7 @@ export default function Messages() {
                 </div>
               </div>
 
-              {/* Liste des Messages (Scroll interne) */}
+              {/* Messages */}
               <div className="flex-1 overflow-hidden relative">
                 <div className="absolute inset-0 bg-[url('/chat-pattern.png')] opacity-[0.03] pointer-events-none" />
                 <MessagesList
@@ -218,7 +286,7 @@ export default function Messages() {
                 />
               </div>
 
-              {/* Input : Simplicité d'envoi de fichiers et vocaux */}
+              {/* Input */}
               <div className="p-4 bg-[#12151a]/95 backdrop-blur-xl border-t border-white/5">
                 <ChatInput
                   input={input}
@@ -234,7 +302,7 @@ export default function Messages() {
               </div>
             </motion.div>
           ) : (
-            /* État vide : Confidentialité rappelée */
+            /* État vide */
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
               <motion.div 
                 initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
@@ -254,8 +322,19 @@ export default function Messages() {
         </AnimatePresence>
       </div>
 
-      {/* --- COUCHE D'APPELS ET MODALS --- */}
+      {/* --- MODALS --- */}
       <AnimatePresence>
+        {/* Modal Numéro de Téléphone */}
+        {showPhoneModal && (
+          <PhoneNumberModal
+            isOpen={showPhoneModal}
+            onClose={() => setShowPhoneModal(false)}
+            onSubmit={handlePhoneSubmit}
+            canSkip={true}
+          />
+        )}
+
+        {/* Modal Appel Entrant */}
         {incomingCall && (
           <IncomingCallModal
             caller={incomingCall.caller}
@@ -273,6 +352,7 @@ export default function Messages() {
         )}
       </AnimatePresence>
 
+      {/* Manager d'Appel */}
       {call.on && (
         <CallManager call={call} onEndCall={endCall} />
       )}
