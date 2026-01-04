@@ -7,19 +7,23 @@ import {
   Legend,
 } from "chart.js";
 import { 
-  Grid, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets 
+  Grid, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Layers, Info, Target
 } from "lucide-react";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const STORAGE_KEY = "poutres-batiment-history";
+const STORAGE_KEY = "poutres-history-pro";
 
-// Dosages Béton Armé (Poutres) - Plus dosé que les fondations
-const DOSAGE = {
+// Configuration Technique
+const TYPES_POUTRES = {
+  SECONDAIRE: { label: "Poutre Secondaire (Chaînage)", acier: 100, icon: "🔗" },
+  PRINCIPALE: { label: "Poutre Principale (Porteuse)", acier: 150, icon: "🏗️" },
+};
+
+const DOSAGE_BETON = {
   ciment: 0.350, // 350kg/m3
   sable: 0.6,    // T/m3
   gravier: 0.85, // T/m3
-  acier: 0.120,  // 120kg/m3 (Ferraillage important)
   eau: 175       // L/m3
 };
 
@@ -27,12 +31,14 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
   
   // --- ÉTATS ---
   const [inputs, setInputs] = useState({
+    type: "PRINCIPALE",
     nombre: "1",
     longueur: "",
     largeur: "",
     hauteur: "",
     prixUnitaire: "",
-    coutMainOeuvre: ""
+    coutMainOeuvre: "",
+    marge: "10" // 10% de marge par défaut (recouvrements aciers)
   });
 
   const [historique, setHistorique] = useState([]);
@@ -44,53 +50,52 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
     const L = parseFloat(inputs.longueur) || 0;
     const l = parseFloat(inputs.largeur) || 0;
     const h = parseFloat(inputs.hauteur) || 0;
-    const pu = parseFloat(inputs.prixUnitaire) || 0;
-    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+    const margeCoef = 1 + (parseFloat(inputs.marge) || 0) / 100;
 
-    const volumeUnitaire = L * l * h;
-    const volumeTotal = volumeUnitaire * nb;
+    const volumeGeo = L * l * h * nb;
+    const volumeFinal = volumeGeo * margeCoef;
 
-    // Calculs Matériaux
-    const cimentT = volumeTotal * DOSAGE.ciment;
+    // Coffrage : (Base + 2 x Hauteur) x Longueur x Nombre
+    const surfaceCoffrage = (l + (2 * h)) * L * nb;
+
+    // Acier selon type
+    const ratioAcier = TYPES_POUTRES[inputs.type].acier;
+    const acierKg = volumeFinal * ratioAcier;
+    const acierT = acierKg / 1000;
+
+    // Matériaux
+    const cimentT = volumeFinal * DOSAGE_BETON.ciment;
     const cimentSacs = (cimentT * 1000) / 50;
-    
-    const sableT = volumeTotal * DOSAGE.sable;
-    const gravierT = volumeTotal * DOSAGE.gravier;
-    
-    const acierT = volumeTotal * DOSAGE.acier;
-    const acierKg = acierT * 1000;
-    
-    const eauL = volumeTotal * DOSAGE.eau;
+    const sableT = volumeFinal * DOSAGE_BETON.sable;
+    const gravierT = volumeFinal * DOSAGE_BETON.gravier;
+    const eauL = volumeFinal * DOSAGE_BETON.eau;
 
     // Coûts
-    const coutMateriaux = volumeTotal * pu;
-    const total = coutMateriaux + mo;
+    const pu = parseFloat(inputs.prixUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+    const total = (volumeFinal * pu) + mo;
 
     return {
-      volumeTotal,
+      volumeGeo,
+      volumeFinal,
+      surfaceCoffrage,
       cimentT, cimentSacs,
-      sableT,
-      gravierT,
-      acierT, acierKg,
-      eauL,
-      coutMateriaux,
-      mo,
-      total
+      sableT, gravierT, acierT, acierKg, eauL,
+      total, ratioAcier
     };
   }, [inputs]);
 
-  // --- SYNC PARENT (Anti-Loop) ---
+  // --- SYNC PARENT ---
   useEffect(() => {
     if (onTotalChange) onTotalChange(results.total);
     if (onMateriauxChange) {
       onMateriauxChange({
-        volume: results.volumeTotal,
+        volume: results.volumeFinal,
         ciment: results.cimentT,
         acier: results.acierT
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results.total]);
+  }, [results.total, results.volumeFinal, results.cimentT, results.acierT, onTotalChange, onMateriauxChange]);
 
   // --- HISTORIQUE ---
   useEffect(() => {
@@ -101,35 +106,22 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
   }, []);
 
   const handleSave = () => {
-    if (results.volumeTotal <= 0) return showToast("⚠️ Dimensions manquantes", "error");
+    if (results.volumeGeo <= 0) return showToast("⚠️ Dimensions manquantes", "error");
     
     const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      inputs: { ...inputs },
-      results: { ...results }
+      typeLabel: TYPES_POUTRES[inputs.type].label,
+      ...inputs,
+      ...results
     };
 
     const newHist = [newEntry, ...historique];
     setHistorique(newHist);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
-    showToast("✅ Poutres sauvegardées !");
+    showToast("✅ Poutres enregistrées !");
   };
 
-  const clearHistory = () => {
-    if (window.confirm("Vider l'historique ?")) {
-      setHistorique([]);
-      localStorage.removeItem(STORAGE_KEY);
-      showToast("Historique vidé");
-    }
-  };
-
-  const resetFields = () => {
-    setInputs({ nombre: "1", longueur: "", largeur: "", hauteur: "", prixUnitaire: "", coutMainOeuvre: "" });
-  };
-
-  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
-  
   const showToast = (msg, type = "success") => {
     setMessage({ text: msg, type });
     setTimeout(() => setMessage(null), 3000);
@@ -137,20 +129,18 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
 
   // --- CHART DATA ---
   const chartData = {
-    labels: ["Ciment", "Sable", "Gravier", "Acier"],
+    labels: ["Béton", "Acier", "Autres"],
     datasets: [{
-      data: [results.cimentT, results.sableT, results.gravierT, results.acierT],
-      backgroundColor: ["#a855f7", "#fbbf24", "#78716c", "#ef4444"], // Purple, Amber, Stone, Red
-      borderColor: "#1f2937",
-      borderWidth: 4,
+      data: [results.cimentT + results.sableT + results.gravierT, results.acierT, 0.1],
+      backgroundColor: ["#a855f7", "#ef4444", "#374151"],
+      borderColor: "#111827",
+      borderWidth: 2,
     }]
   };
 
   return (
-    // 🛑 FIX SCROLL : Structure Flex qui prend toute la hauteur mais ne dépasse pas
     <div className="flex flex-col h-full w-full bg-gray-900 text-gray-100 overflow-hidden relative">
       
-      {/* Toast */}
       {message && (
         <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
           message.type === "error" ? "bg-red-600" : "bg-purple-600"
@@ -159,132 +149,137 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
         </div>
       )}
 
-      {/* Header Local (optionnel, utile si affiché seul) */}
-      <div className="flex-shrink-0 p-4 border-b border-gray-800 bg-gray-900/50 backdrop-blur-sm flex justify-between items-center">
-        <div className="flex items-center gap-2 text-purple-500 font-bold">
-          <Grid className="w-5 h-5" /> Poutres
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 bg-gray-900/50 backdrop-blur-sm flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-purple-600/20 rounded-lg text-purple-500">
+            <Grid className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Élévation : Poutres</h2>
+            <p className="text-xs text-gray-400">Calcul structurel et coffrage</p>
+          </div>
         </div>
-        <div className="text-sm font-bold text-purple-400">
-          {results.total.toLocaleString()} {currency}
+        <div className="text-right">
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Estimation Poutres</span>
+          <span className="text-2xl font-black text-purple-400 tracking-tighter">
+            {results.total.toLocaleString()} <span className="text-sm text-gray-500 font-normal">{currency}</span>
+          </span>
         </div>
       </div>
 
-      {/* 🛑 FIX SCROLL : C'est CE div qui doit avoir overflow-y-auto */}
-      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-20">
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
-          {/* GAUCHE : SAISIE (5 cols) */}
+          {/* GAUCHE : SAISIE */}
           <div className="lg:col-span-5 flex flex-col gap-5">
             
-            {/* 1. Géométrie */}
-            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-purple-400 uppercase tracking-wider mb-4">
-                <Ruler className="w-4 h-4" /> Dimensions Poutre
-              </h3>
-              
-              <div className="mb-4">
-                 <InputGroup label="Nombre de poutres identiques" value={inputs.nombre} onChange={handleChange("nombre")} placeholder="1" />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <InputGroup label="Longueur (m)" value={inputs.longueur} onChange={handleChange("longueur")} placeholder="Ex: 5" />
-                <InputGroup label="Largeur (m)" value={inputs.largeur} onChange={handleChange("largeur")} placeholder="Ex: 0.20" />
-                <InputGroup label="Hauteur (m)" value={inputs.hauteur} onChange={handleChange("hauteur")} placeholder="Ex: 0.40" full />
+            {/* Type de Poutre */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-4">
+              <h3 className="text-[10px] font-bold text-purple-400 uppercase tracking-widest mb-3">Usage de la poutre</h3>
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(TYPES_POUTRES).map(([key, t]) => (
+                  <button
+                    key={key}
+                    onClick={() => setInputs(prev => ({...prev, type: key}))}
+                    className={`p-3 rounded-xl border text-[11px] font-bold transition-all flex items-center justify-center gap-2 ${
+                      inputs.type === key ? "border-purple-500 bg-purple-500/10 text-purple-400" : "border-gray-700 bg-gray-800 text-gray-500"
+                    }`}
+                  >
+                    <span>{t.icon}</span> {t.label}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* 2. Coûts */}
-            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-300 uppercase tracking-wider">
-                <Banknote className="w-4 h-4 text-green-400" /> Coûts
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg space-y-4">
+              <h3 className="flex items-center gap-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                <Ruler className="w-3 h-3" /> Dimensions (m)
               </h3>
-              
               <div className="grid grid-cols-2 gap-4">
-                <InputGroup label={`Prix Béton (${currency}/m³)`} value={inputs.prixUnitaire} onChange={handleChange("prixUnitaire")} placeholder="Ex: 65000" />
-                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} placeholder="Ex: 50000" />
+                <InputGroup label="Nombre" value={inputs.nombre} onChange={v => setInputs({...inputs, nombre: v})} />
+                <InputGroup label="Longueur" value={inputs.longueur} onChange={v => setInputs({...inputs, longueur: v})} placeholder="Ex: 4.5" />
+                <InputGroup label="Largeur (Base)" value={inputs.largeur} onChange={v => setInputs({...inputs, largeur: v})} placeholder="0.20" />
+                <InputGroup label="Hauteur (Retombée)" value={inputs.hauteur} onChange={v => setInputs({...inputs, hauteur: v})} placeholder="0.40" />
               </div>
+            </div>
 
-              <div className="flex gap-3 mt-auto pt-6">
-                <button 
-                  onClick={handleSave}
-                  className="flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2"
-                >
-                  <Save className="w-5 h-5" /> Calculer
-                </button>
-                <button 
-                  onClick={resetFields} 
-                  className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition-colors"
-                >
-                  <Trash2 className="w-5 h-5" />
-                </button>
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label={`PU Béton (${currency}/m³)`} value={inputs.prixUnitaire} onChange={v => setInputs({...inputs, prixUnitaire: v})} />
+                <InputGroup label="Pertes/Recouv. (%)" value={inputs.marge} onChange={v => setInputs({...inputs, marge: v})} />
               </div>
+              <button 
+                onClick={handleSave}
+                className="w-full bg-purple-600 hover:bg-purple-500 text-white py-4 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2"
+              >
+                <Save className="w-5 h-5" /> Enregistrer le calcul
+              </button>
             </div>
           </div>
 
-          {/* DROITE : RÉSULTATS (7 cols) */}
+          {/* DROITE : RÉSULTATS */}
           <div className="lg:col-span-7 flex flex-col gap-6">
             
-            {/* KPIs */}
             <div className="grid grid-cols-3 gap-4">
-              <ResultCard label="Volume Total" value={results.volumeTotal.toFixed(2)} unit="m³" icon="🧊" color="text-purple-400" bg="bg-purple-500/10" />
-              <ResultCard label="Ciment" value={results.cimentSacs.toFixed(1)} unit="sacs" icon="🧱" color="text-gray-300" bg="bg-gray-500/10" border />
-              <ResultCard label="Acier" value={(results.acierT * 1000).toFixed(0)} unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-red-400" bg="bg-red-500/10" />
+              <ResultCard label="Volume à Commander" value={results.volumeFinal.toFixed(2)} unit="m³" icon="🧊" color="text-purple-400" bg="bg-purple-500/10" />
+              <ResultCard label="Coffrage Requis" value={results.surfaceCoffrage.toFixed(1)} unit="m²" icon={<Layers className="w-4 h-4"/>} color="text-indigo-400" bg="bg-indigo-500/10" border />
+              <ResultCard label="Acier Estimé" value={results.acierKg.toFixed(0)} unit="kg" icon={<Target className="w-4 h-4"/>} color="text-red-400" bg="bg-red-500/10" />
             </div>
 
-            {/* Graphique & Détails */}
             <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
-               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
-
                <div className="w-40 h-40 flex-shrink-0 relative">
-                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                     <span className="text-sm font-bold text-purple-400">Poids</span>
+                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                     <span className="text-[10px] text-gray-500 uppercase font-bold">Ciment</span>
+                     <span className="text-sm font-bold text-white">{results.cimentSacs.toFixed(1)} sacs</span>
                   </div>
                </div>
 
                <div className="flex-1 w-full space-y-3">
-                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Matériaux (Dosage 350kg/m³)</h4>
-                  <MaterialRow label="Ciment" val={`${results.cimentT.toFixed(2)} t`} color="bg-purple-500" />
-                  <MaterialRow label="Sable" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-500" />
-                  <MaterialRow label="Gravier" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
-                  <MaterialRow label="Acier (120kg/m³)" val={`${results.acierT.toFixed(2)} t`} color="bg-red-500" />
+                  <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2 mb-2">Analyse des Matériaux</h4>
+                  
+                  <MaterialRow label="Ciment (350kg/m³)" val={`${results.cimentT.toFixed(2)} t`} color="bg-purple-500" />
+                  <MaterialRow label="Sable (Ratio 0.6)" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-500" />
+                  <MaterialRow label="Gravier (Ratio 0.85)" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
+                  <MaterialRow label={`Acier (${results.ratioAcier}kg/m³)`} val={`${results.acierKg.toFixed(0)} kg`} color="bg-red-500" />
                   
                   <div className="pt-2 border-t border-gray-700 flex justify-between items-center mt-2">
                     <span className="text-xs text-gray-400 flex items-center gap-1">
-                      <Droplets className="w-3 h-3 text-blue-400" /> Eau
+                      <Droplets className="w-3 h-3 text-blue-400" /> Eau de gâchée
                     </span>
-                    <span className="text-sm font-bold text-white">{results.eauL.toFixed(0)} L</span>
+                    <span className="text-sm font-bold text-white font-mono">{results.eauL.toFixed(0)} L</span>
+                  </div>
+
+                  <div className="flex items-start gap-2 p-3 bg-purple-500/5 rounded-lg border border-purple-500/20">
+                    <Info className="w-4 h-4 text-purple-400 mt-0.5" />
+                    <p className="text-[10px] text-purple-200/70 leading-relaxed italic">
+                      Les poutres porteuses nécessitent un ferraillage transversal (cadres) serré près des appuis. Le ratio inclut {inputs.marge}% de pertes et recouvrements.
+                    </p>
                   </div>
                </div>
             </div>
 
-            {/* Historique */}
+            {/* Historique Mini */}
             {historique.length > 0 && (
-              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
-                <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
-                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
-                    <History className="w-3 h-3" /> Historique récent
-                  </h4>
-                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
+                <div className="px-4 py-2 bg-gray-800/50 flex justify-between items-center border-b border-gray-700/50">
+                  <h4 className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-2"><History className="w-3 h-3" /> Historique</h4>
+                  <button onClick={() => {setHistorique([]); localStorage.removeItem(STORAGE_KEY)}} className="text-[10px] text-red-400 hover:underline">Vider</button>
                 </div>
-                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
-                  {historique.map((item) => (
-                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-purple-500/30">
-                      <div className="flex flex-col">
-                         <span className="text-[10px] text-gray-500">{item.date.split(',')[0]}</span>
-                         <span className="text-xs text-gray-300">
-                           {item.inputs.nombre}x Poutres (Vol: {item.results.volumeTotal.toFixed(1)}m³)
-                         </span>
+                <div className="max-h-[100px] overflow-y-auto">
+                  {historique.slice(0, 5).map((item) => (
+                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30">
+                      <div className="text-xs">
+                        <span className="text-gray-500 text-[9px] block">{item.date}</span>
+                        {item.nombre}x Poutre {item.typeLabel}
                       </div>
-                      <div className="text-right">
-                        <span className="text-sm font-bold text-purple-400">{item.results.total.toLocaleString()} {currency}</span>
-                      </div>
+                      <span className="text-sm font-bold text-purple-500">{parseFloat(item.total).toLocaleString()} {currency}</span>
                     </div>
                   ))}
                 </div>
               </div>
             )}
-
           </div>
         </div>
       </div>
@@ -294,38 +289,36 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
 
 // --- SOUS-COMPOSANTS ---
 
-const InputGroup = ({ label, value, onChange, placeholder, full = false, type = "number" }) => (
+const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
   <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
-    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase">{label}</label>
     <input
-      type={type}
-      min="0"
-      step="any"
+      type="number"
       value={value}
-      onChange={onChange}
-      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all font-mono text-sm"
+      onChange={e => onChange(e.target.value)}
+      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition-all font-mono text-sm"
       placeholder={placeholder || "0"}
     />
   </div>
 );
 
 const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
-  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
-    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
-      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-700' : ''}`}>
+    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center gap-1">
+      {icon} {label}
     </span>
     <span className={`text-xl font-black ${color}`}>
-      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+      {value} <span className="text-xs font-normal text-gray-500 lowercase">{unit}</span>
     </span>
   </div>
 );
 
 const MaterialRow = ({ label, val, color }) => (
-  <div className="flex justify-between items-center border-b border-gray-700/50 pb-2 last:border-0 group">
+  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
     <div className="flex items-center gap-2">
-      <div className={`w-2 h-2 rounded-full ${color}`} />
-      <span className="text-gray-300 text-sm font-medium">{label}</span>
+      <div className={`w-1.5 h-1.5 rounded-full ${color}`} />
+      <span className="text-gray-300 text-xs font-medium">{label}</span>
     </div>
-    <span className="text-sm font-bold text-white font-mono">{val}</span>
+    <span className="text-xs font-bold text-white font-mono">{val}</span>
   </div>
 );

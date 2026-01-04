@@ -1,185 +1,318 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import jsPDF from "jspdf";
+import "jspdf-autotable";
+import { 
+  DraftingCompass, 
+  Clock, 
+  FileCheck, 
+  Coins, 
+  Save, 
+  Trash2, 
+  History, 
+  CheckCircle2, 
+  AlertCircle,
+  Download,
+  Calendar,
+  Layers
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
-const STORAGE_KEY = "conception-preliminaire-history";
+const STORAGE_KEY = "conception-preliminaire-pro-history";
 
-export default function ConceptionPreliminaire({ onStatusChange = () => {} }) {
-  const [description, setDescription] = useState("");
-  const [plansDisponibles, setPlansDisponibles] = useState(false);
-  const [delaiPrevu, setDelaiPrevu] = useState("");
-  const [etat, setEtat] = useState("Non commencé");
+export default function ConceptionPreliminaire({ currency = "XOF", onStatusChange = () => {}, onCostChange = () => {} }) {
+  // --- ÉTATS ---
+  const [inputs, setInputs] = useState({
+    description: "",
+    plansDisponibles: false,
+    delaiPrevu: "",
+    budgetIngenierie: "",
+    etat: "Non commencé"
+  });
+
   const [historique, setHistorique] = useState([]);
+  const [message, setMessage] = useState(null);
 
+  // --- EFFETS ---
   useEffect(() => {
-    onStatusChange(etat);
-  }, [etat]);
+    onStatusChange(inputs.etat);
+    onCostChange(parseFloat(inputs.budgetIngenierie) || 0);
+  }, [inputs.etat, inputs.budgetIngenierie]);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setHistorique(JSON.parse(saved));
-      } catch {}
-    }
+    if (saved) try { setHistorique(JSON.parse(saved)); } catch (e) {}
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
+  // --- HANDLERS ---
+  const handleInputChange = (field, value) => {
+    setInputs(prev => ({ ...prev, [field]: value }));
+  };
+
+  const showToast = (text, type = "success") => {
+    setMessage({ text, type });
+    setTimeout(() => setMessage(null), 3000);
+  };
 
   const handleSave = () => {
-    if (!description.trim() || !delaiPrevu) {
-      alert("⚠️ Veuillez remplir tous les champs.");
-      return;
+    if (!inputs.description.trim() || !inputs.delaiPrevu) {
+      return showToast("⚠️ Veuillez remplir les champs obligatoires", "error");
     }
 
-    const entry = {
+    const newEntry = {
       id: Date.now(),
-      date: new Date().toLocaleString(),
-      description,
-      plansDisponibles,
-      delaiPrevu,
-      etat,
+      date: new Date().toLocaleString('fr-FR'),
+      ...inputs,
+      budgetIngenierie: parseFloat(inputs.budgetIngenierie) || 0
     };
 
-    setHistorique([entry, ...historique]);
-    alert("✅ Conception préliminaire sauvegardée !");
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Conception enregistrée");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
+  const deleteEntry = (id) => {
+    if (window.confirm("Supprimer cette archive ?")) {
+      const newHist = historique.filter(item => item.id !== id);
+      setHistorique(newHist);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
     }
   };
 
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
-      setHistorique([]);
-    }
-  };
-
-  // --- Fonction export PDF ---
   const exportPDF = () => {
     const doc = new jsPDF();
+    doc.setFontSize(20);
+    doc.setTextColor(30, 27, 75); // Indigo sombre
+    doc.text("RAPPORT DE CONCEPTION PRÉLIMINAIRE (APS)", 105, 20, { align: "center" });
 
-    doc.setFontSize(16);
-    doc.text("Conception Préliminaire", 10, 20);
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Édité le : ${new Date().toLocaleDateString()}`, 105, 28, { align: "center" });
 
-    doc.setFontSize(12);
-    doc.text(`Description :`, 10, 40);
-    doc.text(description || "Aucune description saisie", 10, 50);
+    doc.autoTable({
+      startY: 40,
+      head: [['Paramètre', 'Détails']],
+      body: [
+        ['Description', inputs.description || "N/A"],
+        ['Plans & Schémas', inputs.plansDisponibles ? "Livrables disponibles" : "En attente"],
+        ['Délai Estimé', inputs.delaiPrevu || "Non défini"],
+        ['Budget Ingénierie', `${(parseFloat(inputs.budgetIngenierie) || 0).toLocaleString()} ${currency}`],
+        ['Statut Actuel', inputs.etat],
+      ],
+      theme: 'striped',
+      headStyles: { fillColor: [79, 70, 229] }
+    });
 
-    doc.text(`Plans disponibles : ${plansDisponibles ? "Oui" : "Non"}`, 10, 70);
-    doc.text(`Délai prévu : ${delaiPrevu || "Non renseigné"}`, 10, 90);
-    doc.text(`État : ${etat}`, 10, 110);
-
-    doc.save("ConceptionPreliminaire.pdf");
+    doc.save("RailPro_APS_Rapport.pdf");
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-6 bg-gray-900 rounded-lg shadow-lg text-gray-100 font-sans">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center">📝 Conception préliminaire</h2>
-
-      <div className="grid grid-cols-1 gap-5 mb-6">
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Description</label>
-          <textarea
-            rows="4"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700 focus:ring-2 focus:ring-orange-400"
-            placeholder="Détails sur la conception préliminaire"
-          />
+    <div className="w-full h-full flex flex-col bg-gray-950 text-gray-100 overflow-hidden relative font-sans">
+      
+      {/* Toast Notification */}
+      {message && (
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-bounce ${
+          message.type === "error" ? "bg-red-600" : "bg-indigo-600"
+        }`}>
+          {message.text}
         </div>
+      )}
 
-        <div className="flex items-center space-x-3">
-          <input
-            type="checkbox"
-            id="plansDisponibles"
-            checked={plansDisponibles}
-            onChange={(e) => setPlansDisponibles(e.target.checked)}
-            className="w-5 h-5 rounded border-gray-600 bg-gray-700 text-orange-400 focus:ring-orange-400"
-          />
-          <label htmlFor="plansDisponibles" className="font-semibold text-orange-400 select-none">
-            Plans disponibles
-          </label>
+      {/* Header Local */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 bg-gray-900/50 backdrop-blur-sm flex justify-between items-center">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-indigo-600/20 rounded-lg text-indigo-400">
+            <DraftingCompass className="w-6 h-6" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white uppercase tracking-tight">Avant-Projet Sommaire (APS)</h2>
+            <p className="text-xs text-gray-400 font-medium italic">Conception & Architecture Réseau</p>
+          </div>
         </div>
-
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">Délai prévu</label>
-          <input
-            type="text"
-            value={delaiPrevu}
-            onChange={(e) => setDelaiPrevu(e.target.value)}
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700 focus:ring-2 focus:ring-orange-400"
-            placeholder="Ex : 3 mois"
-          />
-        </div>
-
-        <div>
-          <label className="block mb-1 font-semibold text-orange-400">État</label>
-          <select
-            value={etat}
-            onChange={(e) => setEtat(e.target.value)}
-            className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700 focus:ring-2 focus:ring-orange-400"
-          >
-            <option>Non commencé</option>
-            <option>En cours</option>
-            <option>Terminé</option>
-            <option>En pause</option>
-          </select>
+        <div className="hidden md:flex gap-2">
+            <button onClick={exportPDF} className="bg-gray-800 hover:bg-gray-700 p-2 rounded-lg border border-gray-700 transition-colors">
+                <Download className="w-5 h-5 text-gray-400" />
+            </button>
         </div>
       </div>
 
-      <div className="flex gap-3 justify-center mb-6 flex-wrap">
-        <button
-          onClick={handleSave}
-          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-md font-semibold shadow"
-        >
-          💾 Enregistrer
-        </button>
-        <button
-          onClick={clearHistorique}
-          className="px-5 py-2 bg-red-600 hover:bg-red-700 rounded-md font-semibold shadow"
-        >
-          🧹 Effacer l'historique
-        </button>
-        <button
-          onClick={exportPDF}
-          className="px-5 py-2 bg-green-600 hover:bg-green-700 rounded-md font-semibold shadow"
-        >
-          📄 Exporter PDF
-        </button>
-      </div>
-
-      {historique.length > 0 && (
-        <section
-          className="max-h-80 overflow-y-auto bg-gray-800 rounded-md p-4 shadow-inner scrollbar-thin scrollbar-thumb-orange-500 scrollbar-track-gray-700"
-        >
-          <h3 className="text-lg font-bold text-orange-400 mb-3 text-center">🕓 Historique</h3>
-          {historique.map((item) => (
-            <div
-              key={item.id}
-              className="bg-gray-700 rounded-md p-3 mb-3 flex justify-between items-center text-sm"
-            >
-              <div className="space-y-1">
-                <time className="block text-xs text-gray-400">{item.date}</time>
-                <p><strong>Description:</strong> {item.description}</p>
-                <p><strong>Plans disponibles:</strong> {item.plansDisponibles ? "Oui" : "Non"}</p>
-                <p><strong>Délai prévu:</strong> {item.delaiPrevu}</p>
-                <p><strong>État:</strong> {item.etat}</p>
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+          
+          {/* GAUCHE : FORMULAIRE */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            <div className="bg-gray-900 border border-gray-800 rounded-3xl p-6 shadow-xl space-y-6">
+              
+              <div>
+                <label className="text-[10px] font-bold text-indigo-400 uppercase tracking-[0.2em] mb-2 block">Notes de Conception</label>
+                <textarea
+                  rows="5"
+                  value={inputs.description}
+                  onChange={(e) => handleInputChange("description", e.target.value)}
+                  className="w-full bg-gray-950 border border-gray-800 rounded-2xl p-4 text-sm text-gray-200 focus:border-indigo-500 outline-none transition-all placeholder-gray-700"
+                  placeholder="Détails techniques, choix du tracé, contraintes majeures..."
+                />
               </div>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="ml-4 px-2 py-1 bg-red-600 hover:bg-red-700 rounded-md text-white font-semibold"
+
+              {/* Plans Switch */}
+              <div className={`flex items-center justify-between p-4 rounded-2xl border transition-all ${inputs.plansDisponibles ? "bg-indigo-600/10 border-indigo-500/50" : "bg-gray-950 border-gray-800"}`}>
+                <div className="flex items-center gap-3">
+                   <FileCheck className={inputs.plansDisponibles ? "text-indigo-400" : "text-gray-600"} />
+                   <div>
+                     <p className="text-xs font-bold">Livrables Graphiques</p>
+                     <p className="text-[10px] text-gray-500">Plans et schémas directeurs</p>
+                   </div>
+                </div>
+                <button 
+                  onClick={() => handleInputChange("plansDisponibles", !inputs.plansDisponibles)}
+                  className={`w-12 h-6 rounded-full relative transition-colors ${inputs.plansDisponibles ? "bg-indigo-600" : "bg-gray-700"}`}
+                >
+                  <motion.div 
+                    animate={{ x: inputs.plansDisponibles ? 24 : 4 }}
+                    className="absolute top-1 w-4 h-4 bg-white rounded-full shadow-sm" 
+                  />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-gray-500 font-bold uppercase block ml-1">Budget Design ({currency})</label>
+                  <div className="relative">
+                    <Coins className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                    <input
+                      type="number"
+                      value={inputs.budgetIngenierie}
+                      onChange={(e) => handleInputChange("budgetIngenierie", e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-xl py-3 pl-10 pr-4 text-sm font-mono text-white outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] text-gray-500 font-bold uppercase block ml-1">Échéance</label>
+                  <div className="relative">
+                    <Clock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                    <input
+                      type="text"
+                      value={inputs.delaiPrevu}
+                      onChange={(e) => handleInputChange("delaiPrevu", e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-xl py-3 pl-10 pr-4 text-sm text-white outline-none focus:border-indigo-500"
+                      placeholder="Ex: 8 semaines"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <label className="text-[10px] text-gray-500 font-bold uppercase block mb-1.5 ml-1">Statut Conception</label>
+                <select
+                  value={inputs.etat}
+                  onChange={(e) => handleInputChange("etat", e.target.value)}
+                  className="w-full bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:border-indigo-500 cursor-pointer"
+                >
+                  <option>Non commencé</option>
+                  <option>En cours</option>
+                  <option>Suspendu</option>
+                  <option>Terminé</option>
+                </select>
+              </div>
+
+              <button 
+                onClick={handleSave}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-900/20 transition-all flex justify-center items-center gap-2 active:scale-95"
               >
-                ✖
+                <Save className="w-5 h-5" /> Enregistrer le Dossier
               </button>
             </div>
-          ))}
-        </section>
-      )}
+          </div>
+
+          {/* DROITE : RÉSULTATS & HISTORIQUE */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            <div className="grid grid-cols-2 gap-4">
+               <div className="bg-indigo-600/5 border border-indigo-500/10 p-5 rounded-3xl flex items-center gap-4">
+                  <div className="p-3 bg-indigo-500/20 rounded-2xl text-indigo-400">
+                    <Layers className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-500 font-black uppercase">Livrables</p>
+                    <p className="text-sm font-bold">{inputs.plansDisponibles ? "Plans Prêts" : "En cours de dessin"}</p>
+                  </div>
+               </div>
+               <div className="bg-gray-900 border border-gray-800 p-5 rounded-3xl flex items-center gap-4">
+                  <div className="p-3 bg-emerald-500/10 rounded-2xl text-emerald-500">
+                    <Calendar className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-500 font-black uppercase">Délai estimé</p>
+                    <p className="text-sm font-bold">{inputs.delaiPrevu || "--"}</p>
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique Container */}
+            <div className="bg-gray-900 border border-gray-800 rounded-3xl overflow-hidden flex-1 flex flex-col">
+              <div className="px-6 py-4 bg-gray-800/50 border-b border-gray-800 flex justify-between items-center">
+                <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                  <History className="w-4 h-4" /> Archives de l'APS
+                </h3>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+                <AnimatePresence mode="popLayout">
+                  {historique.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-gray-600 opacity-50">
+                       <FileCheck className="w-12 h-12 mb-2" />
+                       <p className="text-sm italic">Aucune archive disponible</p>
+                    </div>
+                  ) : (
+                    historique.map((item) => (
+                      <motion.div
+                        key={item.id}
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="bg-gray-800/40 border border-gray-800 p-5 rounded-2xl hover:border-indigo-500/30 transition-all group"
+                      >
+                        <div className="flex justify-between items-start mb-3">
+                          <div className="flex items-center gap-2">
+                            {item.etat === "Terminé" ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <Clock className="w-4 h-4 text-amber-500" />}
+                            <span className="text-[10px] font-mono text-gray-500">{item.date}</span>
+                          </div>
+                          <button onClick={() => deleteEntry(item.id)} className="p-1.5 text-gray-700 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <p className="text-xs text-gray-300 line-clamp-2 italic mb-3">"{item.description}"</p>
+                        <div className="flex justify-between items-center pt-3 border-t border-gray-800">
+                           <div className="flex gap-4">
+                             <div className="text-[10px] font-bold uppercase tracking-tighter">
+                                <span className="text-gray-500">Plans: </span>
+                                <span className={item.plansDisponibles ? "text-emerald-500" : "text-red-500"}>
+                                    {item.plansDisponibles ? "OUI" : "NON"}
+                                </span>
+                             </div>
+                             <div className="text-[10px] font-bold uppercase tracking-tighter">
+                                <span className="text-gray-500">Budget: </span>
+                                <span className="text-white">{item.budgetIngenierie.toLocaleString()} {currency}</span>
+                             </div>
+                           </div>
+                           <span className="text-[10px] font-black uppercase text-indigo-400">{item.etat}</span>
+                        </div>
+                      </motion.div>
+                    ))
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e1b4b; border-radius: 10px; }
+      `}</style>
     </div>
   );
 }
-

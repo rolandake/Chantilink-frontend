@@ -1,6 +1,5 @@
 // ============================================
-// 📁 src/pages/Chat/ContactSidebar.jsx
-// VERSION PRODUCTION : Capacitor + Invitations + PhoneHash
+// 📁 ContactSidebar.jsx - VERSION FINALE
 // ============================================
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
@@ -26,7 +25,6 @@ export const ContactSidebar = ({
   const [activeTab, setActiveTab] = useState("chats");
   const { showToast } = useToast();
 
-  // Filtrage des contacts
   const filteredFriends = useMemo(() => {
     return contacts.filter(c => 
       c.fullName?.toLowerCase().includes(searchQuery.toLowerCase())
@@ -34,66 +32,115 @@ export const ContactSidebar = ({
   }, [contacts, searchQuery]);
 
   // ============================================
-  // 🔥 SYNCHRONISATION AVEC CAPACITOR CONTACTS
+  // 🔐 NORMALISATION DU NUMÉRO (IDENTIQUE AU BACKEND)
+  // ============================================
+  const normalizePhone = (phoneNumber) => {
+    // Retirer espaces, tirets, parenthèses, points
+    let cleaned = phoneNumber.replace(/[\s\-\(\)\.]/g, '');
+    
+    // Remplacer 00 par +
+    cleaned = cleaned.replace(/^00/, '+');
+    
+    // Si pas de +, ajouter +225 (Côte d'Ivoire)
+    if (!cleaned.startsWith('+')) {
+      cleaned = '+225' + cleaned.replace(/^0/, ''); // Enlever le 0 initial
+    }
+    
+    return cleaned;
+  };
+
+  // ============================================
+  // 🔥 SYNCHRONISATION CAPACITOR (avec fallback web)
   // ============================================
   const handleSyncProcess = async () => {
     setLoading(true);
     try {
       let phoneContacts = [];
 
-      // ============================================
-      // MODE PRODUCTION : Utiliser Capacitor
-      // ============================================
-      try {
-        const permission = await Contacts.requestPermissions();
-        
-        if (permission.contacts !== 'granted') {
-          showToast("Permission refusée pour accéder aux contacts", "error");
-          setLoading(false);
-          return;
-        }
+      // ✅ DÉTECTION DE L'ENVIRONNEMENT
+      const isWeb = typeof window !== 'undefined' && !window.Capacitor;
 
-        const result = await Contacts.getContacts({
-          projection: {
-            name: true,
-            phones: true
+      if (isWeb) {
+        // 🖥️ MODE WEB : Données de test avec vos vrais numéros
+        console.log("🖥️ [Mode Web] Utilisation de contacts de test");
+        phoneContacts = [
+          { name: "ELF Test", phone: "+2250769144101" },
+          { name: "Neon Test", phone: "+225010101031" },
+          { name: "Anney Test", phone: "+225010101059" },
+          { name: "Abate Test", phone: "+2250150329452" },
+          { name: "2.0Musique Test", phone: "+2250150329453" }
+        ];
+        console.log(`🧪 ${phoneContacts.length} contacts de test générés (vrais numéros DB)`);
+      } else {
+        // 📱 MODE MOBILE : Vrais contacts Capacitor
+        try {
+          console.log("📱 Demande de permission contacts...");
+          const permission = await Contacts.requestPermissions();
+          
+          if (permission.contacts !== 'granted') {
+            showToast("Permission refusée pour accéder aux contacts", "error");
+            setLoading(false);
+            return;
           }
-        });
 
-        phoneContacts = result.contacts
-          .map(contact => ({
-            name: contact.name?.display || 'Inconnu',
-            phone: contact.phones?.[0]?.number || ''
-          }))
-          .filter(c => c.phone);
+          console.log("✅ Permission accordée, lecture des contacts...");
+          const result = await Contacts.getContacts({
+            projection: {
+              name: true,
+              phones: true
+            }
+          });
 
-        console.log(`📱 ${phoneContacts.length} contacts lus depuis le téléphone`);
+          console.log(`📲 ${result.contacts?.length || 0} contacts trouvés`);
 
-        if (phoneContacts.length === 0) {
-          showToast("Aucun contact trouvé dans votre répertoire", "info");
+          // ✅ Extraction et normalisation
+          phoneContacts = result.contacts
+            .map(contact => {
+              const phone = contact.phones?.[0]?.number;
+              if (!phone) return null;
+
+              const name = contact.name?.display || contact.name?.given || 'Inconnu';
+              const normalized = normalizePhone(phone);
+
+              console.log(`📞 ${name}: ${phone} → ${normalized}`);
+
+              return {
+                name,
+                phone: normalized
+              };
+            })
+            .filter(c => c !== null);
+
+          console.log(`✅ ${phoneContacts.length} contacts valides extraits`);
+
+          if (phoneContacts.length === 0) {
+            showToast("Aucun contact avec numéro trouvé", "info");
+            setLoading(false);
+            return;
+          }
+        } catch (err) {
+          console.error("❌ Erreur lecture contacts:", err);
+          showToast(`Impossible de lire les contacts : ${err.message}`, "error");
           setLoading(false);
           return;
         }
-      } catch (err) {
-        console.error("❌ Erreur lecture contacts:", err);
-        showToast("Impossible de lire le répertoire téléphonique", "error");
-        setLoading(false);
-        return;
       }
 
       console.log(`📤 Envoi de ${phoneContacts.length} contacts au backend...`);
+      console.log("📋 Exemple:", phoneContacts.slice(0, 3));
 
-      // Envoi au backend pour matching
+      // ✅ Appel API
       const result = await API.syncContacts(token, phoneContacts);
       
       console.log(`📊 Résultat sync:`, result);
 
+      // ✅ Mise à jour UI
       setSyncMatches(result.onChantilink || []);
       setOffAppContacts(result.notOnChantilink || []);
       
       if (result.onChantilink?.length > 0) {
         setActiveTab("suggestions");
-        showToast(`${result.onChantilink.length} amis trouvés sur Chantilink !`, "success");
+        showToast(`✅ ${result.onChantilink.length} amis trouvés sur Chantilink !`, "success");
       } else {
         showToast("Aucun ami trouvé sur l'app", "info");
         if (result.notOnChantilink?.length > 0) {
@@ -109,18 +156,16 @@ export const ContactSidebar = ({
   };
 
   // ============================================
-  // 📲 INVITER UN CONTACT (WhatsApp)
+  // 📲 INVITER UN CONTACT
   // ============================================
   const handleInvite = async (contact) => {
     try {
-      const result = await API.inviteContact(token, {
-        contactName: contact.name,
-        contactPhone: contact.phone
-      });
-
-      // Ouvrir WhatsApp avec message pré-rempli
-      window.open(result.inviteUrl, '_blank');
-      showToast(`Invitation envoyée à ${contact.name}`, "success");
+      const inviteText = `Salut ! Rejoins-moi sur Chantilink pour discuter en toute sécurité 🔒\n\n${window.location.origin}/register`;
+      const phoneDigits = contact.phone.replace(/\D/g, '');
+      const whatsappUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(inviteText)}`;
+      
+      window.open(whatsappUrl, '_blank');
+      showToast(`Invitation ouverte pour ${contact.name}`, "success");
     } catch (err) {
       console.error("❌ Erreur invitation:", err);
       showToast("Erreur lors de l'invitation", "error");
@@ -139,7 +184,6 @@ export const ContactSidebar = ({
         text: inviteText
       });
     } else {
-      // Fallback WhatsApp
       window.open(
         `https://wa.me/?text=${encodeURIComponent(inviteText)}`, 
         '_blank'
@@ -150,7 +194,7 @@ export const ContactSidebar = ({
   return (
     <div className="flex flex-col h-full bg-[#0b0d10] border-r border-white/5">
       
-      {/* --- HEADER --- */}
+      {/* HEADER */}
       <div className="p-5 bg-[#12151a]/80 backdrop-blur-xl border-b border-white/5">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-black tracking-tighter flex items-center gap-2">
@@ -170,7 +214,7 @@ export const ContactSidebar = ({
           </motion.button>
         </div>
 
-        {/* --- BARRE DE RECHERCHE --- */}
+        {/* BARRE DE RECHERCHE */}
         <div className="relative group">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-blue-500 transition-colors" size={16} />
           <input 
@@ -183,7 +227,7 @@ export const ContactSidebar = ({
         </div>
       </div>
 
-      {/* --- TABS --- */}
+      {/* TABS */}
       <div className="flex p-2 gap-2 bg-[#12151a]/30">
         <TabButton 
           active={activeTab === "chats"} 
@@ -207,10 +251,9 @@ export const ContactSidebar = ({
         />
       </div>
 
-      {/* --- CONTENU DES TABS --- */}
+      {/* CONTENU */}
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <AnimatePresence mode="wait">
-          {/* TAB 1 : Messages actifs */}
           {activeTab === "chats" && (
             <motion.div 
               key="chats"
@@ -238,7 +281,6 @@ export const ContactSidebar = ({
             </motion.div>
           )}
 
-          {/* TAB 2 : Amis trouvés sur l'app */}
           {activeTab === "suggestions" && (
             <motion.div 
               key="suggestions"
@@ -269,7 +311,6 @@ export const ContactSidebar = ({
             </motion.div>
           )}
 
-          {/* TAB 3 : Contacts à inviter */}
           {activeTab === "invite" && (
             <motion.div 
               key="invite"
@@ -297,7 +338,6 @@ export const ContactSidebar = ({
                 />
               )}
 
-              {/* Invitation générique */}
               <div className="mt-8 p-4 bg-blue-500/5 border border-blue-500/10 rounded-2xl text-center mx-2">
                 <p className="text-xs text-gray-500 mb-4">D'autres personnes à inviter ?</p>
                 <button 

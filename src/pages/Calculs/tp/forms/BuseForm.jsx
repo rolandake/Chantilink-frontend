@@ -1,373 +1,256 @@
-// ============================================
-// 📁 BuseForm.jsx
-// Composant formulaire de calcul de buses synchronisé
-// ============================================
-
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS, ArcElement, Tooltip, Legend,
+} from "chart.js";
+import { 
+  Waves, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Info, Activity, Package
+} from "lucide-react";
 import { useCalculator } from "../../../../shared/hooks/useCalculator.js";
 import { BuseCalculator, BUSE_CONSTANTS } from "@/domains/tp/calculators/BuseCalculator.js";
 
-const STORAGE_KEY = "buse-history";
+ChartJS.register(ArcElement, Tooltip, Legend);
+
+const STORAGE_KEY = "buse-history-pro";
 
 export default function BuseForm({ 
   currency = "FCFA",
   onCostChange = () => {},
   onMateriauxChange = () => {}
 }) {
-  // Hook calculateur
-  const { inputs, results, updateInput, isValid } = useCalculator(
-    BuseCalculator,
-    "buse",
-    "tp"
-  );
+  const { inputs, results, updateInput, isValid } = useCalculator(BuseCalculator, "buse", "tp");
 
   const [historique, setHistorique] = useState([]);
-  const [message, setMessage] = useState("");
-  const [showHydraulique, setShowHydraulique] = useState(false);
-  const [showMateriaux, setShowMateriaux] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [showHydraulique, setShowHydraulique] = useState(true);
 
-  // ========================================
-  // GESTION HISTORIQUE (localStorage)
-  // ========================================
+  // --- SYNC PARENT ---
+  useEffect(() => {
+    onCostChange(results?.total ?? 0);
+    if (results && isValid) {
+      onMateriauxChange({
+        volume: results.volume,
+        ciment: results.cimentT,
+        acier: results.acierT,
+        sable: results.sableT,
+        gravier: results.gravierT
+      });
+    }
+  }, [results?.total, isValid]);
+
+  // --- HISTORIQUE ---
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setHistorique(JSON.parse(saved));
-      } catch (e) {
-        console.error("Erreur chargement historique:", e);
-      }
-    }
+    if (saved) try { setHistorique(JSON.parse(saved)); } catch (e) {}
   }, []);
 
-  useEffect(() => {
-    if (historique.length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-    }
-  }, [historique]);
-
-  // ========================================
-  // NOTIFICATION AU PARENT
-  // ========================================
-  useEffect(() => {
-    // Notifier le coût total
-    onCostChange(results?.total ?? 0);
-
-    // Notifier les matériaux pour le devis
-    if (results && isValid) {
-      const materiaux = [
-        {
-          id: 'buse-principal',
-          designation: results.description || `Buse Ø${inputs.diametre}m`,
-          unite: results.unite || 'ml',
-          quantite: results.volume || 0,
-          prixUnitaire: parseFloat(inputs.prixUnitaire) || 0,
-          montant: results.coutMateriaux || 0,
-          metadata: {
-            volumeBeton: results.volume,
-            quantiteBuses: results.quantite
-          }
-        }
-      ];
-
-      // Ajout détail matériaux si disponible
-      if (showMateriaux) {
-        materiaux.push(
-          {
-            id: 'buse-ciment',
-            designation: 'Ciment (buses)',
-            unite: 't',
-            quantite: results.cimentT || 0,
-            prixUnitaire: 0,
-            montant: 0,
-            metadata: { detail: `${results.cimentSacs} sacs` }
-          },
-          {
-            id: 'buse-sable',
-            designation: 'Sable (buses)',
-            unite: 't',
-            quantite: results.sableT || 0,
-            prixUnitaire: 0,
-            montant: 0
-          },
-          {
-            id: 'buse-gravier',
-            designation: 'Gravier (buses)',
-            unite: 't',
-            quantite: results.gravierT || 0,
-            prixUnitaire: 0,
-            montant: 0
-          },
-          {
-            id: 'buse-acier',
-            designation: 'Acier d\'armature (buses)',
-            unite: 't',
-            quantite: results.acierT || 0,
-            prixUnitaire: 0,
-            montant: 0
-          }
-        );
-      }
-
-      onMateriauxChange(materiaux);
-    } else {
-      onMateriauxChange([]);
-    }
-  }, [results, inputs, isValid, showMateriaux, onCostChange, onMateriauxChange]);
-
-  // ========================================
-  // HANDLERS
-  // ========================================
-  const handleChange = (field) => (e) => {
-    const value = e.target.value;
-    updateInput(field, value);
-  };
-
-  const showMessage = (msg, type = "success") => {
-    setMessage({ text: msg, type });
-    setTimeout(() => setMessage(""), 2500);
-  };
-
   const handleSave = () => {
-    if (!isValid || !results?.volume) {
-      return alert("⚠️ Veuillez entrer des dimensions valides.");
-    }
-
-    const entry = {
+    if (!isValid || !results?.volume) return showToast("⚠️ Données incomplètes", "error");
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString('fr-FR'),
-      ...inputs,
-      ...results,
+      ...inputs, ...results,
     };
-
-    setHistorique([entry, ...historique]);
-    showMessage("✅ Calcul sauvegardé !");
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Calcul Buse sauvegardé !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-      showMessage("🗑️ Entrée supprimée !");
-    }
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
   };
 
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
-      setHistorique([]);
-      localStorage.removeItem(STORAGE_KEY);
-      showMessage("🧹 Historique vidé !");
-    }
-  };
-
-  // ========================================
-  // CALCULS HYDRAULIQUES
-  // ========================================
-  const calculerHydraulique = () => {
+  // --- CALCULS HYDRAULIQUES ---
+  const hydraulique = useMemo(() => {
     if (!isValid || !results?.volume) return null;
+    const calc = new BuseCalculator(inputs);
+    return calc.estimerCapaciteHydraulique(1, 0.013); // Pente 1%, Manning 0.013 (Béton lisse)
+  }, [inputs, isValid]);
 
-    const calculator = new BuseCalculator(inputs);
-    return calculator.estimerCapaciteHydraulique(1, 0.013); // Pente 1%, Manning 0.013
+  const chartData = {
+    labels: ["Fournitures", "Pose/MO"],
+    datasets: [{
+      data: [results?.coutMateriaux || 0, results?.coutMainOeuvre || 0],
+      backgroundColor: ["#06b6d4", "#374151"],
+      borderColor: "#111827",
+      borderWidth: 2,
+    }]
   };
 
-  const hydraulique = showHydraulique ? calculerHydraulique() : null;
-
-  // ========================================
-  // RENDER
-  // ========================================
   return (
-    <div className="max-w-3xl mx-auto p-6 bg-gray-900 rounded-2xl shadow-xl text-gray-100 font-sans relative">
-      <h2 className="text-3xl font-extrabold text-blue-400 mb-6 text-center border-b border-gray-700 pb-2">
-        💧 Buses Hydrauliques
-      </h2>
-
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative font-sans">
+      
       {/* Notification Toast */}
       {message && (
-        <div className={`fixed top-5 right-5 px-5 py-3 rounded-xl shadow-lg animate-fadeinout z-50 ${
-          message.type === 'success' ? 'bg-green-600' : 'bg-red-600'
-        } text-white`}>
-          {message.text || message}
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+          message.type === 'error' ? 'bg-red-600' : 'bg-cyan-600'
+        }`}>
+          {message.text}
         </div>
       )}
 
-      {/* Formulaire */}
-      <div className="grid grid-cols-2 gap-5 mb-6">
-        {[
-          { name: "diametre", label: "Diamètre (m)", placeholder: "Ex: 0.8", icon: "⭕", 
-            help: `Standards: ${BUSE_CONSTANTS.DIAMETRES_STANDARDS.join(', ')}m` },
-          { name: "longueur", label: "Longueur (m)", placeholder: "Ex: 2", icon: "📏",
-            help: `Standards: ${BUSE_CONSTANTS.LONGUEURS_STANDARDS.join(', ')}m` },
-          { name: "quantite", label: "Quantité", placeholder: "Ex: 5", icon: "🔢" },
-          { name: "prixUnitaire", label: `Prix unitaire (${currency}/m³)`, placeholder: "Ex: 85000", icon: "💰" },
-          { name: "coutMainOeuvre", label: `Coût main d'œuvre (${currency})`, placeholder: "Ex: 120000", icon: "👷", full: true },
-        ].map(({ name, label, placeholder, icon, help, full }) => (
-          <div className={full ? "col-span-2" : ""} key={name}>
-            <label className="block mb-1 font-semibold text-blue-300">
-              {icon} {label}
-            </label>
-            <input
-              type="number"
-              step="any"
-              min={name === "quantite" ? "1" : "0"}
-              value={inputs[name] || ""}
-              onChange={handleChange(name)}
-              placeholder={placeholder}
-              className="w-full px-4 py-2 rounded-xl bg-gray-800 border border-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400 transition"
-              title={help}
-            />
-            {help && <p className="text-xs text-gray-500 mt-1">{help}</p>}
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-cyan-600/20 rounded-lg text-cyan-500">
+            <Waves className="w-6 h-6" />
           </div>
-        ))}
-      </div>
-
-      {/* Résultats instantanés */}
-      <div className="bg-gray-800 rounded-2xl p-6 border-2 border-blue-500/30 mb-6">
-        <h3 className="text-xl font-bold text-blue-400 mb-4">📊 Résultats</h3>
-
-        {isValid && results ? (
-          <div className="space-y-4">
-            {/* Volumes */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-gray-400 text-sm">Volume béton total</p>
-                <p className="text-2xl font-bold">📦 {results.volume?.toFixed(3) ?? 0} m³</p>
-              </div>
-              <div>
-                <p className="text-gray-400 text-sm">Quantité</p>
-                <p className="text-2xl font-bold">🔢 {results.quantite || 1} buse(s)</p>
-              </div>
-            </div>
-
-            {/* Bouton matériaux */}
-            <button
-              onClick={() => setShowMateriaux(!showMateriaux)}
-              className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold transition text-left"
-            >
-              {showMateriaux ? '🔼' : '🔽'} Détails matériaux
-            </button>
-
-            {/* Détails matériaux */}
-            {showMateriaux && (
-              <div className="p-4 bg-gray-700 rounded-xl space-y-2 text-sm">
-                <p>🧱 <strong>Ciment:</strong> {results.cimentKg?.toFixed(0)} kg ({results.cimentSacs?.toFixed(1)} sacs) = {results.cimentT?.toFixed(3)} t</p>
-                <p>🏖️ <strong>Sable:</strong> {results.sableM3?.toFixed(3)} m³ = {results.sableT?.toFixed(3)} t</p>
-                <p>🪨 <strong>Gravier:</strong> {results.gravierM3?.toFixed(3)} m³ = {results.gravierT?.toFixed(3)} t</p>
-                <p>⚙️ <strong>Acier:</strong> {results.acierKg?.toFixed(1)} kg = {results.acierT?.toFixed(3)} t</p>
-              </div>
-            )}
-
-            {/* Bouton hydraulique */}
-            <button
-              onClick={() => setShowHydraulique(!showHydraulique)}
-              className="w-full px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl font-semibold transition text-left"
-            >
-              {showHydraulique ? '🔼' : '🔽'} Capacité hydraulique
-            </button>
-
-            {/* Détails hydrauliques */}
-            {showHydraulique && hydraulique && (
-              <div className="p-4 bg-blue-900/30 rounded-xl space-y-2 text-sm border border-blue-500/30">
-                <p>💧 <strong>Section utile:</strong> {hydraulique.section} m²</p>
-                <p>🌊 <strong>Vitesse d'écoulement:</strong> {hydraulique.vitesse} m/s (pente 1%)</p>
-                <p>📊 <strong>Débit maximal:</strong> {hydraulique.debit} m³/h ({hydraulique.debitLitres} L/h)</p>
-                <p className="text-xs text-gray-400 italic">* Calcul selon formule de Manning (coefficient 0.013)</p>
-              </div>
-            )}
-
-            {/* Coûts */}
-            <div className="grid grid-cols-2 gap-4 pt-3 border-t border-gray-700">
-              <div>
-                <p className="text-gray-400 text-sm">Coût matériaux</p>
-                <p className="text-xl font-semibold text-blue-400">
-                  {results.coutMateriaux?.toLocaleString("fr-FR") ?? 0} {currency}
-                </p>
-              </div>
-              <div>
-                <p className="text-gray-400 text-sm">Coût main d'œuvre</p>
-                <p className="text-xl font-semibold text-green-400">
-                  {results.coutMainOeuvre?.toLocaleString("fr-FR") ?? 0} {currency}
-                </p>
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-gray-700">
-              <p className="text-gray-400 text-sm">Total Buses</p>
-              <p className="text-3xl font-extrabold text-blue-400">
-                💰 {results.total?.toLocaleString("fr-FR") ?? 0} {currency}
-              </p>
-              {results.quantite > 1 && (
-                <p className="text-sm text-gray-400 mt-1">
-                  ({results.coutParBuse?.toLocaleString("fr-FR")} {currency} / buse)
-                </p>
-              )}
-            </div>
+          <div>
+            <h2 className="text-xl font-bold text-white uppercase tracking-tight">Ouvrages : Buses</h2>
+            <p className="text-xs text-gray-400 font-medium italic">Hydraulique & Assainissement</p>
           </div>
-        ) : (
-          <p className="text-gray-500 text-center py-4">
-            Entrez les dimensions pour voir les résultats
-          </p>
-        )}
+        </div>
+        <div className="text-right">
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Estimation Ouvrage</span>
+          <span className="text-2xl font-black text-cyan-400 tracking-tighter">
+            {(results?.total || 0).toLocaleString()} <span className="text-sm text-gray-500 font-normal">{currency}</span>
+          </span>
+        </div>
       </div>
 
-      {/* Boutons d'action */}
-      <div className="flex flex-wrap justify-center gap-4 mb-8">
-        <button
-          onClick={handleSave}
-          disabled={!isValid}
-          className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-2xl font-bold shadow-md transition"
-        >
-          💾 Sauvegarder
-        </button>
-        <button
-          onClick={clearHistorique}
-          disabled={historique.length === 0}
-          className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-2xl font-bold shadow-md transition"
-        >
-          🧹 Vider l'historique
-        </button>
-      </div>
-
-      {/* Historique */}
-      {historique.length > 0 && (
-        <section className="max-h-80 overflow-y-auto bg-gray-800 rounded-2xl p-4 shadow-inner border border-gray-700 space-y-3">
-          <h3 className="text-xl font-bold text-blue-400 mb-3 text-center sticky top-0 bg-gray-800 pb-2">
-            🕓 Historique ({historique.length})
-          </h3>
-          {historique.map(item => (
-            <div
-              key={item.id}
-              className="bg-gray-700 rounded-xl p-4 flex justify-between items-start text-sm text-gray-100 hover:bg-gray-600 transition"
-            >
-              <div className="space-y-1 max-w-[85%]">
-                <time className="block text-xs text-gray-400">{item.date}</time>
-                <p className="font-semibold text-blue-300">{item.description || `Buse Ø${item.diametre}m`}</p>
-                <p>📐 Dimensions : Ø{item.diametre}m × {item.longueur}m × {item.quantite}</p>
-                <p>📦 Volume : {item.volume?.toFixed(3) ?? 0} m³</p>
-                <p>🧱 Ciment : {item.cimentT?.toFixed(3)} t ({item.cimentSacs?.toFixed(1)} sacs)</p>
-                <p>🏖️ Sable : {item.sableT?.toFixed(3)} t | 🪨 Gravier : {item.gravierT?.toFixed(3)} t</p>
-                <p>⚙️ Acier : {item.acierT?.toFixed(3)} t</p>
-                <p className="font-bold text-blue-300">
-                  💰 Total : {item.total?.toLocaleString("fr-FR") ?? 0} {currency}
-                </p>
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+          
+          {/* GAUCHE : INPUTS */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            <div className="bg-gray-800/50 border border-gray-700 rounded-3xl p-6 shadow-xl space-y-6">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-widest">
+                <Ruler className="w-4 h-4" /> Dimensionnement (ml)
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label="Diamètre Ø (m)" value={inputs.diametre} onChange={(e) => updateInput("diametre", e.target.value)} placeholder="0.80" />
+                <InputGroup label="Longueur (m)" value={inputs.longueur} onChange={(e) => updateInput("longueur", e.target.value)} placeholder="2.00" />
+                <InputGroup label="Quantité (u)" value={inputs.quantite} onChange={(e) => updateInput("quantite", e.target.value)} placeholder="1" full />
               </div>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="ml-2 px-3 py-1 bg-red-600 hover:bg-red-700 rounded-2xl text-white font-bold text-xs transition"
-                aria-label="Supprimer"
+              <p className="text-[9px] text-gray-500 uppercase font-bold">Standards: 0.60, 0.80, 1.00, 1.20 m</p>
+            </div>
+
+            <div className="bg-gray-800/50 border border-gray-700 rounded-3xl p-6 shadow-xl space-y-6 flex-1">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest">
+                <Banknote className="w-4 h-4" /> Paramètres Financiers
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label={`Prix Buse (${currency}/u)`} value={inputs.prixUnitaire} onChange={(e) => updateInput("prixUnitaire", e.target.value)} />
+                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={(e) => updateInput("coutMainOeuvre", e.target.value)} />
+              </div>
+              <button 
+                onClick={handleSave}
+                className="w-full bg-cyan-600 hover:bg-cyan-500 text-white py-4 rounded-2xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 active:scale-95"
               >
-                ✖
+                <Save className="w-5 h-5" /> Enregistrer la ligne
               </button>
             </div>
-          ))}
-        </section>
-      )}
+          </div>
 
-      <style>{`
-        @keyframes fadeinout {
-          0%, 100% { opacity: 0; transform: translateY(-10px); }
-          10%, 90% { opacity: 1; transform: translateY(0); }
-        }
-        .animate-fadeinout { animation: fadeinout 2.5s ease forwards; }
-      `}</style>
+          {/* DROITE : RÉSULTATS */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Volume Béton" value={results?.volume?.toFixed(2)} unit="m³" icon={<Package className="w-4 h-4"/>} color="text-cyan-400" bg="bg-cyan-500/10" />
+              <ResultCard label="Linéaire Total" value={(inputs.longueur * inputs.quantite).toFixed(1)} unit="ml" icon={<Ruler className="w-4 h-4"/>} color="text-white" bg="bg-gray-800" border />
+              <ResultCard label="Acier Estimé" value={(results?.acierKg || 0).toFixed(0)} unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-red-400" bg="bg-red-500/10" />
+            </div>
+
+            {/* Panel Analyse Hydraulique */}
+            <div className={`p-6 rounded-3xl border transition-all flex items-center gap-6 ${hydraulique ? 'bg-blue-600/10 border-blue-500/30 shadow-blue-900/10 shadow-lg' : 'bg-gray-800 border-gray-700'}`}>
+                <div className={`p-4 rounded-2xl ${hydraulique ? 'bg-blue-500/20 text-blue-400' : 'bg-gray-700 text-gray-500'}`}>
+                  <Activity className="w-8 h-8" />
+                </div>
+                <div className="flex-1 grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-gray-500">Débit de pointe (Max)</p>
+                    <span className="text-xl font-black text-blue-400">{hydraulique?.debit || "0.00"} <small className="text-xs">m³/h</small></span>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-gray-500">Vitesse écoulement</p>
+                    <span className="text-xl font-black text-blue-400">{hydraulique?.vitesse || "0.00"} <small className="text-xs">m/s</small></span>
+                  </div>
+                </div>
+                <Info className="w-5 h-5 text-gray-600 cursor-help" title="Calcul selon Manning (n=0.013, i=1%)" />
+            </div>
+
+            <div className="flex-1 bg-gray-800 rounded-3xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="w-44 h-44 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                     <span className="text-[10px] text-gray-500 uppercase font-bold">Ciment</span>
+                     <span className="text-sm font-bold text-white">{results?.cimentSacs?.toFixed(1) || 0} sacs</span>
+                  </div>
+               </div>
+
+               <div className="flex-1 w-full space-y-4">
+                  <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2 mb-2">Détails Fournitures</h4>
+                  <MaterialRow label="Ciment (Buses + Calage)" val={`${(results?.cimentT || 0).toFixed(2)} t`} color="bg-cyan-500" />
+                  <MaterialRow label="Sable / Granulats" val={`${(results?.sableT || 0).toFixed(2)} t`} color="bg-amber-500" />
+                  <MaterialRow label="Acier d'armature" val={`${(results?.acierKg || 0).toFixed(0)} kg`} color="bg-red-500" />
+                  <div className="pt-2 border-t border-gray-700 flex justify-between items-center">
+                    <span className="text-xs text-gray-400 flex items-center gap-1">
+                      <Droplets className="w-3 h-3 text-cyan-400" /> Eau nécessaire
+                    </span>
+                    <span className="text-sm font-bold text-white">{(results?.eauL || 0).toFixed(0)} L</span>
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique Mini */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
+                <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2"><History className="w-3 h-3" /> Devis Récents</h4>
+                  <button onClick={() => {setHistorique([]); localStorage.removeItem(STORAGE_KEY)}} className="text-[10px] text-red-400 hover:underline uppercase">Vider</button>
+                </div>
+                <div className="max-h-[120px] overflow-y-auto">
+                  {historique.slice(0, 5).map((item) => (
+                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30 hover:bg-gray-700/40 transition-colors">
+                      <div className="text-xs">
+                        <span className="text-gray-500 block text-[9px]">{item.date}</span>
+                        <span className="font-medium">Ø{item.diametre} - {item.quantite}u ({item.longueur}m)</span>
+                      </div>
+                      <span className="text-sm font-bold text-cyan-400">{(item.total || 0).toLocaleString()} {currency}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+// --- SOUS-COMPOSANTS ---
+
+const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type="number" value={value || ""} onChange={onChange}
+      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 text-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-700' : ''}`}>
+    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center gap-1">
+      {icon} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500 lowercase">{unit}</span>
+    </span>
+  </div>
+);
+
+const MaterialRow = ({ label, val, color }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
+    <div className="flex items-center gap-2">
+      <div className={`w-1.5 h-1.5 rounded-full ${color}`} />
+      <span className="text-gray-300 text-xs font-medium">{label}</span>
+    </div>
+    <span className="text-xs font-bold text-white font-mono">{val}</span>
+  </div>
+);

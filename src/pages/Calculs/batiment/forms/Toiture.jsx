@@ -1,33 +1,35 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Doughnut } from "react-chartjs-2";
 import {
-  Chart as ChartJS,
-  ArcElement,
-  Tooltip,
-  Legend,
+  Chart as ChartJS, ArcElement, Tooltip, Legend,
 } from "chart.js";
 import { 
-  Home, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Layers 
+  Home, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Layers, ShieldCheck, Wind, Info
 } from "lucide-react";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const STORAGE_KEY = "toiture-batiment-history";
+const STORAGE_KEY = "toiture-history-pro";
 
-// Dosages Béton pour Toit Terrasse (Dalle pleine)
-const DOSAGE_BETON = {
-  ciment: 0.350,
-  sable: 0.6,
-  gravier: 0.85,
-  acier: 0.100, // 100kg/m3 pour dalle toiture
-  eau: 175
+// Configuration Technique Pro
+const CONFIG_TOITURE = {
+  tuiles: { 
+    label: "Tuiles", icon: <Home className="w-4 h-4"/>, 
+    boisM3parM2: 0.02, // 0.02 m3 de bois par m2 de toiture
+    accessoires: "Faîtières", color: "#f97316"
+  },
+  bac_acier: { 
+    label: "Bac Acier", icon: <Layers className="w-4 h-4"/>, 
+    recouvrement: 1.10, // +10% de surface pour chevauchements
+    boisM3parM2: 0.015,
+    accessoires: "Rives/Faîtages", color: "#06b6d4"
+  },
+  toit_terrasse: { 
+    label: "Toit Terrasse", icon: <Layers className="w-4 h-4"/>, 
+    ciment: 0.350, acier: 100, // 100kg/m3 pour dalle toiture (stiffness)
+    etancheiteM2: 1.05, color: "#6366f1"
+  },
 };
-
-const TYPES_TOITURE = [
-  { id: "tuiles", label: "Tuiles", icon: <Home className="w-4 h-4"/>, unit: "u" },
-  { id: "bac_acier", label: "Bac Acier", icon: <Layers className="w-4 h-4"/>, unit: "m²" },
-  { id: "toit_terrasse", label: "Toit Terrasse", icon: <Layers className="w-4 h-4"/>, unit: "m³" },
-];
 
 export default function Toiture({ currency = "XOF", onTotalChange, onMateriauxChange }) {
   
@@ -35,10 +37,11 @@ export default function Toiture({ currency = "XOF", onTotalChange, onMateriauxCh
   const [typeToiture, setTypeToiture] = useState("tuiles");
   const [inputs, setInputs] = useState({
     surface: "",
-    epaisseur: "0.15", // Pour toit terrasse
-    densiteTuiles: "12", // Pour tuiles
+    epaisseur: "0.15", 
+    densiteTuiles: "12", 
     prixUnitaire: "",
-    coutMainOeuvre: ""
+    coutMainOeuvre: "",
+    inclureEtanchéité: true
   });
 
   const [historique, setHistorique] = useState([]);
@@ -49,287 +52,252 @@ export default function Toiture({ currency = "XOF", onTotalChange, onMateriauxCh
     const S = parseFloat(inputs.surface) || 0;
     const pu = parseFloat(inputs.prixUnitaire) || 0;
     const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+    const config = CONFIG_TOITURE[typeToiture];
     
-    let quantiteMateriel = 0;
+    let qtePrincipale = 0;
     let coutMateriaux = 0;
-    let detailsMateriaux = {};
+    let boisEstime = 0;
+    let betonDetails = null;
 
     if (typeToiture === "tuiles") {
-      const densite = parseFloat(inputs.densiteTuiles) || 12;
-      quantiteMateriel = S * densite;
-      coutMateriaux = quantiteMateriel * pu;
-    } else if (typeToiture === "bac_acier") {
-      quantiteMateriel = S;
-      coutMateriaux = S * pu;
-    } else if (typeToiture === "toit_terrasse") {
-      const ep = parseFloat(inputs.epaisseur) || 0.15;
-      const volume = S * ep;
-      quantiteMateriel = volume;
-      coutMateriaux = volume * pu;
-
-      // Calculs Béton
-      detailsMateriaux = {
-        cimentT: volume * DOSAGE_BETON.ciment,
-        sableT: volume * DOSAGE_BETON.sable,
-        gravierT: volume * DOSAGE_BETON.gravier,
-        acierT: volume * DOSAGE_BETON.acier,
-        eauL: volume * DOSAGE_BETON.eau
+      qtePrincipale = S * (parseFloat(inputs.densiteTuiles) || 12);
+      boisEstime = S * config.boisM3parM2;
+      coutMateriaux = qtePrincipale * pu;
+    } 
+    else if (typeToiture === "bac_acier") {
+      qtePrincipale = S * config.recouvrement;
+      boisEstime = S * config.boisM3parM2;
+      coutMateriaux = qtePrincipale * pu;
+    } 
+    else if (typeToiture === "toit_terrasse") {
+      const vol = S * (parseFloat(inputs.epaisseur) || 0.15);
+      qtePrincipale = vol;
+      coutMateriaux = vol * pu;
+      betonDetails = {
+        cimentT: vol * config.ciment,
+        sacs: (vol * config.ciment * 1000) / 50,
+        acierKg: vol * config.acier,
+        etancheite: S * config.etancheiteM2
       };
     }
 
     const total = coutMateriaux + mo;
 
     return {
-      quantiteMateriel,
+      qtePrincipale,
       coutMateriaux,
-      detailsMateriaux,
-      mo,
+      boisEstime,
+      betonDetails,
       total
     };
   }, [inputs, typeToiture]);
 
   // --- SYNC PARENT ---
   useEffect(() => {
-    if (onTotalChange) onTotalChange(results.total);
+    onTotalChange(results.total);
     if (onMateriauxChange && typeToiture === "toit_terrasse") {
       onMateriauxChange({
-        volume: results.quantiteMateriel,
-        ciment: results.detailsMateriaux.cimentT,
-        acier: results.detailsMateriaux.acierT
+        volume: results.qtePrincipale,
+        ciment: results.betonDetails?.cimentT,
+        acier: (results.betonDetails?.acierKg || 0) / 1000
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results.total]);
+  }, [results.total, typeToiture]);
 
   // --- HISTORIQUE ---
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) setHistorique(JSON.parse(saved));
-    } catch {}
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) try { setHistorique(JSON.parse(saved)); } catch {}
   }, []);
 
   const handleSave = () => {
-    if (results.total <= 0) return showToast("⚠️ Données invalides", "error");
-    
+    if (results.total <= 0) return showToast("⚠️ Surface manquante", "error");
     const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      type: typeToiture,
-      inputs: { ...inputs },
-      results: { ...results }
+      type: CONFIG_TOITURE[typeToiture].label,
+      ...inputs, ...results
     };
-
     const newHist = [newEntry, ...historique];
     setHistorique(newHist);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
-    showToast("✅ Toiture sauvegardée !");
+    showToast("✅ Devis toiture enregistré");
   };
 
-  const clearHistory = () => {
-    if (window.confirm("Vider l'historique ?")) {
-      setHistorique([]);
-      localStorage.removeItem(STORAGE_KEY);
-      showToast("Historique vidé");
-    }
-  };
-
-  const resetFields = () => {
-    setInputs({ surface: "", epaisseur: "0.15", densiteTuiles: "12", prixUnitaire: "", coutMainOeuvre: "" });
-  };
-
-  const handleChange = (field) => (e) => setInputs(prev => ({ ...prev, [field]: e.target.value }));
-  
   const showToast = (msg, type = "success") => {
     setMessage({ text: msg, type });
     setTimeout(() => setMessage(null), 3000);
   };
 
-  // --- CHART DATA ---
   const chartData = {
     labels: ["Matériaux", "Main d'œuvre"],
     datasets: [{
-      data: [results.coutMateriaux, results.mo],
-      backgroundColor: ["#f97316", "#06b6d4"], // Orange, Cyan
-      borderColor: "#1f2937",
-      borderWidth: 4,
+      data: [results.coutMateriaux, parseFloat(inputs.coutMainOeuvre) || 0],
+      backgroundColor: [CONFIG_TOITURE[typeToiture].color, "#374151"],
+      borderColor: "#111827",
+      borderWidth: 2,
     }]
   };
 
   return (
     <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
       
-      {/* Toast */}
       {message && (
-        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold ${message.type === "error" ? "bg-red-600" : "bg-orange-600"}`}>
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+          message.type === "error" ? "bg-red-600" : "bg-orange-600"
+        }`}>
           {message.text}
         </div>
       )}
 
       {/* Header */}
-      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 bg-gray-900/50 backdrop-blur-sm flex justify-between items-center">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-orange-600/20 rounded-lg text-orange-500">
+          <div className={`p-2 rounded-lg`} style={{backgroundColor: `${CONFIG_TOITURE[typeToiture].color}20`, color: CONFIG_TOITURE[typeToiture].color}}>
             <Home className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Toiture</h2>
-            <p className="text-xs text-gray-400">Couverture & Charpente</p>
+            <h2 className="text-xl font-bold text-white">Mise hors d'eau : Toiture</h2>
+            <p className="text-xs text-gray-400">Charpente & Couverture</p>
           </div>
         </div>
-        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
-          <span className="text-xs text-gray-400 block">Total Estimé</span>
-          <span className="text-lg font-black text-orange-400">
-            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-sm text-gray-500">{currency}</span>
+        <div className="text-right">
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Budget Toiture</span>
+          <span className="text-2xl font-black text-orange-400 tracking-tighter">
+            {results.total.toLocaleString()} <span className="text-sm text-gray-500 font-normal">{currency}</span>
           </span>
         </div>
       </div>
 
-      {/* Main Grid */}
-      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
           
-          {/* GAUCHE : SÉLECTION & INPUTS (5 cols) */}
+          {/* GAUCHE : SÉLECTION */}
           <div className="lg:col-span-5 flex flex-col gap-5">
             
-            {/* Type Selector */}
             <div className="grid grid-cols-3 gap-2 bg-gray-800 p-1.5 rounded-xl border border-gray-700">
-              {TYPES_TOITURE.map((t) => (
+              {Object.entries(CONFIG_TOITURE).map(([id, t]) => (
                 <button
-                  key={t.id}
-                  onClick={() => setTypeToiture(t.id)}
-                  className={`flex items-center justify-center gap-2 py-2 rounded-lg transition-all text-xs font-bold ${
-                    typeToiture === t.id 
+                  key={id}
+                  onClick={() => setTypeToiture(id)}
+                  className={`flex flex-col items-center justify-center py-3 rounded-lg transition-all ${
+                    typeToiture === id 
                       ? "bg-orange-600 text-white shadow-lg" 
                       : "text-gray-400 hover:text-white hover:bg-gray-700"
                   }`}
                 >
-                  {t.icon} {t.label}
+                  <span className="mb-1">{t.icon}</span>
+                  <span className="text-[10px] font-bold uppercase">{t.label}</span>
                 </button>
               ))}
             </div>
 
-            {/* Formulaire */}
-            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg flex-1 flex flex-col gap-4">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-orange-400 uppercase tracking-wider">
-                <Ruler className="w-4 h-4" /> Dimensions
+            <div className="bg-gray-800/50 border border-gray-700 rounded-3xl p-6 space-y-6 shadow-xl">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-orange-400 uppercase tracking-widest">
+                <Ruler className="w-4 h-4" /> Géométrie de toiture
               </h3>
 
               <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                   <InputGroup label="Surface Toiture (m²)" value={inputs.surface} onChange={handleChange("surface")} placeholder="Ex: 120" />
-                </div>
+                <InputGroup label="Surface Projetée (m²)" value={inputs.surface} onChange={v => setInputs({...inputs, surface: v})} full />
 
                 {typeToiture === "tuiles" && (
-                  <div className="col-span-2">
-                    <InputGroup label="Densité (u/m²)" value={inputs.densiteTuiles} onChange={handleChange("densiteTuiles")} placeholder="12" />
-                  </div>
+                  <InputGroup label="Densité (Tuiles/m²)" value={inputs.densiteTuiles} onChange={v => setInputs({...inputs, densiteTuiles: v})} />
                 )}
 
                 {typeToiture === "toit_terrasse" && (
-                  <div className="col-span-2">
-                    <InputGroup label="Épaisseur Dalle (m)" value={inputs.epaisseur} onChange={handleChange("epaisseur")} placeholder="0.15" />
-                  </div>
+                  <InputGroup label="Épaisseur Dalle (m)" value={inputs.epaisseur} onChange={v => setInputs({...inputs, epaisseur: v})} />
                 )}
               </div>
 
-              <div className="h-px bg-gray-700/50 my-2" />
-
-              <h3 className="flex items-center gap-2 text-sm font-bold text-gray-400 uppercase tracking-wider">
-                <Banknote className="w-4 h-4" /> Coûts
-              </h3>
-              <div className="grid grid-cols-2 gap-4">
-                <InputGroup 
-                  label={`Prix Unit. (${currency}/${typeToiture === 'tuiles' ? 'u' : typeToiture === 'toit_terrasse' ? 'm³' : 'm²'})`} 
-                  value={inputs.prixUnitaire} 
-                  onChange={handleChange("prixUnitaire")} 
-                />
-                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={handleChange("coutMainOeuvre")} />
+              <div className="pt-4 border-t border-gray-700 grid grid-cols-2 gap-4">
+                <InputGroup label={`Prix Unit. (${currency})`} value={inputs.prixUnitaire} onChange={v => setInputs({...inputs, prixUnitaire: v})} />
+                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={v => setInputs({...inputs, coutMainOeuvre: v})} />
               </div>
 
-              <div className="flex gap-3 mt-auto pt-6">
-                <button onClick={handleSave} className="flex-1 bg-gradient-to-r from-orange-600 to-red-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2">
-                  <Save className="w-5 h-5" /> Calculer
-                </button>
-                <button onClick={resetFields} className="px-4 bg-gray-700 hover:bg-gray-600 text-white rounded-xl transition">
-                  <Trash2 className="w-5 h-5" />
-                </button>
-              </div>
+              <button onClick={handleSave} className="w-full bg-orange-600 hover:bg-orange-500 text-white py-4 rounded-2xl font-bold shadow-lg transition-all flex justify-center items-center gap-2">
+                <Save className="w-5 h-5" /> Enregistrer le calcul
+              </button>
             </div>
           </div>
 
-          {/* DROITE : RÉSULTATS (7 cols) */}
+          {/* DROITE : RÉSULTATS */}
           <div className="lg:col-span-7 flex flex-col gap-6">
             
-            {/* KPIs */}
             <div className="grid grid-cols-3 gap-4">
               <ResultCard 
-                label={typeToiture === 'tuiles' ? "Nombre Tuiles" : typeToiture === 'toit_terrasse' ? "Volume Béton" : "Surface"} 
-                value={results.quantiteMateriel.toFixed(typeToiture === 'tuiles' ? 0 : 2)} 
+                label={typeToiture === 'tuiles' ? "Nb Tuiles" : typeToiture === 'toit_terrasse' ? "Vol. Béton" : "Surf. Acier"} 
+                value={results.qtePrincipale.toFixed(typeToiture === 'tuiles' ? 0 : 2)} 
                 unit={typeToiture === 'tuiles' ? "u" : typeToiture === 'toit_terrasse' ? "m³" : "m²"} 
-                icon="📦" 
-                color="text-orange-400" 
-                bg="bg-orange-500/10" 
+                icon={<PackageIcon />} color="text-orange-400" bg="bg-orange-500/10" 
               />
-              <ResultCard label="Coût Matériaux" value={(results.coutMateriaux/1000).toFixed(1)} unit="k" icon="🧱" color="text-gray-300" bg="bg-gray-500/10" border />
-              <ResultCard label="Coût MO" value={(results.mo/1000).toFixed(1)} unit="k" icon="👷" color="text-cyan-400" bg="bg-cyan-500/10" />
+              <ResultCard 
+                label="Charpente" 
+                value={typeToiture === 'toit_terrasse' ? results.betonDetails?.acierKg.toFixed(0) : results.boisEstime.toFixed(2)} 
+                unit={typeToiture === 'toit_terrasse' ? "kg" : "m³"} 
+                icon={<Wind className="w-4 h-4"/>} color="text-emerald-400" bg="bg-emerald-500/10" border 
+              />
+              <ResultCard 
+                label="Protection" 
+                value={typeToiture === 'toit_terrasse' ? "Hydro" : "Rives"} 
+                unit="" icon={<ShieldCheck className="w-4 h-4"/>} color="text-blue-400" bg="bg-blue-500/10" 
+              />
             </div>
 
-            {/* Graphique & Détails */}
-            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
-               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-orange-600/10 rounded-full blur-3xl pointer-events-none" />
-
-               <div className="w-40 h-40 flex-shrink-0 relative">
-                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                     <span className="text-sm font-bold text-orange-400">Total</span>
+            <div className="flex-1 bg-gray-800 rounded-3xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="w-44 h-44 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                     <span className="text-[10px] text-gray-500 uppercase font-bold text-center leading-tight">Ratio<br/>Matos/MO</span>
                   </div>
                </div>
 
-               <div className="flex-1 w-full space-y-3">
-                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Répartition Coûts</h4>
-                  <MaterialRow label="Matériaux" val={`${results.coutMateriaux.toLocaleString()} ${currency}`} color="bg-orange-500" />
-                  <MaterialRow label="Main d'œuvre" val={`${results.mo.toLocaleString()} ${currency}`} color="bg-cyan-500" />
+               <div className="flex-1 w-full space-y-4">
+                  <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2">Détails Logistiques</h4>
                   
-                  {typeToiture === "toit_terrasse" && (
-                    <div className="pt-2 border-t border-gray-700 mt-2">
-                      <p className="text-[10px] text-gray-500 uppercase font-bold mb-2">Détail Béton</p>
-                      <div className="grid grid-cols-2 gap-2 text-xs text-gray-300">
-                        <span>Ciment: {results.detailsMateriaux.cimentT.toFixed(2)} t</span>
-                        <span>Acier: {results.detailsMateriaux.acierT.toFixed(2)} t</span>
-                      </div>
-                    </div>
+                  {typeToiture === "toit_terrasse" ? (
+                    <>
+                      <MaterialRow label="Ciment (350kg/m³)" val={`${results.betonDetails?.sacs.toFixed(0)} sacs`} color="bg-orange-500" />
+                      <MaterialRow label="Acier HA" val={`${results.betonDetails?.acierKg.toFixed(0)} kg`} color="bg-blue-500" />
+                      <MaterialRow label="Étanchéité" val={`${results.betonDetails?.etancheite.toFixed(1)} m²`} color="bg-indigo-500" />
+                    </>
+                  ) : (
+                    <>
+                      <MaterialRow label="Éléments Couverture" val={`${results.qtePrincipale.toFixed(0)} ${typeToiture === 'tuiles' ? 'unités' : 'm²'}`} color="bg-orange-500" />
+                      <MaterialRow label="Bois de charpente" val={`${results.boisEstime.toFixed(3)} m³`} color="bg-emerald-500" />
+                    </>
                   )}
+                  
+                  <div className="flex items-start gap-2 p-3 bg-blue-500/5 rounded-xl border border-blue-500/20 mt-4">
+                    <Info className="w-4 h-4 text-blue-400 mt-0.5" />
+                    <p className="text-[10px] text-blue-200/70 leading-relaxed italic">
+                      {typeToiture === 'toit_terrasse' 
+                        ? "Le calcul inclut une dalle pleine de compression et une membrane d'étanchéité standard." 
+                        : `Le volume de bois est estimé pour une charpente traditionnelle (liteaux + chevrons).`}
+                    </p>
+                  </div>
                </div>
             </div>
 
-            {/* Historique */}
+            {/* Historique Mini */}
             {historique.length > 0 && (
-              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
-                <div className="px-4 py-3 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
-                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
-                    <History className="w-3 h-3" /> Historique récent
-                  </h4>
-                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
+                <div className="px-4 py-2 bg-gray-800/50 flex justify-between items-center border-b border-gray-700/50">
+                  <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2"><History className="w-3 h-3" /> Devis Récents</h4>
+                  <button onClick={() => {setHistorique([]); localStorage.removeItem(STORAGE_KEY)}} className="text-[10px] text-red-400 hover:underline">Vider</button>
                 </div>
-                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
-                  {historique.map((item) => (
-                    <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-orange-500/30">
-                      <div className="flex flex-col">
-                         <span className="text-[10px] text-gray-500">{item.date.split(',')[0]}</span>
-                         <span className="text-xs text-gray-300">
-                           {item.type} ({item.inputs.surface}m²)
-                         </span>
+                <div className="max-h-[120px] overflow-y-auto">
+                  {historique.slice(0, 5).map((item) => (
+                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30 hover:bg-gray-700/40 transition-colors text-xs">
+                      <div>
+                        <span className="text-gray-500 text-[9px] block">{item.date}</span>
+                        <span className="font-medium uppercase">{item.type}</span> - {item.surface} m²
                       </div>
-                      <div className="text-right">
-                        <span className="text-sm font-bold text-orange-400">{item.results.total.toLocaleString()} {currency}</span>
-                      </div>
+                      <span className="font-bold text-orange-400">{parseFloat(item.total).toLocaleString()} {currency}</span>
                     </div>
                   ))}
                 </div>
               </div>
             )}
-
           </div>
         </div>
       </div>
@@ -338,39 +306,40 @@ export default function Toiture({ currency = "XOF", onTotalChange, onMateriauxCh
 }
 
 // --- SOUS-COMPOSANTS ---
+const PackageIcon = () => (
+  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+  </svg>
+);
 
-const InputGroup = ({ label, value, onChange, placeholder, full = false, type = "number" }) => (
+const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
   <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
-    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
     <input
-      type={type}
-      min="0"
-      step="any"
-      value={value}
-      onChange={onChange}
-      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all font-mono text-sm"
+      type="number" value={value} onChange={e => onChange(e.target.value)}
+      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-orange-500 focus:ring-1 focus:ring-orange-500 transition-all font-mono text-sm"
       placeholder={placeholder || "0"}
     />
   </div>
 );
 
 const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
-  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
-    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
-      {typeof icon === 'string' ? icon : <span className="opacity-70">{icon}</span>} {label}
+  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-700' : ''}`}>
+    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center gap-1">
+      {icon} {label}
     </span>
     <span className={`text-xl font-black ${color}`}>
-      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+      {value} <span className="text-xs font-normal text-gray-500 lowercase">{unit}</span>
     </span>
   </div>
 );
 
 const MaterialRow = ({ label, val, color }) => (
-  <div className="flex justify-between items-center border-b border-gray-700/50 pb-2 last:border-0 group">
+  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
     <div className="flex items-center gap-2">
-      <div className={`w-2 h-2 rounded-full ${color}`} />
-      <span className="text-gray-300 text-sm font-medium">{label}</span>
+      <div className={`w-1.5 h-1.5 rounded-full ${color}`} />
+      <span className="text-gray-300 text-xs font-medium">{label}</span>
     </div>
-    <span className="text-sm font-bold text-white font-mono">{val}</span>
+    <span className="text-xs font-bold text-white font-mono">{val}</span>
   </div>
 );

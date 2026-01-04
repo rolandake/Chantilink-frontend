@@ -1,6 +1,7 @@
 // ============================================
 // 📁 src/pages/Home/Home.jsx
 // VERSION ZERO MARGIN - POSTS COLLÉS ⚡
+// ✅ CORRECTION: Ref warning Framer Motion
 // ============================================
 import React, { useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense } from "react";
 import { MagnifyingGlassIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
@@ -141,18 +142,24 @@ const SearchBar = memo(({ searchQuery, onSearchChange, onRefresh, isRefreshing, 
   </div>
 ));
 
-// ✅ OPTIMISATION : Wrapper de post mémorisé SANS MARGIN
-const PostWrapper = memo(({ post }) => (
-  <motion.div
-    initial={{ opacity: 0, y: 20 }}
-    animate={{ opacity: 1, y: 0 }}
-    exit={{ opacity: 0, scale: 0.95 }}
-    transition={fastTransition}
-    className="w-full" // ✅ ZERO MARGIN/PADDING
-  >
-    <PostCard post={post} />
-  </motion.div>
-), (prev, next) => prev.post._id === next.post._id);
+// ✅ CORRECTION: Wrapper de post mémorisé avec forwardRef
+const PostWrapper = memo(
+  React.forwardRef(({ post }, ref) => (
+    <motion.div
+      ref={ref}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={fastTransition}
+      className="w-full"
+    >
+      <PostCard post={post} />
+    </motion.div>
+  )),
+  (prev, next) => prev.post._id === next.post._id
+);
+
+PostWrapper.displayName = 'PostWrapper';
 
 // ═══════════════════════════════════════════════════════════
 // COMPOSANT PRINCIPAL HOME
@@ -355,9 +362,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp }) => {
 
           {/* ✅ POSTS FEED - ZERO PADDING/MARGIN - FULL WIDTH */}
           <div className="flex-1 overflow-y-auto">
-            <div className="w-full max-w-full"> {/* ✅ ZERO PADDING, FULL WIDTH */}
+            <div className="w-full max-w-full">
               
-              {/* ✅ POSTS COLLÉS - ZERO GAP */}
+              {/* ✅ POSTS COLLÉS - ZERO GAP - CORRECTION APPLIQUÉE */}
               <AnimatePresence mode="popLayout">
                 {filteredPosts.map((post) => (
                   <PostWrapper key={post._id} post={post} />

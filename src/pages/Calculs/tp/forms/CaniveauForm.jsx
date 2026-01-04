@@ -1,220 +1,291 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { Doughnut } from "react-chartjs-2";
+import {
+  Chart as ChartJS, ArcElement, Tooltip, Legend,
+} from "chart.js";
+import { 
+  Waves, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Info, Layers, Box
+} from "lucide-react";
 
-export default function CaniveauForm({ currency = "XOF" }) {
-  const [longueur, setLongueur] = useState(0);
-  const [largeur, setLargeur] = useState(0);
-  const [profondeur, setProfondeur] = useState(0);
-  const [quantite, setQuantite] = useState(1);
-  const [prixUnitaire, setPrixUnitaire] = useState(0);
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState(0);
+ChartJS.register(ArcElement, Tooltip, Legend);
+
+const STORAGE_KEY = "caniveau-history-pro";
+
+// Configuration Technique Pro (Ouvrages Hydrauliques)
+const DOSAGE = {
+  ciment: 0.350, // 350kg/m3
+  sable: 0.55,   // T/m3
+  gravier: 0.75, // T/m3
+  acier: 0.070,  // 70kg/m3
+  eau: 180       // L/m3
+};
+
+export default function CaniveauForm({ currency = "XOF", onCostChange, onMateriauxChange }) {
+  
+  // --- ÉTATS ---
+  const [inputs, setInputs] = useState({
+    longueur: "",
+    largeurInterieure: "",
+    profondeurInterieure: "",
+    epaisseurParoi: "0.15",
+    quantite: "1",
+    prixUnitaire: "",
+    coutMainOeuvre: ""
+  });
+
   const [historique, setHistorique] = useState([]);
+  const [message, setMessage] = useState(null);
 
-  // Chargement de l'historique depuis le storage
-  useEffect(() => {
-    const loadHistory = async () => {
-      try {
-        const result = await window.storage.get('caniveau-history');
-        if (result) {
-          setHistorique(JSON.parse(result.value));
-        }
-      } catch (error) {
-        console.log('Aucun historique trouvé');
-      }
-    };
-    loadHistory();
-  }, []);
+  // --- MOTEUR DE CALCUL TECHNIQUE ---
+  const results = useMemo(() => {
+    const L = parseFloat(inputs.longueur) || 0;
+    const l_int = parseFloat(inputs.largeurInterieure) || 0;
+    const h_int = parseFloat(inputs.profondeurInterieure) || 0;
+    const ep = parseFloat(inputs.epaisseurParoi) || 0;
+    const nb = parseFloat(inputs.quantite) || 0;
 
-  // Sauvegarde de l'historique dans le storage
-  useEffect(() => {
-    const saveHistory = async () => {
-      if (historique.length > 0) {
-        try {
-          await window.storage.set('caniveau-history', JSON.stringify(historique));
-        } catch (error) {
-          console.error('Erreur lors de la sauvegarde:', error);
-        }
-      }
-    };
-    saveHistory();
-  }, [historique]);
+    // Section du caniveau (U) = Aire totale - Aire vide intérieur
+    // Aire totale = (l_int + 2*ep) * (h_int + ep)  [On ajoute ep au fond]
+    const aireTotale = (l_int + (2 * ep)) * (h_int + ep);
+    const aireVide = l_int * h_int;
+    const aireSectionBeton = aireTotale - aireVide;
 
-  const { volume, cimentKg, cimentSacs, cimentT, sableM3, sableT, gravierM3, gravierT, acierKg, acierT, total } = useMemo(() => {
-    const vol = longueur > 0 && largeur > 0 && profondeur > 0 && quantite > 0
-      ? longueur * largeur * profondeur * quantite
-      : 0;
+    const volumeTotal = aireSectionBeton * L * nb;
 
-    // Dosages béton armé
-    const cimentKgCalc = vol * 300;
-    const cimentSacsCalc = cimentKgCalc / 50;
-    const cimentTCalc = cimentKgCalc / 1000;
+    // Coffrage (2 joues intérieures + 2 joues extérieures + fond intérieur)
+    const surfaceCoffrage = ((h_int * 2) + l_int + ((h_int + ep) * 2)) * L * nb;
 
-    const sableM3Calc = vol * 0.45;
-    const sableTCalc = sableM3Calc * 1.6;
+    // Matériaux
+    const cimentT = volumeTotal * DOSAGE.ciment;
+    const cimentSacs = (cimentT * 1000) / 50;
+    const sableT = volumeTotal * DOSAGE.sable;
+    const gravierT = volumeTotal * DOSAGE.gravier;
+    const acierKg = volumeTotal * (DOSAGE.acier * 1000);
+    const acierT = acierKg / 1000;
+    const eauL = volumeTotal * DOSAGE.eau;
 
-    const gravierM3Calc = vol * 0.8;
-    const gravierTCalc = gravierM3Calc * 1.75;
-
-    const acierKgCalc = vol * 70;
-    const acierTCalc = acierKgCalc / 1000;
-
-    const totalCalc = vol * prixUnitaire + coutMainOeuvre;
+    // Coûts
+    const pu = parseFloat(inputs.prixUnitaire) || 0;
+    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+    const total = (volumeTotal * pu) + mo;
 
     return {
-      volume: vol,
-      cimentKg: cimentKgCalc,
-      cimentSacs: cimentSacsCalc,
-      cimentT: cimentTCalc,
-      sableM3: sableM3Calc,
-      sableT: sableTCalc,
-      gravierM3: gravierM3Calc,
-      gravierT: gravierTCalc,
-      acierKg: acierKgCalc,
-      acierT: acierTCalc,
-      total: totalCalc,
+      volumeTotal,
+      surfaceCoffrage,
+      cimentT, cimentSacs,
+      sableT, gravierT, acierT, acierKg, eauL,
+      total
     };
-  }, [longueur, largeur, profondeur, quantite, prixUnitaire, coutMainOeuvre]);
+  }, [inputs]);
+
+  // --- SYNC PARENT ---
+  useEffect(() => {
+    if (onCostChange) onCostChange(results.total);
+    if (onMateriauxChange) {
+      onMateriauxChange({
+        volume: results.volumeTotal,
+        ciment: results.cimentT,
+        acier: results.acierT
+      });
+    }
+  }, [results.total]);
+
+  // --- HISTORIQUE ---
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) try { setHistorique(JSON.parse(saved)); } catch (e) {}
+  }, []);
 
   const handleSave = () => {
-    if (volume === 0) return alert("⚠️ Veuillez saisir des dimensions valides.");
-
-    const entry = {
+    if (results.volumeTotal <= 0) return showToast("⚠️ Dimensions invalides", "error");
+    const newEntry = {
       id: Date.now(),
       date: new Date().toLocaleString(),
-      longueur,
-      largeur,
-      profondeur,
-      quantite,
-      volume: volume.toFixed(3),
-      cimentKg: cimentKg.toFixed(0),
-      cimentSacs: cimentSacs.toFixed(1),
-      cimentT: cimentT.toFixed(3),
-      sableM3: sableM3.toFixed(3),
-      sableT: sableT.toFixed(3),
-      gravierM3: gravierM3.toFixed(3),
-      gravierT: gravierT.toFixed(3),
-      acierKg: acierKg.toFixed(1),
-      acierT: acierT.toFixed(3),
-      prixUnitaire,
-      coutMainOeuvre,
-      total: total.toFixed(2),
+      ...inputs, ...results
     };
-
-    setHistorique([entry, ...historique]);
+    const newHist = [newEntry, ...historique];
+    setHistorique(newHist);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
+    showToast("✅ Caniveau enregistré !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      setHistorique(historique.filter((item) => item.id !== id));
-    }
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
   };
 
-  const clearHistorique = async () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
-      setHistorique([]);
-      try {
-        await window.storage.delete('caniveau-history');
-      } catch (error) {
-        console.error('Erreur lors de la suppression:', error);
-      }
-    }
+  const chartData = {
+    labels: ["Ciment", "Sable", "Gravier", "Acier"],
+    datasets: [{
+      data: [results.cimentT, results.sableT, results.gravierT, results.acierT],
+      backgroundColor: ["#0ea5e9", "#fbbf24", "#78716c", "#3b82f6"],
+      borderColor: "#111827",
+      borderWidth: 2,
+    }]
   };
 
   return (
-    <div className="p-6 bg-gray-900 rounded-xl shadow-xl text-gray-100 max-w-3xl mx-auto">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center">Caniveau</h2>
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative font-sans">
+      
+      {/* Notification Toast */}
+      {message && (
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+          message.type === 'error' ? 'bg-red-600' : 'bg-cyan-600'
+        }`}>
+          {message.text}
+        </div>
+      )}
 
-      {/* Formulaire */}
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {[
-          { label: "Longueur (m)", value: longueur, setter: setLongueur },
-          { label: "Largeur (m)", value: largeur, setter: setLargeur },
-          { label: "Profondeur (m)", value: profondeur, setter: setProfondeur },
-          { label: "Quantité", value: quantite, setter: setQuantite },
-          { label: `Prix unitaire (${currency} / m³)`, value: prixUnitaire, setter: setPrixUnitaire },
-          { label: `Coût main d'œuvre (${currency})`, value: coutMainOeuvre, setter: setCoutMainOeuvre, full: true },
-        ].map(({ label, value, setter, full }, i) => (
-          <div className={full ? "col-span-2" : ""} key={i}>
-            <label className="block mb-1 font-semibold text-orange-400">{label}</label>
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={value}
-              onChange={(e) => setter(Number(e.target.value))}
-              className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-600 focus:ring-2 focus:ring-orange-400 transition-all duration-200"
-              placeholder="0"
-            />
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-cyan-600/20 rounded-lg text-cyan-500">
+            <Waves className="w-6 h-6" />
           </div>
-        ))}
-      </div>
-
-      {/* Résultats */}
-      <div className="bg-gray-800 p-5 rounded-xl mb-6 grid grid-cols-2 text-gray-300 gap-4">
-        <div className="space-y-1">
-          <p>📦 Volume total : <span className="text-orange-400 font-semibold">{volume.toFixed(3)} m³</span></p>
-          <p>🧱 Ciment : {cimentKg.toFixed(0)} kg / {cimentSacs.toFixed(1)} sacs / <span className="text-green-400 font-semibold">{cimentT.toFixed(3)} t</span></p>
-          <p>🏖️ Sable : {sableM3.toFixed(3)} m³ / <span className="text-green-400 font-semibold">{sableT.toFixed(3)} t</span></p>
-          <p>🪨 Gravier : {gravierM3.toFixed(3)} m³ / <span className="text-green-400 font-semibold">{gravierT.toFixed(3)} t</span></p>
-          <p>⚙️ Acier : {acierKg.toFixed(1)} kg / <span className="text-green-400 font-semibold">{acierT.toFixed(3)} t</span></p>
+          <div>
+            <h2 className="text-xl font-bold text-white uppercase tracking-tight">Ouvrage Hydraulique</h2>
+            <p className="text-xs text-gray-400 font-medium">Caniveau de drainage (Coulé en place)</p>
+          </div>
         </div>
-        <div className="text-right text-xl font-bold text-orange-400 flex items-center justify-end">
-          Coût total : {isNaN(total) ? 0 : total.toLocaleString()} {currency}
+        <div className="text-right">
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Budget Estimé</span>
+          <span className="text-2xl font-black text-cyan-400 tracking-tighter">
+            {results.total.toLocaleString()} <span className="text-sm text-gray-500 font-normal">{currency}</span>
+          </span>
         </div>
       </div>
 
-      {/* Boutons */}
-      <div className="flex gap-4 justify-center mb-6 flex-wrap">
-        <button
-          onClick={handleSave}
-          className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-6 py-2 rounded transition-all transform hover:scale-105"
-        >
-          💾 Enregistrer
-        </button>
-        <button
-          onClick={clearHistorique}
-          className="bg-red-600 hover:bg-red-700 text-white font-bold px-6 py-2 rounded transition-all transform hover:scale-105"
-        >
-          🧹 Effacer historique
-        </button>
-      </div>
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+          
+          {/* GAUCHE : SAISIE */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+            
+            <div className="bg-gray-800/50 border border-gray-700 rounded-3xl p-6 shadow-xl space-y-6">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-widest">
+                <Ruler className="w-4 h-4" /> Dimensionnement (m)
+              </h3>
 
-      {/* Historique animé */}
-      <AnimatePresence>
-        {historique.length > 0 ? (
-          <section className="max-h-80 overflow-y-auto bg-gray-800 rounded-xl p-4 space-y-3">
-            <h3 className="text-orange-400 font-bold mb-3 text-center">Historique</h3>
-            {historique.map((item) => (
-              <motion.div
-                key={item.id}
-                initial={{ opacity: 0, x: 50 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -50 }}
-                transition={{ duration: 0.4 }}
-                className="bg-gray-700 p-3 rounded-lg flex justify-between items-center shadow-md"
-              >
-                <div className="space-y-0.5 text-sm">
-                  <time className="block text-xs text-gray-400">{item.date}</time>
-                  <p>Volume : {item.volume} m³</p>
-                  <p>Ciment : {item.cimentKg} kg / {item.cimentSacs} sacs / {item.cimentT} t</p>
-                  <p>Sable : {item.sableM3} m³ / {item.sableT} t</p>
-                  <p>Gravier : {item.gravierM3} m³ / {item.gravierT} t</p>
-                  <p>Acier : {item.acierKg} kg / {item.acierT} t</p>
-                  <p className="font-bold text-orange-300">Coût total : {item.total} {currency}</p>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label="Long. Linéaire" value={inputs.longueur} onChange={v => setInputs({...inputs, longueur: v})} placeholder="Ex: 50" />
+                <InputGroup label="Quantité (Nb)" value={inputs.quantite} onChange={v => setInputs({...inputs, quantite: v})} placeholder="1" />
+                <InputGroup label="Largeur Int." value={inputs.largeurInterieure} onChange={v => setInputs({...inputs, largeurInterieure: v})} placeholder="0.40" />
+                <InputGroup label="Haut. Int." value={inputs.profondeurInterieure} onChange={v => setInputs({...inputs, profondeurInterieure: v})} placeholder="0.50" />
+                <InputGroup label="Ép. Parois" value={inputs.epaisseurParoi} onChange={v => setInputs({...inputs, epaisseurParoi: v})} placeholder="0.15" full />
+              </div>
+            </div>
+
+            <div className="bg-gray-800/50 border border-gray-700 rounded-3xl p-6 shadow-xl space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label={`PU Béton (${currency}/m³)`} value={inputs.prixUnitaire} onChange={v => setInputs({...inputs, prixUnitaire: v})} />
+                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={v => setInputs({...inputs, coutMainOeuvre: v})} />
+              </div>
+              <button onClick={handleSave} className="w-full bg-cyan-600 hover:bg-cyan-500 text-white py-4 rounded-2xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 active:scale-95">
+                <Save className="w-5 h-5" /> Enregistrer le calcul
+              </button>
+            </div>
+          </div>
+
+          {/* DROITE : RÉSULTATS */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Volume Béton" value={results.volumeTotal.toFixed(2)} unit="m³" icon={<Box className="w-4 h-4"/>} color="text-cyan-400" bg="bg-cyan-500/10" />
+              <ResultCard label="Coffrage" value={results.surfaceCoffrage.toFixed(1)} unit="m²" icon={<Layers className="w-4 h-4"/>} color="text-white" bg="bg-gray-800" border />
+              <ResultCard label="Acier Estimé" value={results.acierKg.toFixed(0)} unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-blue-400" bg="bg-blue-500/10" />
+            </div>
+
+            <div className="flex-1 bg-gray-800 rounded-3xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
+               <div className="absolute -bottom-10 -right-10 w-44 h-44 bg-cyan-600/10 rounded-full blur-3xl pointer-events-none" />
+
+               <div className="w-44 h-44 flex-shrink-0 relative">
+                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                     <span className="text-[10px] text-gray-500 uppercase font-bold text-center">Poids<br/>Total</span>
+                     <span className="text-sm font-bold text-white">{(results.cimentT + results.sableT + results.gravierT + results.acierT).toFixed(1)} T</span>
+                  </div>
+               </div>
+
+               <div className="flex-1 w-full space-y-4">
+                  <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2 mb-2">Besoins Logistiques</h4>
+                  
+                  <MaterialRow label="Ciment (350kg/m³)" val={`${results.cimentSacs.toFixed(1)} sacs`} color="bg-cyan-500" />
+                  <MaterialRow label="Sable (0.55 T/m³)" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-400" />
+                  <MaterialRow label="Gravier (0.75 T/m³)" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
+                  <MaterialRow label="Acier (HA8/HA10)" val={`${results.acierKg.toFixed(0)} kg`} color="bg-blue-500" />
+                  
+                  <div className="pt-2 border-t border-gray-700 flex justify-between items-center">
+                    <span className="text-xs text-gray-400 flex items-center gap-1">
+                      <Droplets className="w-3 h-3 text-blue-400" /> Eau nécessaire
+                    </span>
+                    <span className="text-sm font-bold text-white font-mono">{results.eauL.toFixed(0)} L</span>
+                  </div>
+
+                  <div className="flex items-start gap-2 p-3 bg-blue-500/5 rounded-xl border border-blue-500/20">
+                    <Info className="w-4 h-4 text-blue-400 mt-0.5" />
+                    <p className="text-[10px] text-blue-200/70 leading-relaxed italic">
+                      Ce calcul inclut le béton du radier et des piédroits selon l'épaisseur renseignée. Le coffrage est estimé pour les faces intérieures et extérieures.
+                    </p>
+                  </div>
+               </div>
+            </div>
+
+            {/* Historique Mini */}
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
+                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center text-xs">
+                  <h4 className="font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2"><History className="w-3 h-3" /> Historique</h4>
+                  <button onClick={() => {setHistorique([]); localStorage.removeItem(STORAGE_KEY)}} className="text-red-400 hover:underline uppercase">Vider</button>
                 </div>
-                <button
-                  onClick={() => handleDelete(item.id)}
-                  className="text-red-500 hover:text-red-700 font-bold text-lg"
-                >
-                  ✖
-                </button>
-              </motion.div>
-            ))}
-          </section>
-        ) : (
-          <p className="text-center text-gray-500">📭 Aucun calcul enregistré pour l'instant.</p>
-        )}
-      </AnimatePresence>
+                <div className="max-h-[120px] overflow-y-auto">
+                  {historique.slice(0, 5).map((item) => (
+                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30 hover:bg-gray-700/40 transition-colors">
+                      <div className="text-xs">
+                        <span className="text-gray-500 block text-[9px]">{item.date}</span>
+                        <span className="font-medium">{item.longueur}ml x {item.largeurInterieure}m</span>
+                      </div>
+                      <span className="text-sm font-bold text-cyan-400">{parseFloat(item.total).toLocaleString()} {currency}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
+
+// --- SOUS-COMPOSANTS ---
+const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type="number" value={value || ""} onChange={e => onChange(e.target.value)}
+      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 text-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
+
+const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
+  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-700' : ''}`}>
+    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center gap-1">
+      {icon} {label}
+    </span>
+    <span className={`text-xl font-black ${color}`}>
+      {value} <span className="text-xs font-normal text-gray-500 lowercase">{unit}</span>
+    </span>
+  </div>
+);
+
+const MaterialRow = ({ label, val, color }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
+    <div className="flex items-center gap-2">
+      <div className={`w-1.5 h-1.5 rounded-full ${color}`} />
+      <span className="text-gray-300 text-xs font-medium">{label}</span>
+    </div>
+    <span className="text-xs font-bold text-white font-mono">{val}</span>
+  </div>
+);
