@@ -1,5 +1,5 @@
 // ============================================
-// 📁 ContactSidebar.jsx - VERSION FINALE
+// 📁 ContactSidebar.jsx - VERSION FINALE CORRIGÉE
 // ============================================
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
@@ -32,9 +32,11 @@ export const ContactSidebar = ({
   }, [contacts, searchQuery]);
 
   // ============================================
-  // 🔐 NORMALISATION DU NUMÉRO (IDENTIQUE AU BACKEND)
+  // 🔐 NORMALISATION IDENTIQUE AU BACKEND
   // ============================================
   const normalizePhone = (phoneNumber) => {
+    if (!phoneNumber) return null;
+    
     // Retirer espaces, tirets, parenthèses, points
     let cleaned = phoneNumber.replace(/[\s\-\(\)\.]/g, '');
     
@@ -50,7 +52,7 @@ export const ContactSidebar = ({
   };
 
   // ============================================
-  // 🔥 SYNCHRONISATION CAPACITOR (avec fallback web)
+  // 🔥 SYNCHRONISATION (avec fallback web/mobile)
   // ============================================
   const handleSyncProcess = async () => {
     setLoading(true);
@@ -61,7 +63,7 @@ export const ContactSidebar = ({
       const isWeb = typeof window !== 'undefined' && !window.Capacitor;
 
       if (isWeb) {
-        // 🖥️ MODE WEB : Données de test avec vos vrais numéros
+        // 🖥️ MODE WEB : Contacts de test
         console.log("🖥️ [Mode Web] Utilisation de contacts de test");
         phoneContacts = [
           { name: "ELF Test", phone: "+2250769144101" },
@@ -70,7 +72,7 @@ export const ContactSidebar = ({
           { name: "Abate Test", phone: "+2250150329452" },
           { name: "2.0Musique Test", phone: "+2250150329453" }
         ];
-        console.log(`🧪 ${phoneContacts.length} contacts de test générés (vrais numéros DB)`);
+        console.log(`🧪 ${phoneContacts.length} contacts de test générés`);
       } else {
         // 📱 MODE MOBILE : Vrais contacts Capacitor
         try {
@@ -127,24 +129,41 @@ export const ContactSidebar = ({
       }
 
       console.log(`📤 Envoi de ${phoneContacts.length} contacts au backend...`);
-      console.log("📋 Exemple:", phoneContacts.slice(0, 3));
+      console.log("📋 Exemples:", phoneContacts.slice(0, 3));
 
-      // ✅ Appel API
+      // ✅ APPEL API avec le service corrigé
       const result = await API.syncContacts(token, phoneContacts);
       
       console.log(`📊 Résultat sync:`, result);
 
-      // ✅ Mise à jour UI
-      setSyncMatches(result.onChantilink || []);
-      setOffAppContacts(result.notOnChantilink || []);
+      // ✅ VÉRIFICATION DES DONNÉES REÇUES
+      if (!result || typeof result !== 'object') {
+        throw new Error('Réponse invalide du serveur');
+      }
+
+      // ✅ Extraction sécurisée des données
+      const onChantilink = Array.isArray(result.onChantilink) 
+        ? result.onChantilink 
+        : (result.data?.onChantilink || []);
       
-      if (result.onChantilink?.length > 0) {
+      const notOnChantilink = Array.isArray(result.notOnChantilink)
+        ? result.notOnChantilink
+        : (result.data?.notOnChantilink || []);
+
+      console.log(`✅ Traitement: ${onChantilink.length} sur app, ${notOnChantilink.length} hors app`);
+
+      // ✅ Mise à jour UI
+      setSyncMatches(onChantilink);
+      setOffAppContacts(notOnChantilink);
+      
+      if (onChantilink.length > 0) {
         setActiveTab("suggestions");
-        showToast(`✅ ${result.onChantilink.length} amis trouvés sur Chantilink !`, "success");
+        showToast(`✅ ${onChantilink.length} amis trouvés sur Chantilink !`, "success");
       } else {
         showToast("Aucun ami trouvé sur l'app", "info");
-        if (result.notOnChantilink?.length > 0) {
-          showToast(`${result.notOnChantilink.length} contacts à inviter`, "info");
+        if (notOnChantilink.length > 0) {
+          showToast(`${notOnChantilink.length} contacts à inviter`, "info");
+          setActiveTab("invite");
         }
       }
     } catch (err) {
@@ -160,12 +179,23 @@ export const ContactSidebar = ({
   // ============================================
   const handleInvite = async (contact) => {
     try {
-      const inviteText = `Salut ! Rejoins-moi sur Chantilink pour discuter en toute sécurité 🔒\n\n${window.location.origin}/register`;
-      const phoneDigits = contact.phone.replace(/\D/g, '');
-      const whatsappUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(inviteText)}`;
-      
-      window.open(whatsappUrl, '_blank');
-      showToast(`Invitation ouverte pour ${contact.name}`, "success");
+      const result = await API.inviteContact(token, {
+        contactName: contact.name,
+        contactPhone: contact.phone
+      });
+
+      if (result.success && result.inviteUrl) {
+        window.open(result.inviteUrl, '_blank');
+        showToast(`Invitation ouverte pour ${contact.name}`, "success");
+      } else {
+        // Fallback si le backend ne retourne pas d'URL
+        const inviteText = `Salut ! Rejoins-moi sur Chantilink pour discuter en toute sécurité 🔒\n\n${window.location.origin}/register`;
+        const phoneDigits = contact.phone.replace(/\D/g, '');
+        const whatsappUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(inviteText)}`;
+        
+        window.open(whatsappUrl, '_blank');
+        showToast(`Invitation ouverte pour ${contact.name}`, "success");
+      }
     } catch (err) {
       console.error("❌ Erreur invitation:", err);
       showToast("Erreur lors de l'invitation", "error");
@@ -182,7 +212,7 @@ export const ContactSidebar = ({
       navigator.share({
         title: 'Chantilink',
         text: inviteText
-      });
+      }).catch(err => console.log('Partage annulé:', err));
     } else {
       window.open(
         `https://wa.me/?text=${encodeURIComponent(inviteText)}`, 
@@ -211,6 +241,9 @@ export const ContactSidebar = ({
             title="Synchroniser mes contacts"
           >
             <RefreshCw size={20} className={`${loading ? 'animate-spin' : ''} text-gray-400`} />
+            {loading && (
+              <span className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
+            )}
           </motion.button>
         </div>
 
