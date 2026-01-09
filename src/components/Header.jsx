@@ -1,12 +1,12 @@
 // ==========================================
-// 📁 src/components/Header.jsx - VERSION OPTIMISÉE (MEMO + GPU)
+// 📁 src/components/Header.jsx - VERSION OPTIMISÉE AVEC RECHERCHE
 // ==========================================
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../context/AuthContext";
 import { useDarkMode } from "../context/DarkModeContext";
-import { Bell, User, Shield, LogOut, Moon, Sun, Trash2, Menu } from "lucide-react";
+import { Bell, User, Shield, LogOut, Moon, Sun, Trash2, Search, X } from "lucide-react";
 import axios from "axios";
 
 // Configuration API sécurisée
@@ -37,8 +37,9 @@ const UserAvatar = memo(({ user, avatarUrl }) => {
 });
 
 // --- COMPOSANT PRINCIPAL HEADER ---
-const Header = memo(function Header() {
+const Header = memo(function Header({ searchQuery, onSearchChange }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, logout, activeUserId, getToken } = useAuth();
   const { isDarkMode, toggleDarkMode } = useDarkMode();
 
@@ -47,11 +48,13 @@ const Header = memo(function Header() {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loadingNotifs, setLoadingNotifs] = useState(false);
+  const [localSearch, setLocalSearch] = useState("");
   
   const notifRef = useRef(null);
   const profileRef = useRef(null);
 
   const isAdminUser = user?.role === 'admin' || user?.role === 'superadmin';
+  const isHomePage = location.pathname === '/' || location.pathname === '/home';
 
   // ✅ 1. Optimisation URL Avatar
   const avatarUrl = useMemo(() => {
@@ -61,13 +64,33 @@ const Header = memo(function Header() {
     return avatar.startsWith('http') ? avatar : `${API_URL}${avatar}`;
   }, [user]);
 
+  // Sync search avec parent si fourni
+  useEffect(() => {
+    if (searchQuery !== undefined) {
+      setLocalSearch(searchQuery);
+    }
+  }, [searchQuery]);
+
+  const handleSearchChange = (value) => {
+    setLocalSearch(value);
+    if (onSearchChange) {
+      onSearchChange(value);
+    }
+  };
+
+  const clearSearch = () => {
+    setLocalSearch("");
+    if (onSearchChange) {
+      onSearchChange("");
+    }
+  };
+
   // ✅ 2. Gestionnaire de clics extérieurs (Fermeture auto)
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (notifRef.current && !notifRef.current.contains(event.target)) setShowNotifications(false);
       if (profileRef.current && !profileRef.current.contains(event.target)) setShowDropdown(false);
     };
-    // Utiliser 'mousedown' est plus réactif que 'click'
     document.addEventListener("mousedown", handleClickOutside, { passive: true });
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
@@ -79,7 +102,6 @@ const Header = memo(function Header() {
       const token = await getToken(activeUserId);
       if (!token) return;
 
-      // On limite la réponse pour éviter la surcharge réseau
       const res = await axios.get(`${API_URL}/notifications?limit=15`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -89,12 +111,11 @@ const Header = memo(function Header() {
         setUnreadCount(res.data.unreadCount || 0);
       }
     } catch (err) {
-      // Silencieux en prod sauf si critique
       if (process.env.NODE_ENV === 'development') console.error("Notif Error", err);
     }
   }, [user?._id, activeUserId, getToken]);
 
-  // Polling intelligent (toutes les 60s au lieu de 30s pour économiser la batterie)
+  // Polling intelligent
   useEffect(() => {
     if (!user?._id) return;
     fetchNotifications();
@@ -123,7 +144,6 @@ const Header = memo(function Header() {
       const token = await getToken(activeUserId);
       await axios.delete(`${API_URL}/notifications/${id}`, { headers: { Authorization: `Bearer ${token}` } });
       setNotifications(prev => prev.filter(n => n._id !== id));
-      // Petit hack UX: on ne décrémente que si c'était non lu, sans refaire d'appel API
       setUnreadCount(prev => Math.max(0, prev - 1)); 
     } catch (e) { console.error(e); }
   };
@@ -139,12 +159,12 @@ const Header = memo(function Header() {
       className={`sticky top-0 z-40 backdrop-blur-xl border-b transition-colors duration-300 ${
         isDarkMode ? 'bg-gray-900/80 border-gray-800' : 'bg-white/80 border-gray-200'
       }`}
-      style={{ willChange: 'transform' }} // Aide le GPU
+      style={{ willChange: 'transform' }}
     >
-      <div className="max-w-7xl mx-auto px-4 h-[72px] flex items-center justify-between">
+      <div className="max-w-7xl mx-auto px-4 h-[72px] flex items-center justify-between gap-4">
         
         {/* LOGO */}
-        <Link to="/" className="flex items-center gap-2 group select-none">
+        <Link to="/" className="flex items-center gap-2 group select-none flex-shrink-0">
           <motion.div 
             whileHover={{ rotate: 10 }}
             className="w-10 h-10 bg-gradient-to-br from-orange-500 to-pink-500 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg"
@@ -155,6 +175,36 @@ const Header = memo(function Header() {
             Chantilink
           </span>
         </Link>
+
+        {/* BARRE DE RECHERCHE (visible uniquement sur la page d'accueil) */}
+        {user && isHomePage && (
+          <div className="flex-1 max-w-md mx-4">
+            <div className={`relative flex items-center rounded-xl transition-all ${
+              isDarkMode ? 'bg-gray-800' : 'bg-gray-100'
+            }`}>
+              <Search className="absolute left-3 text-gray-400" size={18} />
+              <input
+                type="text"
+                value={localSearch}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Rechercher des posts..."
+                className={`w-full pl-10 pr-10 py-2.5 rounded-xl outline-none transition-colors ${
+                  isDarkMode 
+                    ? 'bg-gray-800 text-white placeholder-gray-500 focus:bg-gray-700' 
+                    : 'bg-gray-100 text-gray-900 placeholder-gray-400 focus:bg-gray-200'
+                }`}
+              />
+              {localSearch && (
+                <button
+                  onClick={clearSearch}
+                  className="absolute right-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {user && (
           <div className="flex items-center gap-2 sm:gap-3">

@@ -1,5 +1,5 @@
 // ============================================
-// 📁 src/pages/Home/StoryContainer.jsx - STYLE INSTAGRAM
+// 📁 src/pages/Home/StoryContainer.jsx - AFFICHER TOUTES LES STORIES
 // ============================================
 import React, { useMemo, memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -93,34 +93,68 @@ const StoryContainer = ({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
   const { user } = useAuth();
   const uid = user?._id || user?.id;
 
-  const others = useMemo(() => {
-    if (!stories) return [];
+  // ✅ MODIFICATION : On groupe TOUTES les stories (y compris celles de l'utilisateur courant)
+  const allGroupedStories = useMemo(() => {
+    if (!stories || stories.length === 0) return [];
+    
     const map = {};
+    
+    // Grouper toutes les stories par propriétaire
     for (const s of stories) {
-      if (!s.owner || (s.owner._id || s.owner) === uid) continue;
-      const oId = s.owner._id || s.owner;
-      if (!map[oId]) map[oId] = { owner: s.owner, stories: [] };
-      map[oId].stories.push(s);
+      if (!s.owner) continue;
+      
+      const ownerId = s.owner._id || s.owner;
+      
+      if (!map[ownerId]) {
+        map[ownerId] = { 
+          owner: typeof s.owner === 'object' ? s.owner : { _id: ownerId, fullName: "Utilisateur" }, 
+          stories: [] 
+        };
+      }
+      
+      map[ownerId].stories.push(s);
     }
 
+    // Transformer en tableau et calculer les propriétés
     return Object.values(map).map(data => {
-        const slides = data.stories.flatMap(s => s.slides || []);
-        const unviewed = slides.some(sl => 
-            !(sl.views || []).some(v => (typeof v === "string" ? v : v._id) === uid)
-        );
-        const latest = data.stories.reduce((l, c) => new Date(c.createdAt) > new Date(l.createdAt) ? c : l, data.stories[0]);
-        
-        return { 
-          id: data.owner._id, 
-          owner: data.owner, 
-          stories: data.stories, 
-          unviewed, 
-          latest
-        };
-    }).sort((a, b) => (a.unviewed === b.unviewed ? new Date(b.latest.createdAt) - new Date(a.latest.createdAt) : b.unviewed - a.unviewed));
+      const slides = data.stories.flatMap(s => s.slides || []);
+      const unviewed = slides.some(sl => 
+        !(sl.views || []).some(v => (typeof v === "string" ? v : v._id) === uid)
+      );
+      const latest = data.stories.reduce(
+        (l, c) => new Date(c.createdAt) > new Date(l.createdAt) ? c : l, 
+        data.stories[0]
+      );
+      
+      const isCurrentUser = data.owner._id === uid;
+      
+      return { 
+        id: data.owner._id, 
+        owner: data.owner, 
+        stories: data.stories, 
+        unviewed, 
+        latest,
+        isCurrentUser
+      };
+    })
+    // Trier : stories non vues d'abord, puis par date
+    .sort((a, b) => {
+      // L'utilisateur courant passe en premier si il a une story
+      if (a.isCurrentUser) return -1;
+      if (b.isCurrentUser) return 1;
+      
+      // Ensuite, stories non vues en premier
+      if (a.unviewed !== b.unviewed) return b.unviewed - a.unviewed;
+      
+      // Puis par date (plus récent en premier)
+      return new Date(b.latest.createdAt) - new Date(a.latest.createdAt);
+    });
   }, [stories, uid]);
 
-  const unviewedCount = useMemo(() => others.filter(o => o.unviewed).length, [others]);
+  const unviewedCount = useMemo(() => 
+    allGroupedStories.filter(o => o.unviewed && !o.isCurrentUser).length, 
+    [allGroupedStories]
+  );
 
   if (loading && stories.length === 0) {
     return (
@@ -133,10 +167,10 @@ const StoryContainer = ({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
   }
 
   return (
-    <div className="relative group w-full overflow-hidden">
+    <div className="relative group w-full overflow-hidden pb-2">
       
       {/* 🟢 LISTE SCROLLABLE (Snap Scroll activé) */}
-      <div className="flex gap-4 px-4 py-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory">
+      <div className="flex gap-4 px-4 pt-4 pb-2 overflow-x-auto scrollbar-hide snap-x snap-mandatory">
         
         {/* 1. BOUTON AJOUTER */}
         <motion.button
@@ -158,41 +192,28 @@ const StoryContainer = ({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
               </div>
             )}
           </div>
-          <p className="text-[10px] mt-2 font-bold text-gray-500 uppercase tracking-tighter">Votre story</p>
+          <p className="text-[10px] mt-2 font-bold text-gray-500 uppercase tracking-tighter">Créer</p>
         </motion.button>
 
-        {/* 2. MA STORY (Si elle existe) */}
-        {myStories?.length > 0 && (
-          <div className="snap-start">
+        {/* 2. TOUTES LES STORIES (y compris celle de l'utilisateur si elle existe) */}
+        {allGroupedStories.map((group) => (
+          <div key={group.id} className="snap-start">
             <StoryItem 
-              owner={user} 
-              latest={myStories.at(-1)} 
-              unviewed={false} 
+              owner={group.owner} 
+              latest={group.latest} 
+              unviewed={group.unviewed} 
               isDarkMode={isDarkMode} 
-              onClick={() => onOpenStory(myStories, user)}
-              isCurrentUser={true}
+              onClick={() => onOpenStory(group.stories, group.owner)}
+              isCurrentUser={group.isCurrentUser}
             />
           </div>
-        )}
-
-        {/* 3. LES AUTRES STORIES */}
-        {others.map((u) => (
-          <StoryItem
-            key={u.id}
-            owner={u.owner}
-            unviewed={u.unviewed}
-            latest={u.latest}
-            isDarkMode={isDarkMode}
-            onClick={() => onOpenStory(u.stories, u.owner)}
-            isCurrentUser={false}
-          />
         ))}
 
         {/* Padding final pour compenser le bouton flottant sur mobile */}
         <div className="flex-shrink-0 w-24 md:hidden" />
       </div>
 
-      {/* 🔴 BOUTON UNIVERS FLOTTANT (Plus petit & Orange) */}
+      {/* 🔴 BOUTON UNIVERS FLOTTANT (Visible sur tous les écrans) */}
       <AnimatePresence>
         {unviewedCount > 0 && (
           <motion.button
@@ -202,7 +223,7 @@ const StoryContainer = ({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={onOpenPyramid}
-            className={`fixed md:absolute bottom-4 left-1/2 -translate-x-1/2 z-[100] px-4 py-2 rounded-full flex items-center gap-2 shadow-[0_8px_24px_rgba(249,115,22,0.35)] transition-all ${
+            className={`absolute top-1/2 -translate-y-1/2 right-2 z-[100] px-3 py-2 rounded-full flex items-center gap-2 shadow-[0_8px_24px_rgba(249,115,22,0.35)] transition-all ${
               isDarkMode 
                 ? 'bg-gradient-to-r from-orange-600 to-pink-600 border border-white/10' 
                 : 'bg-gradient-to-r from-orange-500 to-pink-500 border border-white/50'
@@ -216,7 +237,7 @@ const StoryContainer = ({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
                 className="absolute inset-0 bg-white rounded-full blur-sm"
               />
             </div>
-            <span className="text-white text-[11px] font-black tracking-wide uppercase">
+            <span className="text-white text-[10px] font-black tracking-wide uppercase hidden sm:inline">
               Univers
             </span>
             <div className="bg-white/20 backdrop-blur-sm rounded-full px-1.5 py-0.5 min-w-[18px] flex items-center justify-center">

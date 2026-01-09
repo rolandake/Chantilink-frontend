@@ -499,6 +499,22 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
         </div>
       </div>
 
+      {/* CONTENU TEXTE - Déplacé en haut */}
+      {content && (
+        <div className="px-3 pb-2">
+          <p className={`text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+            <span className="font-semibold mr-2">{postUser.fullName}</span>
+            <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{displayContent}</span>
+          </p>
+          {shouldTruncate && (
+            <button onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+              className="text-gray-500 text-sm hover:text-gray-400">
+              {expanded ? "moins" : "plus"}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* MEDIA */}
       {mediaUrls.length > 0 && (
           <div className="w-full">
@@ -535,22 +551,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
           <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
             {likesCount} {likesCount === 1 ? 'mention J\'aime' : 'mentions J\'aime'}
           </span>
-        </div>
-      )}
-
-      {/* CONTENU TEXTE */}
-      {content && (
-        <div className="px-3 pb-2">
-          <p className={`text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-            <span className="font-semibold mr-2">{postUser.fullName}</span>
-            <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{displayContent}</span>
-          </p>
-          {shouldTruncate && (
-            <button onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-              className="text-gray-500 text-sm hover:text-gray-400">
-              {expanded ? "moins" : "plus"}
-            </button>
-          )}
         </div>
       )}
 
