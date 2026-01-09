@@ -78,7 +78,7 @@ export default function BatimentForm({ currency = "XOF" }) {
     return (
       <StepComponent 
         currency={currency} 
-        onCostChange={(val) => handleCostChange(step.id, val)} 
+        onTotalChange={(val) => handleCostChange(step.id, val)} 
         onMateriauxChange={(mats) => handleQuantitesChange(step.id, mats)} 
       />
     );

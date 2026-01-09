@@ -1,6 +1,6 @@
 // 📁 src/pages/Home/StoryViewer.jsx
-import React, { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useEffect, useCallback } from "react";
+import { motion } from "framer-motion";
 import { X, Loader2 } from "lucide-react";
 
 const SERVER_URL = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace('/api', '');
@@ -13,6 +13,15 @@ export default function StoryViewer({ stories = [], currentUser, onClose }) {
   
   const story = stories[0] || {}; // On prend le premier groupe d'un utilisateur
   const slide = story.slides?.[slideIdx];
+
+  // ✅ Prévenir le setState pendant le render
+  useEffect(() => {
+    if (!slide) {
+      // Si pas de slide, fermer proprement
+      const timer = setTimeout(onClose, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [slide, onClose]);
 
   useEffect(() => {
     if (!isLoaded || !slide) return;
@@ -33,16 +42,42 @@ export default function StoryViewer({ stories = [], currentUser, onClose }) {
       });
     }, 100);
     return () => clearInterval(interval);
-  }, [slideIdx, isLoaded, story.slides, onClose]);
+  }, [slideIdx, isLoaded, story.slides, onClose, slide]);
 
+  // ✅ useCallback pour éviter les re-renders inutiles
+  const handlePrevSlide = useCallback(() => {
+    if (slideIdx > 0) {
+      setSlideIdx(s => s - 1);
+      setProgress(0);
+      setIsLoaded(false);
+    }
+  }, [slideIdx]);
+
+  const handleNextSlide = useCallback(() => {
+    if (slideIdx < story.slides.length - 1) {
+      setSlideIdx(s => s + 1);
+      setProgress(0);
+      setIsLoaded(false);
+    } else {
+      onClose();
+    }
+  }, [slideIdx, story.slides, onClose]);
+
+  const handleDragEnd = useCallback((_, info) => {
+    if (info.offset.y > 100) onClose();
+  }, [onClose]);
+
+  // ✅ Ne pas rendre si pas de slide
   if (!slide) return null;
 
   return (
     <motion.div 
       drag="y"
       dragConstraints={{ top: 0, bottom: 0 }}
-      onDragEnd={(_, info) => info.offset.y > 100 && onClose()}
-      initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+      onDragEnd={handleDragEnd}
+      initial={{ y: '100%' }} 
+      animate={{ y: 0 }} 
+      exit={{ y: '100%' }}
       className="fixed inset-0 z-[10000] bg-black touch-none flex flex-col items-center justify-center"
     >
       {/* Progress Bars (Optimisées encoche iPhone) */}
@@ -58,23 +93,33 @@ export default function StoryViewer({ stories = [], currentUser, onClose }) {
       </div>
 
       {/* Bouton Fermer */}
-      <button onClick={onClose} className="absolute top-[calc(env(safe-area-inset-top)+25px)] right-4 z-[10001] p-2 bg-black/20 backdrop-blur-md rounded-full text-white">
+      <button 
+        onClick={onClose} 
+        className="absolute top-[calc(env(safe-area-inset-top)+25px)] right-4 z-[10001] p-2 bg-black/20 backdrop-blur-md rounded-full text-white"
+      >
         <X size={24}/>
       </button>
 
       {/* Média */}
       <div className="w-full h-full flex items-center justify-center relative">
-        {!isLoaded && <Loader2 className="animate-spin text-white/20 absolute" size={40}/>}
+        {!isLoaded && (
+          <Loader2 className="animate-spin text-white/20 absolute" size={40}/>
+        )}
         {slide.type === "video" ? (
           <video 
+            key={`video-${slideIdx}`}
             src={MEDIA_URL(slide.mediaUrl || slide.media)} 
             onLoadedData={() => setIsLoaded(true)}
-            autoPlay playsInline className="w-full h-full object-contain"
+            autoPlay 
+            playsInline 
+            className="w-full h-full object-contain"
           />
         ) : (
           <img 
+            key={`img-${slideIdx}`}
             src={MEDIA_URL(slide.mediaUrl || slide.media)} 
             onLoad={() => setIsLoaded(true)}
+            alt="Story"
             className="w-full h-full object-contain"
           />
         )}
@@ -82,8 +127,16 @@ export default function StoryViewer({ stories = [], currentUser, onClose }) {
 
       {/* Zones de Clic (Navigation tactile facile) */}
       <div className="absolute inset-0 z-[10000] flex">
-        <div className="w-[40%] h-full" onClick={() => slideIdx > 0 && (setSlideIdx(s => s - 1), setProgress(0), setIsLoaded(false))} />
-        <div className="flex-1 h-full" onClick={() => slideIdx < story.slides.length - 1 ? (setSlideIdx(s => s + 1), setProgress(0), setIsLoaded(false)) : onClose()} />
+        <button 
+          onClick={handlePrevSlide}
+          className="w-[40%] h-full"
+          aria-label="Slide précédent"
+        />
+        <button 
+          onClick={handleNextSlide}
+          className="flex-1 h-full"
+          aria-label="Slide suivant"
+        />
       </div>
 
       {/* Swipe Hint Footer */}

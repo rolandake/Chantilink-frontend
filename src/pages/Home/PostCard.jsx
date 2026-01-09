@@ -1,11 +1,11 @@
-// src/pages/Home/PostCard.jsx - FIX BOUTON SUIVRE
+// src/pages/Home/PostCard.jsx - VERSION LAYOUT INSTAGRAM
 import React, { forwardRef, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import {
-  TrashIcon, HeartIcon, ChatBubbleLeftIcon, ShareIcon,
+  TrashIcon, HeartIcon, ChatBubbleLeftIcon, ShareIcon, BookmarkIcon,
 } from "@heroicons/react/24/outline";
-import { HeartIcon as HeartSolid, CheckBadgeIcon, RocketLaunchIcon, FireIcon } from "@heroicons/react/24/solid";
+import { HeartIcon as HeartSolid, CheckBadgeIcon, RocketLaunchIcon, FireIcon, BookmarkIcon as BookmarkSolid } from "@heroicons/react/24/solid";
 import { useAuth } from "../../context/AuthContext";
 import { usePosts } from "../../context/PostsContext";
 import { useDarkMode } from "../../context/DarkModeContext";
@@ -13,6 +13,7 @@ import PostMedia from "./PostMedia";
 import PostComments from "./PostComments";
 import PostShareSection from "./PostShareSection";
 import ErrorBoundary from "../../components/ErrorBoundary";
+import axiosClient from "../../api/axiosClientGlobal";
 
 // === CONFIGURATION ===
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
@@ -87,12 +88,53 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
   );
 });
 
+// === SKELETON LOADER COMPONENT ===
+const SkeletonPostCard = ({ isDarkMode }) => (
+  <div className={`relative w-full max-w-[630px] mx-auto border-b ${
+    isDarkMode ? 'bg-black border-gray-800' : 'bg-white border-gray-200'
+  } animate-pulse overflow-hidden`}>
+    {/* Header */}
+    <div className="flex justify-between items-center p-4">
+      <div className="flex items-center gap-3">
+        <div className={`rounded-full w-10 h-10 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+        <div className="flex flex-col gap-1.5">
+          <div className={`h-4 rounded w-32 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`}></div>
+          <div className={`h-3 rounded w-20 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
+        </div>
+      </div>
+    </div>
+    
+    {/* Media Placeholder */}
+    <div className={`w-full aspect-square ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+    
+    {/* Actions Bar */}
+    <div className="flex items-center p-4 gap-4">
+      <div className={`h-6 w-6 rounded ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+      <div className={`h-6 w-6 rounded ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+      <div className={`h-6 w-6 rounded ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+      <div className={`h-6 w-6 rounded ml-auto ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+    </div>
+    
+    {/* Content Text */}
+    <div className="px-4 pb-4 space-y-2">
+      <div className={`h-3 rounded w-full ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`}></div>
+      <div className={`h-3 rounded w-3/4 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
+    </div>
+  </div>
+);
+
 // === POST CARD PRINCIPALE ===
-const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
+const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, ref) => {
+  const { isDarkMode } = useDarkMode();
+  
+  // ✅ SKELETON LOADER
+  if (loading) {
+    return <SkeletonPostCard isDarkMode={isDarkMode} />;
+  }
+
   if (!post || !post._id) return null;
 
   const { user: currentUser, getToken, updateUserProfile } = useAuth();
-  const { isDarkMode } = useDarkMode();
   const navigate = useNavigate();
   const cardRef = useRef(null);
 
@@ -123,6 +165,9 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
   const [showBoostModal, setShowBoostModal] = useState(false);
   const [boostLoading, setBoostLoading] = useState(false);
   const [selectedBoost, setSelectedBoost] = useState(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const boostPlans = [
     { id: 1, duration: 24, amount: 1000, label: "24h Flash", description: "Visibilité boostée pendant 24h", icon: <RocketLaunchIcon className="w-5 h-5 text-orange-500"/> },
@@ -154,24 +199,21 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     }
   }, [post, currentUser]);
 
-  // ✅ FIX: Synchronisation ROBUSTE du state "Following"
+  // Synchronisation du state "following"
   useEffect(() => {
     if (!currentUser || !postUser._id || postUser._id === 'unknown') {
       setIsFollowing(false);
       return;
     }
 
-    // Ne pas permettre de se suivre soi-même
     if (currentUser._id === postUser._id) {
       setIsFollowing(false);
       return;
     }
 
-    // Vérifier dans le tableau "following" de currentUser
     const followingList = Array.isArray(currentUser.following) ? currentUser.following : [];
     
     const isCurrentlyFollowing = followingList.some(followId => {
-      // Gérer les cas où followId peut être un ObjectId ou un objet User complet
       const idToCompare = typeof followId === 'object' && followId !== null
         ? (followId._id || followId.id || followId)
         : followId;
@@ -179,15 +221,8 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
       return idToCompare?.toString() === postUser._id.toString();
     });
 
-    console.log(`🔍 [PostCard] État follow pour ${postUser.fullName}:`, {
-      isFollowing: isCurrentlyFollowing,
-      postUserId: postUser._id,
-      currentUserFollowing: followingList.length,
-      followingIds: followingList.slice(0, 3)
-    });
-
     setIsFollowing(isCurrentlyFollowing);
-  }, [currentUser, postUser._id]);
+  }, [currentUser, postUser._id, currentUser?.following]);
 
   // Observer Vidéos
   useEffect(() => {
@@ -207,6 +242,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     return () => observer.disconnect();
   }, []);
 
+  // Handle Like
   const handleLike = useCallback(async (e) => {
     e?.stopPropagation();
     if (!currentUser) return showToast?.("Connectez-vous pour aimer", "info");
@@ -220,29 +256,23 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     setLoadingLike(true);
 
     try {
-      const token = await getToken();
-      const response = await fetch(`${API_URL}/posts/${post._id}/like`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      if (!response.ok) throw new Error('Erreur lors du like');
+      await axiosClient.post(`/posts/${post._id}/like`);
     } catch (err) {
       console.error('❌ [Like] Erreur:', err);
       setLiked(prevLiked);
       setLikesCount(prevCount);
-      showToast?.("Erreur lors du like", "error");
+      const errorMsg = err.response?.data?.message || err.response?.data?.error || "Erreur lors du like";
+      showToast?.(errorMsg, "error");
     } finally {
       setLoadingLike(false);
       setTimeout(() => setAnimateHeart(false), 800);
     }
-  }, [currentUser, liked, likesCount, loadingLike, post._id, getToken, showToast]);
+  }, [currentUser, liked, likesCount, loadingLike, post._id, showToast]);
 
-  // ✅ FIX COMPLET: handleFollow avec mise à jour du contexte
+  // Handle Follow
   const handleFollow = useCallback(async (e) => {
     e?.stopPropagation();
 
-    // Validations
     if (!currentUser) {
       showToast?.("Connectez-vous pour suivre", "info");
       return;
@@ -263,46 +293,30 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
     const wasFollowing = isFollowing;
     const action = wasFollowing ? 'unfollow' : 'follow';
 
-    console.log(`🔄 [Follow] Action: ${action} pour ${postUser.fullName} (${postUser._id})`);
-
-    // UI Optimiste
     setIsFollowing(!wasFollowing);
     setLoadingFollow(true);
 
     try {
-      const token = await getToken();
-      
-      const response = await fetch(`${API_URL}/follow/${action}/${postUser._id}`, {
-        method: "POST",
-        headers: { 
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        }
-      });
+      const response = await axiosClient.post(`/follow/${action}/${postUser._id}`);
+      const data = response.data;
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || `Erreur ${response.status}`);
+      if (!data.success) {
+        throw new Error(data.error || data.message || "Échec de l'opération");
       }
 
-      const data = await response.json();
+      const currentFollowing = Array.isArray(currentUser.following) 
+        ? currentUser.following 
+        : [];
+      
+      const updatedFollowing = wasFollowing
+        ? currentFollowing.filter(id => {
+            const idStr = typeof id === 'object' ? (id._id || id) : id;
+            return idStr?.toString() !== postUser._id.toString();
+          })
+        : [...currentFollowing, postUser._id];
 
-      // ✅ MISE À JOUR DU CONTEXTE AUTH
-      if (updateUserProfile && currentUser._id) {
-        const updatedFollowing = wasFollowing
-          ? currentUser.following.filter(id => {
-              const idStr = typeof id === 'object' ? (id._id || id) : id;
-              return idStr?.toString() !== postUser._id.toString();
-            })
-          : [...(currentUser.following || []), postUser._id];
-
-        console.log(`✅ [Follow] Mise à jour locale:`, {
-          action,
-          newFollowingCount: updatedFollowing.length,
-          postUserId: postUser._id
-        });
-
-        updateUserProfile(currentUser._id, {
+      if (updateUserProfile) {
+        await updateUserProfile(currentUser._id, {
           following: updatedFollowing
         });
       }
@@ -313,56 +327,96 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
           : `Vous suivez ${postUser.fullName}`, 
         "success"
       );
-
-      console.log(`✅ [Follow] Action ${action} réussie`);
+      
     } catch (err) {
       console.error(`❌ [Follow] Erreur ${action}:`, err);
-      
-      // Retour arrière en cas d'erreur
       setIsFollowing(wasFollowing);
       
-      showToast?.(
-        err.message || "Impossible de modifier l'abonnement", 
-        "error"
-      );
+      const errorMessage = err.response?.data?.error 
+        || err.response?.data?.message 
+        || err.message 
+        || "Impossible de modifier l'abonnement";
+      
+      showToast?.(errorMessage, "error");
     } finally {
       setLoadingFollow(false);
     }
-  }, [currentUser, isFollowing, loadingFollow, postUser, getToken, showToast, updateUserProfile]);
+  }, [currentUser, isFollowing, loadingFollow, postUser, showToast, updateUserProfile]);
 
   const handleBoostPayment = useCallback(async () => {
     if (!selectedBoost) return;
     setBoostLoading(true);
     try {
       const token = await getToken();
-      const res = await fetch(`${API_URL.replace('/api', '')}/boost/create-session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          postId: post._id, planId: selectedBoost.id, amount: selectedBoost.amount, duration: selectedBoost.duration
-        })
+      const res = await axiosClient.post('/boost/create-session', {
+        postId: post._id, 
+        planId: selectedBoost.id, 
+        amount: selectedBoost.amount, 
+        duration: selectedBoost.duration
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
       });
-      const data = await res.json();
+      
+      const data = res.data;
+      
       if (!data.success) throw new Error(data.message);
-      if (data.url) { window.location.href = data.url; } 
-      else {
+      if (data.url) { 
+        window.location.href = data.url; 
+      } else {
         setIsBoosted(true);
         showToast?.("🚀 Post boosté avec succès !", "success");
         setShowBoostModal(false);
       }
     } catch (err) {
-      showToast?.(err.message || "Erreur de paiement", "error");
+      const errorMsg = err.response?.data?.message || err.message || "Erreur de paiement";
+      showToast?.(errorMsg, "error");
     } finally {
       setBoostLoading(false);
     }
   }, [selectedBoost, getToken, post._id, showToast]);
+
+  // ✅ HANDLE DELETE POST
+  const handleDeletePost = useCallback(async () => {
+    setIsDeleting(true);
+    try {
+      await axiosClient.delete(`/posts/${post._id}`);
+      showToast?.("Post supprimé avec succès", "success");
+      setShowDeleteModal(false);
+      
+      if (onDeleted) {
+        onDeleted(post._id);
+      }
+    } catch (err) {
+      console.error('❌ [Delete] Erreur:', err);
+      
+      let errorMsg = "Erreur lors de la suppression";
+      
+      if (err.response?.status === 404) {
+        errorMsg = "Ce post a déjà été supprimé ou n'existe plus";
+        setShowDeleteModal(false);
+        if (onDeleted) {
+          onDeleted(post._id);
+        }
+      } else if (err.response?.status === 403) {
+        errorMsg = "Vous n'avez pas la permission de supprimer ce post";
+      } else if (err.response?.status === 401) {
+        errorMsg = "Vous devez être connecté pour supprimer ce post";
+      } else {
+        errorMsg = err.response?.data?.message || err.response?.data?.error || errorMsg;
+      }
+      
+      showToast?.(errorMsg, "error");
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [post._id, showToast, onDeleted]);
 
   const isOwner = currentUser && (post.userId === currentUser._id || postUser._id === currentUser._id);
   const canFollow = currentUser && !isOwner && postUser._id !== 'unknown';
 
   const mediaUrls = useMemo(() => 
     (Array.isArray(post.media) ? post.media : [post.media]).filter(Boolean).map(m => 
-        getCloudinaryUrl(typeof m === 'string' ? m : m.url, { width: 800, format: 'auto' })
+        getCloudinaryUrl(typeof m === 'string' ? m : m.url, { width: 1080, format: 'auto' })
     ), [post.media]);
 
   const formattedDate = useMemo(() => {
@@ -376,7 +430,9 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
       ref={node => { cardRef.current = node; if (ref) ref.current = node; }}
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      className={`relative w-full border-b ${isDarkMode ? 'bg-black border-white/10' : 'bg-white border-gray-200'}`}
+      className={`relative w-full max-w-[630px] mx-auto border-b ${
+        isDarkMode ? 'bg-black border-gray-800' : 'bg-white border-gray-200'
+      } overflow-hidden`}
     >
       {isBoosted && (
         <div className="absolute top-0 right-0 z-10 p-2">
@@ -387,10 +443,10 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
       )}
 
       {/* HEADER */}
-      <div className="flex justify-between items-center px-4 pt-3 pb-2">
+      <div className="flex justify-between items-center p-3">
         <div className="flex items-center gap-3">
           <button onClick={() => navigate(`/profile/${postUser._id}`)} className="relative shrink-0">
-            <SimpleAvatar username={postUser.fullName} photo={postUser.profilePhoto} size={42} />
+            <SimpleAvatar username={postUser.fullName} photo={postUser.profilePhoto} size={38} />
             {postUser.isPremium && (
                  <div className="absolute -bottom-1 -right-1 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-full p-[2px] border border-black z-10">
                      <CheckBadgeIcon className="w-3 h-3 text-white" />
@@ -401,12 +457,12 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
           <div className="flex flex-col">
             <div className="flex items-center gap-1.5 flex-wrap">
               <span onClick={() => navigate(`/profile/${postUser._id}`)}
-                className={`font-bold text-sm cursor-pointer hover:underline truncate max-w-[150px] ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                 {postUser.fullName}
               </span>
               {postUser.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500" />}
             </div>
-            <span className="text-xs text-gray-500">{formattedDate} {post.location && ` • ${post.location}`}</span>
+            <span className="text-xs text-gray-500">{formattedDate}</span>
           </div>
         </div>
 
@@ -422,93 +478,132 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
             <button 
                 onClick={handleFollow}
                 disabled={loadingFollow}
-                className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all border active:scale-95 min-w-[80px] ${
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
                     isFollowing 
-                    ? isDarkMode ? 'border-gray-700 text-gray-300 bg-transparent hover:bg-red-500/10 hover:text-red-400 hover:border-red-400' : 'border-gray-300 text-gray-600 bg-transparent hover:bg-red-50 hover:text-red-500 hover:border-red-300'
-                    : isDarkMode ? 'bg-white text-black border-white hover:bg-gray-200' : 'bg-black text-white border-black hover:bg-gray-800'
+                    ? isDarkMode ? 'bg-gray-800 text-gray-300 hover:bg-gray-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    : isDarkMode ? 'bg-white text-black hover:bg-gray-200' : 'bg-black text-white hover:bg-gray-800'
                 }`}
             >
-                {loadingFollow ? "..." : isFollowing ? "Suivi" : "Suivre"}
+                {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
+            </button>
+          )}
+          
+          {isOwner && (
+            <button 
+              onClick={(e) => { e.stopPropagation(); setShowDeleteModal(true); }}
+              className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-all"
+            >
+              <TrashIcon className="w-5 h-5 text-gray-400" />
             </button>
           )}
         </div>
       </div>
 
-      {/* CONTENU TEXTE */}
-      <div className="px-4 py-1">
-        <p className={`whitespace-pre-line text-[15px] leading-relaxed break-words ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-            {displayContent}
-        </p>
-        {shouldTruncate && (
-          <button onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-            className="text-gray-500 text-sm mt-1 hover:text-orange-500 font-medium transition-colors">
-            {expanded ? "Voir moins" : "Voir plus"}
-          </button>
-        )}
-      </div>
-
       {/* MEDIA */}
       {mediaUrls.length > 0 && (
-          <div className="w-full mt-2">
+          <div className="w-full">
              <PostMedia mediaUrls={mediaUrls} />
           </div>
       )}
 
-      {/* ACTIONS BAR */}
-      <div className="flex items-center px-4 py-3 gap-6">
-        <button onClick={handleLike} disabled={loadingLike} className="flex items-center gap-2 group active:scale-95">
-          {liked ? <HeartSolid className={`w-6 h-6 text-red-500 ${animateHeart ? 'animate-bounce' : ''}`} /> 
-                 : <HeartIcon className={`w-6 h-6 ${isDarkMode ? 'text-gray-400 group-hover:text-red-400' : 'text-gray-600 group-hover:text-red-500'}`} />}
-          <span className={`text-sm font-medium ${liked ? 'text-red-500' : 'text-gray-500'}`}>{likesCount || ""}</span>
-        </button>
+      {/* ACTIONS BAR - Style Instagram */}
+      <div className="flex items-center justify-between px-3 py-2">
+        <div className="flex items-center gap-4">
+          <button onClick={handleLike} disabled={loadingLike} className="group active:scale-90 transition-transform">
+            {liked ? <HeartSolid className={`w-7 h-7 text-red-500 ${animateHeart ? 'animate-bounce' : ''}`} /> 
+                   : <HeartIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'} group-hover:text-gray-500`} />}
+          </button>
 
-        <button onClick={(e) => { e.stopPropagation(); setShowComments(!showComments); }} className="flex items-center gap-2 group active:scale-95">
-          <ChatBubbleLeftIcon className={`w-6 h-6 ${isDarkMode ? 'text-gray-400 group-hover:text-blue-400' : 'text-gray-600 group-hover:text-blue-500'}`} />
-          <span className={`text-sm font-medium ${showComments ? 'text-blue-500' : 'text-gray-500'}`}>{commentsCount || ""}</span>
-        </button>
+          <button onClick={(e) => { e.stopPropagation(); setShowComments(!showComments); }} className="group active:scale-90 transition-transform">
+            <ChatBubbleLeftIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'} group-hover:text-gray-500`} />
+          </button>
 
-        <button onClick={(e) => { e.stopPropagation(); setShowShare(!showShare); }} className="flex items-center gap-2 group active:scale-95 ml-auto">
-          <ShareIcon className={`w-6 h-6 ${isDarkMode ? 'text-gray-400 group-hover:text-green-400' : 'text-gray-600 group-hover:text-green-500'}`} />
+          <button onClick={(e) => { e.stopPropagation(); setShowShare(!showShare); }} className="group active:scale-90 transition-transform">
+            <ShareIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'} group-hover:text-gray-500`} />
+          </button>
+        </div>
+
+        <button onClick={() => setSaved(!saved)} className="group active:scale-90 transition-transform">
+          {saved ? <BookmarkSolid className="w-7 h-7 text-gray-900 dark:text-white" />
+                 : <BookmarkIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'} group-hover:text-gray-500`} />}
         </button>
       </div>
 
-      {/* MODAL BOOST */}
+      {/* LIKES COUNT */}
+      {likesCount > 0 && (
+        <div className="px-3 pb-1">
+          <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+            {likesCount} {likesCount === 1 ? 'mention J\'aime' : 'mentions J\'aime'}
+          </span>
+        </div>
+      )}
+
+      {/* CONTENU TEXTE */}
+      {content && (
+        <div className="px-3 pb-2">
+          <p className={`text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+            <span className="font-semibold mr-2">{postUser.fullName}</span>
+            <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{displayContent}</span>
+          </p>
+          {shouldTruncate && (
+            <button onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+              className="text-gray-500 text-sm hover:text-gray-400">
+              {expanded ? "moins" : "plus"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* COMMENTS PREVIEW */}
+      {commentsCount > 0 && !showComments && (
+        <button 
+          onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
+          className="px-3 pb-2 text-sm text-gray-500 hover:text-gray-400 text-left"
+        >
+          Afficher {commentsCount === 1 ? 'le commentaire' : `les ${commentsCount} commentaires`}
+        </button>
+      )}
+
+      {/* MODAL DELETE */}
       <AnimatePresence>
-          {showBoostModal && (
-              <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-                onClick={() => setShowBoostModal(false)}>
-                  <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
-                      className={`w-full max-w-md rounded-3xl p-6 shadow-2xl relative ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white'}`}
+          {showDeleteModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+                onClick={() => !isDeleting && setShowDeleteModal(false)}>
+                  <motion.div 
+                      initial={{ scale: 0.9, opacity: 0 }} 
+                      animate={{ scale: 1, opacity: 1 }} 
+                      exit={{ scale: 0.9, opacity: 0 }}
+                      className={`w-full max-w-sm rounded-2xl p-6 shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white'}`}
                       onClick={(e) => e.stopPropagation()}>
-                      <button onClick={() => setShowBoostModal(false)} className="absolute top-4 right-4 text-gray-500 hover:text-red-500 p-2">✕</button>
                       <div className="text-center mb-6">
-                          <div className="w-16 h-16 bg-gradient-to-br from-orange-400 to-pink-600 rounded-full flex items-center justify-center mx-auto mb-3">
-                              <RocketLaunchIcon className="w-8 h-8 text-white" />
+                          <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                              <TrashIcon className="w-8 h-8 text-red-500" />
                           </div>
-                          <h2 className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Booster ce post</h2>
+                          <h2 className={`text-xl font-bold mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                              Supprimer ce post ?
+                          </h2>
+                          <p className="text-sm text-gray-500">
+                              Cette action est irréversible.
+                          </p>
                       </div>
-                      <div className="space-y-3 mb-6">
-                          {boostPlans.map(plan => (
-                              <div key={plan.id} onClick={() => setSelectedBoost(plan)}
-                                  className={`p-4 rounded-xl border-2 cursor-pointer transition-all flex items-center justify-between ${
-                                      selectedBoost?.id === plan.id ? 'border-orange-500 bg-orange-500/10' 
-                                      : isDarkMode ? 'border-gray-800 bg-gray-800' : 'border-gray-100 bg-gray-50'
-                                  }`}>
-                                  <div className="flex items-center gap-3">
-                                      {plan.icon}
-                                      <div>
-                                          <p className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{plan.label}</p>
-                                          <p className="text-xs text-gray-500">{plan.description}</p>
-                                      </div>
-                                  </div>
-                                  <p className="font-bold text-orange-500">{plan.amount} FCFA</p>
-                              </div>
-                          ))}
+                      <div className="flex gap-3">
+                          <button 
+                              onClick={() => setShowDeleteModal(false)}
+                              disabled={isDeleting}
+                              className={`flex-1 py-3 rounded-xl font-bold ${
+                                  isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'
+                              } disabled:opacity-50`}
+                          >
+                              Annuler
+                          </button>
+                          <button 
+                              onClick={handleDeletePost}
+                              disabled={isDeleting}
+                              className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold hover:bg-red-600 disabled:opacity-50"
+                          >
+                              {isDeleting ? "..." : "Supprimer"}
+                          </button>
                       </div>
-                      <button onClick={handleBoostPayment} disabled={!selectedBoost || boostLoading}
-                          className="w-full py-4 rounded-xl bg-gradient-to-r from-orange-500 to-pink-600 text-white font-bold text-lg disabled:opacity-50">
-                          {boostLoading ? "Paiement..." : `Payer ${selectedBoost ? selectedBoost.amount + ' FCFA' : ''}`}
-                      </button>
                   </motion.div>
               </div>
           )}
@@ -517,7 +612,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
       {/* COMMENTAIRES & PARTAGE */}
       <AnimatePresence>
         {showComments && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden border-t border-gray-200 dark:border-gray-800">
             <ErrorBoundary>
                 <PostComments 
                     postId={post._id} comments={comments}
@@ -539,7 +634,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast }, ref) => {
           </motion.div>
         )}
         {showShare && (
-           <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden">
+           <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-gray-200 dark:border-gray-800">
               <PostShareSection postId={post._id} showToast={showToast} />
            </motion.div>
         )}

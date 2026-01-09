@@ -1,10 +1,11 @@
 // ============================================
 // 📁 src/App.jsx
-// VERSION ULTRA-OPTIMISÉE - Performances Maximales ⚡
+// VERSION AVEC NAVBAR INTELLIGENTE AUTO-HIDE ⚡
+// LAYOUT INSTAGRAM POUR DESKTOP 🎨
 // ============================================
-import React, { useState, Suspense, useEffect, useMemo, useCallback, memo } from "react";
+import React, { useState, Suspense, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { 
   Home, MessageSquare, Video, Calculator, Mail, User, Menu, ArrowLeft, Shield
 } from "lucide-react";
@@ -17,6 +18,7 @@ import { useDarkMode } from "./context/DarkModeContext";
 import { useMessagesData } from "./pages/Chat/hooks/useMessagesData";
 import ProtectedAdminRoute from "./components/ProtectedAdminRoute";
 import { setupIndexedDB } from "./utils/idbMigration";
+import { initializeStorage } from "./utils/idbCleanup";
 
 import { 
   Home as HomePage, Profile, ChatPage, VideosPage, CalculsPage, Messages, AuthPage 
@@ -25,26 +27,98 @@ import {
 import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
 import StoryViewer from "./pages/Home/StoryViewer";
 
-// ✅ OPTIMISATION : Transition ultra-rapide
 const fastTransition = { duration: 0.15, ease: "easeOut" };
+
+// ============================================
+// 🎯 HOOK POUR DÉTECTER LE SCROLL INTELLIGENT
+// ============================================
+function useSmartScroll(threshold = 10) {
+  const [isVisible, setIsVisible] = useState(true);
+  const lastScrollY = useRef(0);
+  const scrollDirection = useRef('up');
+  const ticking = useRef(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      if (!ticking.current) {
+        window.requestAnimationFrame(() => {
+          const currentScrollY = window.scrollY || document.documentElement.scrollTop;
+          
+          // Toujours visible en haut de page (< 80px)
+          if (currentScrollY < 80) {
+            setIsVisible(true);
+            lastScrollY.current = currentScrollY;
+            ticking.current = false;
+            return;
+          }
+
+          const scrollDiff = currentScrollY - lastScrollY.current;
+
+          // Scroll vers le bas (cache la navbar)
+          if (scrollDiff > threshold) {
+            if (scrollDirection.current !== 'down') {
+              scrollDirection.current = 'down';
+              setIsVisible(false);
+            }
+          } 
+          // Scroll vers le haut (montre la navbar)
+          else if (scrollDiff < -threshold) {
+            if (scrollDirection.current !== 'up') {
+              scrollDirection.current = 'up';
+              setIsVisible(true);
+            }
+          }
+
+          lastScrollY.current = currentScrollY;
+          ticking.current = false;
+        });
+        
+        ticking.current = true;
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [threshold]);
+
+  return isVisible;
+}
 
 export default function App() {
   const [ready, setReady] = useState(false);
   const { ready: authReady } = useAuth();
 
   useEffect(() => {
-    // Init IndexedDB en background (non-bloquant)
-    setupIndexedDB().catch(() => console.warn('IDB init failed'));
+    const initApp = async () => {
+      try {
+        await setupIndexedDB().catch(() => console.warn('IDB init failed'));
+        await initializeStorage().catch(err => {
+          console.error('❌ [App] Erreur init storage:', err);
+        });
+      } catch (err) {
+        console.error('❌ [App] Erreur initialisation:', err);
+      }
+    };
     
-    // Viewport height fix
+    initApp();
+    
+    const cleanupInterval = setInterval(() => {
+      console.log('🧹 [App] Nettoyage périodique...');
+      initializeStorage().catch(err => {
+        console.error('❌ [App] Erreur nettoyage périodique:', err);
+      });
+    }, 30 * 60 * 1000);
+    
     const fixVh = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
     fixVh();
     window.addEventListener('resize', fixVh, { passive: true });
     
-    // Ready after auth
     if (authReady) setReady(true);
     
-    return () => window.removeEventListener('resize', fixVh);
+    return () => {
+      window.removeEventListener('resize', fixVh);
+      clearInterval(cleanupInterval);
+    };
   }, [authReady]);
 
   if (!ready) return <SplashScreen onFinish={() => {}} />;
@@ -65,6 +139,9 @@ function AppContent() {
   const [storyViewerOpen, setStoryViewerOpen] = useState(false);
   const [storyViewerData, setStoryViewerData] = useState({ stories: [], owner: null });
 
+  // ✅ Hook pour détecter le scroll intelligent
+  const isNavVisible = useSmartScroll(10);
+
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
 
   const isHome = location.pathname === "/";
@@ -74,23 +151,27 @@ function AppContent() {
 
   const mainStyle = useMemo(() => ({
     top: showNav ? "72px" : "0",
-    height: showNav ? "calc(100% - 136px)" : "100%",
+    height: showNav ? "calc(100% - 72px)" : "100%",
     paddingBottom: "env(safe-area-inset-bottom)",
   }), [showNav]);
 
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
       
-      {showNav && (
-        <motion.div 
-          initial={{ y: -80 }} 
-          animate={{ y: 0 }} 
-          transition={fastTransition}
-          className="fixed top-0 left-0 right-0 z-40"
-        >
-          <Header />
-        </motion.div>
-      )}
+      {/* ✅ HEADER avec animation intelligente */}
+      <AnimatePresence>
+        {showNav && isNavVisible && (
+          <motion.div 
+            initial={{ y: -80 }} 
+            animate={{ y: 0 }} 
+            exit={{ y: -80 }}
+            transition={{ duration: 0.3, ease: "easeInOut" }}
+            className="fixed top-0 left-0 right-0 z-40"
+          >
+            <Header />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {!isHome && !isAuth && !storyViewerOpen && (
         <FloatingBackButton isDarkMode={isDarkMode} onClick={() => navigate("/")} />
@@ -98,9 +179,8 @@ function AppContent() {
 
       {showNav && <SidebarDesktopMemo isDarkMode={isDarkMode} isAdminUser={isAdmin} />}
 
-      <main className="absolute left-0 right-0 z-10 overflow-y-auto" style={mainStyle}>
-        {/* ✅ OPTIMISATION : Suppression de motion.div pour plus de rapidité */}
-        <div key={location.pathname}>
+      <main className="absolute left-0 right-0 z-10 overflow-y-auto lg:left-0" style={mainStyle}>
+        <div className="lg:ml-64 max-w-[630px] lg:max-w-none lg:px-8 mx-auto" key={location.pathname}>
           <Suspense fallback={<LoadingSpinner />}>
             <Routes location={location}>
               <Route path="/auth" element={<AuthRoute redirectIfAuthenticated><AuthPage /></AuthRoute>} />
@@ -117,11 +197,20 @@ function AppContent() {
         </div>
       </main>
 
-      {showNav && (
-        <div className="fixed bottom-0 left-0 right-0 z-50">
-          <NavbarMobileMemo isDarkMode={isDarkMode} isAdminUser={isAdmin} user={user} location={location} />
-        </div>
-      )}
+      {/* ✅ NAVBAR MOBILE avec animation intelligente */}
+      <AnimatePresence>
+        {showNav && isNavVisible && (
+          <motion.div 
+            initial={{ y: 100 }} 
+            animate={{ y: 0 }} 
+            exit={{ y: 100 }}
+            transition={{ duration: 0.3, ease: "easeInOut" }}
+            className="fixed bottom-0 left-0 right-0 z-50"
+          >
+            <NavbarMobileMemo isDarkMode={isDarkMode} isAdminUser={isAdmin} user={user} location={location} />
+          </motion.div>
+        )}
+      </AnimatePresence>
       
       {storyViewerOpen && (
         <StoryViewer 
@@ -137,19 +226,16 @@ function AppContent() {
 
 // ============================================
 // NAVBAR MOBILE OPTIMISÉE
-// ✅ Chargement conditionnel des messages
 // ============================================
 const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location }) => {
   const navigate = useNavigate();
   const [isMenuOpen, setMenuOpen] = useState(false);
   const { token } = useAuth();
   
-  // ✅ OPTIMISATION CRITIQUE : Ne charger les messages que si nécessaire
   const shouldLoadMessages = useMemo(() => {
     return ['/chat', '/messages'].includes(location.pathname);
   }, [location.pathname]);
   
-  // ✅ CORRECTION : Passer null comme 2ème paramètre + chargement conditionnel
   const { data } = useMessagesData(shouldLoadMessages ? token : null, null);
   
   const totalUnread = useMemo(() => {
@@ -161,7 +247,7 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location }) => {
 
   return (
     <>
-      <nav className={`sm:hidden h-16 flex justify-around items-center backdrop-blur-xl border-t ${isDarkMode ? "bg-gray-900/90 border-gray-800" : "bg-white/90 border-gray-200"}`}>
+      <nav className={`lg:hidden h-16 flex justify-around items-center backdrop-blur-xl border-t ${isDarkMode ? "bg-gray-900/90 border-gray-800" : "bg-white/90 border-gray-200"}`}>
         <NavBtn icon={Home} label="Accueil" active={isActive("/")} onClick={() => navigate("/")} />
         <NavBtn icon={Video} label="Vidéos" active={isActive("/videos")} onClick={() => navigate("/videos")} />
         <NavBtn icon={MessageSquare} label="Chat" active={isActive("/chat")} onClick={() => navigate("/chat")} badge={totalUnread} />
@@ -172,7 +258,6 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location }) => {
   );
 });
 
-// ✅ OPTIMISATION : Mémoisation du bouton de navigation
 const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
   <button 
     onClick={onClick} 
@@ -201,24 +286,43 @@ const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
   </motion.button>
 ));
 
+// ============================================
+// SIDEBAR DESKTOP - STYLE INSTAGRAM
+// ============================================
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isActive = useCallback((path) => location.pathname === path, [location.pathname]);
+  
   return (
-    <aside className={`hidden sm:flex fixed left-0 top-[72px] bottom-0 w-20 flex-col items-center py-8 gap-6 z-30 border-r ${isDarkMode ? 'bg-gray-900/50 border-gray-800' : 'bg-white border-gray-100'}`}>
-      <NavIcon icon={Home} onClick={() => navigate("/")} isDarkMode={isDarkMode} />
-      <NavIcon icon={MessageSquare} onClick={() => navigate("/chat")} isDarkMode={isDarkMode} />
-      <NavIcon icon={Video} onClick={() => navigate("/videos")} isDarkMode={isDarkMode} />
-      {isAdminUser && <NavIcon icon={Shield} onClick={() => navigate("/admin")} isDarkMode={isDarkMode} color="text-red-500" />}
+    <aside className={`hidden lg:flex fixed left-0 top-[72px] bottom-0 w-64 flex-col py-8 px-6 gap-2 z-30 border-r ${isDarkMode ? 'bg-gray-900/50 border-gray-800' : 'bg-white border-gray-100'}`}>
+      <NavItemDesktop icon={Home} label="Accueil" onClick={() => navigate("/")} isDarkMode={isDarkMode} active={isActive("/")} />
+      <NavItemDesktop icon={MessageSquare} label="Messages" onClick={() => navigate("/chat")} isDarkMode={isDarkMode} active={isActive("/chat")} />
+      <NavItemDesktop icon={Video} label="Vidéos" onClick={() => navigate("/videos")} isDarkMode={isDarkMode} active={isActive("/videos")} />
+      <NavItemDesktop icon={Calculator} label="Calculs" onClick={() => navigate("/calculs")} isDarkMode={isDarkMode} active={isActive("/calculs")} />
+      <NavItemDesktop icon={Mail} label="Messagerie" onClick={() => navigate("/messages")} isDarkMode={isDarkMode} active={isActive("/messages")} />
+      <NavItemDesktop icon={User} label="Profil" onClick={() => navigate(`/profile/${location.state?.userId || 'me'}`)} isDarkMode={isDarkMode} active={location.pathname.includes("/profile")} />
+      {isAdminUser && (
+        <>
+          <div className={`w-full h-px my-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`} />
+          <NavItemDesktop icon={Shield} label="Admin" onClick={() => navigate("/admin")} isDarkMode={isDarkMode} active={location.pathname.includes("/admin")} isAdmin />
+        </>
+      )}
     </aside>
   );
 });
 
-const NavIcon = memo(({ icon: Icon, onClick, isDarkMode, color }) => (
+const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, isAdmin }) => (
   <button 
     onClick={onClick} 
-    className={`p-3 rounded-2xl hover:scale-110 active:scale-90 transition-transform ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"} ${color || ''}`}
+    className={`group flex items-center gap-4 w-full px-4 py-3 rounded-xl transition-all ${
+      active 
+        ? (isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900')
+        : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900')
+    } ${isAdmin ? 'text-red-500 hover:text-red-400' : ''}`}
   >
-    <Icon size={24} />
+    <Icon size={26} strokeWidth={active ? 2.5 : 2} />
+    <span className={`text-base ${active ? 'font-semibold' : 'font-normal'}`}>{label}</span>
   </button>
 ));
 

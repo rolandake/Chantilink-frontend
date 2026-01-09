@@ -1,4 +1,4 @@
-// src/pages/profile/ProfilePage.jsx - VERSION ULTRA-OPTIMISÉE
+// src/pages/profile/ProfilePage.jsx - SANS ESPACEMENT ENTRE POSTS
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import ProfileHeader from "./ProfileHeader";
@@ -6,6 +6,7 @@ import ProfileMenu from "./ProfileMenu";
 import SettingsSection from "./SettingsSection";
 import CreatePost from "../Home/CreatePost";
 import PostCard from "../Home/PostCard";
+import ProfileSuggestions from "./ProfileSuggestions";
 import { usePosts } from "../../context/PostsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useDarkMode } from "../../context/DarkModeContext";
@@ -22,10 +23,6 @@ import {
 } from "../../utils/idbMigration";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
-
-// ============================================
-// 🚀 UTILITAIRES OPTIMISÉS
-// ============================================
 
 const normalizePost = (p) => ({
   _id: p._id || p.id,
@@ -54,10 +51,6 @@ const extractImageUrls = (posts = [], max = 15) => {
   }
   return urls.slice(0, max);
 };
-
-// ============================================
-// 🎨 COMPOSANTS MÉMORISÉS
-// ============================================
 
 const LoadingSpinner = memo(({ size = "12", darkMode = false, text = "Chargement..." }) => (
   <div className="text-center py-12">
@@ -114,14 +107,10 @@ const Toast = memo(({ message, type }) => (
   </div>
 ));
 
-// ============================================
-// 📱 COMPOSANT PRINCIPAL
-// ============================================
-
 export default function ProfilePage() {
   const { userId } = useParams();
   const navigate = useNavigate();
-  const { user: authUser, loading: authLoading, socket } = useAuth();
+  const { user: authUser, loading: authLoading, socket, getToken } = useAuth();
   const { fetchUserPosts } = usePosts();
   const { isDarkMode } = useDarkMode();
 
@@ -134,6 +123,7 @@ export default function ProfilePage() {
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
   const [isLoadingUser, setIsLoadingUser] = useState(true);
+  const [authToken, setAuthToken] = useState(null);
 
   const loadingRef = useRef(false);
   const saveDebounceTimer = useRef(null);
@@ -145,11 +135,7 @@ export default function ProfilePage() {
   const targetUserId = userId || authUser?.id;
   const isOwner = targetUserId === authUser?.id;
 
-  const CACHE_DURATION = 30000; // 30 secondes
-
-  // ============================================
-  // 🎯 CALLBACKS OPTIMISÉS
-  // ============================================
+  const CACHE_DURATION = 30000;
 
   const showLocalToast = useCallback((msg, type = "success") => {
     setToast({ message: msg, type });
@@ -159,7 +145,6 @@ export default function ProfilePage() {
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
 
-    // ✅ Cache en mémoire
     const cached = requestCache.current.get(uid);
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
       return cached.data;
@@ -174,7 +159,6 @@ export default function ProfilePage() {
         timeout: 8000
       });
       
-      // ✅ Mise en cache
       requestCache.current.set(uid, { data, timestamp: Date.now() });
       return data;
     } catch (err) {
@@ -213,7 +197,7 @@ export default function ProfilePage() {
       } finally { 
         writeInProgress.current = false; 
       }
-    }, 200); // ✅ Réduit de 400ms à 200ms
+    }, 200);
   }, []);
 
   const saveUser = useCallback(async (user) => {
@@ -246,9 +230,9 @@ export default function ProfilePage() {
     showLocalToast("Post supprimé");
   }, [profileUser?._id, showLocalToast]);
 
-  // ============================================
-  // 🔄 CHARGEMENT DES POSTS
-  // ============================================
+  const handleFollowSuccess = useCallback((userId) => {
+    showLocalToast("Abonné ! 🎉", "success");
+  }, [showLocalToast]);
 
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false) => {
     if (!targetId || loadingRef.current) return;
@@ -303,10 +287,6 @@ export default function ProfilePage() {
     }
   }, [fetchUserPosts, savePosts, showLocalToast]);
 
-  // ============================================
-  // 🎨 INFINITE SCROLL OPTIMISÉ
-  // ============================================
-
   const lastPostRef = useCallback((node) => {
     if (loadingRef.current) return;
     if (observer.current) observer.current.disconnect();
@@ -318,16 +298,12 @@ export default function ProfilePage() {
         if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
       }
     }, {
-      rootMargin: '200px', // ✅ Charger 200px avant la fin
+      rootMargin: '200px',
       threshold: 0.1
     });
     
     if (node) observer.current.observe(node);
   }, [page, hasMore, isLoadingPosts, loadProfilePosts, profileUser]);
-
-  // ============================================
-  // 🔌 FOLLOW / UNFOLLOW
-  // ============================================
 
   const followStatus = profileUser && authUser && !isOwner
     ? (profileUser.followers || []).some(u => (typeof u === "object" ? u._id : u) === authUser.id)
@@ -343,7 +319,6 @@ export default function ProfilePage() {
         ? (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUser.id)
         : [...(profileUser.followers || []), authUser.id];
 
-      // ✅ Update optimiste
       startTransition(() => {
         setProfileUser(prev => ({ ...prev, followers: newFollowers }));
       });
@@ -356,7 +331,6 @@ export default function ProfilePage() {
       console.error("❌ Erreur follow:", err);
       showLocalToast("Erreur lors de l'action", "error");
       
-      // ✅ Rollback en cas d'erreur
       const originalFollowers = wasFollowing
         ? [...(profileUser.followers || []), authUser.id]
         : (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUser.id);
@@ -369,11 +343,12 @@ export default function ProfilePage() {
     }
   }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast]);
 
-  // ============================================
-  // 🎬 EFFECTS
-  // ============================================
+  useEffect(() => {
+    if (authUser && getToken) {
+      getToken().then(token => setAuthToken(token)).catch(() => {});
+    }
+  }, [authUser, getToken]);
 
-  // ✅ Setup IndexedDB + ServiceWorker
   useEffect(() => {
     (async () => {
       try { await registerServiceWorker(); } catch {}
@@ -381,20 +356,18 @@ export default function ProfilePage() {
     })();
   }, []);
 
-  // ✅ Prefetch optimisé
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     if (prefetchTimer.current) clearTimeout(prefetchTimer.current);
     
     prefetchTimer.current = setTimeout(() => {
-      const urls = extractImageUrls(profilePosts, 15); // ✅ Réduit de 30 à 15
+      const urls = extractImageUrls(profilePosts, 15);
       if (urls.length) prefetchImagesViaSW(urls);
-    }, 300); // ✅ Réduit de 600ms à 300ms
+    }, 300);
     
     return () => clearTimeout(prefetchTimer.current);
   }, [profilePosts]);
 
-  // ✅ Network recovery
   useEffect(() => {
     const handleOnline = () => {
       if (profileUser?._id) loadProfilePosts(profileUser._id, 1, false);
@@ -403,7 +376,6 @@ export default function ProfilePage() {
     return () => window.removeEventListener("online", handleOnline);
   }, [profileUser?._id, loadProfilePosts]);
 
-  // ✅ Initial Profile Load
   useEffect(() => {
     if (authLoading) return;
     if (!authUser) return navigate("/auth", { replace: true });
@@ -451,7 +423,6 @@ export default function ProfilePage() {
     })();
   }, [authUser, authLoading, targetUserId, isOwner, fetchUserById, navigate, loadProfilePosts, saveUser, showLocalToast]);
 
-  // ✅ Socket Events optimisés
   useEffect(() => {
     if (!socket || !profileUser) return;
     
@@ -500,10 +471,6 @@ export default function ProfilePage() {
     };
   }, [socket, profileUser, savePosts]);
 
-  // ============================================
-  // 🎨 RENDU
-  // ============================================
-
   const stats = {
     posts: profilePosts.length,
     followers: profileUser?.followers?.length || 0,
@@ -521,83 +488,118 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className={`profile-page min-h-screen p-4 space-y-6 transition-colors duration-200 ${
+    <div className={`profile-page min-h-screen p-4 transition-colors duration-200 ${
       isDarkMode ? 'bg-black' : 'bg-orange-50'
     }`}>
-      <ProfileHeader 
-        user={profileUser || authUser}
-        isOwnProfile={isOwner}
-        posts={profilePosts}
-        followers={profileUser?.followers || []}
-        following={profileUser?.following || []}
-        showToast={showLocalToast}
-      />
-
-      {!isOwner && profileUser && (
-        <div className="text-center">
-          <FollowButton
-            isFollowing={followStatus}
-            isLoading={followLoading}
-            onClick={handleFollowToggle}
-            isDarkMode={isDarkMode}
+      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <div className="lg:col-span-2 space-y-6">
+          <ProfileHeader 
+            user={profileUser || authUser}
+            isOwnProfile={isOwner}
+            posts={profilePosts}
+            followers={profileUser?.followers || []}
+            following={profileUser?.following || []}
+            showToast={showLocalToast}
           />
-        </div>
-      )}
 
-      <ProfileMenu 
-        selectedTab={selectedTab} 
-        onSelectTab={setSelectedTab} 
-        isOwner={isOwner} 
-        stats={stats} 
-      />
-
-      {selectedTab === "posts" && (
-        <div className="space-y-4">
-          {isOwner && (
-            <CreatePost 
-              user={authUser} 
-              onPostCreated={handlePostCreated}
-              showToast={showLocalToast} 
-            />
+          {!isOwner && profileUser && (
+            <div className="text-center">
+              <FollowButton
+                isFollowing={followStatus}
+                isLoading={followLoading}
+                onClick={handleFollowToggle}
+                isDarkMode={isDarkMode}
+              />
+            </div>
           )}
 
-          {isLoadingPosts && profilePosts.length === 0 ? (
-            <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
-          ) : (
-            <div className="space-y-4">
-              {profilePosts.map((post, index) => (
-                <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
-                  <PostCard 
-                    post={post} 
-                    onDeleted={handlePostDeleted}
-                    showToast={showLocalToast}
+          {isOwner && authUser && authToken && (
+            <div className="lg:hidden">
+              <ProfileSuggestions
+                currentUser={authUser}
+                token={authToken}
+                isDarkMode={isDarkMode}
+                maxSuggestions={3}
+                onFollowSuccess={handleFollowSuccess}
+              />
+            </div>
+          )}
+
+          <ProfileMenu 
+            selectedTab={selectedTab} 
+            onSelectTab={setSelectedTab} 
+            isOwner={isOwner} 
+            stats={stats} 
+          />
+
+          {selectedTab === "posts" && (
+            <div>
+              {isOwner && (
+                <div className="mb-4">
+                  <CreatePost 
+                    user={authUser} 
+                    onPostCreated={handlePostCreated}
+                    showToast={showLocalToast} 
                   />
                 </div>
-              ))}
-              
-              {isLoadingPosts && (
-                <div className="text-center py-4">
-                  <div className={`inline-block w-8 h-8 border-4 rounded-full animate-spin ${
-                    isDarkMode 
-                      ? 'border-orange-400 border-t-transparent' 
-                      : 'border-orange-500 border-t-transparent'
-                  }`}></div>
-                </div>
               )}
-              
-              {!hasMore && profilePosts.length > 0 && (
-                <p className={`text-center py-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  Plus de posts
-                </p>
+
+              {isLoadingPosts && profilePosts.length === 0 ? (
+                <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
+              ) : (
+                <div>
+                  {/* ✅ POSTS SANS ESPACEMENT */}
+                  {profilePosts.map((post, index) => (
+                    <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
+                      <PostCard 
+                        post={post} 
+                        onDeleted={handlePostDeleted}
+                        showToast={showLocalToast}
+                      />
+                    </div>
+                  ))}
+                  
+                  {isLoadingPosts && (
+                    <div className="text-center py-4">
+                      <div className={`inline-block w-8 h-8 border-4 rounded-full animate-spin ${
+                        isDarkMode 
+                          ? 'border-orange-400 border-t-transparent' 
+                          : 'border-orange-500 border-t-transparent'
+                      }`}></div>
+                    </div>
+                  )}
+                  
+                  {!hasMore && profilePosts.length > 0 && (
+                    <p className={`text-center py-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      Plus de posts
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}
-        </div>
-      )}
 
-      {selectedTab === "settings" && isOwner && (
-        <SettingsSection user={authUser} showToast={showLocalToast} />
-      )}
+          {selectedTab === "settings" && isOwner && (
+            <SettingsSection user={authUser} showToast={showLocalToast} />
+          )}
+        </div>
+
+        {isOwner && authUser && authToken && (
+          <div className="hidden lg:block lg:col-span-1">
+            <div className="sticky top-4">
+              <ProfileSuggestions
+                currentUser={authUser}
+                token={authToken}
+                isDarkMode={isDarkMode}
+                maxSuggestions={5}
+                onFollowSuccess={handleFollowSuccess}
+              />
+            </div>
+          </div>
+        )}
+        
+      </div>
 
       {toast && <Toast message={toast.message} type={toast.type} />}
     </div>

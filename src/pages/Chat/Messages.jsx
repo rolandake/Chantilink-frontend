@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Chat/Messages.jsx
-// VERSION FINALE : Modal Numéro + Synchro + Appels
+// VERSION FINALE CORRIGÉE - TOUTES FONCTIONS DÉFINIES
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -32,7 +32,7 @@ import { useCallManager } from "./hooks/useCallManager";
 import { useSocketHandlers } from "./hooks/useSocketHandlers";
 
 export default function Messages() {
-  const { user, token, socket, updateUser } = useAuth();
+  const { user, token, socket, updateUserProfile } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
@@ -50,7 +50,9 @@ export default function Messages() {
   const { 
     call, setCall, incomingCall, setIncomingCall, 
     startCall, endCall, cleanupCallRingtone 
-  } = useCallManager(sel, connected, 
+  } = useCallManager(
+    sel, 
+    connected, 
     (d) => socket?.emit("call-user", d), 
     (d) => socket?.emit("call-ended", d), 
     (d) => socket?.emit("sendMessage", d), 
@@ -71,8 +73,15 @@ export default function Messages() {
     acceptCall: (d) => socket?.emit("call-answer", d),
     rejectCall: (d) => socket?.emit("call-rejected", d),
     socketEndCall: (d) => socket?.emit("call-ended", d),
-    user, sel, data, setData, setUi, setIncomingCall,
-    showToast, processedMessagesRef, cleanupCallRingtone, 
+    user, 
+    sel, 
+    data, 
+    setData, 
+    setUi, 
+    setIncomingCall,
+    showToast, 
+    processedMessagesRef, 
+    cleanupCallRingtone, 
     sendMessage: (d) => socket?.emit("sendMessage", d)
   });
 
@@ -80,10 +89,8 @@ export default function Messages() {
   // 🔔 VÉRIFIER SI L'UTILISATEUR A UN NUMÉRO
   // ============================================
   useEffect(() => {
-    // Si l'user n'a pas de numéro ET n'a jamais vu la modal
     if (user && !user.phone && !user.hasSeenPhoneModal) {
       console.log("📱 [Messages] User sans numéro détecté, affichage modal");
-      // Attendre 1 seconde avant d'afficher (meilleure UX)
       const timer = setTimeout(() => {
         setShowPhoneModal(true);
       }, 1000);
@@ -98,7 +105,6 @@ export default function Messages() {
     try {
       console.log(`📞 [Messages] Soumission numéro: ${phoneNumber}`);
       
-      // Appeler l'API pour mettre à jour le téléphone
       const response = await fetch(`${API.BASE_URL}/auth/update-phone`, {
         method: 'PUT',
         headers: {
@@ -117,19 +123,9 @@ export default function Messages() {
       console.log("✅ [Messages] Numéro mis à jour:", data.user);
 
       // Mettre à jour le contexte utilisateur
-      if (updateUser) {
-        updateUser(data.user);
+      if (updateUserProfile) {
+        updateUserProfile(user.id, data.user);
       }
-
-      // Marquer la modal comme vue
-      await fetch(`${API.BASE_URL}/users/profile`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ hasSeenPhoneModal: true })
-      });
 
       showToast("Numéro enregistré avec succès ! 🎉", "success");
       setShowPhoneModal(false);
@@ -137,19 +133,26 @@ export default function Messages() {
       // Proposer une synchro automatique
       setTimeout(() => {
         if (window.confirm("Voulez-vous synchroniser vos contacts maintenant ?")) {
-          // Trigger sync depuis le ContactSidebar
-          document.querySelector('[title="Synchroniser mes contacts"]')?.click();
+          const syncBtn = document.querySelector('[title="Synchroniser mes contacts"]');
+          if (syncBtn) {
+            syncBtn.click();
+          } else {
+            console.warn("⚠️ Bouton de synchronisation non trouvé");
+          }
         }
       }, 1500);
 
     } catch (error) {
       console.error("❌ [Messages] Erreur soumission numéro:", error);
-      throw error; // Le PhoneNumberModal gère l'affichage de l'erreur
+      throw error;
     }
   };
 
-  // === ACTIONS DE MESSAGERIE ===
+  // ============================================
+  // 💬 ACTIONS DE MESSAGERIE
+  // ============================================
 
+  // ✅ Charger une conversation
   const loadConversation = useCallback(async (withId) => {
     setUi(p => ({ ...p, load: true }));
     try {
@@ -158,15 +161,19 @@ export default function Messages() {
       socket?.emit("markMessagesAsRead", { senderId: withId });
     } catch (e) {
       showToast("Erreur de synchronisation des messages", "error");
-    } finally { setUi(p => ({ ...p, load: false })); }
+    } finally { 
+      setUi(p => ({ ...p, load: false })); 
+    }
   }, [token, socket, setData, setUi, showToast]);
 
+  // ✅ Sélectionner un contact
   const handlePickContact = useCallback((contact) => {
     if (!contact?.id) return;
     setSel({ friend: contact, msg: null });
     loadConversation(contact.id);
   }, [loadConversation, setSel]);
 
+  // ✅ Envoyer un message texte
   const handleSend = useCallback(() => {
     if (!sel.friend || !input.trim() || !connected) return;
     socket.emit("sendMessage", { 
@@ -177,6 +184,7 @@ export default function Messages() {
     setInput("");
   }, [sel.friend, input, connected, socket]);
 
+  // ✅ Upload de fichier
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !sel.friend) return;
@@ -188,12 +196,17 @@ export default function Messages() {
         recipientId: sel.friend.id,
         onProgress: (p) => console.log(`Upload: ${p.progress}%`)
       });
-      if (result.success) showToast("Fichier envoyé avec succès", "success");
+      if (result.success) {
+        showToast("Fichier envoyé avec succès", "success");
+      }
     } catch (err) {
       showToast(err.message, "error");
-    } finally { setUi(p => ({ ...p, up: false })); }
+    } finally { 
+      setUi(p => ({ ...p, up: false })); 
+    }
   };
 
+  // ✅ Envoyer un message vocal
   const handleVoiceSend = async () => {
     if (!audioBlob || !sel.friend) return;
     setUi(p => ({ ...p, up: true }));
@@ -203,13 +216,16 @@ export default function Messages() {
         recipientId: sel.friend.id
       });
       cancelAudio();
+      showToast("Message vocal envoyé", "success");
     } catch (err) {
       showToast("Échec de l'envoi du message vocal", "error");
-    } finally { setUi(p => ({ ...p, up: false })); }
+    } finally { 
+      setUi(p => ({ ...p, up: false })); 
+    }
   };
 
   // ==========================================
-  // RENDU
+  // 🎨 RENDU
   // ==========================================
 
   return (
@@ -228,7 +244,10 @@ export default function Messages() {
             </div>
             <h1 className="text-xl font-black tracking-tight">Messages</h1>
           </div>
-          <button onClick={() => navigate("/")} className="p-2 hover:bg-white/5 rounded-full transition-colors">
+          <button 
+            onClick={() => navigate("/")} 
+            className="p-2 hover:bg-white/5 rounded-full transition-colors"
+          >
             <X size={24} />
           </button>
         </div>
@@ -254,13 +273,18 @@ export default function Messages() {
           {sel.friend ? (
             <motion.div 
               key={sel.friend.id}
-              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
+              initial={{ opacity: 0, x: 20 }} 
+              animate={{ opacity: 1, x: 0 }} 
+              exit={{ opacity: 0, x: 20 }}
               className="flex flex-col h-full"
             >
               {/* Header Chat */}
               <div className="h-16 flex-none border-b border-white/5 px-4 flex items-center justify-between bg-[#12151a]/90 backdrop-blur-md z-30">
                 <div className="flex items-center gap-3">
-                  <button onClick={() => setSel({ friend: null })} className="md:hidden p-2 -ml-2 text-gray-400">
+                  <button 
+                    onClick={() => setSel({ friend: null })} 
+                    className="md:hidden p-2 -ml-2 text-gray-400"
+                  >
                     <ArrowLeft size={24} />
                   </button>
                   <ChatHeader 
@@ -272,7 +296,9 @@ export default function Messages() {
                 </div>
                 <div className="flex items-center gap-2 px-3 py-1 bg-green-500/5 border border-green-500/20 rounded-full">
                   <Lock size={10} className="text-green-500" />
-                  <span className="text-[9px] text-green-500 font-black uppercase tracking-widest">Sécurisé</span>
+                  <span className="text-[9px] text-green-500 font-black uppercase tracking-widest">
+                    Sécurisé
+                  </span>
                 </div>
               </div>
 
@@ -305,7 +331,8 @@ export default function Messages() {
             /* État vide */
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
               <motion.div 
-                initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+                initial={{ scale: 0.9, opacity: 0 }} 
+                animate={{ scale: 1, opacity: 1 }}
                 className="w-24 h-24 bg-blue-500/5 rounded-[40px] flex items-center justify-center mb-6 border border-blue-500/10 shadow-2xl"
               >
                 <ShieldCheck size={48} className="text-blue-500/50" />

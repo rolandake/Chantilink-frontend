@@ -1,29 +1,27 @@
-// src/pages/Profile/SettingsSection.jsx - FIX isAdmin()
+// src/pages/Profile/SettingsSection.jsx - AVEC ONGLET STOCKAGE
 import React, { useState, lazy, Suspense } from 'react';
 import MonetisationDashboard from "./Monetisation/MonetisationDashboard";
 import CreateOffer from "./Monetisation/CreateOffer";
 import MyClients from "./Monetisation/MyClients";
 import RevenueStats from "./Monetisation/RevenueStats";
 import Payouts from "./Monetisation/Payouts";
+import StorageManager from "./StorageManager"; // ✅ NOUVEAU
 import { useAuth } from '../../context/AuthContext';
 import { useDarkMode } from '../../context/DarkModeContext';
 
-// ✅ LAZY LOADING - AdminDashboard ne charge QUE si nécessaire
 const AdminDashboard = lazy(() => import('../Admin/AdminDashboard'));
 
-// Composant de chargement
 const LoadingSpinner = () => (
   <div className="flex items-center justify-center min-h-[300px]">
     <div className="animate-spin rounded-full h-12 w-12 border-4 border-purple-500 border-t-transparent" />
   </div>
 );
 
-export default function SettingsSection() {
+export default function SettingsSection({ user, showToast }) {
   const [activeTab, setActiveTab] = useState("dashboard");
-  const { isAdmin } = useAuth(); // ✅ isAdmin est une FONCTION
+  const { isAdmin } = useAuth();
   const { isDarkMode } = useDarkMode();
 
-  // ✅ CORRECTION : Appeler isAdmin() avec des parenthèses
   const userIsAdmin = isAdmin();
 
   const TABS = [
@@ -32,6 +30,7 @@ export default function SettingsSection() {
     { id: "clients", label: "👥 Mes clients" },
     { id: "revenus", label: "💰 Statistiques" },
     { id: "retraits", label: "💵 Retraits" },
+    { id: "storage", label: "💾 Stockage" }, // ✅ NOUVEAU
     ...(userIsAdmin ? [{ id: "admin", label: "🛠️ Admin", badge: "Admin only" }] : [])
   ];
 
@@ -52,8 +51,11 @@ export default function SettingsSection() {
       case "retraits": 
         return <Payouts />;
       
+      // ✅ NOUVEAU: Onglet Stockage
+      case "storage":
+        return <StorageManager user={user} showToast={showToast} />;
+      
       case "admin":
-        // ✅ CORRECTION : Utiliser userIsAdmin au lieu de isAdmin()
         if (!userIsAdmin) {
           return (
             <div className="text-center py-12">
@@ -64,7 +66,6 @@ export default function SettingsSection() {
           );
         }
         
-        // ✅ Suspense pour le lazy loading
         return (
           <Suspense fallback={<LoadingSpinner />}>
             <AdminDashboard />
@@ -103,7 +104,7 @@ export default function SettingsSection() {
 
       {/* Onglets desktop */}
       <div 
-        className="hidden md:flex space-x-3 mb-6" 
+        className="hidden md:flex space-x-3 mb-6 overflow-x-auto" 
         role="tablist" 
         aria-label="Sections des paramètres"
       >
@@ -117,7 +118,7 @@ export default function SettingsSection() {
               aria-selected={isActive}
               aria-controls={`tabpanel-${id}`}
               tabIndex={isActive ? 0 : -1}
-              className={`px-5 py-2 rounded-md font-semibold transition-all focus:outline-none focus:ring-2 focus:ring-orange-500 relative ${
+              className={`px-5 py-2 rounded-md font-semibold transition-all focus:outline-none focus:ring-2 focus:ring-orange-500 relative whitespace-nowrap ${
                 isActive 
                   ? "bg-orange-500 text-white shadow-md" 
                   : isDarkMode

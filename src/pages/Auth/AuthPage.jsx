@@ -16,25 +16,30 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { useNavigate } from "react-router-dom";
 
-// ✅ OPTIMISATION 1 : Composant Toast mémorisé
-const Toast = memo(({ notification }) => (
-  <motion.div
-    initial={{ opacity: 0, x: 100 }}
-    animate={{ opacity: 1, x: 0 }}
-    exit={{ opacity: 0, x: 100 }}
-    transition={{ duration: 0.2 }}
-    className={`flex items-center gap-2 px-4 py-3 rounded-xl text-white shadow-lg ${
-      notification.type === "success" ? "bg-green-500" : "bg-red-500"
-    }`}
-  >
-    {notification.type === "success" ? (
-      <CheckCircle className="w-4 h-4" />
-    ) : (
-      <XCircle className="w-4 h-4" />
-    )}
-    <span className="font-medium text-sm">{notification.message}</span>
-  </motion.div>
-));
+// ✅ CORRECTION : Composant Toast avec forwardRef
+const Toast = memo(
+  React.forwardRef(({ notification }, ref) => (
+    <motion.div
+      ref={ref} // ✅ Passer la ref
+      initial={{ opacity: 0, x: 100 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 100 }}
+      transition={{ duration: 0.2 }}
+      className={`flex items-center gap-2 px-4 py-3 rounded-xl text-white shadow-lg ${
+        notification.type === "success" ? "bg-green-500" : "bg-red-500"
+      }`}
+    >
+      {notification.type === "success" ? (
+        <CheckCircle className="w-4 h-4" />
+      ) : (
+        <XCircle className="w-4 h-4" />
+      )}
+      <span className="font-medium text-sm">{notification.message}</span>
+    </motion.div>
+  ))
+);
+
+Toast.displayName = "Toast"; // ✅ Ajout du displayName
 
 // ✅ OPTIMISATION 2 : Animations réduites pour performances
 const fastTransition = { duration: 0.2, ease: "easeOut" };
@@ -68,7 +73,7 @@ export default function AuthPage() {
     setNotifications((prev) => [...prev, { id, type, message }]);
     setTimeout(
       () => setNotifications((prev) => prev.filter((n) => n.id !== id)),
-      3000 // ✅ Réduit de 4s à 3s
+      3000
     );
   };
 
@@ -135,7 +140,6 @@ export default function AuthPage() {
         
         if (result?.success) {
           notify("success", "Bienvenue !");
-          // ✅ Navigation immédiate
           navigate("/");
         } else {
           notify("error", result?.message || "Échec inscription");
@@ -145,7 +149,6 @@ export default function AuthPage() {
         
         if (result?.success) {
           notify("success", "Connexion réussie !");
-          // ✅ Navigation immédiate
           navigate("/");
         } else {
           notify("error", result?.message || "Identifiants incorrects");
@@ -190,7 +193,7 @@ export default function AuthPage() {
         <div className="text-center mb-6">
           <div className="inline-flex items-center gap-3 mb-4">
             <Shield className="w-10 h-10 text-orange-400" />
-            <h1 className="text-3xl font-bold text-white">SecureAuth</h1>
+            <h1 className="text-3xl font-bold text-white">Chantilink</h1>
           </div>
           <p className="text-white/70 text-sm">
             {isRegister ? "Rejoignez-nous" : "Bon retour !"}

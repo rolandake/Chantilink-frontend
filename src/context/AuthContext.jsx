@@ -148,9 +148,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   // === STOCKAGE ===
-  const persistUsers = useCallback((updatedUsers = users, newActiveId = activeUserId) => {
+  const persistUsers = useCallback((updatedUsers, newActiveId) => {
     try {
-      const arr = Array.from(updatedUsers.entries())
+      const usersToUse = updatedUsers || users;
+      const activeToUse = newActiveId !== undefined ? newActiveId : activeUserId;
+      
+      const arr = Array.from(usersToUse.entries())
         .map(([id, data]) => [id, {
           user: data.user,
           token: data.token,
@@ -161,7 +164,9 @@ export function AuthProvider({ children }) {
         .slice(0, CONFIG.MAX_STORED_USERS);
 
       secureSetItem(STORAGE_KEYS.USERS, Object.fromEntries(arr));
-      newActiveId ? secureSetItem(STORAGE_KEYS.ACTIVE_USER, newActiveId) : secureRemoveItem(STORAGE_KEYS.ACTIVE_USER);
+      activeToUse ? secureSetItem(STORAGE_KEYS.ACTIVE_USER, activeToUse) : secureRemoveItem(STORAGE_KEYS.ACTIVE_USER);
+      
+      console.log("💾 [AuthContext] Users persistés:", arr.length);
     } catch (err) {
       console.warn("Échec persistUsers:", err);
     }
@@ -185,6 +190,8 @@ export function AuthProvider({ children }) {
           bio: user.bio || "",
           phone: user.phone || "",
           hasSeenPhoneModal: !!user.hasSeenPhoneModal,
+          following: user.following || [],
+          followers: user.followers || [],
           updatedAt: Date.now(),
         }),
         idbSet("users", "user_active", user),
@@ -525,20 +532,42 @@ export function AuthProvider({ children }) {
     }
   }, [users, persistUsers, addNotification]);
 
-  // === MISE À JOUR DU PROFIL ===
+  // === ✅ MISE À JOUR DU PROFIL (CORRIGÉE) ===
   const updateUserProfile = useCallback(async (userId, updates) => {
     if (!userId) return;
+
+    console.log("🔄 [AuthContext] updateUserProfile appelé:", { userId, updates });
 
     setUsers(prev => {
       const newMap = new Map(prev);
       const currentUserData = newMap.get(userId);
 
       if (currentUserData) {
-        const updatedUser = { ...currentUserData.user, ...updates };
+        // ✅ Merge intelligent : ne pas écraser, mais fusionner
+        const updatedUser = {
+          ...currentUserData.user,
+          ...updates,
+          // Si on met à jour following, s'assurer que c'est bien un tableau
+          following: updates.following !== undefined 
+            ? updates.following 
+            : currentUserData.user.following
+        };
+        
         newMap.set(userId, { ...currentUserData, user: updatedUser });
-        persistUsers(newMap, activeUserId);
-        syncUserToIDB(userId, updatedUser);
-        console.log("✅ [AuthContext] Profil mis à jour localement pour", userId);
+        
+        // Persister immédiatement dans le bon ordre
+        setTimeout(() => {
+          persistUsers(newMap, activeUserId);
+          syncUserToIDB(userId, updatedUser);
+        }, 0);
+        
+        console.log("✅ [AuthContext] Profil mis à jour:", {
+          userId,
+          followingCount: updatedUser.following?.length || 0,
+          followingIds: updatedUser.following?.slice(0, 3)
+        });
+      } else {
+        console.warn("⚠️ [AuthContext] User non trouvé dans Map:", userId);
       }
       return newMap;
     });

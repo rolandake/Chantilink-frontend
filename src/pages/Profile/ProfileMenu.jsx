@@ -1,9 +1,10 @@
-// src/components/profile/ProfileMenu.jsx - VERSION COMPLÈTE CORRIGÉE
+// src/pages/Profile/ProfileMenu.jsx - VERSION COMPLÈTE CORRIGÉE
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { useVideos } from "../../context/VideoContext";
 import { useAuth } from "../../context/AuthContext";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import PrivacyPolicy from "../../components/legal/PrivacyPolicy";
 import { 
   FaHeart, 
   FaComment, 
@@ -26,7 +27,6 @@ import { HiDotsVertical, HiSparkles } from "react-icons/hi";
 export default function ProfileMenu({ selectedTab, onSelectTab, isOwner, userId, stats }) {
   const { videos: allVideos } = useVideos();
   
-  // Compter les vidéos de l'utilisateur
   const userVideosCount = useMemo(() => {
     if (!userId) return 0;
     return allVideos.filter(v => 
@@ -54,7 +54,6 @@ export default function ProfileMenu({ selectedTab, onSelectTab, isOwner, userId,
 
   return (
     <div className="profile-menu mt-6">
-      {/* Menu des onglets */}
       <div className="flex space-x-4 mb-4 border-b border-gray-300 dark:border-gray-700 overflow-x-auto">
         {tabs.map((tab) => (
           <button
@@ -71,15 +70,21 @@ export default function ProfileMenu({ selectedTab, onSelectTab, isOwner, userId,
         ))}
       </div>
 
-      {/* Contenu selon l'onglet */}
       {selectedTab === "videos" && <ProfileVideosContent userId={userId} isOwner={isOwner} />}
+      
+      {selectedTab === "about" && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <PrivacyPolicy />
+        </motion.div>
+      )}
     </div>
   );
 }
 
-/* =========================================
-   🎬 Contenu Vidéos avec sync temps réel
-========================================= */
 const ProfileVideosContent = ({ userId, isOwner }) => {
   const { videos: allVideos, likeVideo, commentVideo, deleteVideo } = useVideos();
   const { getActiveUser } = useAuth();
@@ -88,10 +93,9 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
 
   const [loading, setLoading] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState(null);
-  const [sortBy, setSortBy] = useState("recent"); // recent, popular, views
+  const [sortBy, setSortBy] = useState("recent");
   const [showStats, setShowStats] = useState(true);
 
-  // Filtrer les vidéos de l'utilisateur
   const userVideos = useMemo(() => {
     if (!userId) return [];
     
@@ -101,7 +105,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
     });
   }, [allVideos, userId]);
 
-  // Trier les vidéos
   const sortedVideos = useMemo(() => {
     const videos = [...userVideos];
 
@@ -118,7 +121,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
     }
   }, [userVideos, sortBy]);
 
-  // Calculer les statistiques totales
   const totalStats = useMemo(() => {
     return {
       totalVideos: sortedVideos.length,
@@ -128,7 +130,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
     };
   }, [sortedVideos]);
 
-  // Empty state - Aucune vidéo
   if (sortedVideos.length === 0) {
     return (
       <motion.div 
@@ -170,7 +171,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
 
   return (
     <div className="space-y-4">
-      {/* Stats & Controls */}
       {showStats && (
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -178,12 +178,8 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
           className="bg-gradient-to-r from-orange-50 to-pink-50 dark:from-gray-800 dark:to-gray-900 p-6 rounded-2xl shadow-lg border border-orange-200 dark:border-gray-700"
         >
           <div className="flex items-center justify-between flex-wrap gap-4">
-            {/* Stats */}
             <div className="flex items-center gap-8">
-              <motion.div 
-                whileHover={{ scale: 1.1 }}
-                className="text-center"
-              >
+              <motion.div whileHover={{ scale: 1.1 }} className="text-center">
                 <p className="text-3xl font-black bg-gradient-to-r from-orange-500 to-pink-600 bg-clip-text text-transparent">
                   {totalStats.totalVideos}
                 </p>
@@ -193,10 +189,7 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
                 </p>
               </motion.div>
 
-              <motion.div 
-                whileHover={{ scale: 1.1 }}
-                className="text-center"
-              >
+              <motion.div whileHover={{ scale: 1.1 }} className="text-center">
                 <p className="text-3xl font-black text-red-600">
                   {formatNumber(totalStats.totalLikes)}
                 </p>
@@ -206,10 +199,7 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
                 </p>
               </motion.div>
 
-              <motion.div 
-                whileHover={{ scale: 1.1 }}
-                className="text-center"
-              >
+              <motion.div whileHover={{ scale: 1.1 }} className="text-center">
                 <p className="text-3xl font-black text-blue-600">
                   {formatNumber(totalStats.totalViews)}
                 </p>
@@ -219,10 +209,7 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
                 </p>
               </motion.div>
 
-              <motion.div 
-                whileHover={{ scale: 1.1 }}
-                className="text-center"
-              >
+              <motion.div whileHover={{ scale: 1.1 }} className="text-center">
                 <p className="text-3xl font-black text-purple-600">
                   {formatNumber(totalStats.totalComments)}
                 </p>
@@ -233,9 +220,7 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
               </motion.div>
             </div>
 
-            {/* Controls */}
             <div className="flex items-center gap-2">
-              {/* Tri */}
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
@@ -246,7 +231,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
                 <option value="views">👁 Plus vu</option>
               </select>
 
-              {/* Masquer stats */}
               <motion.button
                 whileTap={{ scale: 0.9 }}
                 onClick={() => setShowStats(false)}
@@ -259,7 +243,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
         </motion.div>
       )}
 
-      {/* Bouton pour réafficher les stats */}
       {!showStats && (
         <motion.button
           initial={{ opacity: 0 }}
@@ -272,7 +255,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
         </motion.button>
       )}
 
-      {/* Grille de vidéos */}
       <div className="grid grid-cols-3 gap-1 sm:gap-2">
         {sortedVideos.map((video, index) => (
           <VideoGridItem
@@ -285,7 +267,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
         ))}
       </div>
 
-      {/* Bouton créer une vidéo (si propriétaire) */}
       {isOwner && (
         <motion.button
           whileHover={{ scale: 1.02 }}
@@ -298,7 +279,6 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
         </motion.button>
       )}
 
-      {/* Modal de lecture */}
       <AnimatePresence>
         {selectedVideo && (
           <VideoModal
@@ -320,12 +300,7 @@ const ProfileVideosContent = ({ userId, isOwner }) => {
   );
 };
 
-/* =========================================
-   🎴 Item Grille de Vidéo
-========================================= */
 const VideoGridItem = ({ video, index, onClick, isOwner }) => {
-  const [imageError, setImageError] = useState(false);
-
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.8 }}
@@ -335,7 +310,6 @@ const VideoGridItem = ({ video, index, onClick, isOwner }) => {
       onClick={onClick}
       className="relative aspect-[9/16] bg-gradient-to-br from-gray-800 to-gray-900 rounded-lg overflow-hidden cursor-pointer group shadow-lg"
     >
-      {/* Thumbnail vidéo */}
       <video
         src={video.url}
         className="w-full h-full object-cover"
@@ -344,10 +318,8 @@ const VideoGridItem = ({ video, index, onClick, isOwner }) => {
         muted
       />
 
-      {/* Gradient overlay */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
 
-      {/* Play icon au centre */}
       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
         <motion.div
           whileHover={{ scale: 1.2 }}
@@ -357,7 +329,6 @@ const VideoGridItem = ({ video, index, onClick, isOwner }) => {
         </motion.div>
       </div>
 
-      {/* Badge LIVE */}
       {video.isLive && (
         <div className="absolute top-2 left-2 z-10">
           <motion.span 
@@ -371,16 +342,13 @@ const VideoGridItem = ({ video, index, onClick, isOwner }) => {
         </div>
       )}
 
-      {/* Stats en bas (visible au hover) */}
       <div className="absolute bottom-0 left-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-        {/* Titre si présent */}
         {video.title && (
           <p className="text-white text-xs font-bold line-clamp-2 mb-2 drop-shadow-lg">
             {video.title}
           </p>
         )}
 
-        {/* Stats */}
         <div className="flex items-center justify-between text-white text-xs">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1 bg-black/40 backdrop-blur-sm px-2 py-1 rounded-full">
@@ -399,12 +367,10 @@ const VideoGridItem = ({ video, index, onClick, isOwner }) => {
         </div>
       </div>
 
-      {/* Durée en haut à droite */}
       <div className="absolute top-2 right-2 bg-black/70 backdrop-blur-sm text-white text-xs font-bold px-2 py-1 rounded-full">
         {formatDuration((video.endTime || 0) - (video.startTime || 0))}
       </div>
 
-      {/* Badge propriétaire */}
       {isOwner && (
         <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
           <span className="bg-orange-500/90 text-white text-xs font-bold px-2 py-1 rounded-full">
@@ -416,13 +382,10 @@ const VideoGridItem = ({ video, index, onClick, isOwner }) => {
   );
 };
 
-/* =========================================
-   🎥 Modal de lecture vidéo
-========================================= */
 const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
   const videoRef = useRef(null);
   const isMountedRef = useRef(true);
-  const { likeVideo, commentVideo } = useVideos();
+  const { likeVideo } = useVideos();
   const { getActiveUser } = useAuth();
   const activeUser = getActiveUser();
 
@@ -433,14 +396,12 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
   const [localVideo, setLocalVideo] = useState(video);
   const [isLiked, setIsLiked] = useState(false);
 
-  // 🔧 CORRECTION: Cleanup sécurisé au démontage
   useEffect(() => {
     isMountedRef.current = true;
     
     return () => {
       isMountedRef.current = false;
       
-      // Cleanup avec requestAnimationFrame pour éviter les conflits
       if (videoRef.current) {
         const vid = videoRef.current;
         requestAnimationFrame(() => {
@@ -457,7 +418,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
     };
   }, []);
 
-  // Gestion ESC pour fermer
   useEffect(() => {
     const handleEscape = (e) => {
       if (e.key === "Escape") onClose();
@@ -466,17 +426,14 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [onClose]);
 
-  // Sync avec les updates
   useEffect(() => {
     setLocalVideo(video);
   }, [video]);
 
-  // Auto-play avec vérification
   useEffect(() => {
     if (videoRef.current && isMountedRef.current) {
       const vid = videoRef.current;
       
-      // Attendre que la vidéo soit prête
       const playVideo = async () => {
         try {
           if (vid.readyState >= 2) {
@@ -509,7 +466,7 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
     try {
       await likeVideo(video._id);
     } catch (err) {
-      console.error("❌ Erreur like:", err);
+      console.error("Erreur like:", err);
       setIsLiked(wasLiked);
       setLocalVideo(prev => ({
         ...prev,
@@ -522,12 +479,11 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
     try {
       await onDelete(video._id);
     } catch (err) {
-      console.error("❌ Erreur suppression:", err);
+      console.error("Erreur suppression:", err);
       alert("Erreur lors de la suppression");
     }
   };
 
-  // 🔧 CORRECTION: Vérifications isMountedRef dans toutes les actions
   const handlePlayPause = () => {
     const vid = videoRef.current;
     if (!vid || !isMountedRef.current) return;
@@ -550,7 +506,7 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
         });
       } else {
         await navigator.clipboard.writeText(window.location.href);
-        alert("🔗 Lien copié !");
+        alert("Lien copié !");
       }
     } catch (err) {
       console.log("Partage annulé");
@@ -569,10 +525,10 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-      alert("📥 Téléchargement lancé !");
+      alert("Téléchargement lancé !");
     } catch (err) {
       console.error("Erreur téléchargement:", err);
-      alert("❌ Erreur lors du téléchargement");
+      alert("Erreur lors du téléchargement");
     }
   };
 
@@ -591,7 +547,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
         className="relative w-full max-w-md aspect-[9/16] bg-black rounded-2xl overflow-hidden shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Vidéo */}
         <video
           ref={videoRef}
           src={video.url}
@@ -604,10 +559,8 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
           onClick={handlePlayPause}
         />
 
-        {/* Overlay gradient */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 pointer-events-none" />
 
-        {/* Bouton fermer */}
         <motion.button
           whileTap={{ scale: 0.9 }}
           onClick={onClose}
@@ -616,7 +569,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
           <FaTimes />
         </motion.button>
 
-        {/* Play/Pause overlay */}
         {!isPlaying && (
           <motion.div
             initial={{ scale: 0 }}
@@ -629,9 +581,7 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
           </motion.div>
         )}
 
-        {/* Actions latérales */}
         <div className="absolute right-4 bottom-32 flex flex-col gap-4 z-20">
-          {/* Like */}
           <motion.button
             whileTap={{ scale: 0.9 }}
             onClick={handleLike}
@@ -652,7 +602,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
             </span>
           </motion.button>
 
-          {/* Comments */}
           <div className="flex flex-col items-center gap-1">
             <div className="w-12 h-12 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center">
               <FaComment className="text-white text-xl" />
@@ -662,7 +611,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
             </span>
           </div>
 
-          {/* Views */}
           <div className="flex flex-col items-center gap-1">
             <div className="w-12 h-12 bg-black/60 backdrop-blur-md rounded-full flex items-center justify-center">
               <FaEye className="text-white text-xl" />
@@ -672,7 +620,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
             </span>
           </div>
 
-          {/* Mute */}
           <motion.button
             whileTap={{ scale: 0.9 }}
             onClick={() => setMuted(!muted)}
@@ -681,7 +628,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
             {muted ? <FaVolumeMute size={20} /> : <FaVolumeUp size={20} />}
           </motion.button>
 
-          {/* Options */}
           <motion.button
             whileTap={{ scale: 0.9 }}
             onClick={() => setShowOptions(!showOptions)}
@@ -691,23 +637,19 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
           </motion.button>
         </div>
 
-        {/* Infos bottom */}
         <div className="absolute bottom-0 left-0 right-20 p-4 z-10">
-          {/* Titre */}
           {localVideo.title && (
             <h3 className="text-white font-bold text-lg mb-1 drop-shadow-lg">
               {localVideo.title}
             </h3>
           )}
 
-          {/* Description */}
           {localVideo.description && (
             <p className="text-gray-300 text-sm mb-2 line-clamp-2 drop-shadow-lg">
               {localVideo.description}
             </p>
           )}
 
-          {/* Date */}
           <p className="text-gray-400 text-xs drop-shadow-lg">
             {new Date(localVideo.createdAt).toLocaleDateString("fr-FR", {
               day: "numeric",
@@ -717,7 +659,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
           </p>
         </div>
 
-        {/* Menu options */}
         <AnimatePresence>
           {showOptions && (
             <>
@@ -784,7 +725,6 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
           )}
         </AnimatePresence>
 
-        {/* Confirmation suppression */}
         <AnimatePresence>
           {showDeleteConfirm && (
             <motion.div
@@ -797,35 +737,28 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
                 initial={{ scale: 0.9, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.9, opacity: 0 }}
-                className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-red-500/30"
+                className="bg-gray-900 rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-red-500/30"
               >
-                <div className="text-center mb-4">
-                  <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <FaTrash className="text-red-500 text-2xl" />
-                  </div>
-                  <h3 className="text-xl font-bold text-white mb-2">
-                    Supprimer la vidéo ?
-                  </h3>
-                  <p className="text-gray-400 text-sm">
-                    Cette action est irréversible. La vidéo sera définitivement supprimée.
-                  </p>
-                </div>
+                <h3 className="text-xl font-bold text-white mb-3 text-center">
+                  Supprimer la vidéo ?
+                </h3>
+                <p className="text-gray-400 text-sm text-center mb-6">
+                  Cette action est irréversible.
+                </p>
 
                 <div className="flex gap-3">
-                  <motion.button
-                    whileTap={{ scale: 0.95 }}
+                  <button
                     onClick={() => setShowDeleteConfirm(false)}
-                    className="flex-1 px-4 py-3 bg-gray-700 text-white rounded-xl font-semibold hover:bg-gray-600 transition"
+                    className="flex-1 py-3 bg-gray-700 rounded-xl text-white font-semibold"
                   >
                     Annuler
-                  </motion.button>
-                  <motion.button
-                    whileTap={{ scale: 0.95 }}
+                  </button>
+                  <button
                     onClick={handleDelete}
-                    className="flex-1 px-4 py-3 bg-gradient-to-r from-red-600 to-pink-600 text-white rounded-xl font-semibold hover:from-red-700 hover:to-pink-700 transition shadow-lg"
+                    className="flex-1 py-3 bg-red-600 rounded-xl text-white font-semibold"
                   >
                     Supprimer
-                  </motion.button>
+                  </button>
                 </div>
               </motion.div>
             </motion.div>
@@ -837,46 +770,19 @@ const VideoModal = ({ video, onClose, isOwner, onDelete }) => {
 };
 
 /* =========================================
-   ⏱️ Helpers & Utils
+   🔧 Helpers
 ========================================= */
 
-// Formater les nombres (1000 -> 1K, 1000000 -> 1M)
 const formatNumber = (num) => {
-  if (!num || num === 0) return "0";
+  if (!num) return "0";
   if (num < 1000) return num.toString();
   if (num < 1000000) return `${(num / 1000).toFixed(1)}K`;
   return `${(num / 1000000).toFixed(1)}M`;
 };
 
-// Formater la durée en secondes vers MM:SS
 const formatDuration = (seconds) => {
   if (!seconds || isNaN(seconds)) return "0:00";
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
-};
-
-// Formater la date relative (il y a X temps)
-const formatTimeAgo = (date) => {
-  if (!date) return "Récemment";
-  
-  const now = new Date();
-  const past = new Date(date);
-  const diffMs = now - past;
-  const diffSecs = Math.floor(diffMs / 1000);
-  const diffMins = Math.floor(diffSecs / 60);
-  const diffHours = Math.floor(diffMins / 60);
-  const diffDays = Math.floor(diffHours / 24);
-  const diffWeeks = Math.floor(diffDays / 7);
-  const diffMonths = Math.floor(diffDays / 30);
-
-  if (diffSecs < 60) return "À l'instant";
-  if (diffMins < 60) return `Il y a ${diffMins} min`;
-  if (diffHours < 24) return `Il y a ${diffHours}h`;
-  if (diffDays < 7) return `Il y a ${diffDays}j`;
-  if (diffWeeks < 4) return `Il y a ${diffWeeks} sem`;
-  if (diffMonths < 12) return `Il y a ${diffMonths} mois`;
-  
-  const diffYears = Math.floor(diffDays / 365);
-  return `Il y a ${diffYears} an${diffYears > 1 ? 's' : ''}`;
 };
