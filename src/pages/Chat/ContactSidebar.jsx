@@ -7,9 +7,57 @@ import {
   Search, Users, MessageSquare, Send
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { API } from '../../services/apiService';
 import { useToast } from '../../context/ToastContext';
 import { Contacts } from '@capacitor-community/contacts';
+
+// ============================================
+// 🔐 NORMALISATION IDENTIQUE AU BACKEND
+// ============================================
+const normalizePhone = (phoneNumber) => {
+  if (!phoneNumber) return null;
+  
+  // Retirer espaces, tirets, parenthèses, points
+  let cleaned = phoneNumber.replace(/[\s\-\(\)\.]/g, '');
+  
+  // Remplacer 00 par +
+  cleaned = cleaned.replace(/^00/, '+');
+  
+  // Si pas de +, ajouter +225 (Côte d'Ivoire)
+  if (!cleaned.startsWith('+')) {
+    cleaned = '+225' + cleaned.replace(/^0/, ''); // Enlever le 0 initial
+  }
+  
+  return cleaned;
+};
+
+// ============================================
+// API SERVICE (Mock pour l'exemple)
+// ============================================
+const API = {
+  syncContacts: async (token, contacts) => {
+    const response = await fetch('/api/contacts/sync', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ contacts })
+    });
+    return await response.json();
+  },
+  
+  inviteContact: async (token, data) => {
+    const response = await fetch('/api/contacts/invite', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(data)
+    });
+    return await response.json();
+  }
+};
 
 export const ContactSidebar = ({ 
   token, 
@@ -32,26 +80,6 @@ export const ContactSidebar = ({
   }, [contacts, searchQuery]);
 
   // ============================================
-  // 🔐 NORMALISATION IDENTIQUE AU BACKEND
-  // ============================================
-  const normalizePhone = (phoneNumber) => {
-    if (!phoneNumber) return null;
-    
-    // Retirer espaces, tirets, parenthèses, points
-    let cleaned = phoneNumber.replace(/[\s\-\(\)\.]/g, '');
-    
-    // Remplacer 00 par +
-    cleaned = cleaned.replace(/^00/, '+');
-    
-    // Si pas de +, ajouter +225 (Côte d'Ivoire)
-    if (!cleaned.startsWith('+')) {
-      cleaned = '+225' + cleaned.replace(/^0/, ''); // Enlever le 0 initial
-    }
-    
-    return cleaned;
-  };
-
-  // ============================================
   // 🔥 SYNCHRONISATION (avec fallback web/mobile)
   // ============================================
   const handleSyncProcess = async () => {
@@ -59,10 +87,10 @@ export const ContactSidebar = ({
     try {
       let phoneContacts = [];
 
-      // ✅ DÉTECTION DE L'ENVIRONNEMENT
-      const isWeb = typeof window !== 'undefined' && !window.Capacitor;
+      // ✅ DÉTECTION CAPACITOR (plus fiable)
+      const isCapacitorApp = window.Capacitor?.isNativePlatform?.() || false;
 
-      if (isWeb) {
+      if (!isCapacitorApp) {
         // 🖥️ MODE WEB : Contacts de test
         console.log("🖥️ [Mode Web] Utilisation de contacts de test");
         phoneContacts = [
@@ -477,3 +505,5 @@ const EmptyState = ({ icon, text, subtext }) => (
     {subtext && <p className="text-[10px] text-gray-600 mt-1">{subtext}</p>}
   </div>
 );
+
+export default ContactSidebar;
