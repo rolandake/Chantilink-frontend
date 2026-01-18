@@ -1,14 +1,58 @@
-// src/components/PostComments.jsx
+// src/pages/Home/PostComments.jsx - VERSION COMPLÈTE CORRIGÉE
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { TrashIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { TrashIcon, XMarkIcon, HeartIcon } from "@heroicons/react/24/outline";
+import { HeartIcon as HeartSolid } from "@heroicons/react/24/solid";
 import EmojiPicker from "emoji-picker-react";
-import SimpleAvatar from "./SimpleAvatar";
 import { useDarkMode } from "../../context/DarkModeContext";
 
+// 🔥 COMPOSANT SIMPLE AVATAR
+const SimpleAvatar = ({ username, profilePhoto, size = 32 }) => {
+  const [error, setError] = useState(false);
+  
+  const initials = useMemo(() => {
+    if (!username) return "?";
+    const parts = username.trim().split(" ");
+    return parts.length > 1 
+      ? (parts[0][0] + parts[1][0]).toUpperCase().slice(0, 2)
+      : username.substring(0, 2).toUpperCase();
+  }, [username]);
+
+  const bgColor = useMemo(() => {
+    const colors = ["#f97316", "#ef4444", "#8b5cf6", "#3b82f6", "#10b981", "#f59e0b", "#ec4899", "#6366f1"];
+    let hash = 0;
+    const str = username || "";
+    for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    return colors[Math.abs(hash) % colors.length];
+  }, [username]);
+
+  if (error || !profilePhoto) {
+    return (
+      <div 
+        className="rounded-full flex items-center justify-center text-white font-bold select-none shadow-sm flex-shrink-0"
+        style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}
+      >
+        {initials}
+      </div>
+    );
+  }
+
+  return (
+    <img 
+      src={profilePhoto} 
+      alt={username} 
+      className="rounded-full object-cover shadow-sm bg-gray-200 flex-shrink-0"
+      style={{ width: size, height: size }} 
+      onError={() => setError(true)}
+      loading="lazy"
+    />
+  );
+};
+
+// 🔥 COMPOSANT PRINCIPAL
 const PostComments = ({
   postId,
-  comments = [], // Valeur par défaut pour éviter le crash
+  comments = [],
   setComments,
   currentUser,
   getToken,
@@ -20,29 +64,33 @@ const PostComments = ({
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [loadingComment, setLoadingComment] = useState(false);
   const [deletingCommentId, setDeletingCommentId] = useState(null);
+  const [reactingCommentId, setReactingCommentId] = useState(null);
   
   const emojiPickerRef = useRef(null);
+  const emojiButtonRef = useRef(null);
   const base = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
-  // ✅ 1. SÉCURISATION DES DONNÉES (Memoized)
-  // On s'assure que "comments" est un tableau et on filtre les entrées invalides
   const safeComments = useMemo(() => {
     if (!Array.isArray(comments)) return [];
     return comments.filter(c => c && (c._id || c.tempId));
   }, [comments]);
 
-  // Gestion du clic extérieur pour fermer le picker
+  // Gestion du clic extérieur
   useEffect(() => {
     const handleClickOutside = (event) => {
-      if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target)) {
+      if (
+        showEmojiPicker &&
+        emojiPickerRef.current &&
+        !emojiPickerRef.current.contains(event.target) &&
+        emojiButtonRef.current &&
+        !emojiButtonRef.current.contains(event.target)
+      ) {
         setShowEmojiPicker(false);
       }
     };
 
-    if (showEmojiPicker) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showEmojiPicker]);
 
   const handleAddComment = async () => {
@@ -50,7 +98,6 @@ const PostComments = ({
     if (!newComment.trim()) return;
 
     const commentContent = newComment.trim();
-    // ID temporaire unique garanti
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     
     const optimisticComment = {
@@ -64,7 +111,8 @@ const PostComments = ({
         isPremium: currentUser.isPremium
       },
       createdAt: new Date().toISOString(),
-      isOptimistic: true
+      isOptimistic: true,
+      likes: []
     };
 
     setComments(prev => [...prev, optimisticComment]);
@@ -90,7 +138,6 @@ const PostComments = ({
       const responseData = await res.json();
       const savedComment = responseData.data || responseData;
       
-      // Remplacement propre : ID temp -> ID réel
       setComments(prev => prev.map(c => 
         c._id === tempId ? savedComment : c
       ));
@@ -99,7 +146,6 @@ const PostComments = ({
 
     } catch (err) {
       console.error("❌ Erreur ajout commentaire:", err);
-      // Rollback en cas d'erreur
       setComments(prev => prev.filter(c => c._id !== tempId));
       setNewComment(commentContent);
       showToast?.("Impossible de publier le commentaire", "error");
@@ -114,7 +160,6 @@ const PostComments = ({
     setDeletingCommentId(commentId);
     const previousComments = [...comments];
 
-    // Optimistic delete
     setComments(prev => prev.filter(c => c._id !== commentId));
 
     try {
@@ -128,7 +173,6 @@ const PostComments = ({
       showToast?.("Commentaire supprimé", "success");
 
     } catch (err) {
-      // Rollback
       setComments(previousComments);
       showToast?.("Erreur lors de la suppression", "error");
     } finally {
@@ -136,8 +180,73 @@ const PostComments = ({
     }
   };
 
+  const handleLikeComment = async (commentId) => {
+    if (!currentUser) return showToast?.("Connectez-vous pour réagir", "info");
+    if (reactingCommentId) return;
+
+    setReactingCommentId(commentId);
+
+    // 💾 Sauvegarder l'état précédent pour rollback
+    const previousComments = [...comments];
+
+    // ⚡ Mise à jour optimiste
+    setComments(prev => prev.map(c => {
+      if (c._id !== commentId) return c;
+      
+      const likes = Array.isArray(c.likes) ? c.likes : [];
+      const hasLiked = likes.some(id => 
+        (typeof id === 'object' ? id._id : id) === currentUser._id
+      );
+
+      return {
+        ...c,
+        likes: hasLiked
+          ? likes.filter(id => (typeof id === 'object' ? id._id : id) !== currentUser._id)
+          : [...likes, currentUser._id]
+      };
+    }));
+
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Non authentifié");
+
+      const res = await fetch(`${base}/api/posts/${postId}/comment/${commentId}/like`, {
+        method: "POST",
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        console.error("❌ Erreur API like:", res.status, errorData);
+        throw new Error(errorData.message || "Erreur like");
+      }
+
+      // ✅ Optionnel: Synchroniser avec la réponse du serveur
+      const data = await res.json();
+      if (data.likes) {
+        setComments(prev => prev.map(c => 
+          c._id === commentId ? { ...c, likes: data.likes } : c
+        ));
+      }
+
+    } catch (err) {
+      console.error("❌ Erreur like commentaire:", err);
+      
+      // 🔄 Rollback à l'état précédent
+      setComments(previousComments);
+      
+      showToast?.("Erreur lors de la réaction", "error");
+    } finally {
+      setReactingCommentId(null);
+    }
+  };
+
   const onEmojiClick = useCallback((emojiObject) => {
     setNewComment(prev => prev + emojiObject.emoji);
+    setShowEmojiPicker(false);
   }, []);
 
   return (
@@ -157,16 +266,20 @@ const PostComments = ({
           </p>
         )}
         
-        {/* ✅ 2. initial={false} pour éviter le flash au chargement */}
         <AnimatePresence mode="popLayout" initial={false}>
           {safeComments.map(c => {
             const userObj = c.user || {};
             const isMe = currentUser && (userObj._id === currentUser._id || c.userId === currentUser._id);
             const isTemp = c.isOptimistic;
+            
+            const likes = Array.isArray(c.likes) ? c.likes : [];
+            const likesCount = likes.length;
+            const hasLiked = currentUser && likes.some(id => 
+              (typeof id === 'object' ? id._id : id) === currentUser._id
+            );
 
             return (
               <motion.div 
-                // ✅ 3. CLÉ UNIQUE GARANTIE (ID + fallback)
                 key={c._id || c.tempId || Math.random()} 
                 layout="position"
                 initial={{ opacity: 0, x: -10 }}
@@ -210,17 +323,36 @@ const PostComments = ({
                     </p>
                   </div>
                   
-                  {isMe && !isTemp && (
-                    <div className="flex justify-end mt-1 px-1">
+                  <div className="flex items-center gap-3 mt-1 px-1">
+                    {!isTemp && (
+                      <button
+                        onClick={() => handleLikeComment(c._id)}
+                        disabled={reactingCommentId === c._id}
+                        className="flex items-center gap-1 text-xs font-medium transition-colors"
+                      >
+                        {hasLiked ? (
+                          <HeartSolid className="w-4 h-4 text-red-500" />
+                        ) : (
+                          <HeartIcon className={`w-4 h-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                        )}
+                        {likesCount > 0 && (
+                          <span className={hasLiked ? 'text-red-500' : 'text-gray-500'}>
+                            {likesCount}
+                          </span>
+                        )}
+                      </button>
+                    )}
+
+                    {isMe && !isTemp && (
                       <button
                         onClick={() => handleDeleteComment(c._id)}
                         disabled={deletingCommentId === c._id}
-                        className="text-xs text-red-500 hover:text-red-600 font-medium flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                        className="text-xs text-red-500 hover:text-red-600 font-medium flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-auto"
                       >
                         <TrashIcon className="w-3 h-3" /> Supprimer
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               </motion.div>
             );
@@ -228,7 +360,7 @@ const PostComments = ({
         </AnimatePresence>
       </div>
 
-      <div className={`p-3 border-t relative z-20 ${
+      <div className={`p-3 border-t relative ${
         isDarkMode ? 'border-gray-700 bg-gray-850' : 'border-gray-200 bg-white'
       }`}>
         <div className="flex items-end gap-2">
@@ -255,7 +387,11 @@ const PostComments = ({
 
           <div className="flex items-center gap-1 pb-1">
             <button
-              onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+              ref={emojiButtonRef}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowEmojiPicker(!showEmojiPicker);
+              }}
               className={`p-2 rounded-full transition-colors ${
                 showEmojiPicker 
                   ? 'bg-orange-100 text-orange-600' 
@@ -285,23 +421,30 @@ const PostComments = ({
           {showEmojiPicker && (
             <motion.div
               ref={emojiPickerRef}
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              initial={{ opacity: 0, scale: 0.9, y: 10 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              exit={{ opacity: 0, scale: 0.9, y: 10 }}
               transition={{ duration: 0.15 }}
-              className="absolute bottom-full right-0 mb-2 z-50 origin-bottom-right"
+              className="fixed bottom-20 right-4 z-[9999] origin-bottom-right"
+              style={{ maxWidth: 'calc(100vw - 2rem)' }}
             >
-              <div className="relative shadow-2xl rounded-2xl overflow-hidden border border-gray-200/50 dark:border-gray-700/50">
-                 <div className={`flex justify-end p-1 ${isDarkMode ? 'bg-[#222]' : 'bg-white'} border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-100'}`}>
-                    <button onClick={() => setShowEmojiPicker(false)} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full">
-                       <XMarkIcon className="w-4 h-4 text-gray-500" />
-                    </button>
-                 </div>
+              <div className="relative shadow-2xl rounded-2xl overflow-hidden border border-gray-200/50 dark:border-gray-700/50 bg-white dark:bg-gray-900">
+                <div className={`flex justify-end p-1 ${isDarkMode ? 'bg-[#222]' : 'bg-white'} border-b ${isDarkMode ? 'border-gray-700' : 'border-gray-100'}`}>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowEmojiPicker(false);
+                    }} 
+                    className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full"
+                  >
+                    <XMarkIcon className="w-4 h-4 text-gray-500" />
+                  </button>
+                </div>
                 <EmojiPicker
                   onEmojiClick={onEmojiClick}
                   theme={isDarkMode ? "dark" : "light"}
-                  width={300}
-                  height={350}
+                  width={320}
+                  height={400}
                   searchDisabled={false}
                   previewConfig={{ showPreview: false }}
                   skinTonesDisabled
@@ -315,4 +458,5 @@ const PostComments = ({
   );
 };
 
+// 🔥 EXPORT PAR DÉFAUT - OBLIGATOIRE
 export default PostComments;

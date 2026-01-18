@@ -31,40 +31,64 @@ const normalizePhone = (phoneNumber) => {
 };
 
 // ============================================
-// API SERVICE (Mock pour l'exemple)
+// API SERVICE (Utilise le vrai service du projet)
 // ============================================
-const API = {
-  syncContacts: async (token, contacts) => {
-    const response = await fetch('/api/contacts/sync', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ contacts })
-    });
-    return await response.json();
-  },
+const getAPIService = () => {
+  const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
   
-  inviteContact: async (token, data) => {
-    const response = await fetch('/api/contacts/invite', {
-      method: 'POST',
+  const fetchWithAuth = async (url, options = {}) => {
+    const response = await fetch(url, {
+      ...options,
       headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...options.headers,
       },
-      body: JSON.stringify(data)
     });
-    return await response.json();
-  }
+
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await response.text();
+      console.error('❌ Réponse non-JSON:', text.substring(0, 200));
+      throw new Error(`Erreur serveur (${response.status}): Réponse invalide`);
+    }
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || `Erreur ${response.status}`);
+    }
+
+    return data;
+  };
+
+  return {
+    syncContacts: async (token, contacts) => {
+      return fetchWithAuth(`${BASE_URL}/contacts/sync`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ contacts }),
+      });
+    },
+    
+    inviteContact: async (token, data) => {
+      return fetchWithAuth(`${BASE_URL}/contacts/invite`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify(data),
+      });
+    }
+  };
 };
+
+const API = getAPIService();
 
 export const ContactSidebar = ({ 
   token, 
   onContactSelect, 
   contacts = [], 
   unreadCounts = {},
-  user
+  user,
+  onSyncComplete // ✅ AJOUTÉ
 }) => {
   const [loading, setLoading] = useState(false);
   const [syncMatches, setSyncMatches] = useState([]);
@@ -78,6 +102,30 @@ export const ContactSidebar = ({
       c.fullName?.toLowerCase().includes(searchQuery.toLowerCase())
     );
   }, [contacts, searchQuery]);
+
+  // ============================================
+  // 💾 PERSISTANCE DES CONTACTS SYNCHRONISÉS
+  // ============================================
+  useEffect(() => {
+    const savedMatches = localStorage.getItem('syncedContacts');
+    const savedOffApp = localStorage.getItem('offAppContacts');
+    
+    if (savedMatches) {
+      try {
+        setSyncMatches(JSON.parse(savedMatches));
+      } catch (e) {
+        console.error('Erreur chargement contacts:', e);
+      }
+    }
+    
+    if (savedOffApp) {
+      try {
+        setOffAppContacts(JSON.parse(savedOffApp));
+      } catch (e) {
+        console.error('Erreur chargement contacts hors app:', e);
+      }
+    }
+  }, []);
 
   // ============================================
   // 🔥 SYNCHRONISATION (avec fallback web/mobile)
@@ -123,7 +171,6 @@ export const ContactSidebar = ({
 
           console.log(`📲 ${result.contacts?.length || 0} contacts trouvés`);
 
-          // ✅ Extraction et normalisation
           phoneContacts = result.contacts
             .map(contact => {
               const phone = contact.phones?.[0]?.number;
@@ -160,9 +207,21 @@ export const ContactSidebar = ({
       console.log("📋 Exemples:", phoneContacts.slice(0, 3));
 
       // ✅ APPEL API avec le service corrigé
-      const result = await API.syncContacts(token, phoneContacts);
-      
-      console.log(`📊 Résultat sync:`, result);
+      let result;
+      try {
+        result = await API.syncContacts(token, phoneContacts);
+        console.log(`📊 Résultat sync:`, result);
+      } catch (apiError) {
+        console.error('❌ Erreur API:', apiError);
+        
+        if (apiError.message.includes('404')) {
+          throw new Error('Route de synchronisation non trouvée. Vérifiez que le backend est correctement configuré.');
+        } else if (apiError.message.includes('Réponse invalide')) {
+          throw new Error('Le serveur a retourné une erreur. Consultez les logs backend.');
+        }
+        
+        throw apiError;
+      }
 
       // ✅ VÉRIFICATION DES DONNÉES REÇUES
       if (!result || typeof result !== 'object') {
@@ -180,13 +239,22 @@ export const ContactSidebar = ({
 
       console.log(`✅ Traitement: ${onChantilink.length} sur app, ${notOnChantilink.length} hors app`);
 
-      // ✅ Mise à jour UI
+      // ✅ Mise à jour UI + SAUVEGARDE PERMANENTE
       setSyncMatches(onChantilink);
       setOffAppContacts(notOnChantilink);
+      
+      // 💾 SAUVEGARDER dans localStorage pour persistance
+      localStorage.setItem('syncedContacts', JSON.stringify(onChantilink));
+      localStorage.setItem('offAppContacts', JSON.stringify(notOnChantilink));
       
       if (onChantilink.length > 0) {
         setActiveTab("suggestions");
         showToast(`✅ ${onChantilink.length} amis trouvés sur Chantilink !`, "success");
+        
+        // ✅ APPELER LE CALLBACK
+        if (onSyncComplete) {
+          onSyncComplete(onChantilink);
+        }
       } else {
         showToast("Aucun ami trouvé sur l'app", "info");
         if (notOnChantilink.length > 0) {
@@ -216,7 +284,6 @@ export const ContactSidebar = ({
         window.open(result.inviteUrl, '_blank');
         showToast(`Invitation ouverte pour ${contact.name}`, "success");
       } else {
-        // Fallback si le backend ne retourne pas d'URL
         const inviteText = `Salut ! Rejoins-moi sur Chantilink pour discuter en toute sécurité 🔒\n\n${window.location.origin}/register`;
         const phoneDigits = contact.phone.replace(/\D/g, '');
         const whatsappUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(inviteText)}`;
@@ -438,44 +505,59 @@ const TabButton = ({ active, onClick, label, icon, badge }) => (
   </button>
 );
 
-const ContactItem = ({ user, unread, onClick, isSuggestion }) => (
-  <div 
-    onClick={onClick}
-    className="flex items-center gap-3 p-4 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all group"
-  >
-    <div className="relative">
-      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg shadow-xl border border-white/5 ${isSuggestion ? 'bg-blue-600' : 'bg-gradient-to-br from-blue-600 to-indigo-700'}`}>
-        {user.fullName[0].toUpperCase()}
+const ContactItem = ({ user, unread, onClick, isSuggestion }) => {
+  const handleClick = () => {
+    const contact = {
+      id: user.id || user._id,
+      fullName: user.fullName,
+      username: user.username,
+      profilePhoto: user.profilePhoto,
+      isOnline: user.isOnline,
+      lastSeen: user.lastSeen,
+      isOnChantilink: user.isOnChantilink || isSuggestion
+    };
+    onClick(contact);
+  };
+
+  return (
+    <div 
+      onClick={handleClick}
+      className="flex items-center gap-3 p-4 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all group"
+    >
+      <div className="relative">
+        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg shadow-xl border border-white/5 ${isSuggestion ? 'bg-blue-600' : 'bg-gradient-to-br from-blue-600 to-indigo-700'}`}>
+          {user.fullName[0].toUpperCase()}
+        </div>
+        {user.isOnline && (
+          <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-[3px] border-[#0b0d10]" />
+        )}
       </div>
-      {user.isOnline && (
-        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-[3px] border-[#0b0d10]" />
-      )}
-    </div>
-    
-    <div className="flex-1 min-w-0">
-      <div className="flex justify-between items-baseline">
-        <p className="text-sm font-bold text-gray-100 truncate group-hover:text-white transition-colors">
-          {user.fullName}
+      
+      <div className="flex-1 min-w-0">
+        <div className="flex justify-between items-baseline">
+          <p className="text-sm font-bold text-gray-100 truncate group-hover:text-white transition-colors">
+            {user.fullName}
+          </p>
+          {unread > 0 && (
+            <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md">
+              {unread}
+            </span>
+          )}
+        </div>
+        <p className="text-[11px] text-gray-500 truncate flex items-center gap-1">
+          {isSuggestion ? (
+            <span className="text-blue-500 font-bold uppercase tracking-tighter text-[9px]">
+              ✓ Sur Chantilink
+            </span>
+          ) : (
+            user.lastSeen ? `Vu ${new Date(user.lastSeen).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Disponible'
+          )}
         </p>
-        {unread > 0 && (
-          <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md">
-            {unread}
-          </span>
-        )}
       </div>
-      <p className="text-[11px] text-gray-500 truncate flex items-center gap-1">
-        {isSuggestion ? (
-          <span className="text-blue-500 font-bold uppercase tracking-tighter text-[9px]">
-            ✓ Sur Chantilink
-          </span>
-        ) : (
-          user.lastSeen ? `Vu ${new Date(user.lastSeen).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Disponible'
-        )}
-      </p>
+      {isSuggestion && <UserCheck size={16} className="text-blue-500/50" />}
     </div>
-    {isSuggestion && <UserCheck size={16} className="text-blue-500/50" />}
-  </div>
-);
+  );
+};
 
 const InviteContactItem = ({ contact, onInvite }) => (
   <div className="flex items-center gap-3 p-4 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl mb-2 transition-all group">

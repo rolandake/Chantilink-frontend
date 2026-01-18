@@ -1,7 +1,6 @@
 // ============================================
 // 📁 src/App.jsx
-// VERSION AVEC NAVBAR INTELLIGENTE AUTO-HIDE ⚡
-// LAYOUT INSTAGRAM POUR DESKTOP 🎨
+// VERSION OPTIMISÉE LCP AVEC SPLASH REACT
 // ============================================
 import React, { useState, Suspense, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -11,7 +10,8 @@ import {
 } from "lucide-react";
 
 import LoadingSpinner from "./components/LoadingSpinner";
-import { Header, SplashScreen } from "./imports/importsComponents";
+import SplashScreen from "./components/SplashScreen"; // ⭐ NOUVEAU
+import { Header } from "./imports/importsComponents";
 import { useAuth } from "./imports/importsContext";
 import { useStories } from "./context/StoryContext";
 import { useDarkMode } from "./context/DarkModeContext";
@@ -44,7 +44,6 @@ function useSmartScroll(threshold = 10) {
         window.requestAnimationFrame(() => {
           const currentScrollY = window.scrollY || document.documentElement.scrollTop;
           
-          // Toujours visible en haut de page (< 80px)
           if (currentScrollY < 80) {
             setIsVisible(true);
             lastScrollY.current = currentScrollY;
@@ -54,14 +53,12 @@ function useSmartScroll(threshold = 10) {
 
           const scrollDiff = currentScrollY - lastScrollY.current;
 
-          // Scroll vers le bas (cache la navbar)
           if (scrollDiff > threshold) {
             if (scrollDirection.current !== 'down') {
               scrollDirection.current = 'down';
               setIsVisible(false);
             }
           } 
-          // Scroll vers le haut (montre la navbar)
           else if (scrollDiff < -threshold) {
             if (scrollDirection.current !== 'up') {
               scrollDirection.current = 'up';
@@ -86,6 +83,7 @@ function useSmartScroll(threshold = 10) {
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  const [showSplash, setShowSplash] = useState(true); // ⭐ NOUVEAU
   const { ready: authReady } = useAuth();
 
   useEffect(() => {
@@ -113,7 +111,9 @@ export default function App() {
     fixVh();
     window.addEventListener('resize', fixVh, { passive: true });
     
-    if (authReady) setReady(true);
+    if (authReady) {
+      setReady(true);
+    }
     
     return () => {
       window.removeEventListener('resize', fixVh);
@@ -121,10 +121,17 @@ export default function App() {
     };
   }, [authReady]);
 
-  if (!ready) return <SplashScreen onFinish={() => {}} />;
+  // ⭐ AFFICHER LE SPLASH REACT PENDANT LE CHARGEMENT
+  if (showSplash) {
+    return <SplashScreen onFinish={() => setShowSplash(false)} />;
+  }
+
+  if (!ready) {
+    return null;
+  }
   
   return (
-    <Suspense fallback={<div className="fixed inset-0 bg-black" />}>
+    <Suspense fallback={<div className="fixed inset-0 bg-gray-900" />}>
       <AppContent />
     </Suspense>
   );
@@ -139,7 +146,6 @@ function AppContent() {
   const [storyViewerOpen, setStoryViewerOpen] = useState(false);
   const [storyViewerData, setStoryViewerData] = useState({ stories: [], owner: null });
 
-  // ✅ Hook pour détecter le scroll intelligent
   const isNavVisible = useSmartScroll(10);
 
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
@@ -158,7 +164,6 @@ function AppContent() {
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
       
-      {/* ✅ HEADER avec animation intelligente */}
       <AnimatePresence>
         {showNav && isNavVisible && (
           <motion.div 
@@ -197,7 +202,6 @@ function AppContent() {
         </div>
       </main>
 
-      {/* ✅ NAVBAR MOBILE avec animation intelligente */}
       <AnimatePresence>
         {showNav && isNavVisible && (
           <motion.div 
@@ -286,9 +290,6 @@ const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
   </motion.button>
 ));
 
-// ============================================
-// SIDEBAR DESKTOP - STYLE INSTAGRAM
-// ============================================
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser }) => {
   const navigate = useNavigate();
   const location = useLocation();

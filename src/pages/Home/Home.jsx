@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Home/Home.jsx
-// VERSION OPTIMISÉE LCP / CLS AVEC RECHERCHE HEADER
+// VERSION OPTIMISÉE LCP / CLS
 // ============================================
 import React, {
   useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense
@@ -19,10 +19,8 @@ import StoryCreator from "./StoryCreator";
 const StoryViewer = lazy(() => import("./StoryViewer"));
 const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
 
-const fastTransition = { duration: 0.15, ease: "easeOut" };
-
 // ============================================
-// Skeleton LCP SAFE
+// Skeleton LCP SAFE - Charge instantanément
 // ============================================
 const SkeletonPosts = ({ count = 3 }) =>
   [...Array(count)].map((_, i) => (
@@ -32,7 +30,7 @@ const SkeletonPosts = ({ count = 3 }) =>
   ));
 
 // ============================================
-// Animated wrapper (NON-LCP)
+// Post Wrapper (pour animations NON-LCP)
 // ============================================
 const PostWrapper = ({ post, onDeleted, showToast }) => (
   <PostCard
@@ -61,7 +59,7 @@ const Toast = ({ message, type = "info", onClose }) => {
 };
 
 // ============================================
-// HOME
+// HOME COMPONENT
 // ============================================
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const { isDarkMode } = useDarkMode();
@@ -161,14 +159,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   }, [handleObserver]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full scrollbar-hide">
       {!showPyramid && (
         <>
-          {/* STORIES - Sans bordure visible */}
+          {/* 🎯 STORIES - Container fixe sans bordure visible */}
           <div className={`sticky top-0 z-30 ${
             isDarkMode ? "bg-black" : "bg-white"
           }`}>
-            <div className="h-full overflow-x-auto">
+            <div className="h-full overflow-x-auto scrollbar-hide">
               <StoryContainer
                 onOpenStory={handleOpenStory}
                 onOpenCreator={() => setShowCreator(true)}
@@ -178,8 +176,8 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
             </div>
           </div>
 
-          {/* FEED - Continuation fluide */}
-          <div className="flex-1 overflow-y-auto">
+          {/* 🎯 FEED - Scroll fluide */}
+          <div className="flex-1 overflow-y-auto scrollbar-hide">
             <div className="w-full lg:max-w-[630px] lg:mx-auto">
 
               {/* Message si recherche active */}
@@ -191,6 +189,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </div>
               )}
 
+              {/* 🔥 CHARGEMENT INITIAL - SKELETON */}
               {initialLoad && postsLoading ? (
                 <SkeletonPosts />
               ) : filteredPosts.length === 0 ? (
@@ -204,7 +203,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </div>
               ) : (
                 <>
-                  {/* 🔥 PREMIER POST – LCP SAFE */}
+                  {/* 🔥 PREMIER POST – LCP CRITIQUE - PAS D'ANIMATION */}
                   {filteredPosts[0] && (
                     <PostCard
                       post={filteredPosts[0]}
@@ -213,7 +212,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                     />
                   )}
 
-                  {/* AUTRES POSTS ANIMÉS */}
+                  {/* ⚡ AUTRES POSTS - AVEC ANIMATIONS */}
                   <AnimatePresence>
                     {filteredPosts.slice(1).map(post => (
                       <PostWrapper
@@ -227,7 +226,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </>
               )}
 
-              {/* Infinite Scroll Trigger */}
+              {/* 🔄 Infinite Scroll Trigger */}
               {!searchQuery && hasMore && (
                 <div ref={observerRef} className="h-20 flex items-center justify-center">
                   {postsLoading && (
@@ -236,7 +235,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </div>
               )}
 
-              {/* Bouton Refresh */}
+              {/* 🔄 Bouton Refresh */}
               {!postsLoading && posts.length > 0 && (
                 <div className="py-8 flex justify-center">
                   <button
@@ -258,7 +257,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         </>
       )}
 
-      {/* MODALS */}
+      {/* 🎬 MODALS - LAZY LOADED */}
       <AnimatePresence>
         {showCreator && <StoryCreator onClose={() => setShowCreator(false)} />}
       </AnimatePresence>
@@ -288,7 +287,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         )}
       </AnimatePresence>
 
-      {/* TOAST */}
+      {/* 🎨 TOAST */}
       <AnimatePresence>
         {toast && (
           <Toast

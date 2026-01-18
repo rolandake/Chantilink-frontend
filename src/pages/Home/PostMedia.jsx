@@ -1,4 +1,7 @@
-// src/pages/Home/PostMedia.jsx - OPTIMISÉ, SWIPE 60 FPS, CLOUDINARY 8K, AUTOPLAY SÉCURISÉ
+// ============================================
+// 📁 src/pages/Home/PostMedia.jsx
+// VERSION OPTIMISÉE LCP + SWIPE + CLOUDINARY
+// ============================================
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 
@@ -21,9 +24,10 @@ const getUltraHDUrl = (url) => {
   return `${base}q_100,f_auto,fl_progressive:steep,dpr_2.0,w_2048,c_limit,e_sharpen:100,cs_srgb/${id}`;
 };
 
-const PostMedia = React.memo(({ mediaUrls }) => {
+const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => { // 🔥 AJOUT PROP
   const [index, setIndex] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [loadedImages, setLoadedImages] = useState({}); // 🔥 TRACKING CHARGEMENT
   const containerRef = useRef(null);
   const videoRefs = useRef({});
   const touch = useRef({ x: 0, y: 0, time: 0 });
@@ -67,16 +71,11 @@ const PostMedia = React.memo(({ mediaUrls }) => {
     const currentVideo = videoRefs.current[index];
     const otherVideos = Object.values(videoRefs.current).filter((_, i) => i !== index);
 
-    // Pause les autres
     otherVideos.forEach(v => v?.pause());
 
-    // Play la vidéo courante (si muette ou après interaction)
     if (currentVideo && (currentVideo.muted || hasInteracted.current)) {
-      currentVideo.play().catch(() => {
-        // Silently ignore
-      });
+      currentVideo.play().catch(() => {});
     }
-
   }, [index]);
 
   // === SWIPE MOBILE/DESKTOP ===
@@ -124,12 +123,9 @@ const PostMedia = React.memo(({ mediaUrls }) => {
       setDragging(false);
     };
 
-    // Touch
     el.addEventListener('touchstart', start, { passive: true });
     el.addEventListener('touchmove', move, { passive: false });
     el.addEventListener('touchend', end, { passive: true });
-
-    // Mouse (pour desktop drag)
     el.addEventListener('mousedown', start);
     el.addEventListener('mousemove', move);
     el.addEventListener('mouseup', end);
@@ -162,18 +158,23 @@ const PostMedia = React.memo(({ mediaUrls }) => {
         style={{ minHeight: '300px' }}
       >
         {urls.map((url, i) => (
-          <div key={i} className="w-full flex-shrink-0 flex items-center justify-center bg-black">
+          <div key={i} className="w-full flex-shrink-0 flex items-center justify-center bg-black relative">
+            {/* 🔥 PLACEHOLDER PENDANT CHARGEMENT */}
+            {!isVideo(url) && !loadedImages[i] && (
+              <div className="absolute inset-0 animate-pulse bg-gray-800" />
+            )}
+            
             {isVideo(url) ? (
               <video
                 ref={el => videoRefs.current[i] = el}
                 src={url}
                 className="w-full h-auto max-h-[600px]"
                 style={{ objectFit: 'contain' }}
-                preload="metadata"
+                preload={isFirstPost && i === 0 ? "auto" : "metadata"} // 🔥 LCP
                 muted
                 playsInline
                 loop
-                controls={total === 1} // controls seulement si 1 média
+                controls={total === 1}
                 onClick={() => {
                   const v = videoRefs.current[i];
                   if (v) v.muted = !v.muted;
@@ -183,15 +184,20 @@ const PostMedia = React.memo(({ mediaUrls }) => {
               <img
                 src={url}
                 alt=""
-                className="w-full h-auto max-h-[600px] transition-opacity duration-300"
+                className={`w-full h-auto max-h-[600px] transition-opacity duration-300 ${
+                  loadedImages[i] ? 'opacity-100' : 'opacity-0'
+                }`}
                 style={{
                   objectFit: 'contain',
                   imageRendering: 'high-quality',
                   userSelect: 'none',
                   pointerEvents: dragging ? 'none' : 'auto'
                 }}
-                loading={i === index ? 'eager' : 'lazy'}
-                decoding="async"
+                // 🔥 OPTIMISATIONS LCP CRITIQUES
+                loading={isFirstPost && i === 0 ? 'eager' : 'lazy'}
+                fetchpriority={isFirstPost && i === 0 ? 'high' : 'auto'}
+                decoding={isFirstPost && i === 0 ? 'sync' : 'async'}
+                onLoad={() => setLoadedImages(prev => ({ ...prev, [i]: true }))}
                 draggable="false"
               />
             )}

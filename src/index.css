@@ -47,6 +47,16 @@ body {
   background: #ea580c;
 }
 
+/* === MASQUER SCROLLBAR (TOUT EN GARDANT LE SCROLL) === */
+.scrollbar-hide {
+  -ms-overflow-style: none;  /* IE et Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;  /* Chrome, Safari et Opera */
+}
+
 /* === SAFE AREA MOBILE === */
 .pb-safe {
   padding-bottom: env(safe-area-inset-bottom, 0px);
