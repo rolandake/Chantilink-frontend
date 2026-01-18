@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Chat/Messages.jsx
-// VERSION FINALE - AVEC CALLBACK SYNC
+// VERSION FINALE - SYNCHRONISATION RÉPERTOIRE
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -46,6 +46,7 @@ export default function Messages() {
   const fileInputRef = useRef(null);
 
   // --- DONNÉES ---
+  const [allContacts, setAllContacts] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [messages, setMessages] = useState([]);
   const [selectedContact, setSelectedContact] = useState(null);
@@ -111,6 +112,25 @@ export default function Messages() {
   );
 
   // ============================================
+  // 📥 CHARGER TOUS LES CONTACTS (AMIS)
+  // ============================================
+  const loadAllContacts = useCallback(async () => {
+    if (!token) return;
+    
+    try {
+      const result = await API.getFriends(token);
+      const contactsList = result.friends || result.data?.friends || [];
+      
+      console.log(`👥 [Messages] ${contactsList.length} contacts (amis) chargés`);
+      
+      setAllContacts(contactsList);
+      
+    } catch (error) {
+      console.error('❌ [Messages] Erreur chargement contacts:', error);
+    }
+  }, [token]);
+
+  // ============================================
   // 📥 CHARGER LES CONVERSATIONS
   // ============================================
   const loadConversations = useCallback(async () => {
@@ -125,7 +145,6 @@ export default function Messages() {
       
       setConversations(existingConversations);
       
-      // ✅ Extraire les unread counts
       const counts = {};
       existingConversations.forEach(conv => {
         if (conv.unreadCount > 0) {
@@ -144,8 +163,9 @@ export default function Messages() {
 
   // ✅ Charger au montage
   useEffect(() => {
+    loadAllContacts();
     loadConversations();
-  }, [loadConversations]);
+  }, [loadAllContacts, loadConversations]);
 
   // ============================================
   // 🔄 CALLBACK APRÈS SYNCHRONISATION
@@ -153,14 +173,21 @@ export default function Messages() {
   const handleSyncComplete = useCallback((newContacts) => {
     console.log(`📲 [Messages] ${newContacts.length} nouveaux contacts synchronisés`);
     
-    // Recharger les conversations
+    // Recharger tous les contacts et conversations
+    loadAllContacts();
     loadConversations();
     
-    // Notification
+    // Ajouter les nouveaux contacts à la liste
+    setAllContacts(prev => {
+      const existingIds = new Set(prev.map(c => c.id || c._id));
+      const uniqueNew = newContacts.filter(c => !existingIds.has(c.id || c._id));
+      return [...prev, ...uniqueNew];
+    });
+    
     if (newContacts.length > 0) {
-      showToast(`${newContacts.length} nouveaux contacts ajoutés !`, "success");
+      showToast(`${newContacts.length} nouveaux amis trouvés !`, "success");
     }
-  }, [loadConversations, showToast]);
+  }, [loadAllContacts, loadConversations, showToast]);
 
   // ============================================
   // 💬 CHARGER LES MESSAGES
@@ -371,7 +398,7 @@ export default function Messages() {
           <div className="flex-1 overflow-hidden">
             <ContactSidebar
               token={token}
-              contacts={conversations}
+              contacts={allContacts}
               selectedContact={selectedContact}
               onContactSelect={handleContactSelect}
               unreadCounts={unreadCounts}
