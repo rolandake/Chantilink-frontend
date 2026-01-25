@@ -1,102 +1,168 @@
 // ============================================
-// 📁 src/hooks/useAudioRecording.js - VERSION CORRIGÉE
+// 📁 src/hooks/useAudioRecording.js
+// VERSION CORRIGÉE - HOOK AUDIO FONCTIONNEL
 // ============================================
-import { useState, useRef, useCallback } from "react";
 
-export const useAudioRecording = (token, showToast) => {
+import { useState, useRef, useCallback } from 'react';
+
+export function useAudioRecording(token, showToast) {
   const [recording, setRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  
+
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
-  const audioRef = useRef(null);
+  const audioElementRef = useRef(null);
 
+  // ========== DÉMARRER L'ENREGISTREMENT ==========
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
+      console.log('🎤 [Audio] Demande permission microphone...');
       
-      mediaRecorderRef.current = mediaRecorder;
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 44100
+        } 
+      });
+
+      console.log('✅ [Audio] Permission accordée');
+
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
+          console.log(`📊 [Audio] Chunk reçu: ${event.data.size} bytes`);
         }
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        console.log('⏹️ [Audio] Enregistrement terminé');
+        
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const url = URL.createObjectURL(blob);
+        
+        console.log(`✅ [Audio] Blob créé: ${(blob.size / 1024).toFixed(2)} KB`);
         
         setAudioBlob(blob);
         setAudioUrl(url);
-        
-        // Arrêter tous les tracks du stream
+        setRecording(false);
+
+        // Arrêter tous les tracks
         stream.getTracks().forEach(track => track.stop());
       };
 
       mediaRecorder.start();
+      mediaRecorderRef.current = mediaRecorder;
       setRecording(true);
+
+      if (showToast) {
+        showToast('🎤 Enregistrement en cours...', 'info');
+      }
+
+    } catch (error) {
+      console.error('❌ [Audio] Erreur microphone:', error);
       
       if (showToast) {
-        showToast("Enregistrement en cours...", "info");
-      }
-    } catch (error) {
-      console.error("Erreur d'accès au microphone:", error);
-      if (showToast) {
-        showToast("Impossible d'accéder au microphone", "error");
+        if (error.name === 'NotAllowedError') {
+          showToast('Permission microphone refusée', 'error');
+        } else if (error.name === 'NotFoundError') {
+          showToast('Aucun microphone détecté', 'error');
+        } else {
+          showToast('Erreur microphone', 'error');
+        }
       }
     }
   }, [showToast]);
 
+  // ========== ARRÊTER L'ENREGISTREMENT ==========
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && recording) {
+      console.log('🛑 [Audio] Arrêt enregistrement...');
       mediaRecorderRef.current.stop();
-      setRecording(false);
-      
-      if (showToast) {
-        showToast("Enregistrement terminé", "success");
-      }
     }
-  }, [recording, showToast]);
+  }, [recording]);
 
-  const cancelAudio = useCallback(() => {
+  // ========== ANNULER L'ENREGISTREMENT ==========
+  const cancelRecording = useCallback(() => {
+    console.log('❌ [Audio] Annulation enregistrement...');
+    
+    if (mediaRecorderRef.current && recording) {
+      mediaRecorderRef.current.stop();
+    }
+
+    // Nettoyer les données
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
     }
+
     setAudioBlob(null);
     setAudioUrl(null);
+    setRecording(false);
     setIsPlaying(false);
     audioChunksRef.current = [];
-  }, [audioUrl]);
 
-  const playPreview = useCallback(() => {
-    if (audioRef.current && audioUrl) {
-      audioRef.current.play();
-      setIsPlaying(true);
+    if (showToast) {
+      showToast('Enregistrement annulé', 'info');
     }
+  }, [recording, audioUrl, showToast]);
+
+  // ========== LECTURE PREVIEW ==========
+  const playPreview = useCallback(() => {
+    if (!audioUrl) return;
+
+    console.log('▶️ [Audio] Lecture preview...');
+
+    if (!audioElementRef.current) {
+      audioElementRef.current = new Audio(audioUrl);
+      
+      audioElementRef.current.onended = () => {
+        console.log('✅ [Audio] Lecture terminée');
+        setIsPlaying(false);
+      };
+    }
+
+    audioElementRef.current.play();
+    setIsPlaying(true);
   }, [audioUrl]);
 
+  // ========== PAUSE PREVIEW ==========
   const pausePreview = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
+    if (audioElementRef.current) {
+      console.log('⏸️ [Audio] Pause preview');
+      audioElementRef.current.pause();
       setIsPlaying(false);
     }
   }, []);
+
+  // ========== NETTOYAGE ==========
+  const cleanup = useCallback(() => {
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
+    if (audioElementRef.current) {
+      audioElementRef.current.pause();
+      audioElementRef.current = null;
+    }
+  }, [audioUrl]);
 
   return {
     recording,
     audioBlob,
     audioUrl,
     isPlaying,
-    audioRef,
     startRecording,
     stopRecording,
-    cancelAudio,
+    cancelRecording,
     playPreview,
-    pausePreview
+    pausePreview,
+    cleanup
   };
-};
+}

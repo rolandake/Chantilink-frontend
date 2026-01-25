@@ -1,243 +1,329 @@
 // ============================================
 // 📁 src/pages/Chat/components/ChatInput.jsx
-// VERSION: FINALE - CORRIGÉE - COPIER CE FICHIER
+// STYLE WHATSAPP - ENREGISTREMENT + FICHIERS
 // ============================================
-import React from "react";
-import { Send, Mic, Paperclip, Smile, StopCircle, X, Play, Pause, ShieldCheck, Lock } from "lucide-react";
-import EmojiPicker from 'emoji-picker-react';
+import React, { useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { 
+  Paperclip, Send, Mic, X, Play, Pause, 
+  Smile, Image, FileText, Video, Trash2
+} from "lucide-react";
+import EmojiPicker from "emoji-picker-react";
 
 export const ChatInput = ({
-  input = "",  // ✅ VALEUR PAR DÉFAUT AJOUTÉE
-  onChange, 
+  input,
+  onChange,
   onSend,
-  recording, 
-  onStartRecording, 
-  onStopRecording, 
-  onCancelAudio, 
+  recording,
+  onStartRecording,
+  onStopRecording,
+  onCancelAudio,
   onSendAudio,
-  audioUrl, 
-  isPlaying, 
-  onPlayPreview, 
+  audioUrl,
+  isPlaying,
+  onPlayPreview,
   onPausePreview,
-  showEmoji, 
-  onToggleEmoji, 
+  showEmoji,
+  onToggleEmoji,
   onEmojiSelect,
-  uploading, 
-  onUpload, 
+  uploading,
+  onUpload,
   connected,
-  txtRef, 
-  fileRef, 
-  audioRef
+  txtRef,
+  fileRef
 }) => {
+  const [showAttachMenu, setShowAttachMenu] = React.useState(false);
+  const [recordingTime, setRecordingTime] = React.useState(0);
+  const timerRef = useRef(null);
 
-  const handleKeyDown = (e) => {
+  // Timer pour l'enregistrement
+  useEffect(() => {
+    if (recording) {
+      setRecordingTime(0);
+      timerRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setRecordingTime(0);
+    }
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [recording]);
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (onSend) onSend();
+      if (input.trim()) {
+        onSend();
+      }
     }
   };
 
-  return (
-    <div className="w-full bg-[#12151a]/95 backdrop-blur-2xl border-t border-white/5 p-3 md:p-5 z-40 relative">
-      
-      {/* --- PRÉVISUALISATION VOCALE SÉCURISÉE --- */}
-      <AnimatePresence>
-        {audioUrl && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }} 
-            animate={{ opacity: 1, y: 0 }} 
-            exit={{ opacity: 0, scale: 0.95 }}
-            className="flex items-center gap-4 bg-[#1c2026] p-4 rounded-[24px] mb-4 shadow-2xl border border-blue-500/20"
-          >
-            <button 
-              onClick={isPlaying ? onPausePreview : onPlayPreview}
-              className="w-12 h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-lg shadow-blue-900/40 active:scale-90 transition-transform"
-            >
-              {isPlaying ? (
-                <Pause size={20} fill="currentColor" />
-              ) : (
-                <Play size={20} className="ml-1" fill="currentColor" />
-              )}
-            </button>
-            
-            <div className="flex-1">
-              <div className="flex justify-between mb-1.5">
-                <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest">
-                  Message Vocal Privé
-                </span>
-                <span className="text-[10px] font-bold text-gray-500 italic">
-                  Prêt pour envoi
-                </span>
-              </div>
-              <div className="h-1.5 w-full bg-black/40 rounded-full overflow-hidden">
-                <motion.div 
-                  className="h-full bg-gradient-to-r from-blue-600 to-indigo-400"
-                  animate={{ width: isPlaying ? "100%" : "0%" }}
-                  transition={{ duration: 10, ease: "linear" }}
-                />
-              </div>
-            </div>
+  const handleFileSelect = (type) => {
+    setShowAttachMenu(false);
+    fileRef.current?.click();
+  };
 
-            {audioRef && <audio ref={audioRef} src={audioUrl} className="hidden" />}
-
-            <div className="flex gap-2">
-              <button 
-                onClick={onCancelAudio} 
-                className="p-3 text-gray-500 hover:text-red-400 transition-colors"
+  // Mode enregistrement audio
+  if (recording || audioUrl) {
+    return (
+      <div className="bg-[#1c2026] border-t border-white/5 p-3">
+        <div className="flex items-center gap-3">
+          {recording ? (
+            // En cours d'enregistrement
+            <>
+              <button
+                onClick={onCancelAudio}
+                className="p-3 bg-red-500/20 hover:bg-red-500/30 rounded-full transition-all"
               >
-                <X size={22}/>
+                <Trash2 size={20} className="text-red-500" />
               </button>
-              <button 
-                onClick={onSendAudio} 
-                className="p-3 bg-blue-600/10 text-blue-400 rounded-xl hover:bg-blue-600 hover:text-white transition-all"
+              
+              <div className="flex-1 flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+                  <span className="text-sm font-mono text-gray-300">
+                    {formatTime(recordingTime)}
+                  </span>
+                </div>
+                
+                <div className="flex-1 flex items-center gap-1">
+                  {[...Array(20)].map((_, i) => (
+                    <motion.div
+                      key={i}
+                      className="w-1 bg-blue-500 rounded-full"
+                      animate={{
+                        height: [8, 16, 8],
+                      }}
+                      transition={{
+                        duration: 0.5,
+                        repeat: Infinity,
+                        delay: i * 0.05,
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={onStopRecording}
+                className="p-3 bg-blue-600 hover:bg-blue-500 rounded-full transition-all"
               >
-                <Send size={22}/>
+                <Send size={20} className="text-white" />
+              </button>
+            </>
+          ) : (
+            // Preview audio
+            <>
+              <button
+                onClick={onCancelAudio}
+                className="p-3 bg-red-500/20 hover:bg-red-500/30 rounded-full transition-all"
+              >
+                <X size={20} className="text-red-500" />
+              </button>
+
+              <button
+                onClick={isPlaying ? onPausePreview : onPlayPreview}
+                className="p-3 bg-green-500/20 hover:bg-green-500/30 rounded-full transition-all"
+              >
+                {isPlaying ? (
+                  <Pause size={20} className="text-green-500" />
+                ) : (
+                  <Play size={20} className="text-green-500" />
+                )}
+              </button>
+
+              <div className="flex-1">
+                <div className="flex items-center gap-1">
+                  {[...Array(30)].map((_, i) => (
+                    <div
+                      key={i}
+                      className="w-1 bg-green-500 rounded-full"
+                      style={{ height: `${8 + Math.random() * 16}px` }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={onSendAudio}
+                className="p-3 bg-blue-600 hover:bg-blue-500 rounded-full transition-all shadow-lg"
+              >
+                <Send size={20} className="text-white" />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Mode normal
+  return (
+    <div className="bg-[#1c2026] border-t border-white/5 p-3 relative">
+      {/* Menu des pièces jointes */}
+      <AnimatePresence>
+        {showAttachMenu && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.9 }}
+            className="absolute bottom-full left-4 mb-2 bg-[#2a3942] rounded-2xl shadow-2xl p-3 border border-white/10"
+          >
+            <div className="flex gap-3">
+              <button
+                onClick={() => handleFileSelect('image')}
+                className="flex flex-col items-center gap-2 p-3 bg-purple-500/20 hover:bg-purple-500/30 rounded-xl transition-all group"
+              >
+                <div className="p-2 bg-purple-500 rounded-full">
+                  <Image size={20} className="text-white" />
+                </div>
+                <span className="text-xs text-gray-300">Image</span>
+              </button>
+
+              <button
+                onClick={() => handleFileSelect('video')}
+                className="flex flex-col items-center gap-2 p-3 bg-pink-500/20 hover:bg-pink-500/30 rounded-xl transition-all group"
+              >
+                <div className="p-2 bg-pink-500 rounded-full">
+                  <Video size={20} className="text-white" />
+                </div>
+                <span className="text-xs text-gray-300">Vidéo</span>
+              </button>
+
+              <button
+                onClick={() => handleFileSelect('file')}
+                className="flex flex-col items-center gap-2 p-3 bg-blue-500/20 hover:bg-blue-500/30 rounded-xl transition-all group"
+              >
+                <div className="p-2 bg-blue-500 rounded-full">
+                  <FileText size={20} className="text-white" />
+                </div>
+                <span className="text-xs text-gray-300">Document</span>
               </button>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      <div className="max-w-5xl mx-auto">
-        <div className="flex items-end gap-3 relative">
-          
-          {/* --- EMOJI PICKER MODERNE --- */}
-          <AnimatePresence>
-            {showEmoji && (
-              <motion.div 
-                initial={{ opacity: 0, y: 20 }} 
-                animate={{ opacity: 1, y: 0 }} 
-                exit={{ opacity: 0, y: 10 }}
-                className="absolute bottom-16 left-0 z-50 shadow-2xl rounded-3xl overflow-hidden border border-white/10"
-              >
-                <EmojiPicker 
-                  onEmojiClick={onEmojiSelect} 
-                  theme="dark" 
-                  width={300} 
-                  height={350} 
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* --- ATTACHEMENT & EMOJI --- */}
-          <div className="flex pb-1.5 gap-1">
-            <button 
-              onClick={() => fileRef?.current?.click()} 
-              disabled={!connected || uploading || recording}
-              className="p-3 text-gray-500 hover:text-blue-400 hover:bg-blue-500/5 rounded-2xl transition-all disabled:opacity-20"
-            >
-              {uploading ? (
-                <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <Paperclip size={24} />
-              )}
-            </button>
-            <input 
-              type="file" 
-              ref={fileRef} 
-              className="hidden" 
-              onChange={onUpload} 
-              accept="image/*,video/*,audio/*,application/pdf,.doc,.docx" 
+      {/* Emoji Picker */}
+      <AnimatePresence>
+        {showEmoji && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="absolute bottom-full right-4 mb-2"
+          >
+            <EmojiPicker
+              onEmojiClick={onEmojiSelect}
+              theme="dark"
+              searchPlaceholder="Rechercher un emoji..."
+              width={350}
+              height={400}
             />
-            
-            <button 
-              onClick={onToggleEmoji} 
-              className={`p-3 rounded-2xl transition-all hidden sm:block ${
-                showEmoji ? 'text-blue-400 bg-blue-500/10' : 'text-gray-500 hover:text-blue-400'
-              }`}
-            >
-              <Smile size={24} />
-            </button>
-          </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-          {/* --- ZONE DE SAISIE PRINCIPALE --- */}
-          <div className={`flex-1 bg-[#0f1115] rounded-[24px] border transition-all flex items-center min-h-[52px] px-2 ${
-            recording 
-              ? 'border-red-500/50 bg-red-500/5' 
-              : 'border-white/5 focus-within:border-blue-500/50'
-          }`}>
-            {recording && (
-              <div className="pl-3 flex items-center gap-2">
-                <div className="w-2 h-2 bg-red-500 rounded-full animate-ping" />
-                <span className="text-[10px] font-black text-red-500 uppercase tracking-widest mr-2">
-                  Enregistrement
-                </span>
-              </div>
-            )}
-            
-            <textarea
-              ref={txtRef}
-              value={input}
-              onChange={onChange}
-              onKeyDown={handleKeyDown}
-              disabled={!connected || recording}
-              placeholder={
-                recording 
-                  ? "" 
-                  : !connected 
-                    ? "Reconnexion..." 
-                    : "Message privé..."
-              }
-              rows={1}
-              className="w-full bg-transparent text-white px-3 py-3.5 max-h-32 resize-none outline-none text-[15px] placeholder:text-gray-700 disabled:opacity-50"
-            />
-            
-            {!input?.trim() && !recording && (
-              <div className="pr-2 opacity-20">
-                <Lock size={16} className="text-gray-400" />
-              </div>
-            )}
-          </div>
+      <div className="flex items-end gap-2">
+        {/* Bouton Emoji */}
+        <button
+          onClick={onToggleEmoji}
+          className="p-2.5 hover:bg-white/5 rounded-full transition-colors flex-shrink-0"
+        >
+          <Smile size={24} className="text-gray-400 hover:text-yellow-500 transition-colors" />
+        </button>
 
-          {/* --- BOUTON D'ACTION DYNAMIQUE --- */}
-          <div className="pb-1">
-            <AnimatePresence mode="wait">
-              {input?.trim() ? (
-                <motion.button
-                  key="send"
-                  initial={{ scale: 0.5, opacity: 0 }} 
-                  animate={{ scale: 1, opacity: 1 }} 
-                  exit={{ scale: 0.5, opacity: 0 }}
-                  onClick={onSend}
-                  className="p-4 bg-blue-600 text-white rounded-2xl shadow-lg shadow-blue-900/40 hover:bg-blue-500 active:scale-95 transition-all"
-                >
-                  <Send size={22} fill="currentColor" />
-                </motion.button>
-              ) : (
-                <motion.button
-                  key="mic"
-                  initial={{ scale: 0.5, opacity: 0 }} 
-                  animate={{ scale: 1, opacity: 1 }} 
-                  exit={{ scale: 0.5, opacity: 0 }}
-                  onClick={recording ? onStopRecording : onStartRecording}
-                  disabled={!connected}
-                  className={`p-4 rounded-2xl transition-all shadow-lg active:scale-95 ${
-                    recording 
-                      ? "bg-red-600 text-white shadow-red-900/40" 
-                      : "bg-[#1c2026] text-gray-400 hover:text-white"
-                  }`}
-                >
-                  {recording ? (
-                    <StopCircle size={22} fill="currentColor" />
-                  ) : (
-                    <Mic size={22} />
-                  )}
-                </motion.button>
-              )}
-            </AnimatePresence>
+        {/* Bouton Pièce jointe */}
+        <button
+          onClick={() => setShowAttachMenu(!showAttachMenu)}
+          className="p-2.5 hover:bg-white/5 rounded-full transition-colors flex-shrink-0"
+        >
+          <Paperclip size={24} className="text-gray-400 hover:text-blue-500 transition-colors" />
+        </button>
+
+        {/* Input file caché */}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar"
+          onChange={onUpload}
+          className="hidden"
+        />
+
+        {/* Zone de texte */}
+        <div className="flex-1 bg-[#2a3942] rounded-2xl border border-white/5 overflow-hidden">
+          <textarea
+            ref={txtRef}
+            value={input}
+            onChange={onChange}
+            onKeyDown={handleKeyPress}
+            placeholder={connected ? "Message privé..." : "Hors ligne..."}
+            disabled={!connected || uploading}
+            rows={1}
+            className="w-full px-4 py-3 bg-transparent text-white resize-none outline-none placeholder-gray-500 max-h-32"
+            style={{ 
+              minHeight: '48px',
+              maxHeight: '128px',
+            }}
+            onInput={(e) => {
+              e.target.style.height = 'auto';
+              e.target.style.height = Math.min(e.target.scrollHeight, 128) + 'px';
+            }}
+          />
+        </div>
+
+        {/* Bouton Envoyer / Micro */}
+        {input.trim() ? (
+          <button
+            onClick={onSend}
+            disabled={!connected || uploading}
+            className="p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-full transition-all flex-shrink-0 shadow-lg"
+          >
+            <Send size={22} className="text-white" />
+          </button>
+        ) : (
+          <button
+            onClick={onStartRecording}
+            disabled={!connected}
+            className="p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed rounded-full transition-all flex-shrink-0 shadow-lg"
+          >
+            <Mic size={22} className="text-white" />
+          </button>
+        )}
+      </div>
+
+      {/* Indicateur upload */}
+      {uploading && (
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center">
+          <div className="bg-[#2a3942] px-6 py-3 rounded-full flex items-center gap-3">
+            <div className="w-5 h-5 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+            <span className="text-sm text-white">Envoi en cours...</span>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* --- BADGE DE SÉCURITÉ --- */}
-      <div className="mt-3 flex justify-center items-center gap-1.5 opacity-30">
-        <ShieldCheck size={10} className="text-blue-500" />
-        <span className="text-[8px] font-black text-gray-500 uppercase tracking-[0.2em]">
-          Transmission Chiffrée
-        </span>
-      </div>
+      {/* Indicateur connexion */}
+      {!connected && (
+        <div className="absolute top-0 left-0 right-0 -translate-y-full bg-red-500/20 border border-red-500/30 px-4 py-2">
+          <p className="text-xs text-red-400 text-center">
+            ⚠️ Connexion perdue - Reconnexion en cours...
+          </p>
+        </div>
+      )}
     </div>
   );
 };

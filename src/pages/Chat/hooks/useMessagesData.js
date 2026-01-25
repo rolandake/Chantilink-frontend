@@ -1,51 +1,41 @@
 // ============================================
 // 📁 src/pages/Chat/hooks/useMessagesData.js
-// VERSION: ÉLITE - FIABILITÉ & CONFIDENTIALITÉ 🔐
-// ✅ CORRIGÉ : API.getConversations + showToast sécurisé
+// VERSION AVEC CACHE IndexedDB
 // ============================================
 import { useState, useEffect, useCallback, useRef } from "react";
 import { API } from "../../../services/apiService";
+import messageCache from "../../../utils/messageCache";
 
-/**
- * Hook de gestion des données pour la messagerie privée.
- * Gère les états de l'interface, les données des contacts et la sécurité des transitions.
- */
 export function useMessagesData(token, showToast) {
-  // --- 1. ÉTATS DE L'INTERFACE (Simplicité UX) ---
   const [ui, setUi] = useState({
-    load: true,          // Chargement initial des données
-    up: false,           // État d'upload (fichiers/médias)
-    search: "",          // Recherche dans la liste de contacts
-    showPending: false,  // Modal des demandes en attente
-    showEmoji: false,    // Sélecteur d'emojis
+    load: true,
+    up: false,
+    search: "",
+    showPending: false,
+    showEmoji: false,
     showAddContact: false,
-    showForward: false,  // Modal de transfert de message
-    contactFilter: 'all' // Filtre de liste (Tous / App / Autres)
+    showForward: false,
+    contactFilter: 'all'
   });
 
-  // --- 2. DONNÉES MÉTIER (Fiabilité) ---
   const [data, setData] = useState({
-    conn: [],             // Liste des contacts (amis et collègues)
-    msg: [],              // Historique des messages de la discussion active
-    unread: {},           // Compteurs de non-lus par utilisateur { userId: count }
+    conn: [],
+    msg: [],
+    unread: {},
     stats: { total: 0, onChantilink: 0, other: 0 },
-    pendingRequests: []   // Demandes d'accès pour nouveaux messages
+    pendingRequests: []
   });
 
-  // --- 3. SÉLECTION ACTIVE (Confidentialité) ---
   const [sel, setSel] = useState({ 
-    friend: null,         // Utilisateur sélectionné pour le chat
-    msgToForward: null    // Message sélectionné pour un transfert
+    friend: null,
+    msgToForward: null
   });
 
-  // --- 4. GESTION DES ERREURS & RÉSEAU ---
   const [err, setErr] = useState(null);
   const isMounted = useRef(true);
 
   /**
-   * ✅ CHARGEMENT PARALLÈLE (Vitesse & Fiabilité)
-   * On récupère conversations, stats et demandes en une seule fois.
-   * Si une requête échoue, les autres continuent de fonctionner.
+   * ✅ CHARGEMENT AVEC CACHE
    */
   const load = useCallback(async () => {
     if (!token) return;
@@ -54,14 +44,32 @@ export function useMessagesData(token, showToast) {
     setErr(null);
 
     try {
+      // 1️⃣ Charger d'abord depuis le cache (UX instantanée)
+      const [cachedConversations, cachedContacts] = await Promise.all([
+        messageCache.getConversations().catch(() => []),
+        messageCache.getContacts().catch(() => [])
+      ]);
+
+      if (isMounted.current && (cachedConversations.length > 0 || cachedContacts.length > 0)) {
+        console.log('📦 [MessagesData] Chargement depuis cache');
+        setData(prev => ({
+          ...prev,
+          conn: cachedConversations,
+          stats: {
+            total: cachedContacts.length,
+            onChantilink: cachedContacts.filter(c => c.isOnChantilink).length,
+            other: cachedContacts.filter(c => !c.isOnChantilink).length
+          }
+        }));
+        setUi(prev => ({ ...prev, load: false }));
+      }
+
+      // 2️⃣ Puis synchroniser avec le serveur
       const [convRes, statsRes, pendingRes] = await Promise.all([
-        // ✅ CORRECTION 1 : loadConversations → getConversations
         API.getConversations(token).catch(e => {
           console.error("⚠️ Erreur Conversations:", e);
-          return { conversations: [] }; // ✅ Ajusté pour correspondre à apiService
+          return { conversations: [] };
         }),
-        // ✅ CORRECTION : loadStats n'existe pas dans apiService
-        // Utiliser getContactsStats à la place
         API.getContactsStats(token).catch(e => {
           console.error("⚠️ Erreur Stats:", e);
           return { totalContacts: 0, unreadMessages: 0, pendingRequests: 0 };
@@ -72,13 +80,18 @@ export function useMessagesData(token, showToast) {
         })
       ]);
 
-      // Vérifier si le composant est toujours affiché pour éviter les fuites de mémoire
       if (!isMounted.current) return;
 
-      // ✅ CORRECTION : Adapter la structure des données reçues
+      const freshConversations = convRes.conversations || [];
+      
+      // 3️⃣ Mettre à jour le cache avec les nouvelles données
+      if (freshConversations.length > 0) {
+        await messageCache.saveConversations(freshConversations);
+      }
+
       setData(prev => ({
         ...prev,
-        conn: convRes.conversations || [], // ✅ conversations au lieu de connections
+        conn: freshConversations,
         stats: {
           total: statsRes.totalContacts || 0,
           onChantilink: statsRes.totalContacts || 0,
@@ -90,11 +103,8 @@ export function useMessagesData(token, showToast) {
     } catch (globalError) {
       console.error("❌ [Critical Sync Error]:", globalError);
       
-      // ✅ CORRECTION 2 : showToast sécurisé
       if (typeof showToast === 'function') {
         showToast("Problème de synchronisation réseau", "error");
-      } else {
-        console.error("❌ [Messages] Problème de synchronisation réseau");
       }
       
       setErr(globalError.message);
@@ -104,9 +114,54 @@ export function useMessagesData(token, showToast) {
   }, [token, showToast]);
 
   /**
-   * ✅ SÉCURITÉ DE TRANSITION (Confidentialité)
-   * Dès qu'on clique sur un nouveau contact, on vide les messages à l'écran.
-   * Cela évite que les messages d'un collègue s'affichent par erreur chez un autre (Leak visuel).
+   * ✅ CHARGER MESSAGES D'UNE CONVERSATION AVEC CACHE
+   */
+  const loadConversationMessages = useCallback(async (userId, friendId) => {
+    if (!userId || !friendId) return [];
+
+    try {
+      // 1️⃣ Charger depuis le cache d'abord
+      const cachedMessages = await messageCache.getMessages(userId, friendId);
+      
+      if (cachedMessages.length > 0) {
+        console.log(`📦 [MessagesData] ${cachedMessages.length} messages depuis cache`);
+        setData(prev => ({ ...prev, msg: cachedMessages }));
+      }
+
+      // 2️⃣ Puis synchroniser avec le serveur
+      const freshMessages = await API.getMessages(token, friendId);
+      
+      if (freshMessages && freshMessages.length > 0) {
+        await messageCache.saveMessages(userId, friendId, freshMessages);
+        setData(prev => ({ ...prev, msg: freshMessages }));
+      }
+
+      return freshMessages || cachedMessages;
+    } catch (error) {
+      console.error('❌ [MessagesData] Erreur chargement messages:', error);
+      return [];
+    }
+  }, [token]);
+
+  /**
+   * ✅ AJOUTER UN MESSAGE AU CACHE
+   */
+  const addMessageToCache = useCallback(async (userId, friendId, message) => {
+    try {
+      await messageCache.addMessage(userId, friendId, message);
+      setData(prev => ({
+        ...prev,
+        msg: [...prev.msg, message].sort((a, b) => 
+          new Date(a.timestamp) - new Date(b.timestamp)
+        )
+      }));
+    } catch (error) {
+      console.error('❌ [MessagesData] Erreur ajout message cache:', error);
+    }
+  }, []);
+
+  /**
+   * ✅ SÉCURITÉ DE TRANSITION
    */
   useEffect(() => {
     if (sel.friend?.id) {
@@ -125,11 +180,24 @@ export function useMessagesData(token, showToast) {
     };
   }, [load]);
 
+  /**
+   * ✅ NETTOYAGE AUTOMATIQUE (tous les jours)
+   */
+  useEffect(() => {
+    const cleanupInterval = setInterval(() => {
+      messageCache.cleanOldMessages(30).catch(console.error);
+    }, 24 * 60 * 60 * 1000); // 1 jour
+
+    return () => clearInterval(cleanupInterval);
+  }, []);
+
   return {
     ui, setUi,
     data, setData,
     sel, setSel,
     err,
-    load
+    load,
+    loadConversationMessages,
+    addMessageToCache
   };
 }

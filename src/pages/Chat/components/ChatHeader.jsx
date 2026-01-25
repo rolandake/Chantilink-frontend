@@ -1,10 +1,10 @@
 // ============================================
 // 📁 src/pages/Chat/components/ChatHeader.jsx
-// VERSION: ÉLITE - SECURE CONNECT UX
+// VERSION FINALE - AVEC BOUTON RETOUR
 // ============================================
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Video, Phone, ShieldCheck, WifiOff, Lock } from 'lucide-react';
+import { Video, Phone, ShieldCheck, WifiOff, Lock, ArrowLeft } from 'lucide-react';
 
 export const ChatHeader = ({ 
   friend, 
@@ -13,6 +13,7 @@ export const ChatHeader = ({
   connected = true,
   onVideoCall,
   onAudioCall,
+  onBack, // ✅ NOUVEAU: Callback pour retour
   className
 }) => {
   if (!friend) return null;
@@ -27,8 +28,19 @@ export const ChatHeader = ({
   return (
     <header className={`bg-[#12151a]/90 backdrop-blur-xl border-b border-white/5 h-20 px-4 flex items-center justify-between z-30 ${className}`}>
       
-      {/* --- BLOC INFO CONTACT (Confidentialité & Identité) --- */}
+      {/* --- BOUTON RETOUR + INFO CONTACT --- */}
       <div className="flex items-center gap-3 overflow-hidden">
+        
+        {/* ✅ BOUTON RETOUR */}
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="p-2 hover:bg-white/10 rounded-full transition-colors flex-shrink-0"
+          >
+            <ArrowLeft size={20} className="text-white" />
+          </button>
+        )}
+
         {/* Avatar avec contour d'état */}
         <div className="relative flex-shrink-0">
           <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black text-xl shadow-lg border-2 
@@ -76,7 +88,7 @@ export const ChatHeader = ({
             ) : (
               <div className="flex items-center gap-1.5">
                 <span className={`text-[10px] font-bold uppercase tracking-tighter ${isOnline ? 'text-green-500' : 'text-gray-600'}`}>
-                  {isOnline ? 'Session Active' : 'Hors ligne'}
+                  {isOnline ? 'En ligne' : 'Hors ligne'}
                 </span>
                 <span className="w-1 h-1 bg-white/10 rounded-full" />
                 <div className="flex items-center gap-1 opacity-40">
@@ -89,7 +101,7 @@ export const ChatHeader = ({
         </div>
       </div>
 
-      {/* --- ACTIONS DE COMMUNICATION (Fiabilité & Appels) --- */}
+      {/* --- ACTIONS DE COMMUNICATION --- */}
       <div className="flex items-center gap-2">
         {!connected && (
           <motion.div 

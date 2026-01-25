@@ -26,7 +26,6 @@ const fetchWithAuth = async (url, options = {}) => {
 
     console.log(`📡 [API Response] ${response.status} ${response.statusText}`);
 
-    // Gestion des réponses non-JSON (erreurs serveur)
     const contentType = response.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
       const text = await response.text();
@@ -49,7 +48,6 @@ const fetchWithAuth = async (url, options = {}) => {
       name: error.name
     });
 
-    // Messages d'erreur plus clairs pour l'utilisateur
     if (error.message === 'Failed to fetch') {
       throw new Error('Impossible de contacter le serveur. Vérifiez votre connexion.');
     }
@@ -174,12 +172,9 @@ export const API = {
   },
 
   // ============================================
-  // 📞 CONTACTS & SYNCHRONISATION - VERSION ROBUSTE
+  // 📞 CONTACTS & SYNCHRONISATION
   // ============================================
 
-  /**
-   * 🔍 Vérifier la santé de l'API Contacts (pour debug)
-   */
   checkContactsHealth: async (token) => {
     try {
       return await fetchWithAuth(`${BASE_URL}/contacts/health`, {
@@ -192,12 +187,6 @@ export const API = {
     }
   },
 
-  /**
-   * 🔄 Synchroniser les contacts du téléphone
-   * @param {string} token - Token d'authentification
-   * @param {Array} contacts - Liste de { name, phone }
-   * @returns {Promise<Object>} { success, onChantilink[], notOnChantilink[], stats }
-   */
   syncContacts: async (token, contacts) => {
     console.log('═══════════════════════════════════════════════');
     console.log(`📤 [API.syncContacts] Début synchro`);
@@ -205,7 +194,6 @@ export const API = {
     console.log(`📋 Exemples:`, contacts.slice(0, 3));
     console.log('═══════════════════════════════════════════════');
 
-    // Validation côté client
     if (!Array.isArray(contacts)) {
       throw new Error('Le paramètre contacts doit être un tableau');
     }
@@ -245,12 +233,31 @@ export const API = {
     }
   },
 
-  /**
-   * 📲 Inviter un contact qui n'est pas sur l'app
-   * @param {string} token - Token d'authentification
-   * @param {Object} contactData - { contactName, contactPhone }
-   * @returns {Promise<Object>} { success, inviteUrl }
-   */
+  getContacts: async (token) => {
+    console.log('📋 [API.getContacts] Chargement des contacts...');
+    
+    try {
+      const result = await fetchWithAuth(`${BASE_URL}/contacts`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      console.log(`✅ [API.getContacts] ${result.contacts?.length || 0} contacts récupérés`);
+
+      return {
+        ...result,
+        contacts: result.contacts || []
+      };
+    } catch (error) {
+      console.error('❌ [API.getContacts] Erreur:', error);
+      return {
+        success: false,
+        contacts: [],
+        message: error.message
+      };
+    }
+  },
+
   inviteContact: async (token, contactData) => {
     console.log(`📲 [API.inviteContact] Invitation: ${contactData.contactName}`);
     
@@ -264,12 +271,6 @@ export const API = {
     return result;
   },
 
-  /**
-   * ➕ Ajouter manuellement un contact par numéro
-   * @param {string} token - Token d'authentification
-   * @param {Object} contactData - { fullName, phoneNumber }
-   * @returns {Promise<Object>} { success, contact, canInvite? }
-   */
   addContact: async (token, contactData) => {
     console.log(`➕ [API.addContact] Ajout: ${contactData.fullName} (${contactData.phoneNumber})`);
     
@@ -283,7 +284,6 @@ export const API = {
       console.log(`✅ [API.addContact] Contact ajouté avec succès`);
       return result;
     } catch (error) {
-      // Si 404 ou "pas encore sur l'app", retourner les infos pour invitation
       if (error.message.includes('404') || 
           error.message.includes('pas encore sur') ||
           error.message.includes('not found')) {
@@ -299,29 +299,18 @@ export const API = {
     }
   },
 
-  /**
-   * 📊 Obtenir les conversations actives
-   * @param {string} token - Token d'authentification
-   * @returns {Promise<Object>} { success, conversations: [] }
-   */
   getConversations: async (token) => {
     const result = await fetchWithAuth(`${BASE_URL}/contacts/conversations`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${token}` },
     });
 
-    // S'assurer qu'on retourne toujours un tableau
     return {
       ...result,
       conversations: result.conversations || []
     };
   },
 
-  /**
-   * 📈 Obtenir les statistiques de contacts
-   * @param {string} token - Token d'authentification
-   * @returns {Promise<Object>} { totalContacts, unreadMessages, pendingRequests }
-   */
   getContactsStats: async (token) => {
     return fetchWithAuth(`${BASE_URL}/contacts/stats`, {
       method: 'GET',
@@ -329,12 +318,6 @@ export const API = {
     });
   },
 
-  /**
-   * 🗑️ Supprimer un contact
-   * @param {string} token - Token d'authentification
-   * @param {string} contactId - ID du contact
-   * @returns {Promise<Object>} { success, message }
-   */
   deleteContact: async (token, contactId) => {
     return fetchWithAuth(`${BASE_URL}/contacts/${contactId}`, {
       method: 'DELETE',
@@ -406,7 +389,6 @@ export const API = {
     });
   },
 
-  // Demandes de messages
   getPendingMessageRequests: async (token) => {
     return fetchWithAuth(`${BASE_URL}/messages/pending-requests`, {
       method: 'GET',

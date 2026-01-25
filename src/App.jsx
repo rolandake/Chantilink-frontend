@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/App.jsx
-// VERSION OPTIMISÉE LCP AVEC SPLASH REACT
+// VERSION FINALE AVEC NAVIGATION MESSAGES CORRIGÉE
 // ============================================
 import React, { useState, Suspense, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 
 import LoadingSpinner from "./components/LoadingSpinner";
-import SplashScreen from "./components/SplashScreen"; // ⭐ NOUVEAU
+import SplashScreen from "./components/SplashScreen";
 import { Header } from "./imports/importsComponents";
 import { useAuth } from "./imports/importsContext";
 import { useStories } from "./context/StoryContext";
@@ -83,7 +83,7 @@ function useSmartScroll(threshold = 10) {
 
 export default function App() {
   const [ready, setReady] = useState(false);
-  const [showSplash, setShowSplash] = useState(true); // ⭐ NOUVEAU
+  const [showSplash, setShowSplash] = useState(true);
   const { ready: authReady } = useAuth();
 
   useEffect(() => {
@@ -121,7 +121,6 @@ export default function App() {
     };
   }, [authReady]);
 
-  // ⭐ AFFICHER LE SPLASH REACT PENDANT LE CHARGEMENT
   if (showSplash) {
     return <SplashScreen onFinish={() => setShowSplash(false)} />;
   }
@@ -152,6 +151,7 @@ function AppContent() {
 
   const isHome = location.pathname === "/";
   const isAuth = location.pathname === "/auth";
+  const isMessages = location.pathname === "/messages";
   const showNav = isHome && !isAuth && !storyViewerOpen;
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
 
@@ -178,7 +178,7 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      {!isHome && !isAuth && !storyViewerOpen && (
+      {!isHome && !isAuth && !storyViewerOpen && !isMessages && (
         <FloatingBackButton isDarkMode={isDarkMode} onClick={() => navigate("/")} />
       )}
 
