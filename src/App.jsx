@@ -1,12 +1,12 @@
 // ============================================
 // 📁 src/App.jsx
-// VERSION FINALE AVEC NAVIGATION MESSAGES CORRIGÉE
+// VERSION ULTRA-VIVANTE AVEC NOTIFICATIONS TEMPS RÉEL
 // ============================================
 import React, { useState, Suspense, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-  Home, MessageSquare, Video, Calculator, Mail, User, Menu, ArrowLeft, Shield
+  Home, MessageSquare, Video, Calculator, Mail, User, Menu, ArrowLeft, Shield, Bell
 } from "lucide-react";
 
 import LoadingSpinner from "./components/LoadingSpinner";
@@ -137,15 +137,71 @@ export default function App() {
 }
 
 function AppContent() {
-  const { user } = useAuth();
+  const { user, socket } = useAuth();
   const { isDarkMode } = useDarkMode();
   const location = useLocation();
   const navigate = useNavigate();
   const { deleteSlide } = useStories();
   const [storyViewerOpen, setStoryViewerOpen] = useState(false);
   const [storyViewerData, setStoryViewerData] = useState({ stories: [], owner: null });
+  const [liveNotifications, setLiveNotifications] = useState([]); // ✅ NOUVEAU : Notifications live
 
   const isNavVisible = useSmartScroll(10);
+
+  // ✅ NOUVEAU : Écoute des notifications Socket
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleNewMessage = (data) => {
+      // Ne pas notifier si on est déjà sur la page Messages
+      if (location.pathname === '/messages') return;
+      
+      const notifId = Date.now() + Math.random();
+      
+      setLiveNotifications(prev => [
+        ...prev.slice(-4), // Garder max 5 notifications
+        {
+          id: notifId,
+          type: 'message',
+          message: `${data.senderName || 'Quelqu\'un'} vous a envoyé un message`,
+          timestamp: Date.now()
+        }
+      ]);
+
+      // Auto-suppression après 5 secondes
+      setTimeout(() => {
+        setLiveNotifications(prev => prev.filter(n => n.id !== notifId));
+      }, 5000);
+    };
+
+    const handleNewStory = (data) => {
+      if (location.pathname === '/') return;
+      
+      const notifId = Date.now() + Math.random();
+      
+      setLiveNotifications(prev => [
+        ...prev.slice(-4),
+        {
+          id: notifId,
+          type: 'story',
+          message: `${data.userName || 'Quelqu\'un'} a publié une story`,
+          timestamp: Date.now()
+        }
+      ]);
+
+      setTimeout(() => {
+        setLiveNotifications(prev => prev.filter(n => n.id !== notifId));
+      }, 5000);
+    };
+
+    socket.on('new_message', handleNewMessage);
+    socket.on('new_story', handleNewStory);
+
+    return () => {
+      socket.off('new_message', handleNewMessage);
+      socket.off('new_story', handleNewStory);
+    };
+  }, [socket, location.pathname]);
 
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
 
@@ -164,6 +220,18 @@ function AppContent() {
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
       
+      {/* ✅ NOUVEAU : Notifications live en haut à droite */}
+      <AnimatePresence>
+        {liveNotifications.map(notif => (
+          <LiveNotification 
+            key={notif.id} 
+            notification={notif} 
+            isDarkMode={isDarkMode}
+            onClose={() => setLiveNotifications(prev => prev.filter(n => n.id !== notif.id))}
+          />
+        ))}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showNav && isNavVisible && (
           <motion.div 
@@ -229,23 +297,121 @@ function AppContent() {
 }
 
 // ============================================
-// NAVBAR MOBILE OPTIMISÉE
+// ✅ NOUVEAU : COMPOSANT NOTIFICATION LIVE
+// ============================================
+const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
+  const [progress, setProgress] = useState(100);
+
+  useEffect(() => {
+    const duration = 5000; // 5 secondes
+    const interval = 50; // Update toutes les 50ms
+    const step = (interval / duration) * 100;
+
+    const timer = setInterval(() => {
+      setProgress(prev => {
+        const newProgress = prev - step;
+        if (newProgress <= 0) {
+          clearInterval(timer);
+          return 0;
+        }
+        return newProgress;
+      });
+    }, interval);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -20, x: 100 }}
+      animate={{ opacity: 1, y: 0, x: 0 }}
+      exit={{ opacity: 0, x: 100 }}
+      transition={{ duration: 0.3, ease: "easeOut" }}
+      className="fixed top-20 right-4 z-[100] max-w-sm"
+      onClick={onClose}
+    >
+      <div className={`relative flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-xl border cursor-pointer ${
+        isDarkMode 
+          ? 'bg-gray-800/95 border-gray-700' 
+          : 'bg-white/95 border-gray-200'
+      }`}>
+        {/* Icône selon le type */}
+        <div className={`flex-shrink-0 p-2 rounded-full ${
+          notification.type === 'message' 
+            ? 'bg-orange-500/20 text-orange-500' 
+            : 'bg-blue-500/20 text-blue-500'
+        }`}>
+          {notification.type === 'message' ? (
+            <MessageSquare size={18} />
+          ) : (
+            <Bell size={18} />
+          )}
+        </div>
+
+        {/* Contenu */}
+        <div className="flex-1 min-w-0">
+          <p className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+            {notification.message}
+          </p>
+          <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+            À l'instant
+          </p>
+        </div>
+
+        {/* Barre de progression */}
+        <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200/20 rounded-b-2xl overflow-hidden">
+          <motion.div
+            className="h-full bg-gradient-to-r from-orange-500 to-orange-600"
+            style={{ width: `${progress}%` }}
+            transition={{ duration: 0.05, ease: "linear" }}
+          />
+        </div>
+      </div>
+    </motion.div>
+  );
+});
+
+// ============================================
+// NAVBAR MOBILE OPTIMISÉE AVEC BADGES ANIMÉS
 // ============================================
 const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location }) => {
   const navigate = useNavigate();
   const [isMenuOpen, setMenuOpen] = useState(false);
-  const { token } = useAuth();
+  const { token, socket } = useAuth();
+  const [unreadCount, setUnreadCount] = useState(0);
   
-  const shouldLoadMessages = useMemo(() => {
-    return ['/chat', '/messages'].includes(location.pathname);
-  }, [location.pathname]);
+  // ✅ TOUJOURS charger les données pour afficher le badge
+  const { data } = useMessagesData(token, null);
   
-  const { data } = useMessagesData(shouldLoadMessages ? token : null, null);
+  // ✅ Calculer le total depuis les conversations
+  useEffect(() => {
+    if (data?.conversations) {
+      const total = data.conversations.reduce((acc, conv) => acc + (conv.unreadCount || 0), 0);
+      setUnreadCount(total);
+    }
+  }, [data?.conversations]);
   
-  const totalUnread = useMemo(() => {
-    if (!data?.unread) return 0;
-    return Object.values(data.unread).reduce((acc, count) => acc + count, 0);
-  }, [data?.unread]);
+  // ✅ Écouter les nouveaux messages via socket pour mise à jour temps réel
+  useEffect(() => {
+    if (!socket) return;
+    
+    const handleNewMessage = () => {
+      setUnreadCount(prev => prev + 1);
+    };
+    
+    const handleMarkAsRead = () => {
+      // Recharger les données pour obtenir le nouveau compteur
+      setUnreadCount(0);
+    };
+    
+    socket.on('receiveMessage', handleNewMessage);
+    socket.on('messagesRead', handleMarkAsRead);
+    
+    return () => {
+      socket.off('receiveMessage', handleNewMessage);
+      socket.off('messagesRead', handleMarkAsRead);
+    };
+  }, [socket]);
 
   const isActive = useCallback((path) => location.pathname === path, [location.pathname]);
 
@@ -254,14 +420,15 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location }) => {
       <nav className={`lg:hidden h-16 flex justify-around items-center backdrop-blur-xl border-t ${isDarkMode ? "bg-gray-900/90 border-gray-800" : "bg-white/90 border-gray-200"}`}>
         <NavBtn icon={Home} label="Accueil" active={isActive("/")} onClick={() => navigate("/")} />
         <NavBtn icon={Video} label="Vidéos" active={isActive("/videos")} onClick={() => navigate("/videos")} />
-        <NavBtn icon={MessageSquare} label="Chat" active={isActive("/chat")} onClick={() => navigate("/chat")} badge={totalUnread} />
-        <NavBtn icon={Menu} label="Plus" onClick={() => setMenuOpen(true)} />
+        <NavBtn icon={MessageSquare} label="Chat" active={isActive("/chat")} onClick={() => navigate("/chat")} />
+        <NavBtn icon={Menu} label="Plus" onClick={() => setMenuOpen(true)} badge={unreadCount} />
       </nav>
       {isMenuOpen && <MenuOverlay user={user} isAdminUser={isAdminUser} isDarkMode={isDarkMode} onClose={() => setMenuOpen(false)} />}
     </>
   );
 });
 
+// ✅ AMÉLIORATION : Badge animé avec pulse
 const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
   <button 
     onClick={onClick} 
@@ -269,11 +436,24 @@ const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
   >
     <Icon size={20} />
     <span className="text-[10px] font-bold mt-1">{label}</span>
-    {badge > 0 && (
-      <span className="absolute top-0 right-4 bg-red-500 text-white text-[10px] font-black min-w-[18px] h-[18px] flex items-center justify-center rounded-full border-2 border-gray-900">
-        {badge > 99 ? '99+' : badge}
-      </span>
-    )}
+    <AnimatePresence>
+      {badge > 0 && (
+        <motion.span
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          exit={{ scale: 0 }}
+          transition={{ type: "spring", stiffness: 500, damping: 25 }}
+          className="absolute top-0 right-4 bg-red-500 text-white text-[10px] font-black min-w-[18px] h-[18px] flex items-center justify-center rounded-full border-2 border-gray-900 shadow-lg"
+        >
+          <motion.span
+            animate={{ scale: [1, 1.1, 1] }}
+            transition={{ repeat: Infinity, duration: 2 }}
+          >
+            {badge > 99 ? '99+' : badge}
+          </motion.span>
+        </motion.span>
+      )}
+    </AnimatePresence>
   </button>
 ));
 
@@ -293,15 +473,49 @@ const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { token, socket } = useAuth();
+  const [unreadCount, setUnreadCount] = useState(0);
   const isActive = useCallback((path) => location.pathname === path, [location.pathname]);
+  
+  // ✅ TOUJOURS charger les messages pour la sidebar
+  const { data } = useMessagesData(token, null);
+  
+  // ✅ Calculer le total depuis les conversations
+  useEffect(() => {
+    if (data?.conversations) {
+      const total = data.conversations.reduce((acc, conv) => acc + (conv.unreadCount || 0), 0);
+      setUnreadCount(total);
+    }
+  }, [data?.conversations]);
+  
+  // ✅ Écouter les nouveaux messages via socket
+  useEffect(() => {
+    if (!socket) return;
+    
+    const handleNewMessage = () => {
+      setUnreadCount(prev => prev + 1);
+    };
+    
+    const handleMarkAsRead = () => {
+      setUnreadCount(0);
+    };
+    
+    socket.on('receiveMessage', handleNewMessage);
+    socket.on('messagesRead', handleMarkAsRead);
+    
+    return () => {
+      socket.off('receiveMessage', handleNewMessage);
+      socket.off('messagesRead', handleMarkAsRead);
+    };
+  }, [socket]);
   
   return (
     <aside className={`hidden lg:flex fixed left-0 top-[72px] bottom-0 w-64 flex-col py-8 px-6 gap-2 z-30 border-r ${isDarkMode ? 'bg-gray-900/50 border-gray-800' : 'bg-white border-gray-100'}`}>
       <NavItemDesktop icon={Home} label="Accueil" onClick={() => navigate("/")} isDarkMode={isDarkMode} active={isActive("/")} />
-      <NavItemDesktop icon={MessageSquare} label="Messages" onClick={() => navigate("/chat")} isDarkMode={isDarkMode} active={isActive("/chat")} />
+      <NavItemDesktop icon={MessageSquare} label="Chat" onClick={() => navigate("/chat")} isDarkMode={isDarkMode} active={isActive("/chat")} />
       <NavItemDesktop icon={Video} label="Vidéos" onClick={() => navigate("/videos")} isDarkMode={isDarkMode} active={isActive("/videos")} />
       <NavItemDesktop icon={Calculator} label="Calculs" onClick={() => navigate("/calculs")} isDarkMode={isDarkMode} active={isActive("/calculs")} />
-      <NavItemDesktop icon={Mail} label="Messagerie" onClick={() => navigate("/messages")} isDarkMode={isDarkMode} active={isActive("/messages")} />
+      <NavItemDesktop icon={Mail} label="Messagerie" onClick={() => navigate("/messages")} isDarkMode={isDarkMode} active={isActive("/messages")} badge={unreadCount} />
       <NavItemDesktop icon={User} label="Profil" onClick={() => navigate(`/profile/${location.state?.userId || 'me'}`)} isDarkMode={isDarkMode} active={location.pathname.includes("/profile")} />
       {isAdminUser && (
         <>
@@ -313,10 +527,11 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser }) => {
   );
 });
 
-const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, isAdmin }) => (
+// ✅ AMÉLIORATION : Badge dans sidebar desktop
+const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, isAdmin, badge }) => (
   <button 
     onClick={onClick} 
-    className={`group flex items-center gap-4 w-full px-4 py-3 rounded-xl transition-all ${
+    className={`group relative flex items-center gap-4 w-full px-4 py-3 rounded-xl transition-all ${
       active 
         ? (isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900')
         : (isDarkMode ? 'text-gray-400 hover:bg-gray-800/50 hover:text-white' : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900')
@@ -324,20 +539,63 @@ const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, i
   >
     <Icon size={26} strokeWidth={active ? 2.5 : 2} />
     <span className={`text-base ${active ? 'font-semibold' : 'font-normal'}`}>{label}</span>
+    
+    {/* ✅ Badge pour desktop */}
+    <AnimatePresence>
+      {badge > 0 && (
+        <motion.span
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          exit={{ scale: 0 }}
+          transition={{ type: "spring", stiffness: 500, damping: 25 }}
+          className="absolute right-3 top-1/2 -translate-y-1/2 bg-red-500 text-white text-xs font-bold min-w-[20px] h-[20px] flex items-center justify-center rounded-full"
+        >
+          {badge > 99 ? '99+' : badge}
+        </motion.span>
+      )}
+    </AnimatePresence>
   </button>
 ));
 
 const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose }) => {
   const navigate = useNavigate();
+  const { token, socket } = useAuth();
+  const [unreadCount, setUnreadCount] = useState(0);
+  
+  // ✅ Charger les messages non lus pour le badge
+  const { data } = useMessagesData(token, null);
+  
+  useEffect(() => {
+    if (data?.conversations) {
+      const total = data.conversations.reduce((acc, conv) => acc + (conv.unreadCount || 0), 0);
+      setUnreadCount(total);
+    }
+  }, [data?.conversations]);
+  
+  useEffect(() => {
+    if (!socket) return;
+    
+    const handleNewMessage = () => setUnreadCount(prev => prev + 1);
+    const handleMarkAsRead = () => setUnreadCount(0);
+    
+    socket.on('receiveMessage', handleNewMessage);
+    socket.on('messagesRead', handleMarkAsRead);
+    
+    return () => {
+      socket.off('receiveMessage', handleNewMessage);
+      socket.off('messagesRead', handleMarkAsRead);
+    };
+  }, [socket]);
+  
   const items = useMemo(() => {
     const baseItems = [
       { label: "Profil", icon: User, path: `/profile/${user?._id}` },
-      { label: "Messages", icon: Mail, path: "/messages" }, 
-      { label: "Calculs", icon: Calculator, path: "/calculs" }
+      { label: "Calculs", icon: Calculator, path: "/calculs" },
+      { label: "Messages", icon: Mail, path: "/messages", badge: unreadCount }
     ];
     if (isAdminUser) baseItems.push({ label: "Admin", icon: Shield, path: "/admin" });
     return baseItems;
-  }, [user?._id, isAdminUser]);
+  }, [user?._id, isAdminUser, unreadCount]);
   
   return (
     <div className="fixed inset-0 z-[110] flex items-end">
@@ -361,10 +619,20 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose }) => {
             <button 
               key={item.path} 
               onClick={() => { navigate(item.path); onClose(); }} 
-              className="flex flex-col items-center gap-2 p-4 rounded-3xl bg-gray-500/5 active:scale-95 transition-transform"
+              className="relative flex flex-col items-center gap-2 p-4 rounded-3xl bg-gray-500/5 active:scale-95 transition-transform"
             >
               <item.icon size={24} className={isDarkMode ? "text-orange-400" : "text-orange-500"} />
               <span className="text-xs font-medium">{item.label}</span>
+              {/* ✅ Badge pour Messages */}
+              {item.badge > 0 && (
+                <motion.span
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  className="absolute top-2 right-2 bg-red-500 text-white text-xs font-bold min-w-[20px] h-[20px] flex items-center justify-center rounded-full"
+                >
+                  {item.badge > 99 ? '99+' : item.badge}
+                </motion.span>
+              )}
             </button>
           ))}
         </div>

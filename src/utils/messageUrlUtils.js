@@ -1,151 +1,246 @@
 // ============================================
-// 📁 src/utils/messageUrlUtils.js
-// Utilitaire partagé pour construire les URLs de médias
+// 📁 src/utils/messageUrlUtils.js - VERSION FINALE CORRIGÉE
+// Extraction robuste des URLs de fichiers dans les messages
 // ============================================
 
-const CLOUD_NAME = "dlymdclhe";
-const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
-const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
-
 /**
- * Construit l'URL complète d'un média à partir d'un message
- * @param {Object} msg - Le message contenant les données du média
- * @returns {string|null} - L'URL complète ou null si introuvable
+ * ✅ EXTRACTION ROBUSTE DE L'URL D'UN MESSAGE
+ * Vérifie TOUS les champs possibles où l'URL peut être stockée
+ * 
+ * @param {Object} message - Message contenant potentiellement un fichier
+ * @returns {string|null} - URL du fichier ou null
  */
-export const getMessageUrl = (msg) => {
-  // 1. EXTRACTION BRUTE - On cherche dans TOUS les champs possibles
-  let rawFile = 
-    msg.file || 
-    msg.url || 
-    msg.mediaUrl || 
-    msg.secure_url || 
-    msg.audio || 
-    msg.image || 
-    msg.video ||
-    msg.media ||
-    null;
-
-  // Gestion cas objet (ex: file: { url: "..." })
-  if (rawFile && typeof rawFile === 'object') {
-    rawFile = rawFile.url || rawFile.secure_url || rawFile.path || null;
-  }
-
-  // ✅ Vérification stricte pour éviter les valeurs falsy
-  if (!rawFile || rawFile === null || rawFile === 'null' || rawFile === '') {
-    // ✅ ON NE LOG PLUS : Les médias manquants sont normaux pour les vieux messages
+export const getMessageUrl = (message) => {
+  if (!message) {
+    console.warn('⚠️ [getMessageUrl] Message null ou undefined');
     return null;
   }
 
-  // 2. SI C'EST DÉJÀ UNE URL COMPLÈTE
-  if (typeof rawFile === 'string' && (rawFile.startsWith('http') || rawFile.startsWith('blob:'))) {
-    return rawFile;
+  // 🔍 DEBUG: Activer seulement pour les messages avec fichiers
+  const shouldLog = message.type && 
+                    !['text', 'system', 'missed-call'].includes(message.type);
+
+  if (shouldLog) {
+    console.log('🔍 [getMessageUrl] Analyse message:', {
+      id: message._id,
+      type: message.type,
+      content: message.content?.substring(0, 50),
+      availableFields: Object.keys(message).filter(k => 
+        k.toLowerCase().includes('url') || 
+        k === 'file' || 
+        k === 'audio' || 
+        k === 'image' || 
+        k === 'video'
+      )
+    });
   }
 
-  // 3. SI C'EST UN FICHIER LOCAL (/uploads/...)
-  if (typeof rawFile === 'string' && (rawFile.startsWith('/uploads') || rawFile.startsWith('uploads/'))) {
-    return `${API_URL}/${rawFile.replace(/^\/+/, '')}`;
+  // ✅ ORDRE DE PRIORITÉ pour chercher l'URL
+  const urlFields = [
+    // Champs principaux
+    'fileUrl',
+    'file',
+    'url',
+    'secure_url',
+    
+    // Champs Cloudinary
+    'mediaUrl',
+    'attachmentUrl',
+    
+    // Champs spécifiques par type
+    'audioUrl',
+    'audio',
+    'imageUrl',
+    'image',
+    'videoUrl',
+    'video',
+    
+    // Anciens formats (compatibilité)
+    'attachment',
+    'media',
+  ];
+
+  // Parcourir tous les champs possibles
+  for (const field of urlFields) {
+    const value = message[field];
+    
+    // Vérifier que la valeur existe et est une string valide
+    if (value && 
+        typeof value === 'string' && 
+        value.trim().length > 0) {
+      
+      // Vérifier que c'est bien une URL (commence par http)
+      if (value.startsWith('http://') || value.startsWith('https://')) {
+        if (shouldLog) {
+          console.log(`✅ [getMessageUrl] URL trouvée dans "${field}":`, value);
+        }
+        return value;
+      }
+    }
   }
 
-  // 4. SI C'EST UN ID CLOUDINARY (reconstruction intelligente)
-  if (typeof rawFile === 'string') {
-    const lower = rawFile.toLowerCase();
-    
-    // Détection du type de média
-    const isVideo = 
-      msg.type === 'video' || 
-      /\.(mp4|mov|webm|avi|mkv)$/i.test(lower);
-    
-    const isAudio = 
-      msg.type === 'audio' || 
-      /\.(mp3|wav|ogg|m4a)$/i.test(lower);
-
-    // Audio = traité comme vidéo par Cloudinary
-    const base = (isVideo || isAudio) ? VID_BASE : IMG_BASE;
-    
-    // URL optimisée avec transformations Cloudinary
-    return `${base}q_auto,f_auto/${rawFile}`;
+  // ❌ Aucune URL valide trouvée
+  if (shouldLog) {
+    console.warn('⚠️ [getMessageUrl] Aucune URL trouvée pour message:', {
+      id: message._id,
+      type: message.type,
+      content: message.content,
+      checkedFields: urlFields,
+      messageKeys: Object.keys(message)
+    });
   }
 
-  // ✅ Format non reconnu = on retourne null silencieusement
   return null;
 };
 
 /**
- * Normalise un message reçu via socket pour garantir la cohérence des URLs
- * @param {Object} rawMsg - Message brut du serveur
- * @returns {Object} - Message normalisé avec URLs complètes
+ * ✅ VÉRIFIER SI UN MESSAGE CONTIENT UN FICHIER
+ * 
+ * @param {Object} message - Message à vérifier
+ * @returns {boolean} - true si le message a un fichier
  */
-export const normalizeMessage = (rawMsg) => {
-  // Extraction de la source brute
-  const rawFile = 
-    rawMsg.file || 
-    rawMsg.url || 
-    rawMsg.mediaUrl || 
-    rawMsg.secure_url || 
-    rawMsg.audio || 
-    rawMsg.image || 
-    rawMsg.video ||
-    null;
-
-  // ✅ Filtrage des valeurs null explicites
-  const cleanFile = (rawFile && rawFile !== 'null' && rawFile !== '') ? rawFile : null;
-
-  // Construction de l'URL finale
-  const finalUrl = getMessageUrl(rawMsg);
-
-  // Détection intelligente du type
-  let detectedType = rawMsg.type || 'text';
-  
-  if (finalUrl) {
-    const lower = finalUrl.toLowerCase();
-    
-    if (/\.(mp4|mov|webm|avi)$/i.test(lower) || lower.includes('/video/upload')) {
-      detectedType = 'video';
-    } else if (/\.(mp3|wav|ogg|m4a)$/i.test(lower) || lower.includes('/audio/')) {
-      detectedType = 'audio';
-    } else if (/\.(jpg|jpeg|png|gif|webp)$/i.test(lower) || lower.includes('/image/upload')) {
-      detectedType = 'image';
-    } else if (!detectedType || detectedType === 'text') {
-      detectedType = 'file';
-    }
-  }
-
-  // Construction du message normalisé
-  const normalized = {
-    ...rawMsg,
-    _id: rawMsg._id || `msg-${Date.now()}-${Math.random()}`,
-    type: detectedType,
-    content: rawMsg.content || rawMsg.text || "",
-  };
-
-  // On ajoute les URLs UNIQUEMENT si elles existent
-  if (finalUrl) {
-    normalized.file = finalUrl;
-    normalized.url = finalUrl;
-    
-    // On ajoute les propriétés spécifiques selon le type
-    if (detectedType === 'image') normalized.image = finalUrl;
-    else if (detectedType === 'video') normalized.video = finalUrl;
-    else if (detectedType === 'audio') normalized.audio = finalUrl;
-  }
-
-  return normalized;
+export const hasFile = (message) => {
+  return !!getMessageUrl(message);
 };
 
 /**
- * Détecte automatiquement le type de média depuis une URL ou un nom de fichier
- * @param {string} urlOrFilename - URL ou nom de fichier
- * @returns {string} - Type détecté: 'image', 'video', 'audio', ou 'file'
+ * ✅ DÉTERMINER LE TYPE DE FICHIER D'APRÈS L'URL
+ * 
+ * @param {string} url - URL du fichier
+ * @returns {string|null} - Type de fichier (image, video, audio, file)
  */
-export const detectMediaType = (urlOrFilename) => {
-  if (!urlOrFilename) return 'file';
-  
-  const lower = urlOrFilename.toLowerCase();
-  
-  if (/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i.test(lower)) return 'image';
-  if (/\.(mp4|mov|webm|avi|mkv|flv)$/i.test(lower)) return 'video';
-  if (/\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(lower)) return 'audio';
-  
+export const getFileTypeFromUrl = (url) => {
+  if (!url) return null;
+
+  const urlLower = url.toLowerCase();
+
+  // Images
+  if (urlLower.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?|$)/i)) {
+    return 'image';
+  }
+  if (urlLower.includes('/image/upload')) {
+    return 'image';
+  }
+
+  // Vidéos
+  if (urlLower.match(/\.(mp4|mov|webm|avi|mkv)(\?|$)/i)) {
+    return 'video';
+  }
+  if (urlLower.includes('/video/upload')) {
+    return 'video';
+  }
+
+  // Audio
+  if (urlLower.match(/\.(mp3|wav|m4a|ogg|aac|webm)(\?|$)/i)) {
+    return 'audio';
+  }
+
+  // Documents
+  if (urlLower.match(/\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|zip|rar)(\?|$)/i)) {
+    return 'file';
+  }
+
+  // Par défaut, considérer comme fichier générique
   return 'file';
+};
+
+/**
+ * ✅ OBTENIR TOUTES LES INFORMATIONS DU FICHIER
+ * 
+ * @param {Object} message - Message contenant le fichier
+ * @returns {Object|null} - Infos du fichier ou null
+ */
+export const getFileInfo = (message) => {
+  const url = getMessageUrl(message);
+  if (!url) return null;
+
+  return {
+    url,
+    name: message.fileName || 
+          message.originalName || 
+          message.content || 
+          'Fichier',
+    size: message.fileSize || null,
+    type: message.type || getFileTypeFromUrl(url),
+    mimeType: message.mimeType || null,
+  };
+};
+
+/**
+ * ✅ FORMATER LA TAILLE D'UN FICHIER
+ * 
+ * @param {number} bytes - Taille en bytes
+ * @returns {string} - Taille formatée (ex: "1.5 MB")
+ */
+export const formatFileSize = (bytes) => {
+  if (!bytes || bytes === 0) return '0 B';
+  
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+
+/**
+ * ✅ OBTENIR L'EXTENSION D'UN FICHIER DEPUIS SON NOM
+ * 
+ * @param {string} filename - Nom du fichier
+ * @returns {string} - Extension en majuscules (ex: "PDF")
+ */
+export const getFileExtension = (filename) => {
+  if (!filename) return '';
+  
+  const parts = filename.split('.');
+  if (parts.length < 2) return '';
+  
+  return parts[parts.length - 1].toUpperCase();
+};
+
+/**
+ * ✅ OBTENIR UNE ICÔNE POUR UN TYPE DE FICHIER
+ * 
+ * @param {string} filename - Nom du fichier
+ * @returns {string} - Emoji représentant le type de fichier
+ */
+export const getFileIcon = (filename) => {
+  const ext = getFileExtension(filename);
+  
+  // Documents texte
+  if (['PDF', 'DOC', 'DOCX', 'TXT', 'RTF'].includes(ext)) return '📄';
+  
+  // Tableurs
+  if (['XLS', 'XLSX', 'CSV', 'NUMBERS'].includes(ext)) return '📊';
+  
+  // Présentations
+  if (['PPT', 'PPTX', 'KEY'].includes(ext)) return '📽️';
+  
+  // Archives
+  if (['ZIP', 'RAR', '7Z', 'TAR', 'GZ'].includes(ext)) return '📦';
+  
+  // Code
+  if (['JS', 'JSX', 'TS', 'TSX', 'PY', 'JAVA', 'CPP', 'C', 'HTML', 'CSS'].includes(ext)) return '💻';
+  
+  // Images (déjà gérées séparément, mais au cas où)
+  if (['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP', 'SVG'].includes(ext)) return '🖼️';
+  
+  // Vidéos (déjà gérées séparément)
+  if (['MP4', 'MOV', 'AVI', 'MKV', 'WEBM'].includes(ext)) return '🎥';
+  
+  // Audio (déjà géré séparément)
+  if (['MP3', 'WAV', 'OGG', 'M4A'].includes(ext)) return '🎵';
+  
+  // Défaut
+  return '📎';
+};
+
+// Export par défaut de toutes les fonctions
+export default {
+  getMessageUrl,
+  hasFile,
+  getFileTypeFromUrl,
+  getFileInfo,
+  formatFileSize,
+  getFileExtension,
+  getFileIcon,
 };

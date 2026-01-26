@@ -994,6 +994,7 @@ export default function Messages() {
             currentUserId={user?.id}
             loading={loading}
             endRef={messagesEndRef}
+            conversationId={selectedContact?.id} 
           />
 
           <ChatInput

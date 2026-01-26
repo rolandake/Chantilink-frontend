@@ -1,5 +1,5 @@
-// src/pages/Auth/AuthPage.jsx - VERSION OPTIMISÉE ULTRA-RAPIDE ⚡
-import React, { useState, useEffect, useRef, memo } from "react";
+// src/pages/Auth/AuthPage.jsx - VERSION LITE AUTO-LOGIN ⚡
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Eye,
@@ -16,11 +16,11 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { useNavigate } from "react-router-dom";
 
-// ✅ CORRECTION : Composant Toast avec forwardRef
-const Toast = memo(
+// Toast Component
+const Toast = React.memo(
   React.forwardRef(({ notification }, ref) => (
     <motion.div
-      ref={ref} // ✅ Passer la ref
+      ref={ref}
       initial={{ opacity: 0, x: 100 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 100 }}
@@ -38,36 +38,47 @@ const Toast = memo(
     </motion.div>
   ))
 );
+Toast.displayName = "Toast";
 
-Toast.displayName = "Toast"; // ✅ Ajout du displayName
-
-// ✅ OPTIMISATION 2 : Animations réduites pour performances
 const fastTransition = { duration: 0.2, ease: "easeOut" };
 
 export default function AuthPage() {
-  const { login, register } = useAuth();
+  const { login, register, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
   const [isRegister, setIsRegister] = useState(false);
-  const [form, setForm] = useState({
-    fullName: "",
-    email: "",
-    password: "",
-  });
+  const [form, setForm] = useState({ fullName: "", email: "", password: "" });
   const [errors, setErrors] = useState({});
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notifications, setNotifications] = useState([]);
+  const [rememberMe, setRememberMe] = useState(true); // ✅ Activé par défaut
   const firstInputRef = useRef(null);
 
-  // ✅ OPTIMISATION 3 : Focus rapide sans délai
+  // ✅ AUTO-LOGIN : Redirection immédiate si déjà connecté
+  useEffect(() => {
+    if (isAuthenticated && !authLoading) {
+      navigate("/", { replace: true });
+    }
+  }, [isAuthenticated, authLoading, navigate]);
+
+  // ✅ RESTAURATION : Charger email/password sauvegardés
+  useEffect(() => {
+    const savedEmail = localStorage.getItem("chantilink_email");
+    const savedRemember = localStorage.getItem("chantilink_remember") === "true";
+    
+    if (savedEmail && savedRemember) {
+      setForm(prev => ({ ...prev, email: savedEmail }));
+      setRememberMe(true);
+    }
+  }, []);
+
   useEffect(() => {
     firstInputRef.current?.focus();
-    setForm({ fullName: "", email: "", password: "" });
+    setForm({ fullName: "", email: form.email, password: "" }); // Garde l'email
     setErrors({});
   }, [isRegister]);
 
-  // === Notification toast optimisée ===
   const notify = (type, message) => {
     const id = Date.now();
     setNotifications((prev) => [...prev, { id, type, message }]);
@@ -77,14 +88,12 @@ export default function AuthPage() {
     );
   };
 
-  // === Gestion des inputs optimisée ===
   const handleChange = (e) => {
     const { name, value } = e.target;
     setForm((prev) => ({ ...prev, [name]: value }));
     if (errors[name]) setErrors((prev) => ({ ...prev, [name]: "" }));
   };
 
-  // === Validation stricte ===
   const validate = () => {
     const newErrors = {};
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -95,8 +104,6 @@ export default function AuthPage() {
         newErrors.fullName = "Nom requis";
       } else if (name.length < 3) {
         newErrors.fullName = "Min 3 caractères";
-      } else if (name.length > 30) {
-        newErrors.fullName = "Max 30 caractères";
       }
     }
 
@@ -118,7 +125,6 @@ export default function AuthPage() {
     return Object.keys(newErrors).length === 0;
   };
 
-  // ✅ OPTIMISATION 4 : Soumission ultra-rapide avec feedback immédiat
   const submit = async (e) => {
     e.preventDefault();
     
@@ -139,6 +145,11 @@ export default function AuthPage() {
         const result = await register(fullName, email, password);
         
         if (result?.success) {
+          // ✅ Sauvegarder les identifiants après inscription
+          if (rememberMe) {
+            localStorage.setItem("chantilink_email", email);
+            localStorage.setItem("chantilink_remember", "true");
+          }
           notify("success", "Bienvenue !");
           navigate("/");
         } else {
@@ -148,6 +159,14 @@ export default function AuthPage() {
         const result = await login(email, password);
         
         if (result?.success) {
+          // ✅ Sauvegarder les identifiants si "Se souvenir"
+          if (rememberMe) {
+            localStorage.setItem("chantilink_email", email);
+            localStorage.setItem("chantilink_remember", "true");
+          } else {
+            localStorage.removeItem("chantilink_email");
+            localStorage.removeItem("chantilink_remember");
+          }
           notify("success", "Connexion réussie !");
           navigate("/");
         } else {
@@ -162,7 +181,6 @@ export default function AuthPage() {
     }
   };
 
-  // ✅ OPTIMISATION 5 : Classes pré-calculées
   const inputClass = (field) =>
     `w-full px-4 py-3 pl-12 rounded-xl border-2 transition-colors duration-200 bg-white/10 backdrop-blur-lg text-white placeholder:text-white/60 ${
       errors[field]
@@ -170,10 +188,22 @@ export default function AuthPage() {
         : "border-white/30 focus:border-orange-400"
     }`;
 
+  // ✅ Afficher loader pendant vérification auto-login
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#1a1a2e] via-[#162447] to-[#1f4068]">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 text-orange-400 animate-spin mx-auto mb-4" />
+          <p className="text-white/70">Vérification...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-[#1a1a2e] via-[#162447] to-[#1f4068]">
       
-      {/* ✅ Toasts optimisés */}
+      {/* Toasts */}
       <div className="fixed top-16 right-4 flex flex-col gap-2 z-50 max-w-xs">
         <AnimatePresence mode="popLayout">
           {notifications.map((n) => (
@@ -182,7 +212,7 @@ export default function AuthPage() {
         </AnimatePresence>
       </div>
 
-      {/* ✅ Carte principale avec animations réduites */}
+      {/* Carte principale */}
       <motion.div
         className="w-full max-w-md p-8 bg-gradient-to-br from-[#162447]/50 via-[#1a1a2e]/40 to-[#1f4068]/60 rounded-3xl shadow-2xl border border-white/20 backdrop-blur-xl"
         initial={{ opacity: 0, y: 20 }}
@@ -296,6 +326,22 @@ export default function AuthPage() {
               </p>
             )}
           </div>
+
+          {/* ✅ NOUVEAU : Checkbox "Se souvenir de moi" */}
+          {!isRegister && (
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="remember"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded border-white/30 bg-white/10 text-orange-500 focus:ring-2 focus:ring-orange-400"
+              />
+              <label htmlFor="remember" className="text-white/70 text-sm cursor-pointer select-none">
+                Se souvenir de moi
+              </label>
+            </div>
+          )}
 
           {/* Bouton principal */}
           <button

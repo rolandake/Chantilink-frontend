@@ -1,11 +1,10 @@
-// src/context/AuthContext.jsx - VERSION CORRIGÉE ET FINALE
+// src/context/AuthContext.jsx - VERSION LITE AUTO-LOGIN ⚡
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import axios from "axios";
 import { io } from "socket.io-client";
 import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
 
-// ✅ FIX: Fournir une valeur par défaut pour éviter undefined
 const AuthContext = createContext({
   users: new Map(),
   activeUserId: null,
@@ -14,6 +13,7 @@ const AuthContext = createContext({
   socket: null,
   loading: false,
   ready: false,
+  isAuthenticated: false, // ✅ NOUVEAU
   notifications: [],
   login: async () => ({ success: false, message: 'Auth not ready' }),
   logout: async () => {},
@@ -40,9 +40,9 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const SOCKET_URL = API_URL.replace('/api', '');
 
 const CONFIG = {
-  TOKEN_REFRESH_MARGIN_MS: 10 * 60 * 1000,
-  AUTO_REFRESH_INTERVAL_MS: 30 * 1000,
-  SESSION_TIMEOUT_MS: 7 * 24 * 60 * 60 * 1000,
+  TOKEN_REFRESH_MARGIN_MS: 30 * 60 * 1000, // ✅ 30 min au lieu de 10
+  AUTO_REFRESH_INTERVAL_MS: 60 * 1000, // ✅ Vérifier toutes les 60s
+  SESSION_TIMEOUT_MS: 90 * 24 * 60 * 60 * 1000, // ✅ 90 jours max
   MAX_STORED_USERS: 10,
   MAX_NOTIFICATIONS: 50,
   MAX_LOGIN_ATTEMPTS: 5,
@@ -51,9 +51,10 @@ const CONFIG = {
 };
 
 const STORAGE_KEYS = {
-  USERS: "chantilink_users_enc_v6",
-  ACTIVE_USER: "chantilink_active_user_v6",
-  LOGIN_ATTEMPTS: "chantilink_login_attempts_v6",
+  USERS: "chantilink_users_enc_v7", // ✅ Nouvelle version
+  ACTIVE_USER: "chantilink_active_user_v7",
+  LOGIN_ATTEMPTS: "chantilink_login_attempts_v7",
+  REMEMBER_ME: "chantilink_remember_v7", // ✅ NOUVEAU
 };
 
 // === UTILITAIRES ===
@@ -85,7 +86,7 @@ export function AuthProvider({ children }) {
   const [users, setUsers] = useState(new Map());
   const [activeUserId, setActiveUserId] = useState(null);
   const [notifications, setNotifications] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // ✅ true par défaut pour vérification initiale
   const [ready, setReady] = useState(false);
   const [loginAttempts, setLoginAttempts] = useState({});
 
@@ -159,6 +160,7 @@ export function AuthProvider({ children }) {
           token: data.token,
           expiresAt: data.expiresAt,
           lastActive: data.lastActive || Date.now(),
+          rememberMe: data.rememberMe || false, // ✅ NOUVEAU
         }])
         .sort((a, b) => b[1].lastActive - a[1].lastActive)
         .slice(0, CONFIG.MAX_STORED_USERS);
@@ -240,7 +242,7 @@ export function AuthProvider({ children }) {
     }
   }, [activeUserId, persistUsers, addNotification, cleanupSocket]);
 
-  // === JETON DE RAFRAÎCHISSEMENT ===
+  // === ✅ REFRESH TOKEN AMÉLIORÉ (Support tokens longue durée) ===
   const refreshTokenForUser = useCallback(async (userId, retryCount = 0) => {
     const now = Date.now();
     if (now - lastRefreshAttempt.current < REFRESH_COOLDOWN) {
@@ -258,8 +260,13 @@ export function AuthProvider({ children }) {
     const userData = users.get(userId);
     if (!userData) return false;
 
+    // ✅ Marges adaptatives selon "rememberMe"
+    const margin = userData.rememberMe 
+      ? 2 * 60 * 60 * 1000 // 2h avant expiration si "se souvenir"
+      : CONFIG.TOKEN_REFRESH_MARGIN_MS; // 30 min sinon
+
     const timeLeft = userData.expiresAt - Date.now();
-    if (timeLeft > 5 * 60 * 1000) return true;
+    if (timeLeft > margin) return true;
 
     isRefreshing.current = true;
     try {
@@ -277,18 +284,29 @@ export function AuthProvider({ children }) {
       }
 
       const { token } = res.data;
-      const expiresAt = Date.now() + (55 * 60 * 1000);
+      
+      // ✅ Calculer expiration selon "rememberMe" (backend envoie déjà le bon token)
+      const expiresAt = userData.rememberMe
+        ? Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 jours
+        : Date.now() + (55 * 60 * 1000); // 55 min
 
       setUsers(prev => {
         const map = new Map(prev);
         const current = map.get(userId);
         if (current) {
-          map.set(userId, { ...current, token, expiresAt, lastActive: Date.now() });
+          map.set(userId, { 
+            ...current, 
+            token, 
+            expiresAt, 
+            lastActive: Date.now() 
+          });
         }
         return map;
       });
 
       persistUsers();
+      
+      console.log(`✅ [Refresh] Token renouvelé (rememberMe: ${userData.rememberMe})`);
       
       const queue = [...refreshQueue.current];
       refreshQueue.current = [];
@@ -305,7 +323,9 @@ export function AuthProvider({ children }) {
         return refreshTokenForUser(userId, retryCount + 1);
       }
       
-      addNotification("warning", "Session expirée");
+      if (!userData.rememberMe) {
+        addNotification("warning", "Session expirée");
+      }
       await logout(userId, true);
       
       const queue = [...refreshQueue.current];
@@ -324,7 +344,13 @@ export function AuthProvider({ children }) {
     if (!userData?.token) return null;
 
     const timeLeft = userData.expiresAt - Date.now();
-    if (timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS) {
+    
+    // ✅ Marges adaptatives
+    const margin = userData.rememberMe 
+      ? 2 * 60 * 60 * 1000 
+      : CONFIG.TOKEN_REFRESH_MARGIN_MS;
+    
+    if (timeLeft < margin) {
       const refreshed = await refreshTokenForUser(userId);
       if (!refreshed) return null;
       return users.get(userId)?.token || null;
@@ -404,23 +430,33 @@ export function AuthProvider({ children }) {
     }
   }, [getToken, refreshTokenForUser, activeUserId]);
 
-  // === JETON DE VÉRIFICATION STOCKÉ ===
-  const verifyStoredToken = useCallback(async (userId, token) => {
+  // === ✅ VÉRIFICATION TOKEN STOCKÉ (Support tokens longue durée) ===
+  const verifyStoredToken = useCallback(async (userId, token, rememberMe = false) => {
     if (!token) return { valid: false };
+    
     try {
       const res = await axios.get(`${API_URL}/auth/verify`, {
         headers: { Authorization: `Bearer ${token}` },
         withCredentials: true,
         timeout: 10000,
       });
-      return res.status === 200 && res.data.valid ? { valid: true, user: res.data.user } : { valid: false };
-    } catch { 
+      
+      if (res.status === 200 && res.data.valid) {
+        console.log(`✅ [Verify] Token valide pour ${userId} (rememberMe: ${rememberMe})`);
+        return { valid: true, user: res.data.user };
+      }
+      
+      return { valid: false };
+    } catch (err) {
+      console.warn(`⚠️ [Verify] Token invalide pour ${userId}:`, err.message);
       return { valid: false }; 
     }
   }, []);
 
-  // === CHARGEMENT INITIAL ===
+  // === ✅ CHARGEMENT INITIAL (Support auto-login) ===
   const loadStoredUsers = useCallback(async () => {
+    console.log("🔍 [AuthContext] Chargement utilisateurs stockés...");
+    
     const storedUsers = secureGetItem(STORAGE_KEYS.USERS);
     const storedActive = secureGetItem(STORAGE_KEYS.ACTIVE_USER);
     const storedAttempts = secureGetItem(STORAGE_KEYS.LOGIN_ATTEMPTS) || {};
@@ -428,16 +464,26 @@ export function AuthProvider({ children }) {
 
     if (storedUsers) {
       for (const [id, data] of Object.entries(storedUsers)) {
+        // ✅ Tokens longue durée peuvent être valides même après plusieurs jours
         if (data.expiresAt > Date.now()) {
-          const { valid, user } = await verifyStoredToken(id, data.token);
+          const { valid, user } = await verifyStoredToken(id, data.token, data.rememberMe);
+          
           if (valid && user?._id === id) {
-            validUsers.set(id, { ...data, user });
+            validUsers.set(id, { 
+              ...data, 
+              user,
+              rememberMe: data.rememberMe || false 
+            });
             await syncUserToIDB(id, user);
+            console.log(`✅ [Load] User ${id} chargé (rememberMe: ${data.rememberMe})`);
           }
+        } else {
+          console.log(`⏰ [Load] Token expiré pour ${id}`);
         }
       }
     }
 
+    // Fallback offline
     if (validUsers.size === 0 && !navigator.onLine) {
       const idbUser = await idbGet("users", "user_active");
       if (idbUser?._id) {
@@ -445,7 +491,8 @@ export function AuthProvider({ children }) {
           user: idbUser, 
           token: null, 
           expiresAt: 0, 
-          lastActive: Date.now() 
+          lastActive: Date.now(),
+          rememberMe: false
         });
         setActiveUserId(idbUser._id);
       }
@@ -455,12 +502,16 @@ export function AuthProvider({ children }) {
     setActiveUserId(storedActive && validUsers.has(storedActive) ? storedActive : validUsers.keys().next().value || null);
     setLoginAttempts(storedAttempts);
     setReady(true);
+    setLoading(false); // ✅ Fin du chargement initial
+    
+    console.log(`✅ [Load] ${validUsers.size} utilisateur(s) chargé(s)`);
   }, [verifyStoredToken]);
 
-  // === CONNEXION ===
-  const login = useCallback(async (email, password) => {
+  // === ✅ CONNEXION (Support "Se souvenir") ===
+  const login = useCallback(async (email, password, rememberMe = false) => {
     const safeEmail = (email || "").toString().trim().toLowerCase();
     setLoading(true);
+    
     try {
       const loginAxios = axios.create({
         baseURL: API_URL.replace('/api', ''),
@@ -469,14 +520,31 @@ export function AuthProvider({ children }) {
         headers: { 'Content-Type': 'application/json' }
       });
 
-      const res = await loginAxios.post('/api/auth/login', { email: safeEmail, password: password.toString() });
+      const res = await loginAxios.post('/api/auth/login', { 
+        email: safeEmail, 
+        password: password.toString(),
+        rememberMe // ✅ Envoyer au backend
+      });
 
-      if (res.status >= 400 || !res.data.success) throw new Error(res.data?.message || "Erreur login");
+      if (res.status >= 400 || !res.data.success) {
+        throw new Error(res.data?.message || "Erreur login");
+      }
 
       const { user, token } = res.data;
-      const expiresAt = Date.now() + (55 * 60 * 1000);
+      
+      // ✅ Expiration selon "rememberMe"
+      const expiresAt = rememberMe
+        ? Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 jours
+        : Date.now() + (55 * 60 * 1000); // 55 min
+      
       const updated = new Map(users);
-      updated.set(user._id, { user, token, expiresAt, lastActive: Date.now() });
+      updated.set(user._id, { 
+        user, 
+        token, 
+        expiresAt, 
+        lastActive: Date.now(),
+        rememberMe // ✅ NOUVEAU
+      });
 
       setUsers(updated);
       setActiveUserId(user._id);
@@ -484,7 +552,9 @@ export function AuthProvider({ children }) {
       resetLoginAttempts(safeEmail);
       await syncUserToIDB(user._id, user);
       
+      console.log(`✅ [Login] Connecté (rememberMe: ${rememberMe})`);
       addNotification("success", "Connecté avec succès");
+      
       return { success: true, user };
     } catch (err) {
       trackLoginAttempt(safeEmail);
@@ -496,9 +566,10 @@ export function AuthProvider({ children }) {
     }
   }, [users, persistUsers, addNotification, trackLoginAttempt, resetLoginAttempts]);
 
-  // === INSCRIPTION ===
-  const register = useCallback(async (fullName, email, password) => {
+  // === ✅ INSCRIPTION (Support "Se souvenir") ===
+  const register = useCallback(async (fullName, email, password, rememberMe = false) => {
     setLoading(true);
+    
     try {
       const registerAxios = axios.create({
         baseURL: API_URL.replace('/api', ''),
@@ -507,21 +578,41 @@ export function AuthProvider({ children }) {
         headers: { 'Content-Type': 'application/json' }
       });
 
-      const res = await registerAxios.post('/api/auth/register', { fullName, email, password });
+      const res = await registerAxios.post('/api/auth/register', { 
+        fullName, 
+        email, 
+        password,
+        rememberMe // ✅ Envoyer au backend
+      });
 
-      if (!res.data.success) throw new Error(res.data?.message || "Erreur inscription");
+      if (!res.data.success) {
+        throw new Error(res.data?.message || "Erreur inscription");
+      }
 
       const { user, token } = res.data;
-      const expiresAt = Date.now() + (55 * 60 * 1000);
+      
+      // ✅ Expiration selon "rememberMe"
+      const expiresAt = rememberMe
+        ? Date.now() + (7 * 24 * 60 * 60 * 1000)
+        : Date.now() + (55 * 60 * 1000);
+      
       const updated = new Map(users);
-      updated.set(user._id, { user, token, expiresAt, lastActive: Date.now() });
+      updated.set(user._id, { 
+        user, 
+        token, 
+        expiresAt, 
+        lastActive: Date.now(),
+        rememberMe
+      });
 
       setUsers(updated);
       setActiveUserId(user._id);
       persistUsers(updated, user._id);
       await syncUserToIDB(user._id, user);
       
+      console.log(`✅ [Register] Inscription réussie (rememberMe: ${rememberMe})`);
       addNotification("success", "Compte créé avec succès !");
+      
       return { success: true, user };
     } catch (err) {
       const msg = err.response?.data?.message || err.message || "Erreur inscription";
@@ -532,7 +623,7 @@ export function AuthProvider({ children }) {
     }
   }, [users, persistUsers, addNotification]);
 
-  // === ✅ MISE À JOUR DU PROFIL (CORRIGÉE) ===
+  // === MISE À JOUR DU PROFIL ===
   const updateUserProfile = useCallback(async (userId, updates) => {
     if (!userId) return;
 
@@ -543,11 +634,9 @@ export function AuthProvider({ children }) {
       const currentUserData = newMap.get(userId);
 
       if (currentUserData) {
-        // ✅ Merge intelligent : ne pas écraser, mais fusionner
         const updatedUser = {
           ...currentUserData.user,
           ...updates,
-          // Si on met à jour following, s'assurer que c'est bien un tableau
           following: updates.following !== undefined 
             ? updates.following 
             : currentUserData.user.following
@@ -555,7 +644,6 @@ export function AuthProvider({ children }) {
         
         newMap.set(userId, { ...currentUserData, user: updatedUser });
         
-        // Persister immédiatement dans le bon ordre
         setTimeout(() => {
           persistUsers(newMap, activeUserId);
           syncUserToIDB(userId, updatedUser);
@@ -563,11 +651,8 @@ export function AuthProvider({ children }) {
         
         console.log("✅ [AuthContext] Profil mis à jour:", {
           userId,
-          followingCount: updatedUser.following?.length || 0,
-          followingIds: updatedUser.following?.slice(0, 3)
+          followingCount: updatedUser.following?.length || 0
         });
-      } else {
-        console.warn("⚠️ [AuthContext] User non trouvé dans Map:", userId);
       }
       return newMap;
     });
@@ -579,16 +664,23 @@ export function AuthProvider({ children }) {
     return () => { isMounted.current = false; }; 
   }, [loadStoredUsers]);
 
+  // ✅ Refresh adaptatif selon "rememberMe"
   useEffect(() => {
     if (!ready || users.size === 0) return;
+    
     refreshInterval.current = setInterval(() => {
       users.forEach((data, id) => {
+        const margin = data.rememberMe 
+          ? 2 * 60 * 60 * 1000 
+          : CONFIG.TOKEN_REFRESH_MARGIN_MS;
+        
         const timeLeft = data.expiresAt - Date.now();
-        if (timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS && timeLeft > 0) {
+        if (timeLeft < margin && timeLeft > 0) {
           refreshTokenForUser(id);
         }
       });
     }, CONFIG.AUTO_REFRESH_INTERVAL_MS);
+    
     return () => clearInterval(refreshInterval.current);
   }, [users, refreshTokenForUser, ready]);
 
@@ -596,7 +688,7 @@ export function AuthProvider({ children }) {
     injectAuthHandlers({ getToken, logout, notify: addNotification });
   }, [getToken, logout, addNotification]);
   
-  // === VALEUR DU CONTEXTE ===
+  // === ✅ VALEUR DU CONTEXTE (avec isAuthenticated) ===
   const value = useMemo(() => {
     const active = getActiveUser();
     const isAdmin = () => active?.user?.role === 'admin' || active?.user?.role === 'superadmin';
@@ -609,6 +701,7 @@ export function AuthProvider({ children }) {
       socket: socketRef.current,
       loading,
       ready,
+      isAuthenticated: !!active?.user, // ✅ NOUVEAU : true si user connecté
       notifications,
       login,
       logout,
@@ -625,8 +718,7 @@ export function AuthProvider({ children }) {
   }, [
     users, activeUserId, loading, ready, notifications,
     login, logout, register, getToken, 
-    updateUserProfile,
-    verifyAdminToken,
+    updateUserProfile, verifyAdminToken,
     addNotification, isLockedOut, getActiveUser, getUserById
   ]);
 
