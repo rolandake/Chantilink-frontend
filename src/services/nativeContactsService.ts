@@ -1,11 +1,11 @@
 // ============================================
 // 📁 src/services/nativeContactsService.ts
 // Service de synchronisation des contacts natifs (Puce téléphonique)
-// VERSION CORRIGÉE - Utilise @capacitor-community/contacts
+// VERSION CORRIGÉE - Types @capacitor-community/contacts
 // ============================================
 
 import { Capacitor } from '@capacitor/core';
-import { Contacts } from '@capacitor-community/contacts';
+import { Contacts, Contact, PhoneNumber } from '@capacitor-community/contacts';
 import { API } from './apiService';
 
 // ============================================
@@ -137,24 +137,29 @@ class NativeContactsService {
       const processedContacts: NativeContact[] = [];
       
       for (const contact of result.contacts || []) {
-        // Extraire le nom
-        const name = contact.name?.display || 
-                    contact.name?.given || 
-                    contact.name?.family || 
-                    'Sans nom';
+        // ✅ Extraction sécurisée du nom
+        const name = (contact.name?.display || 
+                     contact.name?.given || 
+                     contact.name?.family || 
+                     'Sans nom') as string;
 
-        // Extraire les numéros de téléphone
+        // ✅ Extraction sécurisée des numéros de téléphone
         const phones = contact.phones || [];
         
         for (const phoneEntry of phones) {
-          const normalizedPhone = normalizePhone(phoneEntry.number);
+          // ✅ Accès sécurisé au numéro
+          const phoneNumber = phoneEntry.number;
+          
+          if (!phoneNumber) continue;
+          
+          const normalizedPhone = normalizePhone(phoneNumber);
           
           if (normalizedPhone) {
             processedContacts.push({
               id: contact.contactId || String(Math.random()),
               name,
               phone: normalizedPhone,
-              displayName: contact.name?.display,
+              displayName: contact.name?.display || undefined,
               photoUri: contact.image?.base64String 
                 ? `data:image/png;base64,${contact.image.base64String}` 
                 : undefined
