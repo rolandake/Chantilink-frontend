@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Chat/components/MessagesList.jsx
-// VERSION AVEC SUPPRESSION DE MESSAGES
+// VERSION AVEC SUPPRESSION DE MESSAGES - CORRIGÉE
 // ============================================
 import React, { useMemo, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -384,7 +384,7 @@ const DateSeparator = React.memo(({ date }) => {
   );
 });
 
-// === MESSAGE ITEM AVEC SUPPRESSION ===
+// === MESSAGE ITEM AVEC SUPPRESSION - CORRIGÉ ===
 const MessageItem = React.memo(({ msg, prevMsg, currentUserId, conversationId, onDelete }) => {
   const [showMenu, setShowMenu] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -409,8 +409,13 @@ const MessageItem = React.memo(({ msg, prevMsg, currentUserId, conversationId, o
     setShowDeleteConfirm(true);
   };
 
+  // ✅ CORRECTION ICI - vérifier que onDelete existe
   const confirmDelete = () => {
-    onDelete(msg._id);
+    if (onDelete && typeof onDelete === 'function') {
+      onDelete(msg._id);
+    } else {
+      console.error('❌ [MessageItem] onDelete n\'est pas une fonction');
+    }
     setShowDeleteConfirm(false);
   };
 

@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Chat/Messages.jsx
-// VERSION FINALE - AVEC CACHE IndexedDB
+// VERSION FINALE - AVEC CACHE IndexedDB ET SUPPRESSION
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -602,6 +602,34 @@ export default function Messages() {
     setSelectedContact(null);
   }, []);
 
+  /**
+   * ✅ NOUVEAU: Fonction pour supprimer un message
+   */
+  const handleDeleteMessage = useCallback(async (messageId) => {
+    if (!selectedContact || !user?.id) return;
+    
+    try {
+      // 1️⃣ Supprimer de l'UI immédiatement
+      setMessages(prev => prev.filter(msg => msg._id !== messageId));
+      
+      // 2️⃣ Supprimer du cache
+      await messageCache.deleteMessage(user.id, selectedContact.id, messageId);
+      
+      // 3️⃣ Notifier le serveur via socket (optionnel, selon votre backend)
+      if (socket && socket.connected) {
+        socket.emit("deleteMessage", {
+          messageId,
+          conversationId: selectedContact.id
+        });
+      }
+      
+      showToast('Message supprimé', 'success');
+    } catch (error) {
+      console.error('❌ [Messages] Erreur suppression:', error);
+      showToast('Erreur lors de la suppression', 'error');
+    }
+  }, [selectedContact, user, socket, showToast]);
+
   // ========== 9. TOUS LES useEffect À LA FIN ==========
   
   useEffect(() => {
@@ -994,7 +1022,8 @@ export default function Messages() {
             currentUserId={user?.id}
             loading={loading}
             endRef={messagesEndRef}
-            conversationId={selectedContact?.id} 
+            conversationId={selectedContact?.id}
+            onDeleteMessage={handleDeleteMessage}
           />
 
           <ChatInput
