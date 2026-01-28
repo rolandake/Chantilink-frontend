@@ -1,14 +1,16 @@
 // ============================================
-// 📁 ContactSidebar.jsx - VERSION FINALE CORRIGÉE
+// 📁 ContactSidebar.jsx - VERSION AVEC SYNC NATIVE
+// Synchronisation depuis la puce téléphonique (iOS/Android)
 // ============================================
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   ShieldCheck, RefreshCw, Share2, UserCheck, UserPlus,
-  Search, Users, MessageSquare, Send
+  Search, Users, MessageSquare, Send, Smartphone, Wifi, WifiOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '../../context/ToastContext';
-import { Contacts } from '@capacitor-community/contacts';
+import { Capacitor } from '@capacitor/core';
+import nativeContactsService from '../../services/nativeContactsService';
 
 // ============================================
 // 🔐 NORMALISATION IDENTIQUE AU BACKEND
@@ -16,22 +18,18 @@ import { Contacts } from '@capacitor-community/contacts';
 const normalizePhone = (phoneNumber) => {
   if (!phoneNumber) return null;
   
-  // Retirer espaces, tirets, parenthèses, points
   let cleaned = phoneNumber.replace(/[\s\-\(\)\.]/g, '');
-  
-  // Remplacer 00 par +
   cleaned = cleaned.replace(/^00/, '+');
   
-  // Si pas de +, ajouter +225 (Côte d'Ivoire)
   if (!cleaned.startsWith('+')) {
-    cleaned = '+225' + cleaned.replace(/^0/, ''); // Enlever le 0 initial
+    cleaned = '+225' + cleaned.replace(/^0/, '');
   }
   
   return cleaned;
 };
 
 // ============================================
-// API SERVICE (Utilise le vrai service du projet)
+// API SERVICE
 // ============================================
 const getAPIService = () => {
   const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
@@ -88,13 +86,15 @@ export const ContactSidebar = ({
   contacts = [], 
   unreadCounts = {},
   user,
-  onSyncComplete // ✅ AJOUTÉ
+  onSyncComplete
 }) => {
   const [loading, setLoading] = useState(false);
   const [syncMatches, setSyncMatches] = useState([]);
   const [offAppContacts, setOffAppContacts] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState("chats");
+  const [syncProgress, setSyncProgress] = useState(0);
+  const [isNativeSync, setIsNativeSync] = useState(false);
   const { showToast } = useToast();
 
   const filteredFriends = useMemo(() => {
@@ -104,7 +104,17 @@ export const ContactSidebar = ({
   }, [contacts, searchQuery]);
 
   // ============================================
-  // 💾 PERSISTANCE DES CONTACTS SYNCHRONISÉS
+  // 🔍 DÉTECTION ENVIRONNEMENT AU MONTAGE
+  // ============================================
+  useEffect(() => {
+    const isNative = Capacitor.isNativePlatform();
+    setIsNativeSync(isNative);
+    
+    console.log(`📱 [ContactSidebar] Environnement: ${isNative ? 'NATIF (iOS/Android)' : 'WEB'}`);
+  }, []);
+
+  // ============================================
+  // 💾 RESTAURATION DES CONTACTS SYNCHRONISÉS
   // ============================================
   useEffect(() => {
     const savedMatches = localStorage.getItem('syncedContacts');
@@ -128,145 +138,106 @@ export const ContactSidebar = ({
   }, []);
 
   // ============================================
-  // 🔥 SYNCHRONISATION (avec fallback web/mobile)
+  // 🔥 SYNCHRONISATION NATIVE OU WEB
   // ============================================
   const handleSyncProcess = async () => {
     setLoading(true);
+    setSyncProgress(0);
+    
     try {
-      let phoneContacts = [];
+      let result;
 
-      // ✅ DÉTECTION CAPACITOR (plus fiable)
-      const isCapacitorApp = window.Capacitor?.isNativePlatform?.() || false;
+      if (isNativeSync) {
+        // 📱 MODE NATIF: Synchronisation depuis la puce téléphonique
+        console.log("📱 [ContactSidebar] Synchronisation NATIVE depuis la puce téléphonique");
+        
+        showToast("📱 Accès aux contacts du téléphone...", "info");
+        
+        result = await nativeContactsService.syncWithBackend(
+          token,
+          (progress) => {
+            setSyncProgress(progress);
+            console.log(`📊 Progression: ${progress}%`);
+          }
+        );
 
-      if (!isCapacitorApp) {
-        // 🖥️ MODE WEB : Contacts de test
-        console.log("🖥️ [Mode Web] Utilisation de contacts de test");
-        phoneContacts = [
+        if (!result.success) {
+          throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
+        }
+
+        console.log(`✅ [ContactSidebar] Sync native réussie:`, result.stats);
+
+      } else {
+        // 🖥️ MODE WEB: Contacts de test
+        console.log("🖥️ [ContactSidebar] Mode WEB - Contacts de test");
+        
+        const testContacts = [
           { name: "ELF Test", phone: "+2250769144101" },
           { name: "Neon Test", phone: "+225010101031" },
           { name: "Anney Test", phone: "+225010101059" },
           { name: "Abate Test", phone: "+2250150329452" },
           { name: "2.0Musique Test", phone: "+2250150329453" }
         ];
-        console.log(`🧪 ${phoneContacts.length} contacts de test générés`);
-      } else {
-        // 📱 MODE MOBILE : Vrais contacts Capacitor
-        try {
-          console.log("📱 Demande de permission contacts...");
-          const permission = await Contacts.requestPermissions();
-          
-          if (permission.contacts !== 'granted') {
-            showToast("Permission refusée pour accéder aux contacts", "error");
-            setLoading(false);
-            return;
+
+        setSyncProgress(50);
+        result = await API.syncContacts(token, testContacts);
+        setSyncProgress(100);
+
+        // Transformer pour correspondre au format natif
+        result = {
+          success: true,
+          onChantilink: result.onChantilink || [],
+          notOnChantilink: result.notOnChantilink || [],
+          stats: result.stats || {
+            total: testContacts.length,
+            onApp: result.onChantilink?.length || 0,
+            offApp: result.notOnChantilink?.length || 0
           }
-
-          console.log("✅ Permission accordée, lecture des contacts...");
-          const result = await Contacts.getContacts({
-            projection: {
-              name: true,
-              phones: true
-            }
-          });
-
-          console.log(`📲 ${result.contacts?.length || 0} contacts trouvés`);
-
-          phoneContacts = result.contacts
-            .map(contact => {
-              const phone = contact.phones?.[0]?.number;
-              if (!phone) return null;
-
-              const name = contact.name?.display || contact.name?.given || 'Inconnu';
-              const normalized = normalizePhone(phone);
-
-              console.log(`📞 ${name}: ${phone} → ${normalized}`);
-
-              return {
-                name,
-                phone: normalized
-              };
-            })
-            .filter(c => c !== null);
-
-          console.log(`✅ ${phoneContacts.length} contacts valides extraits`);
-
-          if (phoneContacts.length === 0) {
-            showToast("Aucun contact avec numéro trouvé", "info");
-            setLoading(false);
-            return;
-          }
-        } catch (err) {
-          console.error("❌ Erreur lecture contacts:", err);
-          showToast(`Impossible de lire les contacts : ${err.message}`, "error");
-          setLoading(false);
-          return;
-        }
+        };
       }
 
-      console.log(`📤 Envoi de ${phoneContacts.length} contacts au backend...`);
-      console.log("📋 Exemples:", phoneContacts.slice(0, 3));
-
-      // ✅ APPEL API avec le service corrigé
-      let result;
-      try {
-        result = await API.syncContacts(token, phoneContacts);
-        console.log(`📊 Résultat sync:`, result);
-      } catch (apiError) {
-        console.error('❌ Erreur API:', apiError);
-        
-        if (apiError.message.includes('404')) {
-          throw new Error('Route de synchronisation non trouvée. Vérifiez que le backend est correctement configuré.');
-        } else if (apiError.message.includes('Réponse invalide')) {
-          throw new Error('Le serveur a retourné une erreur. Consultez les logs backend.');
-        }
-        
-        throw apiError;
-      }
-
-      // ✅ VÉRIFICATION DES DONNÉES REÇUES
-      if (!result || typeof result !== 'object') {
-        throw new Error('Réponse invalide du serveur');
-      }
-
-      // ✅ Extraction sécurisée des données
-      const onChantilink = Array.isArray(result.onChantilink) 
-        ? result.onChantilink 
-        : (result.data?.onChantilink || []);
-      
-      const notOnChantilink = Array.isArray(result.notOnChantilink)
-        ? result.notOnChantilink
-        : (result.data?.notOnChantilink || []);
+      // ✅ Traitement du résultat
+      const onChantilink = result.onChantilink || [];
+      const notOnChantilink = result.notOnChantilink || [];
 
       console.log(`✅ Traitement: ${onChantilink.length} sur app, ${notOnChantilink.length} hors app`);
 
-      // ✅ Mise à jour UI + SAUVEGARDE PERMANENTE
+      // Mise à jour UI + Sauvegarde
       setSyncMatches(onChantilink);
       setOffAppContacts(notOnChantilink);
       
-      // 💾 SAUVEGARDER dans localStorage pour persistance
       localStorage.setItem('syncedContacts', JSON.stringify(onChantilink));
       localStorage.setItem('offAppContacts', JSON.stringify(notOnChantilink));
       
       if (onChantilink.length > 0) {
         setActiveTab("suggestions");
-        showToast(`✅ ${onChantilink.length} amis trouvés sur Chantilink !`, "success");
+        showToast(
+          `✅ ${onChantilink.length} ami${onChantilink.length > 1 ? 's' : ''} trouvé${onChantilink.length > 1 ? 's' : ''} sur Chantilink !`, 
+          "success"
+        );
         
-        // ✅ APPELER LE CALLBACK
         if (onSyncComplete) {
           onSyncComplete(onChantilink);
         }
       } else {
         showToast("Aucun ami trouvé sur l'app", "info");
         if (notOnChantilink.length > 0) {
-          showToast(`${notOnChantilink.length} contacts à inviter`, "info");
+          showToast(`${notOnChantilink.length} contact${notOnChantilink.length > 1 ? 's' : ''} à inviter`, "info");
           setActiveTab("invite");
         }
       }
+
     } catch (err) {
       console.error("❌ Erreur sync:", err);
-      showToast(err.message || "Erreur de synchronisation", "error");
+      
+      if (err.message?.includes('Permission')) {
+        showToast("Permission refusée. Activez l'accès aux contacts dans les paramètres.", "error");
+      } else {
+        showToast(err.message || "Erreur de synchronisation", "error");
+      }
     } finally {
       setLoading(false);
+      setSyncProgress(0);
     }
   };
 
@@ -328,19 +299,55 @@ export const ContactSidebar = ({
               RÉSEAU
             </span>
           </h2>
-          <motion.button 
-            whileTap={{ scale: 0.9 }}
-            onClick={handleSyncProcess} 
-            disabled={loading}
-            className="p-2 hover:bg-white/5 rounded-xl transition-colors relative"
-            title="Synchroniser mes contacts"
-          >
-            <RefreshCw size={20} className={`${loading ? 'animate-spin' : ''} text-gray-400`} />
-            {loading && (
-              <span className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
-            )}
-          </motion.button>
+          
+          <div className="flex items-center gap-2">
+            {/* Indicateur de mode */}
+            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${
+              isNativeSync 
+                ? 'bg-green-500/10 text-green-500' 
+                : 'bg-orange-500/10 text-orange-500'
+            }`}>
+              {isNativeSync ? <Smartphone size={14} /> : <Wifi size={14} />}
+              <span className="text-[9px] font-black uppercase tracking-wider">
+                {isNativeSync ? 'NATIF' : 'WEB'}
+              </span>
+            </div>
+
+            {/* Bouton sync */}
+            <motion.button 
+              whileTap={{ scale: 0.9 }}
+              onClick={handleSyncProcess} 
+              disabled={loading}
+              className="p-2 hover:bg-white/5 rounded-xl transition-colors relative"
+              title={isNativeSync 
+                ? "Synchroniser depuis la puce téléphonique" 
+                : "Synchroniser (mode test web)"
+              }
+            >
+              <RefreshCw size={20} className={`${loading ? 'animate-spin' : ''} text-gray-400`} />
+              {loading && (
+                <span className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
+              )}
+            </motion.button>
+          </div>
         </div>
+
+        {/* BARRE DE PROGRESSION */}
+        {loading && syncProgress > 0 && (
+          <div className="mb-3">
+            <div className="bg-[#0b0d10] rounded-full h-2 overflow-hidden border border-white/5">
+              <motion.div 
+                className="h-full bg-gradient-to-r from-blue-500 to-indigo-600"
+                initial={{ width: 0 }}
+                animate={{ width: `${syncProgress}%` }}
+                transition={{ duration: 0.3 }}
+              />
+            </div>
+            <p className="text-xs text-gray-500 text-center mt-1">
+              {syncProgress}% {isNativeSync ? '📱 Lecture de la puce...' : '🔄 Synchronisation...'}
+            </p>
+          </div>
+        )}
 
         {/* BARRE DE RECHERCHE */}
         <div className="relative group">
@@ -403,7 +410,10 @@ export const ContactSidebar = ({
                 <EmptyState 
                   icon={<MessageSquare size={40} />} 
                   text="Aucune discussion active"
-                  subtext="Synchronisez vos contacts pour commencer"
+                  subtext={isNativeSync 
+                    ? "Synchronisez vos contacts téléphoniques" 
+                    : "Lancez une synchronisation pour commencer"
+                  }
                 />
               )}
             </motion.div>
@@ -417,7 +427,8 @@ export const ContactSidebar = ({
               exit={{ opacity: 0, x: 10 }}
               className="p-2"
             >
-              <p className="text-[10px] font-black text-blue-500 uppercase px-3 mb-3 tracking-[0.2em]">
+              <p className="text-[10px] font-black text-blue-500 uppercase px-3 mb-3 tracking-[0.2em] flex items-center gap-2">
+                {isNativeSync && <Smartphone size={12} />}
                 Vos amis sur Chantilink
               </p>
               {syncMatches.length > 0 ? (
@@ -433,7 +444,10 @@ export const ContactSidebar = ({
                 <EmptyState 
                   icon={<Users size={40} />} 
                   text="Aucun ami trouvé"
-                  subtext="Lancez une synchronisation"
+                  subtext={isNativeSync 
+                    ? "Lancez une synchronisation depuis vos contacts" 
+                    : "Mode web - Utilisez des contacts de test"
+                  }
                 />
               )}
             </motion.div>
@@ -584,7 +598,7 @@ const EmptyState = ({ icon, text, subtext }) => (
   <div className="flex flex-col items-center justify-center py-12 opacity-20 grayscale">
     {icon}
     <p className="text-xs font-black uppercase tracking-widest mt-4">{text}</p>
-    {subtext && <p className="text-[10px] text-gray-600 mt-1">{subtext}</p>}
+    {subtext && <p className="text-[10px] text-gray-600 mt-1 text-center px-4">{subtext}</p>}
   </div>
 );
 
