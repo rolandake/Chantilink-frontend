@@ -1,32 +1,16 @@
 // ============================================
-// 📁 ContactSidebar.jsx - VERSION AVEC SYNC NATIVE
-// Synchronisation depuis la puce téléphonique (iOS/Android)
+// 📁 ContactSidebar.jsx - VERSION FINALE
+// 100% données serveur - Aucun contact fictif
 // ============================================
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  ShieldCheck, RefreshCw, Share2, UserCheck, UserPlus,
-  Search, Users, MessageSquare, Send, Smartphone, Wifi, WifiOff
+  ShieldCheck, RefreshCw, UserCheck, UserPlus,
+  Search, Users, MessageSquare, Send, Smartphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '../../context/ToastContext';
 import { Capacitor } from '@capacitor/core';
 import nativeContactsService from '../../services/nativeContactsService';
-
-// ============================================
-// 🔐 NORMALISATION IDENTIQUE AU BACKEND
-// ============================================
-const normalizePhone = (phoneNumber) => {
-  if (!phoneNumber) return null;
-  
-  let cleaned = phoneNumber.replace(/[\s\-\(\)\.]/g, '');
-  cleaned = cleaned.replace(/^00/, '+');
-  
-  if (!cleaned.startsWith('+')) {
-    cleaned = '+225' + cleaned.replace(/^0/, '');
-  }
-  
-  return cleaned;
-};
 
 // ============================================
 // API SERVICE
@@ -66,14 +50,6 @@ const getAPIService = () => {
         headers: { Authorization: `Bearer ${token}` },
         body: JSON.stringify({ contacts }),
       });
-    },
-    
-    inviteContact: async (token, data) => {
-      return fetchWithAuth(`${BASE_URL}/contacts/invite`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: JSON.stringify(data),
-      });
     }
   };
 };
@@ -89,128 +65,146 @@ export const ContactSidebar = ({
   onSyncComplete
 }) => {
   const [loading, setLoading] = useState(false);
-  const [syncMatches, setSyncMatches] = useState([]);
-  const [offAppContacts, setOffAppContacts] = useState([]);
+  const [allPhoneContacts, setAllPhoneContacts] = useState([]); // TOUS les contacts du téléphone
+  const [onAppContacts, setOnAppContacts] = useState([]); // Contacts sur Chantilink
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState("chats");
+  const [activeTab, setActiveTab] = useState("phone");
   const [syncProgress, setSyncProgress] = useState(0);
   const [isNativeSync, setIsNativeSync] = useState(false);
   const { showToast } = useToast();
 
-  const filteredFriends = useMemo(() => {
-    return contacts.filter(c => 
+  // ============================================
+  // 🔍 FILTRAGE DES CONTACTS
+  // ============================================
+  const filteredPhoneContacts = useMemo(() => {
+    return allPhoneContacts.filter(c => 
+      c.name?.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [allPhoneContacts, searchQuery]);
+
+  const filteredOnAppContacts = useMemo(() => {
+    return onAppContacts.filter(c => 
       c.fullName?.toLowerCase().includes(searchQuery.toLowerCase())
     );
-  }, [contacts, searchQuery]);
+  }, [onAppContacts, searchQuery]);
 
   // ============================================
-  // 🔍 DÉTECTION ENVIRONNEMENT AU MONTAGE
+  // 🔍 DÉTECTION ENVIRONNEMENT
   // ============================================
   useEffect(() => {
     const isNative = Capacitor.isNativePlatform();
     setIsNativeSync(isNative);
     
     console.log(`📱 [ContactSidebar] Environnement: ${isNative ? 'NATIF (iOS/Android)' : 'WEB'}`);
+    
+    // ✅ Si mode WEB, nettoyer les contacts de test du cache
+    if (!isNative) {
+      const savedContacts = localStorage.getItem('allPhoneContacts');
+      if (savedContacts) {
+        console.log('🧹 [ContactSidebar] Nettoyage des contacts web du cache');
+        localStorage.removeItem('allPhoneContacts');
+        localStorage.removeItem('onAppContacts');
+        setAllPhoneContacts([]);
+        setOnAppContacts([]);
+      }
+    }
   }, []);
 
   // ============================================
-  // 💾 RESTAURATION DES CONTACTS SYNCHRONISÉS
+  // 💾 RESTAURATION DES CONTACTS
   // ============================================
   useEffect(() => {
-    const savedMatches = localStorage.getItem('syncedContacts');
-    const savedOffApp = localStorage.getItem('offAppContacts');
+    const savedPhoneContacts = localStorage.getItem('allPhoneContacts');
+    const savedOnAppContacts = localStorage.getItem('onAppContacts');
     
-    if (savedMatches) {
+    if (savedPhoneContacts) {
       try {
-        setSyncMatches(JSON.parse(savedMatches));
+        setAllPhoneContacts(JSON.parse(savedPhoneContacts));
       } catch (e) {
-        console.error('Erreur chargement contacts:', e);
+        console.error('Erreur chargement contacts téléphone:', e);
       }
     }
     
-    if (savedOffApp) {
+    if (savedOnAppContacts) {
       try {
-        setOffAppContacts(JSON.parse(savedOffApp));
+        setOnAppContacts(JSON.parse(savedOnAppContacts));
       } catch (e) {
-        console.error('Erreur chargement contacts hors app:', e);
+        console.error('Erreur chargement contacts app:', e);
       }
     }
   }, []);
 
   // ============================================
-  // 🔥 SYNCHRONISATION NATIVE OU WEB
+  // 🔥 SYNCHRONISATION 100% SERVEUR - NATIF UNIQUEMENT
   // ============================================
   const handleSyncProcess = async () => {
     setLoading(true);
     setSyncProgress(0);
     
     try {
-      let result;
-
-      if (isNativeSync) {
-        // 📱 MODE NATIF: Synchronisation depuis la puce téléphonique
-        console.log("📱 [ContactSidebar] Synchronisation NATIVE depuis la puce téléphonique");
-        
-        showToast("📱 Accès aux contacts du téléphone...", "info");
-        
-        result = await nativeContactsService.syncWithBackend(
-          token,
-          (progress) => {
-            setSyncProgress(progress);
-            console.log(`📊 Progression: ${progress}%`);
-          }
-        );
-
-        if (!result.success) {
-          throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
-        }
-
-        console.log(`✅ [ContactSidebar] Sync native réussie:`, result.stats);
-
-      } else {
-        // 🖥️ MODE WEB: Contacts de test
-        console.log("🖥️ [ContactSidebar] Mode WEB - Contacts de test");
-        
-        const testContacts = [
-          { name: "ELF Test", phone: "+2250769144101" },
-          { name: "Neon Test", phone: "+225010101031" },
-          { name: "Anney Test", phone: "+225010101059" },
-          { name: "Abate Test", phone: "+2250150329452" },
-          { name: "2.0Musique Test", phone: "+2250150329453" }
-        ];
-
-        setSyncProgress(50);
-        result = await API.syncContacts(token, testContacts);
-        setSyncProgress(100);
-
-        // Transformer pour correspondre au format natif
-        result = {
-          success: true,
-          onChantilink: result.onChantilink || [],
-          notOnChantilink: result.notOnChantilink || [],
-          stats: result.stats || {
-            total: testContacts.length,
-            onApp: result.onChantilink?.length || 0,
-            offApp: result.notOnChantilink?.length || 0
-          }
-        };
+      // ✅ Vérification stricte : UNIQUEMENT en mode natif
+      if (!isNativeSync) {
+        showToast("Synchronisation disponible uniquement sur mobile (iOS/Android)", "warning");
+        setLoading(false);
+        return;
       }
 
-      // ✅ Traitement du résultat
+      console.log("📱 [ContactSidebar] Synchronisation NATIVE depuis la puce téléphonique");
+      
+      showToast("📱 Lecture des contacts du téléphone...", "info");
+      
+      // ✅ Synchroniser avec le backend
+      const result = await nativeContactsService.syncWithBackend(
+        token,
+        (progress) => {
+          setSyncProgress(progress);
+          console.log(`📊 Progression: ${progress}%`);
+        }
+      );
+
+      if (!result.success) {
+        throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
+      }
+
+      console.log(`✅ [ContactSidebar] Sync réussie:`, result.stats);
+
+      // ✅ Extraire UNIQUEMENT les données du serveur (pas de contacts fictifs)
       const onChantilink = result.onChantilink || [];
       const notOnChantilink = result.notOnChantilink || [];
-
-      console.log(`✅ Traitement: ${onChantilink.length} sur app, ${notOnChantilink.length} hors app`);
-
-      // Mise à jour UI + Sauvegarde
-      setSyncMatches(onChantilink);
-      setOffAppContacts(notOnChantilink);
       
-      localStorage.setItem('syncedContacts', JSON.stringify(onChantilink));
-      localStorage.setItem('offAppContacts', JSON.stringify(notOnChantilink));
+      // Construire la liste complète des contacts téléphone
+      const allContacts = [];
+      
+      // Ajouter les contacts sur l'app
+      onChantilink.forEach(contact => {
+        allContacts.push({
+          name: contact.fullName,
+          phone: contact.phone,
+          isOnApp: true,
+          appData: contact // Garder les données complètes
+        });
+      });
+      
+      // Ajouter les contacts hors app
+      notOnChantilink.forEach(contact => {
+        allContacts.push({
+          name: contact.name,
+          phone: contact.phone,
+          isOnApp: false
+        });
+      });
+
+      console.log(`✅ Traitement: ${allContacts.length} contacts téléphone, ${onChantilink.length} sur app`);
+
+      // ✅ Mise à jour UI + Sauvegarde
+      setAllPhoneContacts(allContacts);
+      setOnAppContacts(onChantilink);
+      
+      localStorage.setItem('allPhoneContacts', JSON.stringify(allContacts));
+      localStorage.setItem('onAppContacts', JSON.stringify(onChantilink));
       
       if (onChantilink.length > 0) {
-        setActiveTab("suggestions");
+        setActiveTab("onapp");
         showToast(
           `✅ ${onChantilink.length} ami${onChantilink.length > 1 ? 's' : ''} trouvé${onChantilink.length > 1 ? 's' : ''} sur Chantilink !`, 
           "success"
@@ -220,11 +214,8 @@ export const ContactSidebar = ({
           onSyncComplete(onChantilink);
         }
       } else {
-        showToast("Aucun ami trouvé sur l'app", "info");
-        if (notOnChantilink.length > 0) {
-          showToast(`${notOnChantilink.length} contact${notOnChantilink.length > 1 ? 's' : ''} à inviter`, "info");
-          setActiveTab("invite");
-        }
+        showToast(`📱 ${allContacts.length} contact${allContacts.length > 1 ? 's' : ''} synchronisé${allContacts.length > 1 ? 's' : ''}`, "info");
+        setActiveTab("phone");
       }
 
     } catch (err) {
@@ -246,44 +237,15 @@ export const ContactSidebar = ({
   // ============================================
   const handleInvite = async (contact) => {
     try {
-      const result = await API.inviteContact(token, {
-        contactName: contact.name,
-        contactPhone: contact.phone
-      });
-
-      if (result.success && result.inviteUrl) {
-        window.open(result.inviteUrl, '_blank');
-        showToast(`Invitation ouverte pour ${contact.name}`, "success");
-      } else {
-        const inviteText = `Salut ! Rejoins-moi sur Chantilink pour discuter en toute sécurité 🔒\n\n${window.location.origin}/register`;
-        const phoneDigits = contact.phone.replace(/\D/g, '');
-        const whatsappUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(inviteText)}`;
-        
-        window.open(whatsappUrl, '_blank');
-        showToast(`Invitation ouverte pour ${contact.name}`, "success");
-      }
+      const inviteText = `Salut ! Rejoins-moi sur Chantilink pour discuter en toute sécurité 🔒\n\n${window.location.origin}/register`;
+      const phoneDigits = contact.phone.replace(/\D/g, '');
+      const whatsappUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(inviteText)}`;
+      
+      window.open(whatsappUrl, '_blank');
+      showToast(`Invitation envoyée à ${contact.name}`, "success");
     } catch (err) {
       console.error("❌ Erreur invitation:", err);
       showToast("Erreur lors de l'invitation", "error");
-    }
-  };
-
-  // ============================================
-  // 🔗 PARTAGE GÉNÉRIQUE
-  // ============================================
-  const shareInvite = () => {
-    const inviteText = `Rejoins-moi sur Chantilink pour discuter en toute sécurité !\n${window.location.origin}/register`;
-    
-    if (navigator.share) {
-      navigator.share({
-        title: 'Chantilink',
-        text: inviteText
-      }).catch(err => console.log('Partage annulé:', err));
-    } else {
-      window.open(
-        `https://wa.me/?text=${encodeURIComponent(inviteText)}`, 
-        '_blank'
-      );
     }
   };
 
@@ -296,32 +258,34 @@ export const ContactSidebar = ({
           <h2 className="text-xl font-black tracking-tighter flex items-center gap-2">
             <ShieldCheck className="text-blue-500" size={22} /> 
             <span className="bg-gradient-to-r from-white to-gray-500 bg-clip-text text-transparent">
-              RÉSEAU
+              CONTACTS
             </span>
           </h2>
           
           <div className="flex items-center gap-2">
             {/* Indicateur de mode */}
-            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${
-              isNativeSync 
-                ? 'bg-green-500/10 text-green-500' 
-                : 'bg-orange-500/10 text-orange-500'
-            }`}>
-              {isNativeSync ? <Smartphone size={14} /> : <Wifi size={14} />}
-              <span className="text-[9px] font-black uppercase tracking-wider">
-                {isNativeSync ? 'NATIF' : 'WEB'}
-              </span>
-            </div>
+            {isNativeSync && (
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-green-500/10 text-green-500">
+                <Smartphone size={14} />
+                <span className="text-[9px] font-black uppercase tracking-wider">
+                  NATIF
+                </span>
+              </div>
+            )}
 
             {/* Bouton sync */}
             <motion.button 
               whileTap={{ scale: 0.9 }}
               onClick={handleSyncProcess} 
-              disabled={loading}
-              className="p-2 hover:bg-white/5 rounded-xl transition-colors relative"
+              disabled={loading || !isNativeSync}
+              className={`p-2 rounded-xl transition-colors relative ${
+                isNativeSync 
+                  ? 'hover:bg-white/5' 
+                  : 'opacity-30 cursor-not-allowed'
+              }`}
               title={isNativeSync 
                 ? "Synchroniser depuis la puce téléphonique" 
-                : "Synchroniser (mode test web)"
+                : "Disponible uniquement sur mobile"
               }
             >
               <RefreshCw size={20} className={`${loading ? 'animate-spin' : ''} text-gray-400`} />
@@ -344,7 +308,7 @@ export const ContactSidebar = ({
               />
             </div>
             <p className="text-xs text-gray-500 text-center mt-1">
-              {syncProgress}% {isNativeSync ? '📱 Lecture de la puce...' : '🔄 Synchronisation...'}
+              {syncProgress}% 📱 Lecture de la puce téléphonique...
             </p>
           </div>
         )}
@@ -365,132 +329,98 @@ export const ContactSidebar = ({
       {/* TABS */}
       <div className="flex p-2 gap-2 bg-[#12151a]/30">
         <TabButton 
-          active={activeTab === "chats"} 
-          onClick={() => setActiveTab("chats")} 
-          label="Messages" 
-          icon={<MessageSquare size={14} />} 
+          active={activeTab === "phone"} 
+          onClick={() => setActiveTab("phone")} 
+          label="Téléphone" 
+          icon={<Smartphone size={14} />} 
+          badge={allPhoneContacts.length}
         />
         <TabButton 
-          active={activeTab === "suggestions"} 
-          onClick={() => setActiveTab("suggestions")} 
-          label="Trouvés" 
+          active={activeTab === "onapp"} 
+          onClick={() => setActiveTab("onapp")} 
+          label="Sur l'app" 
           icon={<Users size={14} />} 
-          badge={syncMatches.length}
-        />
-        <TabButton 
-          active={activeTab === "invite"} 
-          onClick={() => setActiveTab("invite")} 
-          label="Inviter" 
-          icon={<UserPlus size={14} />} 
-          badge={offAppContacts.length}
+          badge={onAppContacts.length}
         />
       </div>
 
       {/* CONTENU */}
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <AnimatePresence mode="wait">
-          {activeTab === "chats" && (
+          
+          {/* TAB 1: CONTACTS TÉLÉPHONE */}
+          {activeTab === "phone" && (
             <motion.div 
-              key="chats"
+              key="phone"
               initial={{ opacity: 0, x: -10 }} 
               animate={{ opacity: 1, x: 0 }} 
               exit={{ opacity: 0, x: -10 }}
-              className="divide-y divide-white/[0.02]"
+              className="p-2"
             >
-              {filteredFriends.length > 0 ? (
-                filteredFriends.map(user => (
-                  <ContactItem 
-                    key={user.id} 
-                    user={user} 
-                    unread={unreadCounts[user.id]} 
-                    onClick={() => onContactSelect(user)} 
+              <p className="text-[10px] font-black text-gray-500 uppercase px-3 mb-3 tracking-[0.2em] flex items-center gap-2">
+                <Smartphone size={12} />
+                Tous vos contacts ({allPhoneContacts.length})
+              </p>
+              
+              {filteredPhoneContacts.length > 0 ? (
+                filteredPhoneContacts.map((contact, idx) => (
+                  <PhoneContactItem 
+                    key={idx}
+                    contact={contact}
+                    onInvite={() => handleInvite(contact)}
+                    onSelect={() => {
+                      if (contact.isOnApp && contact.appData) {
+                        onContactSelect(contact.appData);
+                      }
+                    }}
                   />
                 ))
               ) : (
                 <EmptyState 
-                  icon={<MessageSquare size={40} />} 
-                  text="Aucune discussion active"
+                  icon={<Smartphone size={40} />} 
+                  text={isNativeSync ? "Aucun contact synchronisé" : "Synchronisation mobile uniquement"}
                   subtext={isNativeSync 
-                    ? "Synchronisez vos contacts téléphoniques" 
-                    : "Lancez une synchronisation pour commencer"
+                    ? "Appuyez sur Synchroniser pour importer vos contacts" 
+                    : "Ouvrez l'app sur iOS ou Android"
                   }
                 />
               )}
             </motion.div>
           )}
 
-          {activeTab === "suggestions" && (
+          {/* TAB 2: CONTACTS SUR L'APP */}
+          {activeTab === "onapp" && (
             <motion.div 
-              key="suggestions"
+              key="onapp"
               initial={{ opacity: 0, x: 10 }} 
               animate={{ opacity: 1, x: 0 }} 
               exit={{ opacity: 0, x: 10 }}
               className="p-2"
             >
               <p className="text-[10px] font-black text-blue-500 uppercase px-3 mb-3 tracking-[0.2em] flex items-center gap-2">
-                {isNativeSync && <Smartphone size={12} />}
-                Vos amis sur Chantilink
+                <Users size={12} />
+                Disponibles sur Chantilink ({onAppContacts.length})
               </p>
-              {syncMatches.length > 0 ? (
-                syncMatches.map(user => (
+              
+              {filteredOnAppContacts.length > 0 ? (
+                filteredOnAppContacts.map(user => (
                   <ContactItem 
                     key={user.id} 
                     user={user} 
-                    isSuggestion 
+                    unread={unreadCounts[user.id]}
                     onClick={() => onContactSelect(user)} 
                   />
                 ))
               ) : (
                 <EmptyState 
                   icon={<Users size={40} />} 
-                  text="Aucun ami trouvé"
-                  subtext={isNativeSync 
-                    ? "Lancez une synchronisation depuis vos contacts" 
-                    : "Mode web - Utilisez des contacts de test"
-                  }
+                  text="Aucun ami sur l'app"
+                  subtext="Synchronisez vos contacts pour trouver vos amis"
                 />
               )}
             </motion.div>
           )}
-
-          {activeTab === "invite" && (
-            <motion.div 
-              key="invite"
-              initial={{ opacity: 0, x: 10 }} 
-              animate={{ opacity: 1, x: 0 }} 
-              exit={{ opacity: 0, x: 10 }}
-              className="p-2"
-            >
-              <p className="text-[10px] font-black text-orange-500 uppercase px-3 mb-3 tracking-[0.2em]">
-                À inviter sur Chantilink
-              </p>
-              {offAppContacts.length > 0 ? (
-                offAppContacts.map((contact, idx) => (
-                  <InviteContactItem 
-                    key={idx}
-                    contact={contact}
-                    onInvite={() => handleInvite(contact)}
-                  />
-                ))
-              ) : (
-                <EmptyState 
-                  icon={<UserPlus size={40} />} 
-                  text="Aucun contact à inviter"
-                  subtext="Tous vos contacts sont déjà sur l'app !"
-                />
-              )}
-
-              <div className="mt-8 p-4 bg-blue-500/5 border border-blue-500/10 rounded-2xl text-center mx-2">
-                <p className="text-xs text-gray-500 mb-4">D'autres personnes à inviter ?</p>
-                <button 
-                  onClick={shareInvite}
-                  className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl flex items-center justify-center gap-2 text-sm font-black transition-all shadow-lg shadow-blue-900/20"
-                >
-                  <Share2 size={16} /> PARTAGER CHANTILINK
-                </button>
-              </div>
-            </motion.div>
-          )}
+          
         </AnimatePresence>
       </div>
     </div>
@@ -519,7 +449,54 @@ const TabButton = ({ active, onClick, label, icon, badge }) => (
   </button>
 );
 
-const ContactItem = ({ user, unread, onClick, isSuggestion }) => {
+// Contact du téléphone
+const PhoneContactItem = ({ contact, onInvite, onSelect }) => (
+  <div className="flex items-center gap-3 p-4 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl mb-2 transition-all group">
+    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg ${
+      contact.isOnApp 
+        ? 'bg-blue-600 border border-blue-500/30' 
+        : 'bg-gray-700/50 border border-gray-600/30'
+    }`}>
+      {contact.name[0]?.toUpperCase() || '?'}
+    </div>
+    
+    <div className="flex-1 min-w-0">
+      <p className="text-sm font-bold text-gray-100 truncate">{contact.name}</p>
+      <div className="flex items-center gap-2 mt-0.5">
+        {contact.isOnApp ? (
+          <span className="text-[9px] text-blue-500 font-black uppercase tracking-wider flex items-center gap-1">
+            <UserCheck size={10} /> Sur Chantilink
+          </span>
+        ) : (
+          <span className="text-[9px] text-gray-600 font-bold uppercase tracking-wider">
+            Pas encore sur l'app
+          </span>
+        )}
+      </div>
+    </div>
+
+    {contact.isOnApp ? (
+      <button
+        onClick={onSelect}
+        className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-95"
+        title="Envoyer un message"
+      >
+        <MessageSquare size={16} />
+      </button>
+    ) : (
+      <button
+        onClick={onInvite}
+        className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl transition-all active:scale-95"
+        title="Inviter sur Chantilink"
+      >
+        <Send size={16} />
+      </button>
+    )}
+  </div>
+);
+
+// Contact sur l'application
+const ContactItem = ({ user, unread, onClick }) => {
   const handleClick = () => {
     const contact = {
       id: user.id || user._id,
@@ -528,7 +505,7 @@ const ContactItem = ({ user, unread, onClick, isSuggestion }) => {
       profilePhoto: user.profilePhoto,
       isOnline: user.isOnline,
       lastSeen: user.lastSeen,
-      isOnChantilink: user.isOnChantilink || isSuggestion
+      isOnChantilink: true
     };
     onClick(contact);
   };
@@ -539,8 +516,8 @@ const ContactItem = ({ user, unread, onClick, isSuggestion }) => {
       className="flex items-center gap-3 p-4 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all group"
     >
       <div className="relative">
-        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg shadow-xl border border-white/5 ${isSuggestion ? 'bg-blue-600' : 'bg-gradient-to-br from-blue-600 to-indigo-700'}`}>
-          {user.fullName[0].toUpperCase()}
+        <div className="w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg shadow-xl border border-white/5 bg-gradient-to-br from-blue-600 to-indigo-700">
+          {user.fullName?.[0]?.toUpperCase() || '?'}
         </div>
         {user.isOnline && (
           <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-[3px] border-[#0b0d10]" />
@@ -559,40 +536,16 @@ const ContactItem = ({ user, unread, onClick, isSuggestion }) => {
           )}
         </div>
         <p className="text-[11px] text-gray-500 truncate flex items-center gap-1">
-          {isSuggestion ? (
-            <span className="text-blue-500 font-bold uppercase tracking-tighter text-[9px]">
-              ✓ Sur Chantilink
-            </span>
-          ) : (
-            user.lastSeen ? `Vu ${new Date(user.lastSeen).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : 'Disponible'
-          )}
+          {user.lastSeen 
+            ? `Vu ${new Date(user.lastSeen).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` 
+            : 'Disponible'
+          }
         </p>
       </div>
-      {isSuggestion && <UserCheck size={16} className="text-blue-500/50" />}
+      <UserCheck size={16} className="text-blue-500/50" />
     </div>
   );
 };
-
-const InviteContactItem = ({ contact, onInvite }) => (
-  <div className="flex items-center gap-3 p-4 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl mb-2 transition-all group">
-    <div className="w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg bg-orange-600/20 border border-orange-500/30">
-      {contact.name[0].toUpperCase()}
-    </div>
-    
-    <div className="flex-1 min-w-0">
-      <p className="text-sm font-bold text-gray-100 truncate">{contact.name}</p>
-      <p className="text-[11px] text-gray-500 truncate">Pas encore sur l'app</p>
-    </div>
-
-    <button
-      onClick={onInvite}
-      className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl transition-all active:scale-95"
-      title="Inviter via WhatsApp"
-    >
-      <Send size={16} />
-    </button>
-  </div>
-);
 
 const EmptyState = ({ icon, text, subtext }) => (
   <div className="flex flex-col items-center justify-center py-12 opacity-20 grayscale">
