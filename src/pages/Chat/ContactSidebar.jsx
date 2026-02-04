@@ -11,6 +11,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '../../context/ToastContext';
 import { Capacitor } from '@capacitor/core';
 import nativeContactsService from '../../services/nativeContactsService';
+import { PermissionModal } from './PermissionModal';
 
 // ============================================
 // API SERVICE
@@ -71,6 +72,7 @@ export const ContactSidebar = ({
   const [activeTab, setActiveTab] = useState("phone");
   const [syncProgress, setSyncProgress] = useState(0);
   const [isNativeSync, setIsNativeSync] = useState(false);
+  const [showPermissionModal, setShowPermissionModal] = useState(false);
   const { showToast } = useToast();
 
   // ============================================
@@ -135,7 +137,7 @@ export const ContactSidebar = ({
   }, []);
 
   // ============================================
-  // 🔥 SYNCHRONISATION NATIVE (avec fallback gracieux)
+  // 🔥 SYNCHRONISATION NATIVE (avec demande de permission + modal)
   // ============================================
   const handleSyncProcess = async () => {
     setLoading(true);
@@ -146,20 +148,76 @@ export const ContactSidebar = ({
       console.log("📱 [ContactSidebar] isNativeSync:", isNativeSync);
       console.log("📱 [ContactSidebar] Capacitor.isNativePlatform():", Capacitor.isNativePlatform());
       
-      showToast("📱 Synchronisation en cours...", "info");
+      // ✅ ÉTAPE 1 : Vérifier si on a déjà la permission
+      const hasPermission = await nativeContactsService.checkPermissions();
+      console.log("🔐 [ContactSidebar] Permission actuelle:", hasPermission);
       
-      // ✅ Synchroniser avec le backend (fonctionne en natif ET web)
-      const result = await nativeContactsService.syncWithBackend(
-        token,
-        (progress) => {
-          setSyncProgress(progress);
-          console.log(`📊 Progression: ${progress}%`);
-        }
-      );
-
-      if (!result.success) {
-        throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
+      if (!hasPermission) {
+        // ✅ ÉTAPE 2 : Afficher le modal explicatif
+        setShowPermissionModal(true);
+        setLoading(false);
+        return; // Attendre que l'utilisateur clique sur "Autoriser"
       }
+      
+      // ✅ ÉTAPE 3 : Lancer la synchronisation (permission déjà accordée)
+      await performSync();
+
+    } catch (err) {
+      console.error("❌ Erreur sync:", err);
+      handleSyncError(err);
+      setLoading(false);
+      setSyncProgress(0);
+    }
+  };
+
+  // ============================================
+  // 🔐 DEMANDER LA PERMISSION (appelé depuis le modal)
+  // ============================================
+  const handleRequestPermission = async () => {
+    setShowPermissionModal(false);
+    setLoading(true);
+    
+    try {
+      showToast("📱 Demande d'accès aux contacts...", "info");
+      
+      const granted = await nativeContactsService.requestPermissions();
+      console.log("🔐 [ContactSidebar] Permission accordée:", granted);
+      
+      if (!granted) {
+        throw new Error("Permission refusée. Veuillez autoriser l'accès aux contacts dans les paramètres de votre téléphone.");
+      }
+      
+      showToast("✅ Permission accordée !", "success");
+      
+      // ✅ Lancer la synchronisation
+      await performSync();
+      
+    } catch (err) {
+      console.error("❌ Erreur permission:", err);
+      handleSyncError(err);
+    } finally {
+      setLoading(false);
+      setSyncProgress(0);
+    }
+  };
+
+  // ============================================
+  // 📡 EFFECTUER LA SYNCHRONISATION
+  // ============================================
+  const performSync = async () => {
+    showToast("📱 Lecture des contacts...", "info");
+    
+    const result = await nativeContactsService.syncWithBackend(
+      token,
+      (progress) => {
+        setSyncProgress(progress);
+        console.log(`📊 Progression: ${progress}%`);
+      }
+    );
+
+    if (!result.success) {
+      throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
+    }
 
       console.log(`✅ [ContactSidebar] Sync réussie:`, result.stats);
 
@@ -214,20 +272,21 @@ export const ContactSidebar = ({
       } else {
         showToast("Aucun contact trouvé", "info");
       }
-
-    } catch (err) {
-      console.error("❌ Erreur sync:", err);
       
-      if (err.message?.includes('Permission')) {
-        showToast("Permission refusée. Activez l'accès aux contacts dans les paramètres de votre téléphone.", "error");
-      } else if (err.message?.includes('not available')) {
-        showToast("Fonctionnalité non disponible sur cet appareil", "warning");
-      } else {
-        showToast(err.message || "Erreur de synchronisation", "error");
-      }
-    } finally {
       setLoading(false);
       setSyncProgress(0);
+  };
+
+  // ============================================
+  // ❌ GESTION DES ERREURS
+  // ============================================
+  const handleSyncError = (err) => {
+    if (err.message?.includes('Permission')) {
+      showToast("Permission refusée. Activez l'accès aux contacts dans les paramètres de votre téléphone.", "error");
+    } else if (err.message?.includes('not available')) {
+      showToast("Fonctionnalité non disponible sur cet appareil", "warning");
+    } else {
+      showToast(err.message || "Erreur de synchronisation", "error");
     }
   };
 
@@ -415,6 +474,16 @@ export const ContactSidebar = ({
           
         </AnimatePresence>
       </div>
+
+      {/* MODAL DE PERMISSION */}
+      <PermissionModal
+        isOpen={showPermissionModal}
+        onAccept={handleRequestPermission}
+        onCancel={() => {
+          setShowPermissionModal(false);
+          setLoading(false);
+        }}
+      />
     </div>
   );
 };
