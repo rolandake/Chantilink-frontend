@@ -135,25 +135,20 @@ export const ContactSidebar = ({
   }, []);
 
   // ============================================
-  // 🔥 SYNCHRONISATION 100% SERVEUR - NATIF UNIQUEMENT
+  // 🔥 SYNCHRONISATION NATIVE (avec fallback gracieux)
   // ============================================
   const handleSyncProcess = async () => {
     setLoading(true);
     setSyncProgress(0);
     
     try {
-      // ✅ Vérification stricte : UNIQUEMENT en mode natif
-      if (!isNativeSync) {
-        showToast("Synchronisation disponible uniquement sur mobile (iOS/Android)", "warning");
-        setLoading(false);
-        return;
-      }
-
-      console.log("📱 [ContactSidebar] Synchronisation NATIVE depuis la puce téléphonique");
+      console.log("📱 [ContactSidebar] Démarrage synchronisation...");
+      console.log("📱 [ContactSidebar] isNativeSync:", isNativeSync);
+      console.log("📱 [ContactSidebar] Capacitor.isNativePlatform():", Capacitor.isNativePlatform());
       
-      showToast("📱 Lecture des contacts du téléphone...", "info");
+      showToast("📱 Synchronisation en cours...", "info");
       
-      // ✅ Synchroniser avec le backend
+      // ✅ Synchroniser avec le backend (fonctionne en natif ET web)
       const result = await nativeContactsService.syncWithBackend(
         token,
         (progress) => {
@@ -168,7 +163,7 @@ export const ContactSidebar = ({
 
       console.log(`✅ [ContactSidebar] Sync réussie:`, result.stats);
 
-      // ✅ Extraire UNIQUEMENT les données du serveur (pas de contacts fictifs)
+      // ✅ Extraire UNIQUEMENT les données du serveur
       const onChantilink = result.onChantilink || [];
       const notOnChantilink = result.notOnChantilink || [];
       
@@ -181,7 +176,7 @@ export const ContactSidebar = ({
           name: contact.fullName,
           phone: contact.phone,
           isOnApp: true,
-          appData: contact // Garder les données complètes
+          appData: contact
         });
       });
       
@@ -213,16 +208,20 @@ export const ContactSidebar = ({
         if (onSyncComplete) {
           onSyncComplete(onChantilink);
         }
-      } else {
+      } else if (allContacts.length > 0) {
         showToast(`📱 ${allContacts.length} contact${allContacts.length > 1 ? 's' : ''} synchronisé${allContacts.length > 1 ? 's' : ''}`, "info");
         setActiveTab("phone");
+      } else {
+        showToast("Aucun contact trouvé", "info");
       }
 
     } catch (err) {
       console.error("❌ Erreur sync:", err);
       
       if (err.message?.includes('Permission')) {
-        showToast("Permission refusée. Activez l'accès aux contacts dans les paramètres.", "error");
+        showToast("Permission refusée. Activez l'accès aux contacts dans les paramètres de votre téléphone.", "error");
+      } else if (err.message?.includes('not available')) {
+        showToast("Fonctionnalité non disponible sur cet appareil", "warning");
       } else {
         showToast(err.message || "Erreur de synchronisation", "error");
       }
@@ -273,20 +272,13 @@ export const ContactSidebar = ({
               </div>
             )}
 
-            {/* Bouton sync */}
+            {/* Bouton sync - TOUJOURS ACTIF */}
             <motion.button 
               whileTap={{ scale: 0.9 }}
               onClick={handleSyncProcess} 
-              disabled={loading || !isNativeSync}
-              className={`p-2 rounded-xl transition-colors relative ${
-                isNativeSync 
-                  ? 'hover:bg-white/5' 
-                  : 'opacity-30 cursor-not-allowed'
-              }`}
-              title={isNativeSync 
-                ? "Synchroniser depuis la puce téléphonique" 
-                : "Disponible uniquement sur mobile"
-              }
+              disabled={loading}
+              className="p-2 hover:bg-white/5 rounded-xl transition-colors relative"
+              title="Synchroniser depuis la puce téléphonique"
             >
               <RefreshCw size={20} className={`${loading ? 'animate-spin' : ''} text-gray-400`} />
               {loading && (
