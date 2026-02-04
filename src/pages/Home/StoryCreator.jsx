@@ -1,5 +1,5 @@
 // ============================================
-// 📁 src/pages/Home/StoryCreator.jsx - UX/UI MODERNE
+// 📁 src/pages/Home/StoryCreator.jsx - UX/UI MODERNE AVEC SON
 // ============================================
 import React, { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
@@ -206,7 +206,7 @@ function StoryCreator({ onClose }) {
                        {media.type.startsWith("image") ? (
                          <img src={preview} className="w-full h-full object-cover blur-2xl opacity-50 scale-110" alt="bg" />
                        ) : (
-                         <video src={preview} className="w-full h-full object-cover blur-2xl opacity-50 scale-110" muted />
+                         <video src={preview} className="w-full h-full object-cover blur-2xl opacity-50 scale-110" muted loop />
                        )}
                     </div>
 
@@ -215,7 +215,15 @@ function StoryCreator({ onClose }) {
                         {media.type.startsWith("image") ? (
                           <img src={preview} alt="Preview" className="max-w-full max-h-full object-contain shadow-2xl" />
                         ) : (
-                          <video ref={videoRef} src={preview} className="max-w-full max-h-full object-contain shadow-2xl" autoPlay loop muted playsInline />
+                          <video 
+                            ref={videoRef} 
+                            src={preview} 
+                            className="max-w-full max-h-full object-contain shadow-2xl" 
+                            autoPlay 
+                            loop 
+                            playsInline 
+                            controls
+                          />
                         )}
                     </div>
                   </>

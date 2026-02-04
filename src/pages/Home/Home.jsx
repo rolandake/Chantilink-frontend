@@ -1,12 +1,12 @@
 // ============================================
 // 📁 src/pages/Home/Home.jsx
-// VERSION OPTIMISÉE LCP / CLS
+// VERSION OPTIMISÉE - Pull to Refresh INTELLIGENT
 // ============================================
 import React, {
   useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense
 } from "react";
 import { ArrowPathIcon } from "@heroicons/react/24/outline";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { useDarkMode } from "../../context/DarkModeContext";
 import { useStories } from "../../context/StoryContext";
 import { usePosts } from "../../context/PostsContext";
@@ -20,7 +20,7 @@ const StoryViewer = lazy(() => import("./StoryViewer"));
 const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
 
 // ============================================
-// Skeleton LCP SAFE - Charge instantanément
+// Skeleton LCP SAFE
 // ============================================
 const SkeletonPosts = ({ count = 3 }) =>
   [...Array(count)].map((_, i) => (
@@ -30,7 +30,68 @@ const SkeletonPosts = ({ count = 3 }) =>
   ));
 
 // ============================================
-// Post Wrapper (pour animations NON-LCP)
+// Pull to Refresh Indicator - VERSION DISCRÈTE
+// ============================================
+const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, threshold = 100 }) => {
+  const progress = Math.min((pullDistance / threshold) * 100, 100);
+  const opacity = Math.min(pullDistance / 60, 1); // Apparition progressive
+
+  return (
+    <AnimatePresence>
+      {pullDistance > 20 && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: opacity, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.8 }}
+          transition={{ duration: 0.2 }}
+          className="fixed top-24 left-1/2 -translate-x-1/2 z-[45] pointer-events-none"
+        >
+          <div className={`relative w-10 h-10 rounded-full flex items-center justify-center ${
+            isDarkMode ? 'bg-gray-800/95' : 'bg-white/95'
+          } backdrop-blur-md shadow-lg border ${
+            isDarkMode ? 'border-gray-700' : 'border-gray-200'
+          }`}>
+            {/* Cercle de progression */}
+            <svg className="absolute inset-0 -rotate-90" viewBox="0 0 40 40">
+              <circle
+                cx="20"
+                cy="20"
+                r="16"
+                fill="none"
+                stroke={isDarkMode ? '#374151' : '#e5e7eb'}
+                strokeWidth="2"
+              />
+              <circle
+                cx="20"
+                cy="20"
+                r="16"
+                fill="none"
+                stroke="#f97316"
+                strokeWidth="2"
+                strokeDasharray={`${2 * Math.PI * 16}`}
+                strokeDashoffset={`${2 * Math.PI * 16 * (1 - progress / 100)}`}
+                strokeLinecap="round"
+                style={{ transition: 'stroke-dashoffset 0.1s linear' }}
+              />
+            </svg>
+            
+            {/* Icône */}
+            <ArrowPathIcon
+              className={`w-5 h-5 ${isPulling ? 'text-orange-500' : 'text-gray-400'}`}
+              style={{ 
+                transform: `rotate(${(pullDistance / threshold) * 360}deg)`,
+                transition: 'transform 0.1s linear'
+              }}
+            />
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+});
+
+// ============================================
+// Post Wrapper
 // ============================================
 const PostWrapper = ({ post, onDeleted, showToast }) => (
   <PostCard
@@ -41,7 +102,7 @@ const PostWrapper = ({ post, onDeleted, showToast }) => (
 );
 
 // ============================================
-// Toast Simple
+// Toast
 // ============================================
 const Toast = ({ message, type = "info", onClose }) => {
   useEffect(() => {
@@ -82,6 +143,17 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const [initialLoad, setInitialLoad] = useState(true);
   const [toast, setToast] = useState(null);
 
+  // ============================================
+  // 🆕 PULL TO REFRESH - États optimisés
+  // ============================================
+  const [isPulling, setIsPulling] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const touchStartY = useRef(0);
+  const touchStartTime = useRef(0);
+  const isRefreshingPull = useRef(false);
+  const lastScrollY = useRef(0);
+  const canPull = useRef(true);
+
   const observerRef = useRef(null);
   const loadingRef = useRef(false);
 
@@ -110,19 +182,141 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const handleRefresh = useCallback(async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
+    
     try {
       await Promise.allSettled([
-        refetch?.(),
-        fetchNextPage?.(true),
         fetchStories(true),
+        refetch?.(),
       ]);
-      showToast("Feed actualisé !", "success");
+      showToast("Actualisé !", "success");
     } catch (error) {
-      showToast("Erreur lors de l'actualisation", "error");
+      console.error('Erreur refresh:', error);
+      showToast("Erreur", "error");
     } finally {
       setIsRefreshing(false);
     }
-  }, [isRefreshing, refetch, fetchNextPage, fetchStories, showToast]);
+  }, [isRefreshing, refetch, fetchStories, showToast]);
+
+  // ============================================
+  // 🆕 PULL TO REFRESH - Logique ULTRA-OPTIMISÉE
+  // ============================================
+  useEffect(() => {
+    const THRESHOLD = 100; // Seuil plus élevé pour éviter déclenchements accidentels
+    const MIN_PULL_DURATION = 300; // Minimum 300ms de pull
+
+    const resetPull = () => {
+      setPullDistance(0);
+      setIsPulling(false);
+      canPull.current = true;
+    };
+
+    const triggerRefresh = async () => {
+      if (isRefreshingPull.current) return;
+      
+      isRefreshingPull.current = true;
+      setIsPulling(false);
+      canPull.current = false;
+      
+      try {
+        await handleRefresh();
+      } catch (error) {
+        console.error('❌ Erreur refresh:', error);
+      } finally {
+        isRefreshingPull.current = false;
+        setTimeout(() => resetPull(), 500); // Cooldown de 500ms
+      }
+    };
+
+    // ========== MOBILE : Touch Events INTELLIGENTS ==========
+    const handleTouchStart = (e) => {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+      
+      // Conditions strictes pour activer le pull
+      if (scrollTop <= 2 && canPull.current && !isRefreshingPull.current) {
+        touchStartY.current = e.touches[0].clientY;
+        touchStartTime.current = Date.now();
+      } else {
+        touchStartY.current = 0; // Désactiver
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (isRefreshingPull.current || !canPull.current || touchStartY.current === 0) return;
+
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+      const touchY = e.touches[0].clientY;
+      const pullDown = touchY - touchStartY.current;
+
+      // Conditions strictes : en haut de page + mouvement vers le bas + suffisamment ample
+      if (scrollTop <= 2 && pullDown > 20) {
+        // Empêcher le scroll natif seulement si pull significatif
+        if (pullDown > 40) {
+          e.preventDefault();
+        }
+        
+        // Effet rubber band (résistance progressive)
+        const resistance = 0.4;
+        const distance = Math.min(pullDown * resistance, THRESHOLD * 1.5);
+        setPullDistance(distance);
+        setIsPulling(distance > THRESHOLD);
+      } else if (pullDown < -10) {
+        // Si scroll vers le haut, annuler le pull
+        resetPull();
+      }
+    };
+
+    const handleTouchEnd = () => {
+      const pullDuration = Date.now() - touchStartTime.current;
+      
+      // Vérifier : dépassement du seuil + durée minimale
+      if (
+        pullDistance > THRESHOLD && 
+        pullDuration >= MIN_PULL_DURATION &&
+        !isRefreshingPull.current
+      ) {
+        triggerRefresh();
+      } else {
+        resetPull();
+      }
+      
+      touchStartY.current = 0;
+    };
+
+    // ========== DESKTOP : Scroll rapide vers le haut ==========
+    const handleScroll = () => {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+      
+      // Détection scroll rapide vers le haut (retour au sommet)
+      if (
+        scrollTop === 0 && 
+        lastScrollY.current > 200 && 
+        !isRefreshingPull.current &&
+        canPull.current
+      ) {
+        // Petit délai pour confirmer l'intention
+        setTimeout(() => {
+          const finalScrollTop = window.scrollY || document.documentElement.scrollTop;
+          if (finalScrollTop === 0 && canPull.current) {
+            triggerRefresh();
+          }
+        }, 150);
+      }
+      
+      lastScrollY.current = scrollTop;
+    };
+
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd, { passive: true });
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('scroll', handleScroll);
+    };
+  }, [pullDistance, handleRefresh]);
 
   const filteredPosts = useMemo(() => {
     if (!searchQuery.trim()) return posts;
@@ -160,9 +354,17 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
   return (
     <div className="flex flex-col h-full scrollbar-hide">
+      {/* ✅ Indicateur Pull to Refresh DISCRET */}
+      <PullToRefreshIndicator 
+        isPulling={isPulling} 
+        pullDistance={pullDistance} 
+        isDarkMode={isDarkMode}
+        threshold={100}
+      />
+
       {!showPyramid && (
         <>
-          {/* 🎯 STORIES - Container fixe sans bordure visible */}
+          {/* 🎯 STORIES */}
           <div className={`sticky top-0 z-30 ${
             isDarkMode ? "bg-black" : "bg-white"
           }`}>
@@ -176,11 +378,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
             </div>
           </div>
 
-          {/* 🎯 FEED - Scroll fluide */}
+          {/* 🎯 FEED */}
           <div className="flex-1 overflow-y-auto scrollbar-hide">
             <div className="w-full lg:max-w-[630px] lg:mx-auto">
 
-              {/* Message si recherche active */}
               {searchQuery && (
                 <div className={`p-4 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                   <p className="text-sm">
@@ -189,7 +390,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </div>
               )}
 
-              {/* 🔥 CHARGEMENT INITIAL - SKELETON */}
               {initialLoad && postsLoading ? (
                 <SkeletonPosts />
               ) : filteredPosts.length === 0 ? (
@@ -203,7 +403,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </div>
               ) : (
                 <>
-                  {/* 🔥 PREMIER POST – LCP CRITIQUE - PAS D'ANIMATION */}
                   {filteredPosts[0] && (
                     <PostCard
                       post={filteredPosts[0]}
@@ -212,7 +411,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                     />
                   )}
 
-                  {/* ⚡ AUTRES POSTS - AVEC ANIMATIONS */}
                   <AnimatePresence>
                     {filteredPosts.slice(1).map(post => (
                       <PostWrapper
@@ -226,7 +424,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </>
               )}
 
-              {/* 🔄 Infinite Scroll Trigger */}
               {!searchQuery && hasMore && (
                 <div ref={observerRef} className="h-20 flex items-center justify-center">
                   {postsLoading && (
@@ -235,7 +432,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </div>
               )}
 
-              {/* 🔄 Bouton Refresh */}
               {!postsLoading && posts.length > 0 && (
                 <div className="py-8 flex justify-center">
                   <button
@@ -248,7 +444,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                     } disabled:opacity-50`}
                   >
                     <ArrowPathIcon className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                    {isRefreshing ? "Actualisation..." : "Actualiser le feed"}
+                    {isRefreshing ? "Actualisation..." : "Actualiser"}
                   </button>
                 </div>
               )}
@@ -257,7 +453,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         </>
       )}
 
-      {/* 🎬 MODALS - LAZY LOADED */}
+      {/* 🎬 MODALS */}
       <AnimatePresence>
         {showCreator && <StoryCreator onClose={() => setShowCreator(false)} />}
       </AnimatePresence>
