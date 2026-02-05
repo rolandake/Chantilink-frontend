@@ -1,9 +1,10 @@
 // ============================================
 // 📁 src/pages/Home/PostMedia.jsx
-// VERSION OPTIMISÉE LCP + SWIPE + CLOUDINARY
+// VERSION OPTIMISÉE LCP + SWIPE + CLOUDINARY + WATERMARK
 // ============================================
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
+import VideoWatermark from "../../components/VideoWatermark";
 
 const CLOUD_NAME = "dlymdclhe";
 const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
@@ -24,10 +25,11 @@ const getUltraHDUrl = (url) => {
   return `${base}q_100,f_auto,fl_progressive:steep,dpr_2.0,w_2048,c_limit,e_sharpen:100,cs_srgb/${id}`;
 };
 
-const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => { // 🔥 AJOUT PROP
+const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
   const [index, setIndex] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const [loadedImages, setLoadedImages] = useState({}); // 🔥 TRACKING CHARGEMENT
+  const [loadedImages, setLoadedImages] = useState({});
+  const [videoStates, setVideoStates] = useState({}); // 🎬 États des vidéos
   const containerRef = useRef(null);
   const videoRefs = useRef({});
   const touch = useRef({ x: 0, y: 0, time: 0 });
@@ -38,6 +40,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => { // 🔥 A
 
   const urls = mediaUrls.map(getUltraHDUrl);
   const total = urls.length;
+  const currentIsVideo = isVideo(urls[index]);
 
   // === DÉBLOCAGE AUTOPLAY APRÈS INTERACTION ===
   useEffect(() => {
@@ -66,17 +69,43 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => { // 🔥 A
     }
   }, [index, urls, total]);
 
-  // === GESTION VIDÉOS : PLAY/PAUSE + AUTOPLAY MUET ===
+  // === 🎬 GESTION VIDÉOS : PLAY/PAUSE + AUTOPLAY MUET + TRACKING ÉTAT ===
   useEffect(() => {
     const currentVideo = videoRefs.current[index];
     const otherVideos = Object.values(videoRefs.current).filter((_, i) => i !== index);
 
-    otherVideos.forEach(v => v?.pause());
+    otherVideos.forEach(v => {
+      if (v) {
+        v.pause();
+        setVideoStates(prev => ({ ...prev, [v.src]: { isPlaying: false, hasEnded: false } }));
+      }
+    });
 
     if (currentVideo && (currentVideo.muted || hasInteracted.current)) {
       currentVideo.play().catch(() => {});
+      setVideoStates(prev => ({ ...prev, [currentVideo.src]: { ...prev[currentVideo.src], isPlaying: true } }));
     }
   }, [index]);
+
+  // === 🎬 ÉCOUTE DES ÉVÉNEMENTS VIDÉO ===
+  const handleVideoPlay = useCallback((videoSrc) => {
+    setVideoStates(prev => ({ ...prev, [videoSrc]: { isPlaying: true, hasEnded: false } }));
+  }, []);
+
+  const handleVideoPause = useCallback((videoSrc) => {
+    setVideoStates(prev => ({ ...prev, [videoSrc]: { ...prev[videoSrc], isPlaying: false } }));
+  }, []);
+
+  const handleVideoEnded = useCallback((videoSrc) => {
+    setVideoStates(prev => ({ ...prev, [videoSrc]: { isPlaying: false, hasEnded: true } }));
+  }, []);
+
+  const handleVideoTimeUpdate = useCallback((videoSrc) => {
+    setVideoStates(prev => ({ 
+      ...prev, 
+      [videoSrc]: { ...prev[videoSrc], hasEnded: false } 
+    }));
+  }, []);
 
   // === SWIPE MOBILE/DESKTOP ===
   useEffect(() => {
@@ -157,52 +186,71 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => { // 🔥 A
         className="flex w-full"
         style={{ minHeight: '300px' }}
       >
-        {urls.map((url, i) => (
-          <div key={i} className="w-full flex-shrink-0 flex items-center justify-center bg-black relative">
-            {/* 🔥 PLACEHOLDER PENDANT CHARGEMENT */}
-            {!isVideo(url) && !loadedImages[i] && (
-              <div className="absolute inset-0 animate-pulse bg-gray-800" />
-            )}
-            
-            {isVideo(url) ? (
-              <video
-                ref={el => videoRefs.current[i] = el}
-                src={url}
-                className="w-full h-auto max-h-[600px]"
-                style={{ objectFit: 'contain' }}
-                preload={isFirstPost && i === 0 ? "auto" : "metadata"} // 🔥 LCP
-                muted
-                playsInline
-                loop
-                controls={total === 1}
-                onClick={() => {
-                  const v = videoRefs.current[i];
-                  if (v) v.muted = !v.muted;
-                }}
-              />
-            ) : (
-              <img
-                src={url}
-                alt=""
-                className={`w-full h-auto max-h-[600px] transition-opacity duration-300 ${
-                  loadedImages[i] ? 'opacity-100' : 'opacity-0'
-                }`}
-                style={{
-                  objectFit: 'contain',
-                  imageRendering: 'high-quality',
-                  userSelect: 'none',
-                  pointerEvents: dragging ? 'none' : 'auto'
-                }}
-                // 🔥 OPTIMISATIONS LCP CRITIQUES
-                loading={isFirstPost && i === 0 ? 'eager' : 'lazy'}
-                fetchpriority={isFirstPost && i === 0 ? 'high' : 'auto'}
-                decoding={isFirstPost && i === 0 ? 'sync' : 'async'}
-                onLoad={() => setLoadedImages(prev => ({ ...prev, [i]: true }))}
-                draggable="false"
-              />
-            )}
-          </div>
-        ))}
+        {urls.map((url, i) => {
+          const isVideoItem = isVideo(url);
+          const videoState = videoStates[url] || { isPlaying: false, hasEnded: false };
+
+          return (
+            <div key={i} className="w-full flex-shrink-0 flex items-center justify-center bg-black relative">
+              {/* 🔥 PLACEHOLDER PENDANT CHARGEMENT */}
+              {!isVideoItem && !loadedImages[i] && (
+                <div className="absolute inset-0 animate-pulse bg-gray-800" />
+              )}
+              
+              {isVideoItem ? (
+                <>
+                  <video
+                    ref={el => videoRefs.current[i] = el}
+                    src={url}
+                    className="w-full h-auto max-h-[600px]"
+                    style={{ objectFit: 'contain' }}
+                    preload={isFirstPost && i === 0 ? "auto" : "metadata"}
+                    muted
+                    playsInline
+                    loop
+                    controls={total === 1}
+                    onPlay={() => handleVideoPlay(url)}
+                    onPause={() => handleVideoPause(url)}
+                    onEnded={() => handleVideoEnded(url)}
+                    onTimeUpdate={() => handleVideoTimeUpdate(url)}
+                    onClick={() => {
+                      const v = videoRefs.current[i];
+                      if (v) v.muted = !v.muted;
+                    }}
+                  />
+                  
+                  {/* 🎬 WATERMARK VIDÉO */}
+                  {i === index && (
+                    <VideoWatermark
+                      videoRef={videoRefs.current[i]}
+                      isPlaying={videoState.isPlaying}
+                      showFinalWatermark={videoState.hasEnded}
+                    />
+                  )}
+                </>
+              ) : (
+                <img
+                  src={url}
+                  alt=""
+                  className={`w-full h-auto max-h-[600px] transition-opacity duration-300 ${
+                    loadedImages[i] ? 'opacity-100' : 'opacity-0'
+                  }`}
+                  style={{
+                    objectFit: 'contain',
+                    imageRendering: 'high-quality',
+                    userSelect: 'none',
+                    pointerEvents: dragging ? 'none' : 'auto'
+                  }}
+                  loading={isFirstPost && i === 0 ? 'eager' : 'lazy'}
+                  fetchpriority={isFirstPost && i === 0 ? 'high' : 'auto'}
+                  decoding={isFirstPost && i === 0 ? 'sync' : 'async'}
+                  onLoad={() => setLoadedImages(prev => ({ ...prev, [i]: true }))}
+                  draggable="false"
+                />
+              )}
+            </div>
+          );
+        })}
       </motion.div>
 
       {total > 1 && (
