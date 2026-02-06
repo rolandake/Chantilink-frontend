@@ -1,5 +1,5 @@
-// 📁 src/pages/Home/StoryViewer.jsx - VERSION COMPLÈTE AVEC SUPPRESSION
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+// 📁 src/pages/Home/StoryViewer.jsx - VERSION OPTIMISÉE ULTRA-FLUIDE
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Loader2, Heart, Send, MoreVertical, Eye, ChevronRight, Volume2, VolumeX, Trash2 } from "lucide-react";
 
@@ -178,18 +178,20 @@ const ViewsModal = ({ slide, onClose }) => {
 };
 
 // ========================================
-// STORY VIEWER PRINCIPAL
+// STORY VIEWER PRINCIPAL - OPTIMISÉ
 // ========================================
 export default function StoryViewer({ stories = [], currentUser, onClose, onDeleteSlide }) {
   const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
   const [slideIdx, setSlideIdx] = useState(0);
   const [progress, setProgress] = useState(0);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadedSlides, setLoadedSlides] = useState(new Set());
   const [isPaused, setIsPaused] = useState(false);
   const [showViewsModal, setShowViewsModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [showOptionsMenu, setShowOptionsMenu] = useState(false);
+  
+  const videoRef = useRef(null);
   
   const story = stories[currentStoryIndex] || {};
   const allSlides = useMemo(() => {
@@ -223,6 +225,18 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
     return (slide?.views || []).length;
   }, [slide?.views]);
 
+  // Clé unique pour chaque slide
+  const slideKey = useMemo(() => {
+    return `${currentStoryIndex}-${slideIdx}`;
+  }, [currentStoryIndex, slideIdx]);
+
+  // Vérifier si le slide actuel est chargé
+  const isCurrentSlideLoaded = useMemo(() => {
+    if (!slide) return false;
+    if (slide.type === "text") return true;
+    return loadedSlides.has(slideKey);
+  }, [slide, loadedSlides, slideKey]);
+
   // Calcul de la durée en fonction du contenu
   const slideDuration = useMemo(() => {
     if (!slide) return 10000;
@@ -242,35 +256,75 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
     return 10000;
   }, [slide]);
 
+  // Préchargement des médias adjacents
+  useEffect(() => {
+    const preloadMedia = (index) => {
+      const targetSlide = allSlides[index];
+      if (!targetSlide || targetSlide.type === "text") return;
+
+      const key = `${currentStoryIndex}-${index}`;
+      if (loadedSlides.has(key)) return;
+
+      const mediaUrl = MEDIA_URL(targetSlide.mediaUrl || targetSlide.media);
+      
+      if (targetSlide.type === "video") {
+        const video = document.createElement('video');
+        video.src = mediaUrl;
+        video.preload = 'auto';
+        video.onloadeddata = () => {
+          setLoadedSlides(prev => new Set(prev).add(key));
+        };
+      } else {
+        const img = new Image();
+        img.src = mediaUrl;
+        img.onload = () => {
+          setLoadedSlides(prev => new Set(prev).add(key));
+        };
+      }
+    };
+
+    // Précharger le slide suivant
+    if (slideIdx < allSlides.length - 1) {
+      preloadMedia(slideIdx + 1);
+    }
+
+    // Précharger les 2 prochains si possible
+    if (slideIdx < allSlides.length - 2) {
+      setTimeout(() => preloadMedia(slideIdx + 2), 500);
+    }
+  }, [slideIdx, allSlides, currentStoryIndex, loadedSlides]);
+
+  // Marquer instantanément le slide de type texte comme chargé
+  useEffect(() => {
+    if (slide?.type === "text") {
+      setLoadedSlides(prev => new Set(prev).add(slideKey));
+    }
+  }, [slide, slideKey]);
+
+  // Gestion du changement de story/slide
   useEffect(() => {
     if (!slide && allSlides.length === 0) {
-      const timer = setTimeout(onClose, 0);
-      return () => clearTimeout(timer);
+      onClose();
     }
   }, [slide, allSlides.length, onClose]);
 
-  // Marquer le slide comme chargé pour les stories texte
+  // Barre de progression
   useEffect(() => {
-    if (slide?.type === "text") {
-      setIsLoaded(true);
+    if (!isCurrentSlideLoaded || !slide || isPaused || showViewsModal || showDeleteConfirm || showOptionsMenu) {
+      return;
     }
-  }, [slide]);
 
-  useEffect(() => {
-    if (!isLoaded || !slide || isPaused || showViewsModal || showDeleteConfirm || showOptionsMenu) return;
     const interval = setInterval(() => {
       setProgress(p => {
         if (p >= 100) {
           if (slideIdx < allSlides.length - 1) {
             setSlideIdx(s => s + 1);
             setProgress(0);
-            setIsLoaded(false);
           } else {
             if (currentStoryIndex < stories.length - 1) {
               setCurrentStoryIndex(i => i + 1);
               setSlideIdx(0);
               setProgress(0);
-              setIsLoaded(false);
             } else {
               onClose();
             }
@@ -280,20 +334,32 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
         return p + (100 / (slideDuration / 100));
       });
     }, 100);
+
     return () => clearInterval(interval);
-  }, [slideIdx, isLoaded, allSlides.length, onClose, slide, isPaused, currentStoryIndex, stories.length, slideDuration, showViewsModal, showDeleteConfirm, showOptionsMenu]);
+  }, [
+    slideIdx, 
+    isCurrentSlideLoaded, 
+    allSlides.length, 
+    onClose, 
+    slide, 
+    isPaused, 
+    currentStoryIndex, 
+    stories.length, 
+    slideDuration, 
+    showViewsModal, 
+    showDeleteConfirm, 
+    showOptionsMenu
+  ]);
 
   const handlePrevSlide = useCallback(() => {
     if (slideIdx > 0) {
       setSlideIdx(s => s - 1);
       setProgress(0);
-      setIsLoaded(false);
     } else if (currentStoryIndex > 0) {
       setCurrentStoryIndex(i => i - 1);
       const prevStory = stories[currentStoryIndex - 1];
       setSlideIdx((prevStory?.slides?.length || 1) - 1);
       setProgress(0);
-      setIsLoaded(false);
     }
   }, [slideIdx, currentStoryIndex, stories]);
 
@@ -301,12 +367,10 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
     if (slideIdx < allSlides.length - 1) {
       setSlideIdx(s => s + 1);
       setProgress(0);
-      setIsLoaded(false);
     } else if (currentStoryIndex < stories.length - 1) {
       setCurrentStoryIndex(i => i + 1);
       setSlideIdx(0);
       setProgress(0);
-      setIsLoaded(false);
     } else {
       onClose();
     }
@@ -348,16 +412,13 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
         await onDeleteSlide(story._id, slide._id);
         setShowDeleteConfirm(false);
         
-        // Si c'était le dernier slide de la story, fermer le viewer
         if (allSlides.length === 1) {
           onClose();
         } else {
-          // Sinon, passer au slide suivant ou précédent
           if (slideIdx >= allSlides.length - 1) {
             setSlideIdx(Math.max(0, slideIdx - 1));
           }
           setProgress(0);
-          setIsLoaded(false);
         }
       } catch (error) {
         console.error("Erreur lors de la suppression:", error);
@@ -372,6 +433,11 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
     setIsPaused(false);
   }, []);
 
+  // Gérer le chargement des médias
+  const handleMediaLoaded = useCallback(() => {
+    setLoadedSlides(prev => new Set(prev).add(slideKey));
+  }, [slideKey]);
+
   if (!slide) return null;
 
   return (
@@ -383,6 +449,7 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
         initial={{ y: '100%' }} 
         animate={{ y: 0 }} 
         exit={{ y: '100%' }}
+        transition={{ type: "spring", damping: 30, stiffness: 300 }}
         className="fixed inset-0 z-[10000] bg-black touch-none flex flex-col items-center justify-center"
       >
         {/* Barres de progression */}
@@ -391,7 +458,7 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
             <div key={i} className="h-1 flex-1 bg-white/20 rounded-full overflow-hidden">
               <motion.div 
                 className="h-full bg-white" 
-                initial={{ width: '0%' }}
+                initial={false}
                 animate={{ 
                   width: i === slideIdx ? `${progress}%` : i < slideIdx ? '100%' : '0%' 
                 }}
@@ -504,63 +571,75 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
           </div>
         </div>
 
-        {/* Contenu média */}
+        {/* Contenu média - AFFICHAGE INSTANTANÉ */}
         <div className="w-full h-full flex items-center justify-center relative">
-          {!isLoaded && slide.type !== "text" && (
-            <Loader2 className="animate-spin text-white/20 absolute" size={40}/>
+          {/* Loader uniquement pour les médias non chargés */}
+          {!isCurrentSlideLoaded && slide.type !== "text" && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+              <Loader2 className="animate-spin text-white/60" size={48}/>
+            </div>
           )}
           
-          <motion.div
-            key={`slide-${currentStoryIndex}-${slideIdx}`}
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 1.05 }}
-            transition={{ duration: 0.3 }}
-            className="w-full h-full flex items-center justify-center"
-          >
-            {/* Story de type TEXTE */}
-            {slide.type === "text" ? (
-              <div 
-                className="w-full h-full flex items-center justify-center p-8 transition-[background] duration-500"
-                style={{ 
-                  background: slide.backgroundColor || "#000000"
-                }}
-              >
-                <p 
-                  className="text-white text-center text-3xl md:text-4xl font-bold drop-shadow-lg px-4 whitespace-pre-wrap break-words"
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={slideKey}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="w-full h-full flex items-center justify-center"
+            >
+              {/* Story de type TEXTE - Affichage instantané */}
+              {slide.type === "text" ? (
+                <div 
+                  className="w-full h-full flex items-center justify-center p-8"
                   style={{ 
-                    fontFamily: slide.fontFamily || "Inter",
-                    color: slide.textColor || "#ffffff"
+                    background: slide.backgroundColor || "#000000"
                   }}
                 >
-                  {slide.content || slide.text}
-                </p>
-              </div>
-            ) : slide.type === "video" ? (
-              <video 
-                src={MEDIA_URL(slide.mediaUrl || slide.media)} 
-                onLoadedData={() => setIsLoaded(true)}
-                autoPlay 
-                playsInline 
-                muted={isMuted}
-                className="w-full h-full object-contain"
-              />
-            ) : (
-              <img 
-                src={MEDIA_URL(slide.mediaUrl || slide.media)} 
-                onLoad={() => setIsLoaded(true)}
-                alt="Story"
-                className="w-full h-full object-contain"
-              />
-            )}
-          </motion.div>
+                  <motion.p 
+                    initial={{ scale: 0.95, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ duration: 0.2 }}
+                    className="text-white text-center text-3xl md:text-4xl font-bold drop-shadow-lg px-4 whitespace-pre-wrap break-words"
+                    style={{ 
+                      fontFamily: slide.fontFamily || "Inter",
+                      color: slide.textColor || "#ffffff"
+                    }}
+                  >
+                    {slide.content || slide.text}
+                  </motion.p>
+                </div>
+              ) : slide.type === "video" ? (
+                <video 
+                  ref={videoRef}
+                  src={MEDIA_URL(slide.mediaUrl || slide.media)} 
+                  onLoadedData={handleMediaLoaded}
+                  autoPlay 
+                  playsInline 
+                  muted={isMuted}
+                  className="w-full h-full object-contain"
+                  style={{ opacity: isCurrentSlideLoaded ? 1 : 0 }}
+                />
+              ) : (
+                <img 
+                  src={MEDIA_URL(slide.mediaUrl || slide.media)} 
+                  onLoad={handleMediaLoaded}
+                  alt="Story"
+                  className="w-full h-full object-contain transition-opacity duration-200"
+                  style={{ opacity: isCurrentSlideLoaded ? 1 : 0 }}
+                />
+              )}
+            </motion.div>
+          </AnimatePresence>
 
           {/* Texte du slide (uniquement pour les slides avec média) */}
-          {slide.type !== "text" && (slide.content || slide.text) && (
+          {slide.type !== "text" && (slide.content || slide.text) && isCurrentSlideLoaded && (
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
+              transition={{ delay: 0.1 }}
               className="absolute bottom-20 left-4 right-4 z-[10001]"
             >
               <p className="text-white text-sm bg-black/40 backdrop-blur-md px-4 py-3 rounded-2xl drop-shadow-lg">

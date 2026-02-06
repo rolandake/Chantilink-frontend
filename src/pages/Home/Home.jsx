@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Home/Home.jsx
-// VERSION OPTIMISÉE - Pull to Refresh INTELLIGENT
+// VERSION AVEC SYSTÈME DE PUBLICITÉS
 // ============================================
 import React, {
   useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense
@@ -15,9 +15,21 @@ import { useAuth } from "../../context/AuthContext";
 import PostCard from "./PostCard";
 import StoryContainer from "./StoryContainer";
 import StoryCreator from "./StoryCreator";
+import DemoAdCard from "./Publicite/DemoAdCard";
 
 const StoryViewer = lazy(() => import("./StoryViewer"));
 const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
+
+// ============================================
+// Configuration des publicités
+// ============================================
+const AD_CONFIG = {
+  enabled: true, // Activer/désactiver les pubs
+  frequency: 3, // Une pub tous les X posts
+  useDemoAds: true, // true = pubs démo, false = Google AdSense
+  googleAdClient: "ca-pub-XXXXXXXXXXXXXXXX", // Votre ID Google AdSense
+  googleAdSlot: "XXXXXXXXXX" // Votre Slot ID
+};
 
 // ============================================
 // Skeleton LCP SAFE
@@ -30,11 +42,11 @@ const SkeletonPosts = ({ count = 3 }) =>
   ));
 
 // ============================================
-// Pull to Refresh Indicator - VERSION DISCRÈTE
+// Pull to Refresh Indicator
 // ============================================
 const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, threshold = 100 }) => {
   const progress = Math.min((pullDistance / threshold) * 100, 100);
-  const opacity = Math.min(pullDistance / 60, 1); // Apparition progressive
+  const opacity = Math.min(pullDistance / 60, 1);
 
   return (
     <AnimatePresence>
@@ -51,7 +63,6 @@ const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, thre
           } backdrop-blur-md shadow-lg border ${
             isDarkMode ? 'border-gray-700' : 'border-gray-200'
           }`}>
-            {/* Cercle de progression */}
             <svg className="absolute inset-0 -rotate-90" viewBox="0 0 40 40">
               <circle
                 cx="20"
@@ -75,7 +86,6 @@ const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, thre
               />
             </svg>
             
-            {/* Icône */}
             <ArrowPathIcon
               className={`w-5 h-5 ${isPulling ? 'text-orange-500' : 'text-gray-400'}`}
               style={{ 
@@ -100,6 +110,42 @@ const PostWrapper = ({ post, onDeleted, showToast }) => (
     showToast={showToast}
   />
 );
+
+// ============================================
+// Composant pour insérer les publicités
+// ============================================
+const PostWithAd = memo(({ 
+  post, 
+  index, 
+  onDeleted, 
+  showToast, 
+  adConfig 
+}) => {
+  const shouldShowAd = adConfig.enabled && 
+                       index > 0 && 
+                       (index % adConfig.frequency === 0);
+
+  return (
+    <>
+      <PostWrapper
+        post={post}
+        onDeleted={onDeleted}
+        showToast={showToast}
+      />
+      
+      {shouldShowAd && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -20 }}
+          transition={{ duration: 0.3 }}
+        >
+          <DemoAdCard canClose={true} />
+        </motion.div>
+      )}
+    </>
+  );
+});
 
 // ============================================
 // Toast
@@ -143,9 +189,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const [initialLoad, setInitialLoad] = useState(true);
   const [toast, setToast] = useState(null);
 
-  // ============================================
-  // 🆕 PULL TO REFRESH - États optimisés
-  // ============================================
+  // États Pull to Refresh
   const [isPulling, setIsPulling] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
   const touchStartY = useRef(0);
@@ -197,12 +241,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     }
   }, [isRefreshing, refetch, fetchStories, showToast]);
 
-  // ============================================
-  // 🆕 PULL TO REFRESH - Logique ULTRA-OPTIMISÉE
-  // ============================================
+  // Pull to Refresh Logic
   useEffect(() => {
-    const THRESHOLD = 100; // Seuil plus élevé pour éviter déclenchements accidentels
-    const MIN_PULL_DURATION = 300; // Minimum 300ms de pull
+    const THRESHOLD = 100;
+    const MIN_PULL_DURATION = 300;
 
     const resetPull = () => {
       setPullDistance(0);
@@ -223,20 +265,18 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         console.error('❌ Erreur refresh:', error);
       } finally {
         isRefreshingPull.current = false;
-        setTimeout(() => resetPull(), 500); // Cooldown de 500ms
+        setTimeout(() => resetPull(), 500);
       }
     };
 
-    // ========== MOBILE : Touch Events INTELLIGENTS ==========
     const handleTouchStart = (e) => {
       const scrollTop = window.scrollY || document.documentElement.scrollTop;
       
-      // Conditions strictes pour activer le pull
       if (scrollTop <= 2 && canPull.current && !isRefreshingPull.current) {
         touchStartY.current = e.touches[0].clientY;
         touchStartTime.current = Date.now();
       } else {
-        touchStartY.current = 0; // Désactiver
+        touchStartY.current = 0;
       }
     };
 
@@ -247,20 +287,16 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       const touchY = e.touches[0].clientY;
       const pullDown = touchY - touchStartY.current;
 
-      // Conditions strictes : en haut de page + mouvement vers le bas + suffisamment ample
       if (scrollTop <= 2 && pullDown > 20) {
-        // Empêcher le scroll natif seulement si pull significatif
         if (pullDown > 40) {
           e.preventDefault();
         }
         
-        // Effet rubber band (résistance progressive)
         const resistance = 0.4;
         const distance = Math.min(pullDown * resistance, THRESHOLD * 1.5);
         setPullDistance(distance);
         setIsPulling(distance > THRESHOLD);
       } else if (pullDown < -10) {
-        // Si scroll vers le haut, annuler le pull
         resetPull();
       }
     };
@@ -268,7 +304,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     const handleTouchEnd = () => {
       const pullDuration = Date.now() - touchStartTime.current;
       
-      // Vérifier : dépassement du seuil + durée minimale
       if (
         pullDistance > THRESHOLD && 
         pullDuration >= MIN_PULL_DURATION &&
@@ -282,18 +317,15 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       touchStartY.current = 0;
     };
 
-    // ========== DESKTOP : Scroll rapide vers le haut ==========
     const handleScroll = () => {
       const scrollTop = window.scrollY || document.documentElement.scrollTop;
       
-      // Détection scroll rapide vers le haut (retour au sommet)
       if (
         scrollTop === 0 && 
         lastScrollY.current > 200 && 
         !isRefreshingPull.current &&
         canPull.current
       ) {
-        // Petit délai pour confirmer l'intention
         setTimeout(() => {
           const finalScrollTop = window.scrollY || document.documentElement.scrollTop;
           if (finalScrollTop === 0 && canPull.current) {
@@ -354,7 +386,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
   return (
     <div className="flex flex-col h-full scrollbar-hide">
-      {/* ✅ Indicateur Pull to Refresh DISCRET */}
+      {/* Pull to Refresh Indicator */}
       <PullToRefreshIndicator 
         isPulling={isPulling} 
         pullDistance={pullDistance} 
@@ -364,7 +396,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
       {!showPyramid && (
         <>
-          {/* 🎯 STORIES */}
+          {/* STORIES */}
           <div className={`sticky top-0 z-30 ${
             isDarkMode ? "bg-black" : "bg-white"
           }`}>
@@ -378,7 +410,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
             </div>
           </div>
 
-          {/* 🎯 FEED */}
+          {/* FEED AVEC PUBLICITÉS */}
           <div className="flex-1 overflow-y-auto scrollbar-hide">
             <div className="w-full lg:max-w-[630px] lg:mx-auto">
 
@@ -403,6 +435,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                 </div>
               ) : (
                 <>
+                  {/* Premier post sans pub */}
                   {filteredPosts[0] && (
                     <PostCard
                       post={filteredPosts[0]}
@@ -411,13 +444,16 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                     />
                   )}
 
+                  {/* Posts suivants avec publicités intercalées */}
                   <AnimatePresence>
-                    {filteredPosts.slice(1).map(post => (
-                      <PostWrapper
+                    {filteredPosts.slice(1).map((post, index) => (
+                      <PostWithAd
                         key={post._id}
                         post={post}
+                        index={index + 1}
                         onDeleted={handlePostDeleted}
                         showToast={showToast}
+                        adConfig={AD_CONFIG}
                       />
                     ))}
                   </AnimatePresence>
@@ -453,7 +489,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         </>
       )}
 
-      {/* 🎬 MODALS */}
+      {/* MODALS */}
       <AnimatePresence>
         {showCreator && <StoryCreator onClose={() => setShowCreator(false)} />}
       </AnimatePresence>
@@ -483,7 +519,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         )}
       </AnimatePresence>
 
-      {/* 🎨 TOAST */}
+      {/* TOAST */}
       <AnimatePresence>
         {toast && (
           <Toast
