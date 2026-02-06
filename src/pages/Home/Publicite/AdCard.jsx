@@ -64,7 +64,7 @@ const AdCard = memo(({
               minHeight: '100px',
               ...style
             }}
-            data-ad-client="chantilink.myshopify.com" // À remplacer par votre ID
+            data-ad-client="ca-pub-9979082242566048" // À remplacer par votre ID
             data-ad-slot={slot}
             data-ad-format={format}
             data-full-width-responsive={responsive.toString()}

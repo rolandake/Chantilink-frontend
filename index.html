@@ -2,7 +2,10 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+    />
     <meta name="description" content="ChantiLink - Votre réseau social" />
 
     <!-- PWA -->
@@ -15,57 +18,121 @@
     <!-- SEO -->
     <meta property="og:type" content="website" />
     <meta property="og:title" content="ChantiLink" />
-    <meta property="og:description" content="Le réseau social nouvelle génération" />
+    <meta
+      property="og:description"
+      content="Le réseau social nouvelle génération"
+    />
     <meta property="og:image" content="/chantilink-logo.png" />
 
     <title>ChantiLink</title>
 
     <!-- Icons -->
-    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
-    
-    <!-- 🔥 PRELOAD CRITIQUE pour LCP -->
-    <link rel="preload" as="image" href="/chantilink-logo.png" fetchpriority="high" />
+    <link
+      rel="apple-touch-icon"
+      sizes="180x180"
+      href="/apple-touch-icon.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="/favicon-32x32.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="16x16"
+      href="/favicon-16x16.png"
+    />
 
-    <!-- Fonts optimisées -->
+    <!-- Preload critique LCP -->
+    <link
+      rel="preload"
+      as="image"
+      href="/chantilink-logo.png"
+      fetchpriority="high"
+    />
+
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Google AdSense (OBLIGATOIRE POUR LA VALIDATION) -->
+    <script
+      async
+      src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9979082242566048"
+      crossorigin="anonymous"
+    ></script>
 
     <style>
       /* Reset & Base */
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      html, body { height: 100%; width: 100%; overflow: hidden; }
-      body { 
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        background: #2B2D42;
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+      }
+
+      body {
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+        background: #2b2d42;
         -webkit-font-smoothing: antialiased;
       }
 
-      /* ⭐ SUPPRESSION DU SPLASH NATIF - LAISSE REACT GÉRER */
+      /* Suppression splash natif */
       #splash-native {
         display: none !important;
       }
 
       /* Empêcher zoom mobile */
-      input, textarea, select { font-size: 16px !important; }
-      * { -webkit-tap-highlight-color: transparent; }
+      input,
+      textarea,
+      select {
+        font-size: 16px !important;
+      }
+
+      * {
+        -webkit-tap-highlight-color: transparent;
+      }
     </style>
   </head>
 
   <body>
-    <!-- React mount point -->
+    <!-- React mount -->
     <div id="root"></div>
 
     <!-- Chargement React -->
     <script type="module" src="/src/main.jsx"></script>
 
-    <!-- Fallback JS désactivé -->
+    <!-- Fallback JS -->
     <noscript>
-      <div style="position:fixed;inset:0;background:#2B2D42;color:white;display:flex;align-items:center;justify-center;text-align:center;padding:20px;">
+      <div
+        style="
+          position: fixed;
+          inset: 0;
+          background: #2b2d42;
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          padding: 20px;
+        "
+      >
         <div>
-          <h1 style="margin-bottom:10px;font-size:24px;">JavaScript requis</h1>
+          <h1 style="margin-bottom: 10px; font-size: 24px">
+            JavaScript requis
+          </h1>
           <p>Veuillez activer JavaScript pour utiliser ChantiLink.</p>
         </div>
       </div>
