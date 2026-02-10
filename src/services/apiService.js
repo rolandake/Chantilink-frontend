@@ -1,6 +1,7 @@
 // ============================================
 // 📁 src/services/apiService.js
 // SERVICE API COMPLET - VERSION OPTIMISÉE
+// Compatible avec synchronisation native des contacts
 // ============================================
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
@@ -26,6 +27,7 @@ const fetchWithAuth = async (url, options = {}) => {
 
     console.log(`📡 [API Response] ${response.status} ${response.statusText}`);
 
+    // ✅ Vérifier si la réponse est JSON
     const contentType = response.headers.get('content-type');
     if (!contentType || !contentType.includes('application/json')) {
       const text = await response.text();
@@ -48,6 +50,7 @@ const fetchWithAuth = async (url, options = {}) => {
       name: error.name
     });
 
+    // Messages d'erreur plus clairs
     if (error.message === 'Failed to fetch') {
       throw new Error('Impossible de contacter le serveur. Vérifiez votre connexion.');
     }
@@ -175,6 +178,9 @@ export const API = {
   // 📞 CONTACTS & SYNCHRONISATION
   // ============================================
 
+  /**
+   * ✅ Vérifier la santé de l'endpoint contacts
+   */
   checkContactsHealth: async (token) => {
     try {
       return await fetchWithAuth(`${BASE_URL}/contacts/health`, {
@@ -187,13 +193,18 @@ export const API = {
     }
   },
 
+  /**
+   * ✅ Synchroniser les contacts du téléphone avec le backend
+   * Utilisé par nativeContactsService
+   */
   syncContacts: async (token, contacts) => {
     console.log('═══════════════════════════════════════════════');
-    console.log(`📤 [API.syncContacts] Début synchro`);
+    console.log(`📤 [API.syncContacts] Début synchronisation`);
     console.log(`📊 Total contacts: ${contacts.length}`);
     console.log(`📋 Exemples:`, contacts.slice(0, 3));
     console.log('═══════════════════════════════════════════════');
 
+    // ✅ Validation des données
     if (!Array.isArray(contacts)) {
       throw new Error('Le paramètre contacts doit être un tableau');
     }
@@ -209,21 +220,34 @@ export const API = {
       };
     }
 
+    // ✅ Normaliser les numéros de téléphone
+    const normalizedContacts = contacts.map(contact => ({
+      name: contact.name || 'Sans nom',
+      phone: (contact.phone || contact.phoneNumber || '').replace(/\D/g, '') // Garder seulement les chiffres
+    })).filter(c => c.phone.length >= 8); // Minimum 8 chiffres
+
+    console.log(`📊 Contacts normalisés: ${normalizedContacts.length}/${contacts.length}`);
+
     try {
       const result = await fetchWithAuth(`${BASE_URL}/contacts/sync`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ contacts }),
+        body: JSON.stringify({ contacts: normalizedContacts }),
       });
 
       console.log('═══════════════════════════════════════════════');
-      console.log(`✅ [API.syncContacts] Synchro réussie`);
+      console.log(`✅ [API.syncContacts] Synchronisation réussie`);
       console.log(`📊 Résultats:`, result.stats);
       console.log(`   ✓ Sur app: ${result.stats?.onApp || 0}`);
       console.log(`   ➖ Hors app: ${result.stats?.offApp || 0}`);
       console.log('═══════════════════════════════════════════════');
 
-      return result;
+      return {
+        success: true,
+        onChantilink: result.onChantilink || [],
+        notOnChantilink: result.notOnChantilink || [],
+        stats: result.stats || { total: 0, onApp: 0, offApp: 0 }
+      };
     } catch (error) {
       console.error('═══════════════════════════════════════════════');
       console.error('❌ [API.syncContacts] ÉCHEC');
@@ -233,6 +257,9 @@ export const API = {
     }
   },
 
+  /**
+   * ✅ Récupérer la liste des contacts
+   */
   getContacts: async (token) => {
     console.log('📋 [API.getContacts] Chargement des contacts...');
     
@@ -245,7 +272,7 @@ export const API = {
       console.log(`✅ [API.getContacts] ${result.contacts?.length || 0} contacts récupérés`);
 
       return {
-        ...result,
+        success: true,
         contacts: result.contacts || []
       };
     } catch (error) {
@@ -258,6 +285,9 @@ export const API = {
     }
   },
 
+  /**
+   * ✅ Inviter un contact (hors app)
+   */
   inviteContact: async (token, contactData) => {
     console.log(`📲 [API.inviteContact] Invitation: ${contactData.contactName}`);
     
@@ -271,6 +301,9 @@ export const API = {
     return result;
   },
 
+  /**
+   * ✅ Ajouter un contact manuellement
+   */
   addContact: async (token, contactData) => {
     console.log(`➕ [API.addContact] Ajout: ${contactData.fullName} (${contactData.phoneNumber})`);
     
@@ -284,6 +317,7 @@ export const API = {
       console.log(`✅ [API.addContact] Contact ajouté avec succès`);
       return result;
     } catch (error) {
+      // ✅ Gestion des contacts hors app
       if (error.message.includes('404') || 
           error.message.includes('pas encore sur') ||
           error.message.includes('not found')) {
@@ -299,18 +333,32 @@ export const API = {
     }
   },
 
+  /**
+   * ✅ Récupérer les conversations
+   */
   getConversations: async (token) => {
-    const result = await fetchWithAuth(`${BASE_URL}/contacts/conversations`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    try {
+      const result = await fetchWithAuth(`${BASE_URL}/contacts/conversations`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
 
-    return {
-      ...result,
-      conversations: result.conversations || []
-    };
+      return {
+        success: true,
+        conversations: result.conversations || []
+      };
+    } catch (error) {
+      console.error('❌ [API.getConversations] Erreur:', error);
+      return {
+        success: false,
+        conversations: []
+      };
+    }
   },
 
+  /**
+   * ✅ Statistiques des contacts
+   */
   getContactsStats: async (token) => {
     return fetchWithAuth(`${BASE_URL}/contacts/stats`, {
       method: 'GET',
@@ -318,6 +366,9 @@ export const API = {
     });
   },
 
+  /**
+   * ✅ Supprimer un contact
+   */
   deleteContact: async (token, contactId) => {
     return fetchWithAuth(`${BASE_URL}/contacts/${contactId}`, {
       method: 'DELETE',

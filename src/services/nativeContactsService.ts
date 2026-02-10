@@ -1,11 +1,11 @@
 // ============================================
 // 📁 src/services/nativeContactsService.ts
 // Service de synchronisation des contacts natifs (Puce téléphonique)
-// VERSION CORRIGÉE - Types @capacitor-community/contacts
+// VERSION FINALE - Imports corrects pour @capacitor-community/contacts
 // ============================================
 
 import { Capacitor } from '@capacitor/core';
-import { Contacts, Contact, PhoneNumber } from '@capacitor-community/contacts';
+import { Contacts, PermissionStatus as ContactPermissionStatus } from '@capacitor-community/contacts';
 import { API } from './apiService';
 
 // ============================================
@@ -32,6 +32,13 @@ export interface SyncResult {
     invalid: number;
   };
   errors?: string[];
+}
+
+export interface PermissionStatus {
+  available: boolean;
+  status: 'granted' | 'denied' | 'prompt' | 'prompt-with-rationale' | 'web' | 'error';
+  message: string;
+  canRequest: boolean;
 }
 
 // ============================================
@@ -71,37 +78,111 @@ class NativeContactsService {
    * 🔍 Vérifier si l'environnement est natif (iOS/Android)
    */
   isNativePlatform(): boolean {
-    return Capacitor.isNativePlatform();
+    const isNative = Capacitor.isNativePlatform();
+    console.log(`📱 [NativeContacts] Plateforme: ${isNative ? 'NATIVE (iOS/Android)' : 'WEB'}`);
+    return isNative;
   }
 
   /**
-   * 🔐 Demander la permission d'accès aux contacts
+   * 🔐 Vérifier si la permission est déjà accordée
+   * SANS déclencher de popup
    */
-  async requestPermissions(): Promise<boolean> {
+  async checkPermissions(): Promise<boolean> {
+    if (!this.isNativePlatform()) {
+      console.log('📱 [NativeContacts] Mode WEB - pas de vérification');
+      return false;
+    }
+
     try {
-      console.log('📱 [NativeContacts] Demande de permission...');
+      const result = await Contacts.checkPermissions();
+      console.log('🔐 [NativeContacts] Permission actuelle:', result);
       
-      const permission = await Contacts.requestPermissions();
-      
-      console.log('📱 [NativeContacts] Réponse permission:', permission);
-      
-      return permission.contacts === 'granted';
+      // Le plugin retourne { contacts: 'granted' | 'denied' | 'prompt' }
+      return result.contacts === 'granted';
     } catch (error) {
-      console.error('❌ [NativeContacts] Erreur permission:', error);
+      console.error('❌ [NativeContacts] Erreur vérification permission:', error);
       return false;
     }
   }
 
   /**
-   * 🔍 Vérifier si la permission est déjà accordée
+   * 🔐 Demander la permission (DÉCLENCHE LA POPUP SYSTÈME NATIVE)
+   * C'est ici que la popup iOS/Android apparaît - comme Telegram
    */
-  async checkPermissions(): Promise<boolean> {
-    try {
-      const permission = await Contacts.checkPermissions();
-      return permission.contacts === 'granted';
-    } catch (error) {
-      console.error('❌ [NativeContacts] Erreur vérification permission:', error);
+  async requestPermissions(): Promise<boolean> {
+    if (!this.isNativePlatform()) {
+      console.log('📱 [NativeContacts] Mode WEB - pas de demande');
       return false;
+    }
+
+    try {
+      console.log('🔐 [NativeContacts] Demande de permission système native...');
+      
+      // 🎯 CETTE LIGNE AFFICHE LA POPUP NATIVE
+      // iOS: "Chantilink souhaite accéder à vos contacts"
+      // Android: "Autoriser Chantilink à accéder à vos contacts ?"
+      const result = await Contacts.requestPermissions();
+      
+      console.log('🔐 [NativeContacts] Réponse utilisateur:', result);
+      
+      const granted = result.contacts === 'granted';
+      
+      if (granted) {
+        console.log('✅ [NativeContacts] Permission accordée !');
+      } else {
+        console.log('❌ [NativeContacts] Permission refusée');
+      }
+      
+      return granted;
+    } catch (error) {
+      console.error('❌ [NativeContacts] Erreur demande permission:', error);
+      
+      // Certaines erreurs spécifiques
+      if (error instanceof Error && error.message?.includes('not available')) {
+        throw new Error('Fonction non disponible sur cet appareil');
+      }
+      
+      return false;
+    }
+  }
+
+  /**
+   * 📊 Obtenir le statut détaillé des permissions
+   */
+  async getPermissionStatus(): Promise<PermissionStatus> {
+    if (!this.isNativePlatform()) {
+      return {
+        available: false,
+        status: 'web',
+        message: 'Fonctionnalité disponible uniquement sur mobile',
+        canRequest: false
+      };
+    }
+
+    try {
+      const result = await Contacts.checkPermissions();
+      const status = result.contacts as PermissionStatus['status'];
+
+      const messages: Record<string, string> = {
+        'granted': 'Accès autorisé',
+        'denied': 'Accès refusé définitivement',
+        'prompt': 'Jamais demandé',
+        'prompt-with-rationale': 'Refusé précédemment (Android)'
+      };
+
+      return {
+        available: true,
+        status,
+        message: messages[status] || status,
+        canRequest: status !== 'denied'
+      };
+    } catch (error) {
+      return {
+        available: false,
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Erreur inconnue',
+        canRequest: false
+      };
     }
   }
 
@@ -112,17 +193,20 @@ class NativeContactsService {
     try {
       console.log('📱 [NativeContacts] Récupération des contacts natifs...');
       
-      // Vérifier la permission d'abord
+      // ✅ Vérifier la permission d'abord
       const hasPermission = await this.checkPermissions();
       
       if (!hasPermission) {
+        // ✅ Demander la permission (popup native apparaît ici)
+        console.log('🔐 [NativeContacts] Permission non accordée, demande...');
         const granted = await this.requestPermissions();
+        
         if (!granted) {
           throw new Error('Permission refusée pour accéder aux contacts');
         }
       }
 
-      // Récupérer les contacts avec le plugin @capacitor-community/contacts
+      // ✅ Récupérer les contacts avec le plugin @capacitor-community/contacts
       const result = await Contacts.getContacts({
         projection: {
           name: true,
@@ -131,24 +215,33 @@ class NativeContactsService {
         }
       });
 
-      console.log(`📱 [NativeContacts] ${result.contacts?.length || 0} contacts trouvés`);
+      console.log(`📱 [NativeContacts] ${result.contacts?.length || 0} contacts bruts trouvés`);
 
-      // Traiter et normaliser les contacts
+      // ✅ Traiter et normaliser les contacts
       const processedContacts: NativeContact[] = [];
       
-      for (const contact of result.contacts || []) {
+      // Le plugin retourne un tableau de contacts
+      const contacts = result.contacts || [];
+      
+      for (const contact of contacts) {
         // ✅ Extraction sécurisée du nom
-        const name = (contact.name?.display || 
-                     contact.name?.given || 
-                     contact.name?.family || 
-                     'Sans nom') as string;
+        // Le format exact dépend de la plateforme (iOS vs Android)
+        let name = 'Sans nom';
+        
+        if (contact.name) {
+          // Essayer différentes propriétés selon la plateforme
+          name = contact.name.display || 
+                 (contact.name.given && contact.name.family 
+                   ? `${contact.name.given} ${contact.name.family}`.trim()
+                   : contact.name.given || contact.name.family || 'Sans nom');
+        }
 
         // ✅ Extraction sécurisée des numéros de téléphone
         const phones = contact.phones || [];
         
         for (const phoneEntry of phones) {
-          // ✅ Accès sécurisé au numéro
-          const phoneNumber = phoneEntry.number;
+          // Le format peut varier : {number: string} ou {value: string}
+          const phoneNumber = phoneEntry.number || (phoneEntry as any).value;
           
           if (!phoneNumber) continue;
           
@@ -157,9 +250,9 @@ class NativeContactsService {
           if (normalizedPhone) {
             processedContacts.push({
               id: contact.contactId || String(Math.random()),
-              name,
+              name: name.trim(),
               phone: normalizedPhone,
-              displayName: contact.name?.display || undefined,
+              displayName: contact.name?.display || name,
               photoUri: contact.image?.base64String 
                 ? `data:image/png;base64,${contact.image.base64String}` 
                 : undefined
@@ -169,10 +262,17 @@ class NativeContactsService {
       }
 
       console.log(`✅ [NativeContacts] ${processedContacts.length} contacts valides extraits`);
+      console.log('📋 Exemples:', processedContacts.slice(0, 3));
 
       return processedContacts;
     } catch (error) {
-      console.error('❌ [NativeContacts] Erreur récupération:', error);
+      console.error('❌ [NativeContacts] Erreur récupération contacts:', error);
+      
+      // Messages d'erreur plus clairs
+      if (error instanceof Error && error.message?.includes('permission')) {
+        throw new Error('Permission refusée. Activez l\'accès aux contacts dans les paramètres.');
+      }
+      
       throw error;
     }
   }
@@ -191,15 +291,17 @@ class NativeContactsService {
   async syncWithBackend(token: string, onProgress?: (percent: number) => void): Promise<SyncResult> {
     try {
       console.log('═══════════════════════════════════════════════');
-      console.log('📱 [NativeContacts] Début synchronisation');
+      console.log('📱 [NativeContacts] DÉBUT SYNCHRONISATION');
       console.log('═══════════════════════════════════════════════');
 
-      // 1. Récupérer les contacts natifs
+      // 1️⃣ Récupérer les contacts natifs (permission sera demandée si besoin)
       if (onProgress) onProgress(10);
+      console.log('📱 [1/5] Lecture de la puce téléphonique...');
       
       const nativeContacts = await this.getAllContacts();
       
       if (nativeContacts.length === 0) {
+        console.log('⚠️ [NativeContacts] Aucun contact trouvé');
         return {
           success: true,
           onChantilink: [],
@@ -214,18 +316,20 @@ class NativeContactsService {
         };
       }
 
-      console.log(`📊 [NativeContacts] ${nativeContacts.length} contacts à synchroniser`);
+      console.log(`📊 [NativeContacts] ${nativeContacts.length} contacts à traiter`);
       
       if (onProgress) onProgress(30);
 
-      // 2. Dédupliquer les contacts (même numéro)
+      // 2️⃣ Dédupliquer les contacts (même numéro = même personne)
+      console.log('🔍 [2/5] Déduplication...');
       const uniqueContacts = this.deduplicateContacts(nativeContacts);
       
-      console.log(`🔍 [NativeContacts] ${uniqueContacts.length} contacts uniques après déduplication`);
+      console.log(`✅ [NativeContacts] ${uniqueContacts.length} contacts uniques (${nativeContacts.length - uniqueContacts.length} doublons retirés)`);
       
       if (onProgress) onProgress(50);
 
-      // 3. Envoyer au backend par lots de 100
+      // 3️⃣ Envoyer au backend par lots de 100
+      console.log('📤 [3/5] Envoi au serveur...');
       const BATCH_SIZE = 100;
       const batches = this.splitIntoBatches(uniqueContacts, BATCH_SIZE);
       
@@ -235,7 +339,7 @@ class NativeContactsService {
       for (let i = 0; i < batches.length; i++) {
         const batch = batches[i];
         
-        console.log(`📤 [NativeContacts] Envoi du lot ${i + 1}/${batches.length} (${batch.length} contacts)`);
+        console.log(`📤 [NativeContacts] Lot ${i + 1}/${batches.length} (${batch.length} contacts)`);
         
         try {
           const result = await API.syncContacts(
@@ -247,7 +351,7 @@ class NativeContactsService {
           allNotOnChantilink = [...allNotOnChantilink, ...(result.notOnChantilink || [])];
 
           // Progression
-          const progress = 50 + ((i + 1) / batches.length) * 50;
+          const progress = 50 + ((i + 1) / batches.length) * 40;
           if (onProgress) onProgress(Math.round(progress));
           
         } catch (batchError) {
@@ -255,6 +359,9 @@ class NativeContactsService {
         }
       }
 
+      // 4️⃣ Construire le résultat final
+      console.log('📊 [4/5] Traitement des résultats...');
+      
       const finalResult: SyncResult = {
         success: true,
         onChantilink: allOnChantilink,
@@ -269,8 +376,11 @@ class NativeContactsService {
       };
 
       console.log('═══════════════════════════════════════════════');
-      console.log('✅ [NativeContacts] Synchronisation terminée');
+      console.log('✅ [NativeContacts] SYNCHRONISATION RÉUSSIE');
       console.log(`📊 Résultats:`, finalResult.stats);
+      console.log(`   ✓ Sur Chantilink: ${finalResult.stats.onApp}`);
+      console.log(`   ➖ Hors app: ${finalResult.stats.offApp}`);
+      console.log(`   🚫 Doublons retirés: ${finalResult.stats.invalid}`);
       console.log('═══════════════════════════════════════════════');
 
       if (onProgress) onProgress(100);
@@ -278,7 +388,10 @@ class NativeContactsService {
       return finalResult;
 
     } catch (error) {
-      console.error('❌ [NativeContacts] Erreur synchronisation:', error);
+      console.error('═══════════════════════════════════════════════');
+      console.error('❌ [NativeContacts] ÉCHEC SYNCHRONISATION');
+      console.error('   Erreur:', error instanceof Error ? error.message : error);
+      console.error('═══════════════════════════════════════════════');
       
       return {
         success: false,
@@ -310,7 +423,7 @@ class NativeContactsService {
       } else {
         // Si on a déjà ce numéro, garder celui avec le nom le plus complet
         const existing = seen.get(key)!;
-        if (contact.name.length > existing.name.length) {
+        if (contact.name.length > existing.name.length && contact.name !== 'Sans nom') {
           seen.set(key, contact);
         }
       }
@@ -374,6 +487,24 @@ class NativeContactsService {
       withPhoto,
       withMultipleNumbers
     };
+  }
+
+  /**
+   * ✅ Vérifier si le plugin Contacts est disponible
+   */
+  async isContactsPluginAvailable(): Promise<boolean> {
+    try {
+      if (!this.isNativePlatform()) {
+        return false;
+      }
+      
+      // Tenter de vérifier les permissions
+      await Contacts.checkPermissions();
+      return true;
+    } catch (error) {
+      console.error('❌ [NativeContacts] Plugin non disponible:', error);
+      return false;
+    }
   }
 }
 

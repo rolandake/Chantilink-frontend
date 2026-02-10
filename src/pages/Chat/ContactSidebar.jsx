@@ -1,6 +1,6 @@
 // ============================================
-// 📁 ContactSidebar.jsx - VERSION FINALE
-// 100% données serveur - Aucun contact fictif
+// 📁 ContactSidebar.jsx - VERSION CORRIGÉE
+// Permission native directe (comme Telegram)
 // ============================================
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
@@ -11,7 +11,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '../../context/ToastContext';
 import { Capacitor } from '@capacitor/core';
 import nativeContactsService from '../../services/nativeContactsService';
-import { PermissionModal } from './PermissionModal';
 
 // ============================================
 // API SERVICE
@@ -66,13 +65,12 @@ export const ContactSidebar = ({
   onSyncComplete
 }) => {
   const [loading, setLoading] = useState(false);
-  const [allPhoneContacts, setAllPhoneContacts] = useState([]); // TOUS les contacts du téléphone
-  const [onAppContacts, setOnAppContacts] = useState([]); // Contacts sur Chantilink
+  const [allPhoneContacts, setAllPhoneContacts] = useState([]);
+  const [onAppContacts, setOnAppContacts] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState("phone");
   const [syncProgress, setSyncProgress] = useState(0);
   const [isNativeSync, setIsNativeSync] = useState(false);
-  const [showPermissionModal, setShowPermissionModal] = useState(false);
   const { showToast } = useToast();
 
   // ============================================
@@ -99,7 +97,6 @@ export const ContactSidebar = ({
     
     console.log(`📱 [ContactSidebar] Environnement: ${isNative ? 'NATIF (iOS/Android)' : 'WEB'}`);
     
-    // ✅ Si mode WEB, nettoyer les contacts de test du cache
     if (!isNative) {
       const savedContacts = localStorage.getItem('allPhoneContacts');
       if (savedContacts) {
@@ -137,7 +134,7 @@ export const ContactSidebar = ({
   }, []);
 
   // ============================================
-  // 🔥 SYNCHRONISATION NATIVE (avec demande de permission + modal)
+  // 🔥 SYNCHRONISATION NATIVE (demande directe comme Telegram)
   // ============================================
   const handleSyncProcess = async () => {
     setLoading(true);
@@ -145,57 +142,40 @@ export const ContactSidebar = ({
     
     try {
       console.log("📱 [ContactSidebar] Démarrage synchronisation...");
-      console.log("📱 [ContactSidebar] isNativeSync:", isNativeSync);
-      console.log("📱 [ContactSidebar] Capacitor.isNativePlatform():", Capacitor.isNativePlatform());
       
       // ✅ ÉTAPE 1 : Vérifier si on a déjà la permission
       const hasPermission = await nativeContactsService.checkPermissions();
       console.log("🔐 [ContactSidebar] Permission actuelle:", hasPermission);
       
       if (!hasPermission) {
-        // ✅ ÉTAPE 2 : Afficher le modal explicatif
-        setShowPermissionModal(true);
-        setLoading(false);
-        return; // Attendre que l'utilisateur clique sur "Autoriser"
+        // ✅ ÉTAPE 2 : Demander DIRECTEMENT la permission (popup système native)
+        console.log("🔐 [ContactSidebar] Demande de permission système native...");
+        showToast("📱 Demande d'accès aux contacts...", "info");
+        
+        // 🎯 CETTE LIGNE DÉCLENCHE LA POPUP NATIVE (comme Telegram)
+        const granted = await nativeContactsService.requestPermissions();
+        console.log("🔐 [ContactSidebar] Réponse utilisateur:", granted);
+        
+        if (!granted) {
+          // L'utilisateur a refusé dans la popup native
+          setLoading(false);
+          setSyncProgress(0);
+          showToast(
+            "❌ Accès refusé. Pour synchroniser, activez l'accès dans Paramètres > Chantilink > Contacts",
+            "warning"
+          );
+          return;
+        }
+        
+        showToast("✅ Accès autorisé !", "success");
       }
       
-      // ✅ ÉTAPE 3 : Lancer la synchronisation (permission déjà accordée)
+      // ✅ ÉTAPE 3 : Lancer la synchronisation
       await performSync();
 
     } catch (err) {
       console.error("❌ Erreur sync:", err);
       handleSyncError(err);
-      setLoading(false);
-      setSyncProgress(0);
-    }
-  };
-
-  // ============================================
-  // 🔐 DEMANDER LA PERMISSION (appelé depuis le modal)
-  // ============================================
-  const handleRequestPermission = async () => {
-    setShowPermissionModal(false);
-    setLoading(true);
-    
-    try {
-      showToast("📱 Demande d'accès aux contacts...", "info");
-      
-      const granted = await nativeContactsService.requestPermissions();
-      console.log("🔐 [ContactSidebar] Permission accordée:", granted);
-      
-      if (!granted) {
-        throw new Error("Permission refusée. Veuillez autoriser l'accès aux contacts dans les paramètres de votre téléphone.");
-      }
-      
-      showToast("✅ Permission accordée !", "success");
-      
-      // ✅ Lancer la synchronisation
-      await performSync();
-      
-    } catch (err) {
-      console.error("❌ Erreur permission:", err);
-      handleSyncError(err);
-    } finally {
       setLoading(false);
       setSyncProgress(0);
     }
@@ -219,62 +199,57 @@ export const ContactSidebar = ({
       throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
     }
 
-      console.log(`✅ [ContactSidebar] Sync réussie:`, result.stats);
+    console.log(`✅ [ContactSidebar] Sync réussie:`, result.stats);
 
-      // ✅ Extraire UNIQUEMENT les données du serveur
-      const onChantilink = result.onChantilink || [];
-      const notOnChantilink = result.notOnChantilink || [];
-      
-      // Construire la liste complète des contacts téléphone
-      const allContacts = [];
-      
-      // Ajouter les contacts sur l'app
-      onChantilink.forEach(contact => {
-        allContacts.push({
-          name: contact.fullName,
-          phone: contact.phone,
-          isOnApp: true,
-          appData: contact
-        });
+    const onChantilink = result.onChantilink || [];
+    const notOnChantilink = result.notOnChantilink || [];
+    
+    const allContacts = [];
+    
+    onChantilink.forEach(contact => {
+      allContacts.push({
+        name: contact.fullName,
+        phone: contact.phone,
+        isOnApp: true,
+        appData: contact
       });
-      
-      // Ajouter les contacts hors app
-      notOnChantilink.forEach(contact => {
-        allContacts.push({
-          name: contact.name,
-          phone: contact.phone,
-          isOnApp: false
-        });
+    });
+    
+    notOnChantilink.forEach(contact => {
+      allContacts.push({
+        name: contact.name,
+        phone: contact.phone,
+        isOnApp: false
       });
+    });
 
-      console.log(`✅ Traitement: ${allContacts.length} contacts téléphone, ${onChantilink.length} sur app`);
+    console.log(`✅ Traitement: ${allContacts.length} contacts téléphone, ${onChantilink.length} sur app`);
 
-      // ✅ Mise à jour UI + Sauvegarde
-      setAllPhoneContacts(allContacts);
-      setOnAppContacts(onChantilink);
+    setAllPhoneContacts(allContacts);
+    setOnAppContacts(onChantilink);
+    
+    localStorage.setItem('allPhoneContacts', JSON.stringify(allContacts));
+    localStorage.setItem('onAppContacts', JSON.stringify(onChantilink));
+    
+    if (onChantilink.length > 0) {
+      setActiveTab("onapp");
+      showToast(
+        `✅ ${onChantilink.length} ami${onChantilink.length > 1 ? 's' : ''} trouvé${onChantilink.length > 1 ? 's' : ''} sur Chantilink !`, 
+        "success"
+      );
       
-      localStorage.setItem('allPhoneContacts', JSON.stringify(allContacts));
-      localStorage.setItem('onAppContacts', JSON.stringify(onChantilink));
-      
-      if (onChantilink.length > 0) {
-        setActiveTab("onapp");
-        showToast(
-          `✅ ${onChantilink.length} ami${onChantilink.length > 1 ? 's' : ''} trouvé${onChantilink.length > 1 ? 's' : ''} sur Chantilink !`, 
-          "success"
-        );
-        
-        if (onSyncComplete) {
-          onSyncComplete(onChantilink);
-        }
-      } else if (allContacts.length > 0) {
-        showToast(`📱 ${allContacts.length} contact${allContacts.length > 1 ? 's' : ''} synchronisé${allContacts.length > 1 ? 's' : ''}`, "info");
-        setActiveTab("phone");
-      } else {
-        showToast("Aucun contact trouvé", "info");
+      if (onSyncComplete) {
+        onSyncComplete(onChantilink);
       }
-      
-      setLoading(false);
-      setSyncProgress(0);
+    } else if (allContacts.length > 0) {
+      showToast(`📱 ${allContacts.length} contact${allContacts.length > 1 ? 's' : ''} synchronisé${allContacts.length > 1 ? 's' : ''}`, "info");
+      setActiveTab("phone");
+    } else {
+      showToast("Aucun contact trouvé", "info");
+    }
+    
+    setLoading(false);
+    setSyncProgress(0);
   };
 
   // ============================================
@@ -282,9 +257,9 @@ export const ContactSidebar = ({
   // ============================================
   const handleSyncError = (err) => {
     if (err.message?.includes('Permission')) {
-      showToast("Permission refusée. Activez l'accès aux contacts dans les paramètres de votre téléphone.", "error");
+      showToast("❌ Permission refusée. Activez l'accès aux contacts dans les paramètres de votre téléphone.", "error");
     } else if (err.message?.includes('not available')) {
-      showToast("Fonctionnalité non disponible sur cet appareil", "warning");
+      showToast("⚠️ Fonctionnalité non disponible sur cet appareil", "warning");
     } else {
       showToast(err.message || "Erreur de synchronisation", "error");
     }
@@ -331,13 +306,13 @@ export const ContactSidebar = ({
               </div>
             )}
 
-            {/* Bouton sync - TOUJOURS ACTIF */}
+            {/* Bouton sync */}
             <motion.button 
               whileTap={{ scale: 0.9 }}
               onClick={handleSyncProcess} 
               disabled={loading}
               className="p-2 hover:bg-white/5 rounded-xl transition-colors relative"
-              title="Synchroniser depuis la puce téléphonique"
+              title="Synchroniser vos contacts"
             >
               <RefreshCw size={20} className={`${loading ? 'animate-spin' : ''} text-gray-400`} />
               {loading && (
@@ -474,16 +449,6 @@ export const ContactSidebar = ({
           
         </AnimatePresence>
       </div>
-
-      {/* MODAL DE PERMISSION */}
-      <PermissionModal
-        isOpen={showPermissionModal}
-        onAccept={handleRequestPermission}
-        onCancel={() => {
-          setShowPermissionModal(false);
-          setLoading(false);
-        }}
-      />
     </div>
   );
 };
@@ -510,7 +475,6 @@ const TabButton = ({ active, onClick, label, icon, badge }) => (
   </button>
 );
 
-// Contact du téléphone
 const PhoneContactItem = ({ contact, onInvite, onSelect }) => (
   <div className="flex items-center gap-3 p-4 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl mb-2 transition-all group">
     <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg ${
@@ -556,7 +520,6 @@ const PhoneContactItem = ({ contact, onInvite, onSelect }) => (
   </div>
 );
 
-// Contact sur l'application
 const ContactItem = ({ user, unread, onClick }) => {
   const handleClick = () => {
     const contact = {
