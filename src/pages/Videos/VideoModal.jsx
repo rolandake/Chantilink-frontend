@@ -11,7 +11,7 @@ import { HiSparkles } from "react-icons/hi2";
 
 // --- CONSTANTES ---
 const MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
-const ACCEPT_TYPES = "video/mp4,video/webm,video/quicktime,video/x-msvideo"; // ✅ Types MIME valides
+const ACCEPT_TYPES = "video/mp4,video/webm,video/quicktime,video/x-msvideo";
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
@@ -25,16 +25,17 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
   const abortControllerRef = useRef(null);
 
   const { addVideo, fetchVideos } = useVideos();
-  const { user: currentUser, getToken } = useAuth(); // ✅ Utilisation de getToken pour sécuriser l'appel
+  const { user: currentUser, getToken } = useAuth();
 
   // --- STATES ---
-  const [step, setStep] = useState("upload"); // upload | edit | publish
+  const [step, setStep] = useState("upload"); // upload | camera | edit | publish
   const [videoFile, setVideoFile] = useState(null);
   const [videoURL, setVideoURL] = useState(null);
   
   // Camera
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [cameraReady, setCameraReady] = useState(false);
   
   // Data
   const [title, setTitle] = useState("");
@@ -62,6 +63,10 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
     if (abortControllerRef.current) {
         abortControllerRef.current.abort();
     }
+    // Reset timer
+    if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+    }
     // Reset states
     setStep("upload");
     setVideoFile(null);
@@ -73,6 +78,7 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
     setUploadProgress(0);
     setUploadError(null);
     setIsRecording(false);
+    setCameraReady(false);
   }, [videoURL]);
 
   // Fermeture modale avec confirmation si upload en cours
@@ -95,7 +101,7 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
         return;
     }
 
-    // Validation type (sécurité supplémentaire)
+    // Validation type
     if (!file.type.startsWith('video/')) {
         alert("Ce fichier n'est pas une vidéo valide.");
         return;
@@ -105,42 +111,123 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
     setVideoFile(file);
     setVideoURL(URL.createObjectURL(file));
     setStep("edit");
-    e.target.value = null; // Reset input pour permettre de ré-uploader le même fichier
+    e.target.value = null;
   };
 
   // --- HANDLERS CAMERA ---
-  const startRecording = async () => {
+  const initCamera = async () => {
     try {
+      console.log('📷 Initialisation caméra...');
+      
       const stream = await navigator.mediaDevices.getUserMedia({ 
           video: { 
-              aspectRatio: { ideal: 9/16 }, // Format vertical (TikTok style)
-              facingMode: "user" 
+              aspectRatio: { ideal: 9/16 },
+              facingMode: "user",
+              width: { ideal: 1080 },
+              height: { ideal: 1920 }
           }, 
           audio: true 
       });
       
+      console.log('✅ Stream obtenu:', stream);
       streamRef.current = stream;
-      if (cameraVideoRef.current) cameraVideoRef.current.srcObject = stream;
       
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
+      // Attendre que la ref soit disponible
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+        
+        // Attendre que la vidéo soit prête
+        cameraVideoRef.current.onloadedmetadata = () => {
+          console.log('✅ Caméra prête');
+          setCameraReady(true);
+        };
+      } else {
+        console.error('❌ Ref caméra non disponible');
+      }
+      
+      setStep("camera");
+
+    } catch (err) {
+      console.error("❌ Erreur caméra:", err);
+      
+      let errorMsg = "Impossible d'accéder à la caméra.";
+      
+      if (err.name === 'NotAllowedError') {
+        errorMsg = "Permission refusée. Autorisez l'accès à la caméra dans les paramètres.";
+      } else if (err.name === 'NotFoundError') {
+        errorMsg = "Aucune caméra détectée sur cet appareil.";
+      } else if (err.name === 'NotReadableError') {
+        errorMsg = "La caméra est déjà utilisée par une autre application.";
+      }
+      
+      alert(errorMsg);
+      setStep("upload");
+    }
+  };
+
+  const startRecording = () => {
+    if (!streamRef.current) {
+      console.error('❌ Stream non disponible');
+      return;
+    }
+
+    try {
+      // Vérifier les types MIME supportés
+      const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9') 
+        ? 'video/webm; codecs=vp9'
+        : MediaRecorder.isTypeSupported('video/webm')
+        ? 'video/webm'
+        : 'video/mp4';
+
+      console.log('🎥 Démarrage enregistrement avec:', mimeType);
+
+      const recorder = new MediaRecorder(streamRef.current, { 
+        mimeType,
+        videoBitsPerSecond: 2500000 // 2.5 Mbps
+      });
+      
       const chunks = [];
       
-      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.ondataavailable = (e) => { 
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data); 
+          console.log('📦 Chunk reçu:', e.data.size, 'bytes');
+        }
+      };
       
       recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: "video/webm" });
-        const file = new File([blob], `cam_${Date.now()}.webm`, { type: "video/webm" });
+        console.log('🛑 Enregistrement arrêté, chunks:', chunks.length);
+        
+        const blob = new Blob(chunks, { type: mimeType });
+        console.log('📹 Blob créé:', blob.size, 'bytes');
+        
+        const file = new File([blob], `cam_${Date.now()}.${mimeType.includes('webm') ? 'webm' : 'mp4'}`, { 
+          type: mimeType 
+        });
+        
         setVideoFile(file);
         setVideoURL(URL.createObjectURL(blob));
-        setStep("edit");
         
-        // Couper la caméra une fois l'enregistrement fini
-        stream.getTracks().forEach(t => t.stop());
+        // Couper la caméra
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(t => t.stop());
+          streamRef.current = null;
+        }
+        
+        setCameraReady(false);
+        setStep("edit");
+      };
+
+      recorder.onerror = (e) => {
+        console.error('❌ Erreur MediaRecorder:', e);
+        alert('Erreur lors de l\'enregistrement');
       };
 
       mediaRecorderRef.current = recorder;
-      recorder.start();
+      recorder.start(1000); // Chunk toutes les secondes
       setIsRecording(true);
+      
+      console.log('✅ Enregistrement démarré');
       
       // Timer
       let time = 0;
@@ -154,17 +241,38 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
       }, 1000);
 
     } catch (err) {
-      console.error("Erreur caméra:", err);
-      alert("Impossible d'accéder à la caméra. Vérifiez les permissions.");
+      console.error("❌ Erreur startRecording:", err);
+      alert("Impossible de démarrer l'enregistrement");
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current?.state === 'recording') {
+    console.log('⏹️ Arrêt enregistrement demandé');
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
     }
+    
     setIsRecording(false);
-    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+  };
+
+  const cancelCamera = () => {
+    console.log('❌ Annulation caméra');
+    
+    stopRecording();
+    
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    
+    setCameraReady(false);
+    setStep("upload");
   };
 
   // --- PUBLISH ---
@@ -183,7 +291,6 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
     formData.append('filter', selectedFilter);
 
     try {
-      // ✅ Récupération sécurisée du token
       const token = await getToken(); 
       
       if (!token) {
@@ -202,20 +309,16 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
             setUploadProgress(percentCompleted);
         },
         signal: abortControllerRef.current.signal,
-        timeout: 300000 // 5 minutes timeout pour les grosses vidéos
+        timeout: 300000
       });
 
       console.log("✅ Upload réussi:", res.data);
 
       if (addVideo) addVideo(res.data.video || res.data);
-      if (fetchVideos) fetchVideos(true); // Rafraîchir le feed
+      if (fetchVideos) fetchVideos(true);
       if (onVideoPublished) onVideoPublished(res.data);
       
-      // Fermeture propre
       handleClose();
-      
-      // Feedback utilisateur (Toast serait mieux qu'alert)
-      // alert("Vidéo publiée avec succès ! 🚀"); 
 
     } catch (err) {
       console.error("❌ Erreur Upload:", err);
@@ -255,7 +358,7 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
         >
           
           {/* ================= HEADER (Fixe) ================= */}
-          {!isRecording && (
+          {step !== "camera" && (
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800 bg-gray-900/90 z-20">
               <div className="flex items-center gap-3">
                   {step !== "upload" && (
@@ -282,7 +385,7 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
           <div className="flex-1 overflow-y-auto overflow-x-hidden relative bg-black custom-scrollbar">
             
             {/* ETAPE 1: UPLOAD */}
-            {step === "upload" && !isRecording && (
+            {step === "upload" && (
               <div className="h-full flex flex-col items-center justify-center p-6 gap-8 animate-in fade-in zoom-in duration-300">
                  <div className="text-center space-y-3">
                     <div className="w-20 h-20 bg-gradient-to-tr from-blue-500 to-purple-600 rounded-full flex items-center justify-center mx-auto shadow-lg shadow-purple-500/30 mb-4">
@@ -307,7 +410,7 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
                     </button>
 
                     <button 
-                        onClick={startRecording}
+                        onClick={initCamera}
                         className="flex items-center gap-4 p-5 bg-gray-800 rounded-2xl hover:bg-gray-700 transition border border-gray-700 group active:scale-95"
                     >
                         <div className="w-12 h-12 bg-pink-500/20 text-pink-400 rounded-full flex items-center justify-center group-hover:scale-110 transition">
@@ -323,32 +426,60 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
             )}
 
             {/* MODE CAMERA (Full Screen) */}
-            {isRecording && (
+            {step === "camera" && (
                 <div className="absolute inset-0 bg-black flex flex-col z-50">
-                    <video ref={cameraVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+                    <video 
+                      ref={cameraVideoRef} 
+                      autoPlay 
+                      muted 
+                      playsInline 
+                      className="w-full h-full object-cover"
+                    />
                     
-                    {/* Timer */}
-                    <div className="absolute top-6 left-0 right-0 flex justify-center">
-                        <span className="bg-red-600/90 backdrop-blur px-4 py-1.5 rounded-full text-white font-mono text-sm shadow-lg animate-pulse border border-red-400/50">
-                            00:{recordingTime.toString().padStart(2, '0')} / 01:00
-                        </span>
-                    </div>
+                    {/* Overlay sombre si pas encore prêt */}
+                    {!cameraReady && (
+                      <div className="absolute inset-0 bg-black/80 flex items-center justify-center">
+                        <div className="text-center space-y-3">
+                          <div className="w-16 h-16 border-4 border-white/20 border-t-white rounded-full animate-spin mx-auto" />
+                          <p className="text-white font-medium">Initialisation de la caméra...</p>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Timer (seulement si enregistrement) */}
+                    {isRecording && (
+                      <div className="absolute top-6 left-0 right-0 flex justify-center z-10">
+                          <span className="bg-red-600/90 backdrop-blur px-4 py-1.5 rounded-full text-white font-mono text-sm shadow-lg animate-pulse border border-red-400/50">
+                              {Math.floor(recordingTime / 60).toString().padStart(2, '0')}:{(recordingTime % 60).toString().padStart(2, '0')} / 01:00
+                          </span>
+                      </div>
+                    )}
 
                     {/* Controls */}
-                    <div className="absolute bottom-10 inset-x-0 flex items-center justify-center gap-12 pb-safe">
+                    <div className="absolute bottom-10 inset-x-0 flex items-center justify-center gap-12 pb-safe z-10">
                         <button 
-                            onClick={() => { stopRecording(); setIsRecording(false); cleanup(); }} 
-                            className="p-4 bg-gray-800/80 text-white rounded-full hover:bg-gray-700 backdrop-blur"
+                            onClick={cancelCamera} 
+                            className="p-4 bg-gray-800/80 text-white rounded-full hover:bg-gray-700 backdrop-blur active:scale-95 transition"
                         >
                             <FaTimes size={20} />
                         </button>
                         
-                        <button 
-                            onClick={stopRecording} 
-                            className="w-20 h-20 border-4 border-white rounded-full p-1 transition-transform active:scale-90"
-                        >
-                            <div className="w-full h-full bg-red-600 rounded-full animate-pulse" />
-                        </button>
+                        {!isRecording ? (
+                          <button 
+                              onClick={startRecording}
+                              disabled={!cameraReady}
+                              className="w-20 h-20 border-4 border-white rounded-full p-2 transition-transform active:scale-90 disabled:opacity-50"
+                          >
+                              <div className="w-full h-full bg-red-600 rounded-full" />
+                          </button>
+                        ) : (
+                          <button 
+                              onClick={stopRecording} 
+                              className="w-20 h-20 border-4 border-white rounded-full p-2 transition-transform active:scale-90"
+                          >
+                              <div className="w-full h-full bg-red-600 rounded-sm animate-pulse" />
+                          </button>
+                        )}
                         
                         {/* Placeholder pour équilibrer */}
                         <div className="w-14" /> 
@@ -458,7 +589,7 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
           </div>
 
           {/* ================= FOOTER (Fixe - Boutons) ================= */}
-          {!isRecording && step !== "upload" && (
+          {step !== "camera" && step !== "upload" && (
             <div className="p-4 border-t border-gray-800 bg-gray-900/95 backdrop-blur-sm z-20">
                 {step === "edit" ? (
                     <button 

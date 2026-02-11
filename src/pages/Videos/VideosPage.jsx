@@ -1,22 +1,39 @@
 // ============================================
-// 📁 src/pages/Videos/VideosPage.jsx
-// VERSION ULTRA-OPTIMISÉE - Performances Maximales ⚡
+// 📁 src/pages/Videos/VideosPage.INFINITE.jsx
+// VERSION SCROLL INFINI - Pubs invisibles + contenu sans fin
 // ============================================
-import React, { useState, useEffect, useRef, useCallback, memo } from "react";
+import React, { useState, useEffect, useRef, useCallback, memo, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { useVideos } from "../../context/VideoContext";
 import VideoCard from "./VideoCard";
 import VideoModal from "./VideoModal";
+import VideoAd from "./Publicite/VideoAd.jsx"; // Version invisible
 import {
   FaPlus, FaSearch, FaArrowLeft, FaTimes
 } from "react-icons/fa";
 
-// ✅ OPTIMISATION : Transition ultra-rapide
+// ============================================
+// CONFIGURATION GLOBALE
+// ============================================
+const CONFIG = {
+  ads: {
+    enabled: true,
+    frequency: 3, // Une pub tous les 3 posts
+  },
+  infiniteScroll: {
+    enabled: true,
+    minContentBeforeAds: 0, // Même si 0 posts, afficher des pubs
+    adsToGenerate: 20, // Combien de pubs générer quand il n'y a plus de contenu
+  }
+};
+
 const fastTransition = { duration: 0.15, ease: "easeOut" };
 
-// ✅ OPTIMISATION : Composant ActionBar mémorisé
+// ============================================
+// ACTION BAR
+// ============================================
 const ActionBar = memo(({ 
   onBack, 
   activeTab, 
@@ -30,7 +47,6 @@ const ActionBar = memo(({
   <div className="fixed top-0 inset-x-0 z-50 bg-gradient-to-b from-black/80 to-transparent px-4 py-3 pt-safe">
     <div className="flex items-center justify-between max-w-7xl mx-auto">
       
-      {/* RETOUR */}
       <button
         onClick={onBack}
         className="w-10 h-10 rounded-full bg-white/10 backdrop-blur-md flex items-center justify-center text-white hover:bg-white/20 active:scale-95 transition-transform"
@@ -38,7 +54,6 @@ const ActionBar = memo(({
         <FaArrowLeft />
       </button>
 
-      {/* TABS CENTRAUX */}
       <div className="flex gap-1 bg-black/30 backdrop-blur-xl rounded-full p-1 border border-white/10">
         {[
           { id: "foryou", label: "Pour toi" },
@@ -58,9 +73,7 @@ const ActionBar = memo(({
         ))}
       </div>
 
-      {/* ACTIONS DROITE */}
       <div className="flex items-center gap-2">
-        {/* RECHERCHE */}
         <div className="relative">
           <AnimatePresence>
             {showSearch && (
@@ -85,7 +98,6 @@ const ActionBar = memo(({
           </button>
         </div>
 
-        {/* ADD BUTTON */}
         <button
           onClick={onAddVideo}
           className="w-10 h-10 rounded-full bg-gradient-to-r from-orange-500 to-pink-600 flex items-center justify-center text-white shadow-lg hover:scale-105 active:scale-95 transition-transform"
@@ -97,7 +109,9 @@ const ActionBar = memo(({
   </div>
 ));
 
-// ✅ OPTIMISATION : Écran de chargement mémorisé
+// ============================================
+// LOADING SCREEN
+// ============================================
 const LoadingScreen = memo(() => (
   <div className="h-screen bg-black flex flex-col items-center justify-center z-50">
     <div className="w-16 h-16 border-4 border-gray-800 border-t-orange-500 rounded-full animate-spin mb-4" />
@@ -105,25 +119,12 @@ const LoadingScreen = memo(() => (
   </div>
 ));
 
-// ✅ OPTIMISATION : État vide mémorisé
-const EmptyState = memo(({ onAddVideo }) => (
-  <div className="h-full flex flex-col items-center justify-center text-white space-y-4">
-    <div className="text-6xl">📹</div>
-    <h2 className="text-2xl font-bold">Aucune vidéo</h2>
-    <p className="text-gray-400">Soyez le premier à publier !</p>
-    <button 
-      onClick={onAddVideo}
-      className="px-6 py-3 bg-white text-black rounded-full font-bold hover:scale-105 active:scale-95 transition-transform"
-    >
-      Créer une vidéo
-    </button>
-  </div>
-));
-
+// ============================================
+// COMPOSANT PRINCIPAL
+// ============================================
 const VideosPage = () => {
   const navigate = useNavigate();
   
-  // Auth
   const { user: currentUser } = useAuth();
   
   const {
@@ -150,11 +151,61 @@ const VideosPage = () => {
   const fetchTriggered = useRef(false);
   const scrollTimeout = useRef(null);
 
-  // ✅ OPTIMISATION : Gestion du scroll avec debounce
+  // ============================================
+  // 🔥 LOGIQUE SCROLL INFINI AVEC PUBS
+  // ============================================
+  const feedItems = useMemo(() => {
+    const items = [];
+    const hasUserContent = filteredVideos.length > 0;
+
+    if (hasUserContent) {
+      // CAS 1 : Il y a des posts utilisateurs
+      filteredVideos.forEach((video, index) => {
+        // Ajouter le post
+        items.push({ type: 'video', data: video, id: video._id });
+
+        // Ajouter une pub tous les X posts (si activé)
+        if (CONFIG.ads.enabled && (index + 1) % CONFIG.ads.frequency === 0) {
+          items.push({ 
+            type: 'ad', 
+            id: `ad-${index}`,
+            adIndex: Math.floor(index / CONFIG.ads.frequency)
+          });
+        }
+      });
+
+      // Ajouter des pubs à la fin pour le scroll infini
+      if (CONFIG.infiniteScroll.enabled && !hasMore) {
+        for (let i = 0; i < CONFIG.infiniteScroll.adsToGenerate; i++) {
+          items.push({
+            type: 'ad',
+            id: `infinite-ad-${i}`,
+            adIndex: i + 1000 // Index élevé pour éviter les collisions
+          });
+        }
+      }
+    } else {
+      // CAS 2 : Aucun post utilisateur = QUE DES PUBS
+      if (CONFIG.infiniteScroll.enabled) {
+        for (let i = 0; i < CONFIG.infiniteScroll.adsToGenerate; i++) {
+          items.push({
+            type: 'ad',
+            id: `solo-ad-${i}`,
+            adIndex: i
+          });
+        }
+      }
+    }
+
+    return items;
+  }, [filteredVideos, hasMore]);
+
+  // ============================================
+  // GESTION DU SCROLL
+  // ============================================
   const handleScroll = useCallback(() => {
     if (viewMode !== "swipe") return;
     
-    // ✅ Debounce pour éviter trop d'appels
     if (scrollTimeout.current) {
       clearTimeout(scrollTimeout.current);
     }
@@ -166,22 +217,34 @@ const VideosPage = () => {
       const scrollTop = container.scrollTop;
       const windowHeight = container.clientHeight;
       
-      // Calcul de l'index actuel
       const newIndex = Math.round(scrollTop / windowHeight);
 
-      if (newIndex !== activeIndex && newIndex >= 0 && newIndex < filteredVideos.length) {
+      if (newIndex !== activeIndex && newIndex >= 0 && newIndex < feedItems.length) {
         setActiveIndex(newIndex);
       }
 
-      // Infinite Scroll
+      // Infinite Scroll : charger plus de posts utilisateurs si disponibles
       const distanceToBottom = container.scrollHeight - (scrollTop + windowHeight);
       if (distanceToBottom < windowHeight * 2 && hasMore && !loading) {
         fetchVideos();
       }
-    }, 50); // ✅ Debounce de 50ms
-  }, [activeIndex, filteredVideos.length, hasMore, loading, fetchVideos, viewMode]);
 
-  // ✅ OPTIMISATION : Callbacks mémorisés
+      // 🔥 Si on est proche de la fin des pubs, en générer plus
+      if (CONFIG.infiniteScroll.enabled) {
+        const totalItems = feedItems.length;
+        const triggerPoint = totalItems - 5; // Déclencher 5 items avant la fin
+        
+        if (newIndex >= triggerPoint) {
+          console.log('🔄 Génération de pubs supplémentaires...');
+          // La logique se gère automatiquement via useMemo
+        }
+      }
+    }, 50);
+  }, [activeIndex, feedItems.length, hasMore, loading, fetchVideos, viewMode]);
+
+  // ============================================
+  // CALLBACKS
+  // ============================================
   const handleVideoPublished = useCallback(() => {
     console.log("✅ [VideosPage] Vidéo publiée !");
     setActiveIndex(0);
@@ -194,7 +257,11 @@ const VideosPage = () => {
   const handleBack = useCallback(() => navigate("/"), [navigate]);
   const handleAddVideo = useCallback(() => setShowModal(true), []);
 
-  // CSS Injection pour cacher la scrollbar
+  // ============================================
+  // EFFECTS
+  // ============================================
+  
+  // CSS Injection
   useEffect(() => {
     const styleId = 'videos-scrollbar-hide';
     if (!document.getElementById(styleId)) {
@@ -206,14 +273,13 @@ const VideosPage = () => {
     return () => {
       const el = document.getElementById(styleId);
       if (el) el.remove();
-      // ✅ Cleanup du timeout
       if (scrollTimeout.current) {
         clearTimeout(scrollTimeout.current);
       }
     };
   }, []);
 
-  // Fetch initial unique
+  // Fetch initial
   useEffect(() => {
     if (!fetchTriggered.current) {
       fetchTriggered.current = true;
@@ -221,7 +287,7 @@ const VideosPage = () => {
     }
   }, [fetchVideos]);
 
-  // ✅ OPTIMISATION : Filtrage avec useMemo serait mieux, mais useEffect ok
+  // Filtrage
   useEffect(() => {
     if (searchQuery.trim()) {
       const lowerQ = searchQuery.toLowerCase();
@@ -236,26 +302,31 @@ const VideosPage = () => {
     }
   }, [searchQuery, videos]);
 
-  // ✅ OPTIMISATION : Tracking vues sécurisé
+  // Tracking vues (seulement pour les vidéos normales)
   useEffect(() => {
-    const activeVideo = filteredVideos[activeIndex];
+    const activeItem = feedItems[activeIndex];
     
-    if (activeVideo && !viewTracked.current.has(activeVideo._id)) {
-      viewTracked.current.add(activeVideo._id);
+    if (activeItem && activeItem.type === 'video') {
+      const video = activeItem.data;
       
-      // ✅ Vérification stricte avant appel
-      if (typeof incrementViews === 'function') {
-        incrementViews(activeVideo._id);
+      if (!viewTracked.current.has(video._id)) {
+        viewTracked.current.add(video._id);
+        
+        if (typeof incrementViews === 'function') {
+          incrementViews(video._id);
+        }
       }
     }
-  }, [activeIndex, filteredVideos, incrementViews]);
+  }, [activeIndex, feedItems, incrementViews]);
 
-  // ✅ LOADING SCREEN
+  // ============================================
+  // RENDER
+  // ============================================
+  
   if (initialLoad) {
     return <LoadingScreen />;
   }
 
-  // ✅ RENDER : MODE SWIPE (TikTok Style)
   return (
     <div className="relative h-screen w-full bg-black overflow-hidden">
       <ActionBar 
@@ -274,18 +345,25 @@ const VideosPage = () => {
         onScroll={handleScroll}
         className="videos-container h-full w-full overflow-y-scroll snap-y snap-mandatory scroll-smooth"
       >
-        {filteredVideos.length === 0 && !loading ? (
-          <EmptyState onAddVideo={handleAddVideo} />
-        ) : (
-          filteredVideos.map((video, index) => (
-            <div key={video._id} className="h-full w-full snap-start snap-always relative">
-              {/* ✅ On passe isActive pour autoplay intelligent */}
-              <VideoCard video={video} isActive={index === activeIndex} />
-            </div>
-          ))
-        )}
+        {feedItems.map((item, index) => (
+          <div 
+            key={item.id} 
+            className="h-full w-full snap-start snap-always relative"
+          >
+            {item.type === 'ad' ? (
+              <VideoAd 
+                isActive={index === activeIndex}
+              />
+            ) : (
+              <VideoCard 
+                video={item.data} 
+                isActive={index === activeIndex} 
+              />
+            )}
+          </div>
+        ))}
         
-        {/* ✅ Loading indicator pendant le fetch */}
+        {/* Loading indicator pour les posts utilisateurs */}
         {loading && (
           <div className="h-20 flex items-center justify-center w-full absolute bottom-0 z-20">
             <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -293,24 +371,26 @@ const VideosPage = () => {
         )}
       </div>
 
-      {/* ✅ INDICATEUR DE POSITION (léger) */}
-      {filteredVideos.length > 1 && (
+      {/* INDICATEUR DE POSITION */}
+      {feedItems.length > 1 && (
         <div className="absolute right-1 top-1/2 -translate-y-1/2 flex flex-col gap-1 z-10 pointer-events-none">
-          {filteredVideos.slice(
+          {feedItems.slice(
             Math.max(0, activeIndex - 2), 
             activeIndex + 3
-          ).map((_, i) => (
+          ).map((item, i) => (
             <div 
               key={i} 
               className={`w-1 h-1 rounded-full transition-colors ${
-                i === Math.min(2, activeIndex) ? 'bg-white' : 'bg-white/30'
+                i === Math.min(2, activeIndex) 
+                  ? item.type === 'ad' ? 'bg-orange-500' : 'bg-white'
+                  : 'bg-white/30'
               }`} 
             />
           ))}
         </div>
       )}
 
-      {/* ✅ MODAL CREATION */}
+      {/* MODAL CREATION */}
       {showModal && (
         <VideoModal 
           showModal={showModal} 

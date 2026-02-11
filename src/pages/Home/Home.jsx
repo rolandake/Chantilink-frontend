@@ -1,6 +1,6 @@
 // ============================================
-// 📁 src/pages/Home/Home.jsx
-// VERSION AVEC SYSTÈME DE PUBLICITÉS
+// 📁 src/pages/Home/Home.final.jsx
+// VERSION FINALE - Avec système de publicités intelligent
 // ============================================
 import React, {
   useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense
@@ -15,7 +15,7 @@ import { useAuth } from "../../context/AuthContext";
 import PostCard from "./PostCard";
 import StoryContainer from "./StoryContainer";
 import StoryCreator from "./StoryCreator";
-import DemoAdCard from "./Publicite/DemoAdCard";
+import SmartAd from "./Publicite/SmartAd"; // 🎯 Utilise SmartAd au lieu de DemoAdCard
 
 const StoryViewer = lazy(() => import("./StoryViewer"));
 const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
@@ -26,9 +26,6 @@ const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse")
 const AD_CONFIG = {
   enabled: true, // Activer/désactiver les pubs
   frequency: 3, // Une pub tous les X posts
-  useDemoAds: true, // true = pubs démo, false = Google AdSense
-  googleAdClient: "ca-pub-XXXXXXXXXXXXXXXX", // Votre ID Google AdSense
-  googleAdSlot: "XXXXXXXXXX" // Votre Slot ID
 };
 
 // ============================================
@@ -112,7 +109,7 @@ const PostWrapper = ({ post, onDeleted, showToast }) => (
 );
 
 // ============================================
-// Composant pour insérer les publicités
+// Composant pour insérer les publicités (VERSION SMART)
 // ============================================
 const PostWithAd = memo(({ 
   post, 
@@ -140,7 +137,12 @@ const PostWithAd = memo(({
           exit={{ opacity: 0, y: -20 }}
           transition={{ duration: 0.3 }}
         >
-          <DemoAdCard canClose={true} />
+          {/* 🎯 SmartAd choisit automatiquement entre Demo et Google */}
+          <SmartAd 
+            slot="feedInline" 
+            canClose={true}
+            autoRotate={false}
+          />
         </motion.div>
       )}
     </>
