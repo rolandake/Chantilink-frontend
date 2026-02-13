@@ -1,4 +1,4 @@
-// ProfileSuggestions.jsx - VERSION FINALE COMPLÈTE CORRIGÉE
+// ProfileSuggestions.jsx - VERSION FINALE SANS DOUBLONS SUIVIS
 import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { UserPlusIcon, XMarkIcon, SparklesIcon, ShieldCheckIcon, ChevronLeftIcon, ChevronRightIcon } from "@heroicons/react/24/outline";
@@ -6,7 +6,7 @@ import { UserPlusIcon, XMarkIcon, SparklesIcon, ShieldCheckIcon, ChevronLeftIcon
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 // ============================================
-// 🎨 COMPOSANT CARTE SUGGESTION (HORIZONTAL)
+// 🎨 COMPOSANT CARTE SUGGESTION (INCHANGÉ)
 // ============================================
 
 const SuggestionCard = React.forwardRef(({ 
@@ -48,7 +48,6 @@ const SuggestionCard = React.forwardRef(({
           : 'bg-white/90 hover:bg-white border border-gray-200/50 hover:border-orange-300 shadow-sm hover:shadow-md'
       }`}
     >
-      {/* Bouton Dismiss - Au survol uniquement */}
       <AnimatePresence>
         {isHovered && (
           <motion.button
@@ -70,7 +69,6 @@ const SuggestionCard = React.forwardRef(({
       </AnimatePresence>
 
       <div className="p-4 flex flex-col items-center text-center">
-        {/* Avatar avec contour premium */}
         <div className="relative mb-3">
           <motion.div
             className={`relative ${
@@ -93,7 +91,6 @@ const SuggestionCard = React.forwardRef(({
             />
           </motion.div>
           
-          {/* Badge Premium/Vérifié */}
           {(suggestion.isPremium || suggestion.isVerified) && (
             <motion.div
               initial={{ scale: 0 }}
@@ -112,9 +109,7 @@ const SuggestionCard = React.forwardRef(({
           )}
         </div>
 
-        {/* Infos utilisateur */}
         <div className="w-full mb-3">
-          {/* Nom extrabold */}
           <div className="flex items-center justify-center gap-1 mb-0.5">
             <p className={`font-extrabold text-sm truncate max-w-full ${
               isDarkMode ? 'text-white' : 'text-gray-900'
@@ -126,14 +121,12 @@ const SuggestionCard = React.forwardRef(({
             )}
           </div>
           
-          {/* Username gris */}
           <p className={`text-[11px] truncate mb-1.5 ${
             isDarkMode ? 'text-gray-500' : 'text-gray-500'
           }`}>
             @{suggestion.username || suggestion.email?.split('@')[0] || 'user'}
           </p>
           
-          {/* Badge contexte */}
           <span className={`inline-block text-[9px] font-semibold px-2 py-0.5 rounded-full ${
             suggestion.isPremium 
               ? 'bg-gradient-to-r from-orange-500/20 to-pink-500/20 text-orange-400'
@@ -147,14 +140,12 @@ const SuggestionCard = React.forwardRef(({
           </span>
         </div>
 
-        {/* Stats - Une seule ligne */}
         <div className={`w-full text-[10px] mb-3 ${
           isDarkMode ? 'text-gray-500' : 'text-gray-500'
         }`}>
           <span className="font-medium">{suggestion.followers?.length || 0} abonnés</span>
         </div>
 
-        {/* Bouton Follow */}
         <motion.button
           onClick={() => onFollow(suggestion._id)}
           disabled={isLoading}
@@ -183,7 +174,7 @@ const SuggestionCard = React.forwardRef(({
 SuggestionCard.displayName = 'SuggestionCard';
 
 // ============================================
-// 🔄 LOADING SKELETON
+// 🔄 LOADING SKELETON (INCHANGÉ)
 // ============================================
 
 const LoadingCard = React.memo(({ isDarkMode }) => (
@@ -225,8 +216,11 @@ export default function ProfileSuggestions({
   const [scrollPosition, setScrollPosition] = useState(0);
   const scrollContainerRef = React.useRef(null);
 
+  // ✅ NOUVEAU : Suivre les IDs des utilisateurs suivis localement
+  const [localFollowedIds, setLocalFollowedIds] = useState(new Set());
+
   // ============================================
-  // 🎯 SCROLL HORIZONTAL
+  // 🎯 SCROLL HORIZONTAL (INCHANGÉ)
   // ============================================
 
   const scroll = (direction) => {
@@ -259,16 +253,24 @@ export default function ProfileSuggestions({
 
       const usersMap = new Map();
       const currentUserId = currentUser?._id || currentUser?.id;
-      const currentFollowing = new Set(
-        (currentUser?.following || []).map(f => typeof f === 'object' ? f._id : f)
-      );
+      
+      // ✅ CORRECTION : Inclure currentUser.following + localFollowedIds
+      const currentFollowing = new Set([
+        ...(currentUser?.following || []).map(f => typeof f === 'object' ? f._id : f),
+        ...localFollowedIds
+      ]);
 
       posts.forEach(post => {
         const postUser = post.user;
         if (!postUser) return;
 
         const userId = postUser._id || postUser.id;
-        if (!userId || userId === currentUserId || currentFollowing.has(userId) || dismissedIds.has(userId)) {
+        if (!userId 
+          || userId === currentUserId 
+          || currentFollowing.has(userId) 
+          || dismissedIds.has(userId)
+          || localFollowedIds.has(userId) // ✅ CRITIQUE
+        ) {
           return;
         }
 
@@ -306,7 +308,7 @@ export default function ProfileSuggestions({
       console.error('❌ Erreur cache:', err);
       return [];
     }
-  }, [currentUser, dismissedIds, maxSuggestions]);
+  }, [currentUser, dismissedIds, localFollowedIds, maxSuggestions]);
 
   // ============================================
   // 🔄 FETCH SUGGESTIONS
@@ -381,19 +383,20 @@ export default function ProfileSuggestions({
         return;
       }
 
-      // ✅ FILTRAGE RENFORCÉ: Exclure following + dismissed + followingIds
-      const currentFollowing = new Set(
-        (currentUser.following || []).map(f => typeof f === 'object' ? f._id : f)
-      );
+      // ✅ CORRECTION CRITIQUE : Quadruple filtrage
+      const currentFollowing = new Set([
+        ...(currentUser.following || []).map(f => typeof f === 'object' ? f._id : f),
+        ...localFollowedIds // ✅ AJOUT DES FOLLOWS LOCAUX
+      ]);
 
       const filtered = allUsers
         .filter(u => {
           const uid = u._id || u.id;
-          // ✅ Triple vérification pour éviter les doublons
           return uid !== userId 
             && !currentFollowing.has(uid) 
             && !dismissedIds.has(uid)
-            && !followingIds.has(uid); // ✅ CRITIQUE
+            && !followingIds.has(uid)
+            && !localFollowedIds.has(uid); // ✅ CRITIQUE
         })
         .sort((a, b) => {
           if (a.isPremium && !b.isPremium) return -1;
@@ -404,7 +407,7 @@ export default function ProfileSuggestions({
         })
         .slice(0, maxSuggestions);
 
-      console.log(`📊 Suggestions filtrées: ${filtered.length} (following: ${currentFollowing.size}, dismissed: ${dismissedIds.size}, following en cours: ${followingIds.size})`);
+      console.log(`📊 Suggestions filtrées: ${filtered.length} (following: ${currentFollowing.size}, dismissed: ${dismissedIds.size}, en cours: ${followingIds.size}, local: ${localFollowedIds.size})`);
       setSuggestions(filtered);
 
     } catch (err) {
@@ -418,7 +421,7 @@ export default function ProfileSuggestions({
     } finally {
       setLoading(false);
     }
-  }, [currentUser, token, dismissedIds, followingIds, maxSuggestions, getSuggestionsFromCache]);
+  }, [currentUser, token, dismissedIds, followingIds, localFollowedIds, maxSuggestions, getSuggestionsFromCache]);
 
   useEffect(() => {
     fetchSuggestions();
@@ -429,12 +432,21 @@ export default function ProfileSuggestions({
   // ============================================
 
   const handleFollow = useCallback(async (userId) => {
-    if (!token || followingIds.has(userId)) return;
+    if (!token || followingIds.has(userId) || localFollowedIds.has(userId)) {
+      console.log('⚠️ Follow ignoré - Déjà en cours ou suivi');
+      return;
+    }
 
+    console.log(`🚀 [Follow] Démarrage pour userId: ${userId}`);
+    
+    // ✅ Marquer immédiatement comme "en cours" et "suivi localement"
     setFollowingIds(prev => new Set(prev).add(userId));
+    setLocalFollowedIds(prev => new Set(prev).add(userId));
+    
+    // ✅ Retirer IMMÉDIATEMENT de la liste pour éviter double-clic
+    setSuggestions(prev => prev.filter(s => (s._id || s.id) !== userId));
 
     try {
-      // ✅ Utiliser la nouvelle route unifiée /:id/follow
       const response = await fetch(`${API_URL}/api/users/${userId}/follow`, {
         method: 'POST',
         headers: {
@@ -450,34 +462,37 @@ export default function ProfileSuggestions({
       }
 
       const data = await response.json();
-      console.log('✅ Follow réussi:', data);
+      console.log('✅ [Follow] Succès:', data);
 
-      // ✅ Retirer immédiatement de la liste
-      setSuggestions(prev => prev.filter(s => (s._id || s.id) !== userId));
-      
-      // ✅ Ajouter à dismissedIds pour ne jamais revenir
+      // ✅ Ajouter à dismissedIds pour ne JAMAIS revenir
       setDismissedIds(prev => new Set(prev).add(userId));
       
-      // ✅ Notifier le parent
+      // ✅ Notifier le parent (pour mettre à jour currentUser.following)
       onFollowSuccess?.(userId);
       
     } catch (err) {
-      console.error('❌ Erreur follow:', err);
+      console.error('❌ [Follow] Erreur:', err);
+      
+      // ✅ En cas d'erreur, on ne remet PAS dans la liste
+      // Mais on retire de followingIds
       setFollowingIds(prev => {
         const newSet = new Set(prev);
         newSet.delete(userId);
         return newSet;
       });
+      
+      // ✅ On garde dans localFollowedIds pour éviter de le revoir
     }
-  }, [token, followingIds, onFollowSuccess]);
+  }, [token, followingIds, localFollowedIds, onFollowSuccess]);
 
   const handleDismiss = useCallback((userId) => {
+    console.log(`🚫 [Dismiss] userId: ${userId}`);
     setDismissedIds(prev => new Set(prev).add(userId));
     setSuggestions(prev => prev.filter(s => (s._id || s.id) !== userId));
   }, []);
 
   // ============================================
-  // 🎨 RENDU
+  // 🎨 RENDU (INCHANGÉ)
   // ============================================
 
   if (loading) {
@@ -563,7 +578,6 @@ export default function ProfileSuggestions({
         </div>
       </div>
 
-      {/* Scroll horizontal avec boutons */}
       <div className="relative">
         {scrollPosition > 0 && (
           <motion.button

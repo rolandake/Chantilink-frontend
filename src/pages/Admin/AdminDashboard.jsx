@@ -1,13 +1,14 @@
 // ==========================================
-// 📁 AdminDashboard.jsx - VERSION FINALE CORRIGÉE
-// ✅ Utilise useAuth() au lieu de AuthContext directement
+// 📁 AdminDashboard.jsx - VERSION AVEC SIGNALEMENTS
+// ✅ Ajout d'une section pour voir les utilisateurs signalés
 // ==========================================
 import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { 
   Users, Crown, CheckCircle, Ban, Search, RotateCw, 
-  Mail, Trash2, AlertCircle, Shield, Clock, Eye, Activity
+  Mail, Trash2, AlertCircle, Shield, Clock, Eye, Activity,
+  Flag, TrendingUp, AlertTriangle // ✅ NOUVEAUX ICÔNES
 } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext'; // ✅ CORRECTION
+import { useAuth } from '../../context/AuthContext';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
@@ -48,7 +49,257 @@ const useSecureRequest = (token) => {
 };
 
 // ==========================================
-// 👤 USER CARD
+// 🚨 REPORTED USER CARD - NOUVEAU
+// ==========================================
+const ReportedUserCard = memo(({ user, onAction, onViewReports }) => {
+  const reportCount = user.moderation?.reportCount || 0;
+  const strikes = user.moderation?.strikes || 0;
+  const riskLevel = user.moderation?.riskLevel || 'low';
+  
+  const riskColors = {
+    low: 'bg-green-100 text-green-700 border-green-200',
+    medium: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+    high: 'bg-orange-100 text-orange-700 border-orange-200',
+    critical: 'bg-red-100 text-red-700 border-red-200',
+    banned: 'bg-gray-800 text-white border-gray-900'
+  };
+
+  const riskColor = user.isBanned ? riskColors.banned : riskColors[riskLevel] || riskColors.low;
+
+  return (
+    <div className="p-4 border-b border-gray-100 bg-white hover:bg-gray-50 transition-colors">
+      <div className="flex items-start justify-between">
+        {/* USER INFO */}
+        <div className="flex items-center gap-3 flex-1">
+          <div className="relative">
+            <img 
+              src={user.profilePhoto || '/default-avatar.png'} 
+              className="w-12 h-12 rounded-full object-cover border-2 border-white shadow-sm" 
+              alt="" 
+            />
+            {user.isBanned && (
+              <div className="absolute -top-1 -right-1 w-5 h-5 bg-red-600 rounded-full flex items-center justify-center">
+                <Ban size={10} className="text-white" />
+              </div>
+            )}
+          </div>
+          
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-gray-900 truncate text-sm">
+                {user.fullName || 'Anonyme'}
+              </h3>
+              {user.isVerified && <Shield size={12} className="text-blue-500" />}
+            </div>
+            <p className="text-xs text-gray-500 truncate">{user.email}</p>
+          </div>
+        </div>
+
+        {/* RISK BADGE */}
+        <div className={`px-3 py-1 rounded-full text-xs font-bold border ${riskColor}`}>
+          {user.isBanned ? 'BANNI' : riskLevel.toUpperCase()}
+        </div>
+      </div>
+
+      {/* STATS */}
+      <div className="grid grid-cols-3 gap-2 mt-3">
+        <div className="bg-red-50 p-2 rounded-lg border border-red-100 text-center">
+          <p className="text-xs font-bold text-red-600">{reportCount}</p>
+          <p className="text-[9px] text-red-500 uppercase">Signalements</p>
+        </div>
+        <div className="bg-orange-50 p-2 rounded-lg border border-orange-100 text-center">
+          <p className="text-xs font-bold text-orange-600">{strikes}/3</p>
+          <p className="text-[9px] text-orange-500 uppercase">Strikes</p>
+        </div>
+        <div className="bg-gray-50 p-2 rounded-lg border border-gray-100 text-center">
+          <p className="text-xs font-bold text-gray-600">
+            {user.moderation?.warningCount || 0}
+          </p>
+          <p className="text-[9px] text-gray-500 uppercase">Avertissements</p>
+        </div>
+      </div>
+
+      {/* ACTIONS */}
+      <div className="grid grid-cols-3 gap-2 mt-3">
+        <button 
+          onClick={() => onViewReports(user)}
+          className="px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1 active:scale-95"
+        >
+          <Eye size={14} />
+          Voir signalements
+        </button>
+        <button 
+          onClick={() => onAction('ban', user)}
+          className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 active:scale-95 ${
+            user.isBanned 
+              ? 'bg-green-600 text-white' 
+              : 'bg-red-600 text-white'
+          }`}
+        >
+          <Ban size={14} />
+          {user.isBanned ? 'Débannir' : 'Bannir'}
+        </button>
+        <button 
+          onClick={() => onAction('delete', user)}
+          className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-xs font-bold flex items-center justify-center gap-1 active:scale-95"
+        >
+          <Trash2 size={14} />
+          Supprimer
+        </button>
+      </div>
+    </div>
+  );
+});
+
+// ==========================================
+// 🚨 REPORTS MODAL - NOUVEAU
+// ==========================================
+const ReportsModal = memo(({ user, onClose, request }) => {
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadReports = async () => {
+      try {
+        const data = await request(`/reports?reportedUser=${user._id}`);
+        setReports(data.reports || []);
+      } catch (err) {
+        console.error('Erreur chargement signalements:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadReports();
+  }, [user._id, request]);
+
+  const categoryLabels = {
+    spam: '🚫 Spam',
+    harassment: '😡 Harcèlement',
+    hate_speech: '⚠️ Discours haineux',
+    fake_account: '🎭 Faux compte',
+    inappropriate_content: '🔞 Contenu inapproprié',
+    scam: '💰 Arnaque',
+    violence: '🔪 Violence',
+    other: '📝 Autre'
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-md z-[500] flex items-center justify-center p-4">
+      <div className="bg-white w-full max-w-2xl max-h-[80vh] rounded-3xl shadow-2xl overflow-hidden">
+        {/* HEADER */}
+        <div className="p-6 bg-gradient-to-r from-red-600 to-orange-600 text-white">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-black uppercase">Signalements</h2>
+              <p className="text-sm opacity-90 mt-1">{user.fullName}</p>
+            </div>
+            <button 
+              onClick={onClose}
+              className="p-2 bg-white/20 rounded-full hover:bg-white/30 transition-colors"
+            >
+              <AlertCircle size={24} />
+            </button>
+          </div>
+        </div>
+
+        {/* STATS */}
+        <div className="grid grid-cols-3 gap-3 p-4 bg-gray-50 border-b">
+          <div className="text-center">
+            <p className="text-2xl font-black text-red-600">
+              {user.moderation?.reportCount || 0}
+            </p>
+            <p className="text-xs text-gray-600 uppercase font-bold">Total</p>
+          </div>
+          <div className="text-center">
+            <p className="text-2xl font-black text-orange-600">
+              {user.moderation?.strikes || 0}/3
+            </p>
+            <p className="text-xs text-gray-600 uppercase font-bold">Strikes</p>
+          </div>
+          <div className="text-center">
+            <p className="text-2xl font-black text-gray-600">
+              {reports.filter(r => r.status === 'pending').length}
+            </p>
+            <p className="text-xs text-gray-600 uppercase font-bold">En attente</p>
+          </div>
+        </div>
+
+        {/* LISTE DES SIGNALEMENTS */}
+        <div className="overflow-y-auto max-h-96 p-4">
+          {loading ? (
+            <div className="text-center py-12">
+              <RotateCw className="animate-spin mx-auto text-blue-500" size={32} />
+            </div>
+          ) : reports.length === 0 ? (
+            <div className="text-center py-12 text-gray-400">
+              <Flag size={48} className="mx-auto mb-4 opacity-50" />
+              <p className="font-bold">Aucun signalement trouvé</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {reports.map((report) => (
+                <div 
+                  key={report._id} 
+                  className="p-4 bg-white border rounded-2xl hover:shadow-md transition-shadow"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl">
+                        {categoryLabels[report.category]?.split(' ')[0] || '📝'}
+                      </span>
+                      <div>
+                        <p className="font-bold text-sm text-gray-900">
+                          {categoryLabels[report.category]?.split(' ').slice(1).join(' ') || report.category}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {new Date(report.createdAt).toLocaleDateString('fr-FR', {
+                            day: 'numeric',
+                            month: 'short',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </p>
+                      </div>
+                    </div>
+                    <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                      report.status === 'pending' 
+                        ? 'bg-yellow-100 text-yellow-700'
+                        : report.status === 'resolved'
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-gray-100 text-gray-700'
+                    }`}>
+                      {report.status}
+                    </span>
+                  </div>
+                  
+                  {report.description && (
+                    <p className="text-sm text-gray-700 bg-gray-50 p-3 rounded-lg">
+                      {report.description}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* FOOTER */}
+        <div className="p-4 bg-gray-50 border-t flex justify-end gap-3">
+          <button 
+            onClick={onClose}
+            className="px-6 py-3 bg-gray-200 text-gray-700 rounded-xl font-bold hover:bg-gray-300 transition-colors"
+          >
+            Fermer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// ==========================================
+// 👤 USER CARD (INCHANGÉ)
 // ==========================================
 const UserCard = memo(({ user, onAction }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -61,7 +312,6 @@ const UserCard = memo(({ user, onAction }) => {
   return (
     <div className={`transition-all border-b border-gray-100 ${isExpanded ? 'bg-blue-50/40' : 'bg-white'}`}>
       <div className="p-4">
-        {/* LIGNE 1 : INFOS DE BASE */}
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
             <div className="relative">
@@ -94,7 +344,6 @@ const UserCard = memo(({ user, onAction }) => {
           </div>
         </div>
 
-        {/* STATS */}
         <div className="grid grid-cols-3 gap-2 mt-4 text-center">
           <div className="bg-gray-50 p-2 rounded-xl border border-gray-100">
             <p className="text-[8px] font-bold text-gray-400 uppercase">Amis</p>
@@ -110,7 +359,6 @@ const UserCard = memo(({ user, onAction }) => {
           </div>
         </div>
 
-        {/* BOUTONS */}
         <div className="grid grid-cols-4 gap-2 mt-4">
           <button onClick={() => onAction('notify', user)} className="flex flex-col items-center p-2 bg-blue-50 text-blue-600 rounded-xl active:scale-95">
             <Mail size={18}/><span className="text-[8px] font-bold mt-1">Message</span>
@@ -126,7 +374,6 @@ const UserCard = memo(({ user, onAction }) => {
           </button>
         </div>
 
-        {/* DÉTAILS EXPANDUS */}
         {isExpanded && (
           <div className="mt-4 p-4 bg-white rounded-2xl border-2 border-orange-200">
             <h4 className="text-[10px] font-black text-orange-600 uppercase mb-3 flex items-center gap-2">
@@ -169,16 +416,18 @@ const UserCard = memo(({ user, onAction }) => {
 // 🚀 DASHBOARD PRINCIPAL
 // ==========================================
 export default function AdminDashboard() {
-  // ✅ CORRECTION : Utiliser useAuth() au lieu de useContext(AuthContext)
   const { user, token } = useAuth();
   const { request } = useSecureRequest(token);
   
   const [users, setUsers] = useState([]);
+  const [reportedUsers, setReportedUsers] = useState([]); // ✅ NOUVEAU
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [toasts, setToasts] = useState([]);
   const [confirmModal, setConfirmModal] = useState({ show: false });
   const [notificationModal, setNotificationModal] = useState({ show: false, targetUser: null });
+  const [reportsModal, setReportsModal] = useState({ show: false, user: null }); // ✅ NOUVEAU
+  const [activeTab, setActiveTab] = useState('all'); // ✅ NOUVEAU: 'all' ou 'reported'
 
   const addToast = (message, type = 'info') => {
     const id = Date.now();
@@ -200,10 +449,18 @@ export default function AdminDashboard() {
       
       console.log("✅ [loadUsers] Réponse API:", data);
       
-      // ✅ CORRECTION : Extraire users de l'objet response
       if (data.success && Array.isArray(data.users)) {
         console.log(`✅ [loadUsers] ${data.users.length} utilisateurs`);
         setUsers(data.users);
+        
+        // ✅ NOUVEAU : Filtrer les utilisateurs signalés
+        const reported = data.users.filter(u => 
+          u.moderation?.reportCount > 0 || u.moderation?.strikes > 0
+        ).sort((a, b) => 
+          (b.moderation?.reportCount || 0) - (a.moderation?.reportCount || 0)
+        );
+        setReportedUsers(reported);
+        console.log(`🚨 ${reported.length} utilisateurs signalés`);
       } else {
         throw new Error("Format invalide");
       }
@@ -216,7 +473,6 @@ export default function AdminDashboard() {
     }
   }, [request, token]);
 
-  // ✅ Vérifier que l'utilisateur est admin
   useEffect(() => {
     if (!user) {
       console.warn("⚠️ Utilisateur non chargé");
@@ -244,7 +500,8 @@ export default function AdminDashboard() {
     premium: users.filter(u => u.isPremium).length,
     verified: users.filter(u => u.isVerified).length,
     banned: users.filter(u => u.isBanned).length,
-  }), [users]);
+    reported: reportedUsers.length, // ✅ NOUVEAU
+  }), [users, reportedUsers]);
 
   const handleUserAction = useCallback(async (action, targetUser) => {
     if (action === 'notify') { 
@@ -306,7 +563,13 @@ export default function AdminDashboard() {
     )
   , [users, searchQuery]);
 
-  // ✅ Vérifications de sécurité
+  const filteredReportedUsers = useMemo(() => 
+    reportedUsers.filter(u => 
+      (u.fullName || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+      u.email.toLowerCase().includes(searchQuery.toLowerCase())
+    )
+  , [reportedUsers, searchQuery]);
+
   if (!user) {
     return (
       <div className="p-20 text-center">
@@ -394,9 +657,38 @@ export default function AdminDashboard() {
           <p className="text-[10px] font-black opacity-70 uppercase">Vérifiés</p>
           <p className="text-3xl font-black">{stats.verified}</p>
         </div>
+        {/* ✅ NOUVEAU : Stat signalements */}
         <div className="bg-red-600 p-4 rounded-[28px] text-white shadow-lg">
-          <p className="text-[10px] font-black opacity-70 uppercase">Bannis</p>
-          <p className="text-3xl font-black">{stats.banned}</p>
+          <p className="text-[10px] font-black opacity-70 uppercase">Signalés</p>
+          <p className="text-3xl font-black">{stats.reported}</p>
+        </div>
+      </div>
+
+      {/* ✅ NOUVEAU : TABS */}
+      <div className="max-w-4xl mx-auto px-4 mb-4">
+        <div className="bg-white rounded-2xl p-2 flex gap-2 shadow-sm border">
+          <button
+            onClick={() => setActiveTab('all')}
+            className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${
+              activeTab === 'all'
+                ? 'bg-blue-600 text-white'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <Users size={16} className="inline mr-2" />
+            Tous ({filteredUsers.length})
+          </button>
+          <button
+            onClick={() => setActiveTab('reported')}
+            className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${
+              activeTab === 'reported'
+                ? 'bg-red-600 text-white'
+                : 'text-gray-600 hover:bg-gray-100'
+            }`}
+          >
+            <Flag size={16} className="inline mr-2" />
+            Signalés ({filteredReportedUsers.length})
+          </button>
         </div>
       </div>
 
@@ -405,7 +697,10 @@ export default function AdminDashboard() {
         <div className="bg-white rounded-[32px] shadow-sm border overflow-hidden">
           <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
             <span className="text-[10px] font-black text-gray-500 uppercase">
-              Registre ({filteredUsers.length})
+              {activeTab === 'all' 
+                ? `Registre (${filteredUsers.length})` 
+                : `Signalements (${filteredReportedUsers.length})`
+              }
             </span>
             <Activity size={14} className="text-gray-400" />
           </div>
@@ -414,14 +709,32 @@ export default function AdminDashboard() {
             <div className="p-20 text-center">
               <RotateCw className="animate-spin mx-auto text-blue-500" />
             </div>
-          ) : filteredUsers.length === 0 ? (
-            <div className="p-20 text-center text-gray-400 font-bold">
-              Aucun résultat
-            </div>
+          ) : activeTab === 'all' ? (
+            filteredUsers.length === 0 ? (
+              <div className="p-20 text-center text-gray-400 font-bold">
+                Aucun résultat
+              </div>
+            ) : (
+              filteredUsers.map(u => (
+                <UserCard key={u._id} user={u} onAction={handleUserAction} />
+              ))
+            )
           ) : (
-            filteredUsers.map(u => (
-              <UserCard key={u._id} user={u} onAction={handleUserAction} />
-            ))
+            filteredReportedUsers.length === 0 ? (
+              <div className="p-20 text-center text-gray-400 font-bold">
+                <Flag size={48} className="mx-auto mb-4 opacity-50" />
+                Aucun utilisateur signalé
+              </div>
+            ) : (
+              filteredReportedUsers.map(u => (
+                <ReportedUserCard 
+                  key={u._id} 
+                  user={u} 
+                  onAction={handleUserAction}
+                  onViewReports={(user) => setReportsModal({ show: true, user })}
+                />
+              ))
+            )
           )}
         </div>
       </div>
@@ -514,6 +827,15 @@ export default function AdminDashboard() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ✅ NOUVEAU : MODAL REPORTS */}
+      {reportsModal.show && (
+        <ReportsModal
+          user={reportsModal.user}
+          onClose={() => setReportsModal({ show: false, user: null })}
+          request={request}
+        />
       )}
     </div>
   );

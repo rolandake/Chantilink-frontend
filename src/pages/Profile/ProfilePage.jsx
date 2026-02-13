@@ -1,4 +1,4 @@
-// src/pages/profile/ProfilePage.jsx - SANS ESPACEMENT ENTRE POSTS
+// src/pages/profile/ProfilePage.jsx - VERSION COMPLÈTE AVEC SCROLL AUTO
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import ProfileHeader from "./ProfileHeader";
@@ -343,6 +343,13 @@ export default function ProfilePage() {
     }
   }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast]);
 
+  // ============================================
+  // ✅ SCROLL EN HAUT À CHAQUE CHANGEMENT DE PROFIL
+  // ============================================
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }, [targetUserId]);
+
   useEffect(() => {
     if (authUser && getToken) {
       getToken().then(token => setAuthToken(token)).catch(() => {});
@@ -549,7 +556,6 @@ export default function ProfilePage() {
                 <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
               ) : (
                 <div>
-                  {/* ✅ POSTS SANS ESPACEMENT */}
                   {profilePosts.map((post, index) => (
                     <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
                       <PostCard 

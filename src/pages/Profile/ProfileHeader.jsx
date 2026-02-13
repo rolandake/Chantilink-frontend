@@ -1,4 +1,4 @@
-// src/components/ProfileHeader.jsx - VERSION AVEC MODAL FOLLOWERS/FOLLOWING
+// src/components/ProfileHeader.jsx - AVEC BOUTON SIGNALEMENT
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -13,12 +13,15 @@ import {
   CalendarIcon,
   ChartBarIcon,
   UserGroupIcon,
-  UserPlusIcon
+  UserPlusIcon,
+  FlagIcon,  // ✅ NOUVEAU
+  EllipsisVerticalIcon  // ✅ NOUVEAU
 } from '@heroicons/react/24/outline';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { useDarkMode } from '../../context/DarkModeContext';
 import { useAuth } from '../../context/AuthContext';
+import { ReportUserModal } from './ReportUserModal';  // ✅ NOUVEAU
 import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
@@ -33,7 +36,7 @@ const FollowersModal = ({
   type, 
   users, 
   currentUserId,
-  currentUserFollowing = [], // ✅ NOUVEAU: Liste des IDs que le user connecté suit
+  currentUserFollowing = [],
   onFollowToggle,
   isDarkMode 
 }) => {
@@ -43,7 +46,6 @@ const FollowersModal = ({
 
   useEffect(() => {
     if (isOpen && users.length > 0) {
-      // ✅ Vérifier si on suit déjà ces utilisateurs
       const states = {};
       const followingIds = new Set(
         currentUserFollowing.map(f => typeof f === 'object' ? f._id : f)
@@ -100,7 +102,6 @@ const FollowersModal = ({
               : 'bg-white border-gray-200'
           } overflow-hidden`}
         >
-          {/* HEADER */}
           <div className={`sticky top-0 z-10 px-6 py-4 border-b backdrop-blur-xl ${
             isDarkMode 
               ? 'bg-gray-900/95 border-white/10' 
@@ -133,7 +134,6 @@ const FollowersModal = ({
             </div>
           </div>
 
-          {/* LISTE */}
           <div className="overflow-y-auto max-h-[calc(80vh-80px)] px-6 py-4">
             {users.length === 0 ? (
               <div className="text-center py-12">
@@ -165,7 +165,6 @@ const FollowersModal = ({
                           : 'bg-gray-50 hover:bg-gray-100 border border-gray-200'
                       }`}
                     >
-                      {/* AVATAR + INFOS */}
                       <div 
                         className="flex items-center gap-3 flex-1 cursor-pointer"
                         onClick={() => {
@@ -217,14 +216,8 @@ const FollowersModal = ({
                         </div>
                       </div>
 
-                      {/* BOUTON FOLLOW - Visible uniquement si: 
-                          1. Ce n'est pas son propre profil
-                          2. (Pour followers) On ne suit pas encore cette personne qui nous suit
-                          3. (Pour following) Toujours visible pour unfollow
-                      */}
                       {!isOwnProfile && (
                         type === 'followers' ? (
-                          // ✅ Dans Followers: afficher "Suivre" uniquement si on ne suit pas encore
                           !isFollowing && (
                             <motion.button
                               onClick={() => handleFollowToggle(userId)}
@@ -244,7 +237,6 @@ const FollowersModal = ({
                             </motion.button>
                           )
                         ) : (
-                          // ✅ Dans Following: toujours afficher le bouton pour unfollow
                           <motion.button
                             onClick={() => handleFollowToggle(userId)}
                             disabled={isLoading}
@@ -302,11 +294,13 @@ export default function ProfileHeader({
   const [saving, setSaving] = useState(false);
   const [showStats, setShowStats] = useState(false);
   
-  // ✅ NOUVEAUX STATES POUR LE MODAL
   const [modalOpen, setModalOpen] = useState(false);
-  const [modalType, setModalType] = useState(null); // 'followers' | 'following'
+  const [modalType, setModalType] = useState(null);
   
-  // States pour les stats
+  // ✅ NOUVEAUX STATES POUR LE SIGNALEMENT
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false);
+  
   const [userPosts, setUserPosts] = useState(posts);
   const [userFollowers, setUserFollowers] = useState(followers);
   const [userFollowing, setUserFollowing] = useState(following);
@@ -323,8 +317,57 @@ export default function ProfileHeader({
   
   const profileInputRef = useRef(null);
   const coverInputRef = useRef(null);
+  const optionsMenuRef = useRef(null);
 
-  // ✅ RÉCUPÉRATION AUTOMATIQUE DES STATS
+  // ============================================
+  // 🚨 GESTION DU SIGNALEMENT
+  // ============================================
+  const handleReportUser = useCallback(async (reportData) => {
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Session expirée");
+
+      await axios.post(
+        `${API_URL}/reports/user`,
+        reportData,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          withCredentials: true
+        }
+      );
+
+      showToast?.('Signalement envoyé. Merci pour votre aide ! 🙏', 'success');
+      setShowReportModal(false);
+      setShowOptionsMenu(false);
+    } catch (err) {
+      console.error('❌ Erreur signalement:', err);
+      throw new Error(err.response?.data?.message || 'Erreur lors du signalement');
+    }
+  }, [getToken, showToast]);
+
+  // ============================================
+  // 🔄 FERMETURE MENU OPTIONS (clic extérieur)
+  // ============================================
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (optionsMenuRef.current && !optionsMenuRef.current.contains(event.target)) {
+        setShowOptionsMenu(false);
+      }
+    };
+
+    if (showOptionsMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showOptionsMenu]);
+
+  // ============================================
+  // [... RESTE DU CODE INCHANGÉ ...]
+  // ============================================
+
   const fetchUserStats = useCallback(async () => {
     if (!user?._id) return;
     
@@ -364,12 +407,6 @@ export default function ProfileHeader({
         setUserFollowing(Array.isArray(followingData) ? followingData : []);
       }
 
-      console.log('✅ [ProfileHeader] Stats chargées:', {
-        posts: postsRes.status === 'fulfilled' ? postsRes.value.data?.posts?.length : 0,
-        followers: followersRes.status === 'fulfilled' ? followersRes.value.data?.followers?.length : 0,
-        following: followingRes.status === 'fulfilled' ? followingRes.value.data?.following?.length : 0
-      });
-
     } catch (err) {
       console.error('❌ [ProfileHeader] Erreur chargement stats:', err);
       setStatsError(err.message);
@@ -388,15 +425,13 @@ export default function ProfileHeader({
     }
   }, [user?._id, posts, followers, following, fetchUserStats]);
 
-  // ✅ GESTION FOLLOW/UNFOLLOW DEPUIS LE MODAL
   const handleFollowToggle = useCallback(async (userId, shouldFollow) => {
     try {
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
 
-      const endpoint = shouldFollow ? 'follow' : 'unfollow';
       await axios.post(
-        `${API_URL}/users/${userId}/${endpoint}`,
+        `${API_URL}/users/${userId}/follow`,
         {},
         {
           headers: { Authorization: `Bearer ${token}` },
@@ -404,7 +439,6 @@ export default function ProfileHeader({
         }
       );
 
-      // Refresh les stats
       await fetchUserStats();
       
       showToast?.(shouldFollow ? 'Abonné ! 🎉' : 'Désabonné', 'success');
@@ -436,7 +470,8 @@ export default function ProfileHeader({
     { name: "Likes", value: stats.likes }
   ], [stats]);
 
-  // ✅ UPLOAD PHOTOS (code inchangé)
+  // [... Fonctions upload photos, save profile, etc - INCHANGÉES ...]
+
   const handleProfilePhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -597,6 +632,57 @@ export default function ProfileHeader({
               : 'bg-gradient-to-t from-gray-900/60 via-gray-900/20 to-transparent'
           }`} />
 
+          {/* ✅ BOUTON OPTIONS (pour profils non-propriétaires) */}
+          {!isOwnProfile && (
+            <div className="absolute top-4 right-4" ref={optionsMenuRef}>
+              <motion.button
+                onClick={() => setShowOptionsMenu(!showOptionsMenu)}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className={`p-3 rounded-2xl backdrop-blur-xl border transition-all ${
+                  isDarkMode
+                    ? 'bg-black/50 border-white/20 hover:bg-black/70 text-white'
+                    : 'bg-white/50 border-gray-300 hover:bg-white/70 text-gray-800'
+                }`}
+              >
+                <EllipsisVerticalIcon className="w-5 h-5" />
+              </motion.button>
+
+              {/* MENU DÉROULANT */}
+              <AnimatePresence>
+                {showOptionsMenu && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                    transition={{ duration: 0.15 }}
+                    className={`absolute top-full right-0 mt-2 w-56 rounded-2xl shadow-2xl border overflow-hidden ${
+                      isDarkMode
+                        ? 'bg-gray-800 border-white/10'
+                        : 'bg-white border-gray-200'
+                    }`}
+                  >
+                    <button
+                      onClick={() => {
+                        setShowReportModal(true);
+                        setShowOptionsMenu(false);
+                      }}
+                      className={`w-full px-4 py-3 text-left flex items-center gap-3 transition-colors ${
+                        isDarkMode
+                          ? 'hover:bg-gray-700 text-gray-300'
+                          : 'hover:bg-gray-50 text-gray-700'
+                      }`}
+                    >
+                      <FlagIcon className="w-5 h-5 text-red-500" />
+                      <span className="font-medium">Signaler cet utilisateur</span>
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+
+          {/* BOUTON UPLOAD COUVERTURE (pour propriétaires) */}
           {isOwnProfile && (
             <>
               <input 
@@ -625,7 +711,7 @@ export default function ProfileHeader({
           )}
         </div>
 
-        {/* PROFIL */}
+        {/* [... RESTE DU CODE PROFIL INCHANGÉ ...] */}
         <div className="relative px-6 sm:px-8 pb-8">
           <div className="relative -mt-20 sm:-mt-24 mb-6">
             <div className="relative inline-block group">
@@ -931,15 +1017,24 @@ export default function ProfileHeader({
         </div>
       </motion.div>
 
-      {/* ✅ MODAL FOLLOWERS/FOLLOWING */}
+      {/* MODAL FOLLOWERS/FOLLOWING */}
       <FollowersModal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         type={modalType}
         users={modalType === 'followers' ? userFollowers : userFollowing}
         currentUserId={authUser?._id || authUser?.id}
-        currentUserFollowing={userFollowing} // ✅ Passer la liste following
+        currentUserFollowing={userFollowing}
         onFollowToggle={handleFollowToggle}
+        isDarkMode={isDarkMode}
+      />
+
+      {/* ✅ MODAL DE SIGNALEMENT */}
+      <ReportUserModal
+        isOpen={showReportModal}
+        onClose={() => setShowReportModal(false)}
+        user={user}
+        onSubmit={handleReportUser}
         isDarkMode={isDarkMode}
       />
     </>
