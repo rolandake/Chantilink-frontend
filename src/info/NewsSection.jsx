@@ -1,6 +1,6 @@
 // 📁 src/info/NewsSection.jsx
-// ✅ VERSION AVEC LECTEUR INTÉGRÉ - SCROLL CORRIGÉ
-// Lecture complète de l'article dans un modal
+// ✅ VERSION FINALE - Catégorie BTP = Génie Civil, Construction, Travaux Publics
+// Lecture complète de l'article dans un modal avec scroll fonctionnel
 
 import React, { useState, memo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -18,6 +18,33 @@ import { useNews } from '../hooks/useNews';
 import { useDarkMode } from '../context/DarkModeContext';
 
 // ============================================
+// HELPERS PARTAGÉS
+// ============================================
+const getCategoryColor = (category) => {
+  const colors = {
+    genieCivil: 'from-orange-500 to-red-500',      // BTP, Construction
+    sport: 'from-blue-500 to-cyan-500',
+    politique: 'from-purple-500 to-pink-500',
+    technologie: 'from-green-500 to-emerald-500',
+    environnement: 'from-teal-500 to-green-600',
+    general: 'from-gray-500 to-gray-600'
+  };
+  return colors[category] || colors.general;
+};
+
+const getCategoryLabel = (category) => {
+  const labels = {
+    genieCivil: '🏗️ Génie Civil & BTP',           // Construction, Bâtiment, Travaux Publics
+    sport: '⚽ Sport',
+    politique: '🏛️ Politique',
+    technologie: '💻 Tech',
+    environnement: '🌱 Environnement',
+    general: '📰 Actualités'
+  };
+  return labels[category] || labels.general;
+};
+
+// ============================================
 // LECTEUR D'ARTICLE COMPLET (MODAL)
 // ============================================
 const ArticleReader = memo(({ article, onClose }) => {
@@ -25,7 +52,6 @@ const ArticleReader = memo(({ article, onClose }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
 
   useEffect(() => {
-    // Bloquer le scroll du body
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = 'unset';
@@ -43,30 +69,6 @@ const ArticleReader = memo(({ article, onClose }) => {
     });
   };
 
-  const getCategoryColor = (category) => {
-    const colors = {
-      genieCivil: 'from-orange-500 to-red-500',
-      sport: 'from-blue-500 to-cyan-500',
-      politique: 'from-purple-500 to-pink-500',
-      technologie: 'from-green-500 to-emerald-500',
-      environnement: 'from-teal-500 to-green-600',
-      general: 'from-gray-500 to-gray-600'
-    };
-    return colors[category] || colors.general;
-  };
-
-  const getCategoryLabel = (category) => {
-    const labels = {
-      genieCivil: '🏗️ Génie Civil',
-      sport: '⚽ Sport',
-      politique: '🏛️ Politique',
-      technologie: '💻 Tech',
-      environnement: '🌱 Environnement',
-      general: '📰 Actualités'
-    };
-    return labels[category] || labels.general;
-  };
-
   const handleShare = () => {
     if (navigator.share && article.url) {
       navigator.share({
@@ -74,7 +76,6 @@ const ArticleReader = memo(({ article, onClose }) => {
         text: article.description,
         url: article.url
       }).catch(() => {
-        // Fallback: copier dans le presse-papier
         navigator.clipboard.writeText(article.url);
         alert('Lien copié !');
       });
@@ -96,10 +97,8 @@ const ArticleReader = memo(({ article, onClose }) => {
         WebkitBackdropFilter: 'blur(8px)'
       }}
     >
-      {/* Overlay */}
       <div className="absolute inset-0 bg-black/60" />
 
-      {/* Modal Content - STRUCTURE FLEX CORRIGÉE */}
       <motion.div
         initial={{ y: '100%', opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
@@ -114,7 +113,7 @@ const ArticleReader = memo(({ article, onClose }) => {
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header fixe - NE PAS SCROLLER */}
+        {/* Header fixe */}
         <div className={`flex-shrink-0 ${
           isDarkMode ? 'bg-gray-900/95' : 'bg-white/95'
         } backdrop-blur-xl border-b ${
@@ -148,7 +147,7 @@ const ArticleReader = memo(({ article, onClose }) => {
           </div>
         </div>
 
-        {/* Contenu scrollable - FLEX-1 + OVERFLOW */}
+        {/* Contenu scrollable */}
         <div 
           className="flex-1 overflow-y-auto overscroll-contain"
           style={{
@@ -174,7 +173,6 @@ const ArticleReader = memo(({ article, onClose }) => {
               />
               <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
               
-              {/* Badge catégorie sur l'image */}
               <div className="absolute bottom-4 left-4">
                 <div className={`px-3 py-1.5 rounded-full bg-gradient-to-r ${getCategoryColor(article.category)} text-white text-sm font-bold shadow-lg`}>
                   {getCategoryLabel(article.category)}
@@ -214,7 +212,7 @@ const ArticleReader = memo(({ article, onClose }) => {
               {article.title}
             </h1>
 
-            {/* Description/Chapeau */}
+            {/* Description */}
             {article.description && (
               <p className={`text-lg mb-6 leading-relaxed font-medium ${
                 isDarkMode ? 'text-gray-300' : 'text-gray-700'
@@ -247,7 +245,7 @@ const ArticleReader = memo(({ article, onClose }) => {
               </p>
             )}
 
-            {/* Source originale (si l'utilisateur veut vraiment y aller) */}
+            {/* Source originale */}
             {article.url && (
               <div className={`mt-8 p-4 rounded-xl border ${
                 isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'
@@ -273,7 +271,6 @@ const ArticleReader = memo(({ article, onClose }) => {
               </div>
             )}
 
-            {/* Padding bottom pour éviter que le contenu soit coupé */}
             <div className="h-20" />
           </div>
         </div>
@@ -285,36 +282,12 @@ const ArticleReader = memo(({ article, onClose }) => {
 ArticleReader.displayName = 'ArticleReader';
 
 // ============================================
-// CARD ACTUALITÉ - OPTIMISÉE
+// CARD ACTUALITÉ
 // ============================================
 const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
   const { isDarkMode } = useDarkMode();
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
-
-  const getCategoryColor = (category) => {
-    const colors = {
-      genieCivil: 'from-orange-500 to-red-500',
-      sport: 'from-blue-500 to-cyan-500',
-      politique: 'from-purple-500 to-pink-500',
-      technologie: 'from-green-500 to-emerald-500',
-      environnement: 'from-teal-500 to-green-600',
-      general: 'from-gray-500 to-gray-600'
-    };
-    return colors[category] || colors.general;
-  };
-
-  const getCategoryLabel = (category) => {
-    const labels = {
-      genieCivil: '🏗️ Génie Civil',
-      sport: '⚽ Sport',
-      politique: '🏛️ Politique',
-      technologie: '💻 Tech',
-      environnement: '🌱 Environnement',
-      general: '📰 Actualités'
-    };
-    return labels[category] || labels.general;
-  };
 
   const formatDate = (date) => {
     const now = new Date();
@@ -421,7 +394,7 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
           </div>
         )}
 
-        {/* Catégorie badge */}
+        {/* Badge catégorie */}
         <div className="absolute bottom-3 left-3">
           <div className={`px-3 py-1 rounded-full bg-gradient-to-r ${getCategoryColor(article.category)} text-white text-xs font-bold shadow-lg`}>
             {getCategoryLabel(article.category)}
@@ -431,7 +404,6 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
 
       {/* Contenu */}
       <div className="p-3">
-        {/* Source + Date */}
         <div className="flex items-center gap-2 mb-2">
           <span className={`text-xs font-semibold ${
             isDarkMode ? 'text-orange-400' : 'text-orange-600'
@@ -453,14 +425,12 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
           </div>
         </div>
 
-        {/* Titre */}
         <h3 className={`text-base font-bold mb-2 line-clamp-2 ${
           isDarkMode ? 'text-white' : 'text-gray-900'
         }`}>
           {article.title}
         </h3>
 
-        {/* Description */}
         {article.description && (
           <p className={`text-sm mb-3 line-clamp-2 ${
             isDarkMode ? 'text-gray-400' : 'text-gray-600'
@@ -469,7 +439,6 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
           </p>
         )}
 
-        {/* Bouton Lire l'article */}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -514,7 +483,7 @@ const NewsSection = memo(({ maxArticles = 3, showCategories = true, enabled = tr
 
   const categories = [
     { id: 'all', label: '📰 Toutes' },
-    { id: 'genieCivil', label: '🏗️ BTP' },
+    { id: 'genieCivil', label: '🏗️ Génie Civil & BTP' }, // Construction, Bâtiment, Travaux Publics
     { id: 'sport', label: '⚽ Sport' },
     { id: 'technologie', label: '💻 Tech' },
     { id: 'politique', label: '🏛️ Politique' },

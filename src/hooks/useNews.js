@@ -1,10 +1,10 @@
 // 📁 src/hooks/useNews.js
 // Hook pour récupérer les actualités depuis l'API backend
-// ✅ VERSION FINALE : Utilise AuthContext au lieu de localStorage
+// ✅ VERSION FINALE : Filtrage côté client + Debug
 
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { useAuth } from '../context/AuthContext'; // ✅ Import du contexte
+import { useAuth } from '../context/AuthContext';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
@@ -16,7 +16,6 @@ export const useNews = (options = {}) => {
     enabled = true
   } = options;
 
-  // ✅ Utiliser le contexte Auth pour obtenir le token
   const { getToken, isAuthenticated } = useAuth();
 
   const [articles, setArticles] = useState([]);
@@ -24,7 +23,6 @@ export const useNews = (options = {}) => {
   const [error, setError] = useState(null);
 
   const fetchNews = useCallback(async () => {
-    // ✅ Ne pas charger si pas authentifié
     if (!enabled || !isAuthenticated) {
       setArticles([]);
       setLoading(false);
@@ -35,7 +33,6 @@ export const useNews = (options = {}) => {
     setError(null);
 
     try {
-      // ✅ Obtenir le token via AuthContext (gère automatiquement le refresh)
       const token = await getToken();
       
       if (!token) {
@@ -43,6 +40,9 @@ export const useNews = (options = {}) => {
         setLoading(false);
         return;
       }
+
+      // 🔍 Log pour debug
+      console.log(`🔍 [useNews] Fetching category: "${category}"`);
 
       const response = await axios.get(`${API_URL}/news`, {
         params: {
@@ -55,8 +55,53 @@ export const useNews = (options = {}) => {
       });
 
       if (response.data.success) {
-        console.log(`✅ [useNews] ${response.data.count} actualités chargées`);
-        setArticles(response.data.articles || []);
+        const fetchedArticles = response.data.articles || [];
+        
+        // 🔍 Log les données reçues
+        console.log(`📥 [useNews] ${fetchedArticles.length} articles reçus`);
+        
+        // Afficher les catégories uniques reçues
+        const categoriesReceived = [...new Set(fetchedArticles.map(a => a.category))];
+        console.log(`📊 [useNews] Catégories reçues:`, categoriesReceived);
+
+        // ✅ FILTRAGE CÔTÉ CLIENT (protection si backend ne filtre pas)
+        let filteredArticles = fetchedArticles;
+        
+        if (category !== 'all') {
+          const beforeFilter = fetchedArticles.length;
+          
+          // Filtrer uniquement les articles de la catégorie demandée
+          filteredArticles = fetchedArticles.filter(article => {
+            const matches = article.category === category;
+            
+            // Log les articles qui ne correspondent pas (debug)
+            if (!matches) {
+              console.warn(
+                `⚠️ [useNews] Article ignoré - ` +
+                `Attendu: "${category}", Reçu: "${article.category}" - ` +
+                `"${article.title?.substring(0, 50)}..."`
+              );
+            }
+            
+            return matches;
+          });
+
+          const afterFilter = filteredArticles.length;
+          
+          // Si le filtrage côté client a supprimé des articles
+          if (beforeFilter !== afterFilter) {
+            console.error(
+              `❌ [useNews] BACKEND NE FILTRE PAS CORRECTEMENT! ` +
+              `${beforeFilter} reçus, ${afterFilter} correspondent à "${category}". ` +
+              `Filtrage côté client appliqué.`
+            );
+          } else {
+            console.log(`✅ [useNews] Backend filtre correctement`);
+          }
+        }
+
+        console.log(`✅ [useNews] ${filteredArticles.length} articles finaux`);
+        setArticles(filteredArticles);
       } else {
         throw new Error('Réponse invalide du serveur');
       }
