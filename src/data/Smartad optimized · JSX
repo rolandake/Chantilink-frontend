@@ -1,0 +1,434 @@
+// ============================================
+// 📁 src/pages/Home/Publicite/SmartAd.jsx
+// VERSION OPTIMISÉE - Performance améliorée
+// ============================================
+import React, { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { ExternalLink, X, ShoppingBag, BookOpen, Plane, Smartphone } from 'lucide-react';
+
+// ============================================
+// CONFIGURATION
+// ============================================
+const CONFIG = {
+  enabled: true,
+  useDemoAds: true,
+  googlePublisherId: "ca-pub-9979082242566048",
+  googleSlots: {
+    feedInline: "XXXXXXXXXX",
+    headerBanner: "XXXXXXXXXX",
+    footerBanner: "XXXXXXXXXX",
+  },
+  // NOUVEAUX PARAMÈTRES DE PERFORMANCE
+  imagePreloadDelay: 50, // Délai avant préchargement des images (ms)
+  adRotationInterval: 30000, // Rotation auto des pubs démo (30s)
+  enableAdRotation: false, // Active/désactive la rotation auto
+  lazyLoadThreshold: '200px', // Distance avant chargement (Intersection Observer)
+};
+
+// ============================================
+// DONNÉES DES PUBLICITÉS DÉMO
+// ============================================
+const DEMO_ADS = [
+  {
+    id: 1,
+    title: "Boostez votre entreprise",
+    description: "Découvrez nos solutions marketing innovantes pour développer votre activité en Côte d'Ivoire",
+    image: "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800&q=80",
+    cta: "En savoir plus",
+    icon: Smartphone,
+    bgGradient: "from-blue-500 to-purple-600"
+  },
+  {
+    id: 2,
+    title: "Formation en ligne",
+    description: "Apprenez le digital marketing, la programmation et le design avec nos cours certifiés",
+    image: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=800&q=80",
+    cta: "Découvrir",
+    icon: BookOpen,
+    bgGradient: "from-green-500 to-teal-600"
+  },
+  {
+    id: 3,
+    title: "E-commerce à Abidjan",
+    description: "Créez votre boutique en ligne et vendez partout en Côte d'Ivoire avec Orange Money",
+    image: "https://images.unsplash.com/photo-1472851294608-062f824d29cc?w=800&q=80",
+    cta: "Commencer",
+    icon: ShoppingBag,
+    bgGradient: "from-indigo-500 to-blue-600"
+  },
+  {
+    id: 4,
+    title: "Voyage de rêve",
+    description: "Assinie, Bassam, San Pedro... Des destinations exceptionnelles à prix imbattables",
+    image: "https://images.unsplash.com/photo-1488646953014-85cb44e25828?w=800&q=80",
+    cta: "Réserver",
+    icon: Plane,
+    bgGradient: "from-cyan-500 to-blue-600"
+  },
+  {
+    id: 5,
+    title: "Cuisine ivoirienne",
+    description: "Commandez vos plats préférés : Attiéké, Garba, Alloco... Livraison 30min",
+    image: "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=800&q=80",
+    cta: "Commander",
+    icon: ShoppingBag,
+    bgGradient: "from-green-500 to-emerald-600"
+  }
+];
+
+// ============================================
+// HOOK PERSONNALISÉ : DÉTECTION DARK MODE
+// ============================================
+const useDarkMode = () => {
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    // Initialisation optimisée
+    if (typeof window === 'undefined') return false;
+    return document.documentElement.classList.contains('dark') ||
+           window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
+  useEffect(() => {
+    const checkDarkMode = () => {
+      const isDark = document.documentElement.classList.contains('dark') ||
+                     window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setIsDarkMode(isDark);
+    };
+    
+    // Observer pour les changements de classe
+    const observer = new MutationObserver(checkDarkMode);
+    observer.observe(document.documentElement, { 
+      attributes: true, 
+      attributeFilter: ['class'] // Optimisation : surveiller uniquement l'attribut 'class'
+    });
+    
+    // Listener pour les préférences système
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = () => checkDarkMode();
+    mediaQuery.addEventListener('change', handleChange);
+    
+    return () => {
+      observer.disconnect();
+      mediaQuery.removeEventListener('change', handleChange);
+    };
+  }, []);
+
+  return isDarkMode;
+};
+
+// ============================================
+// HOOK PERSONNALISÉ : INTERSECTION OBSERVER (Lazy Loading)
+// ============================================
+const useIntersectionObserver = (ref, options = {}) => {
+  const [isVisible, setIsVisible] = useState(false);
+  const observerRef = useRef(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    // Utiliser Intersection Observer pour lazy loading
+    observerRef.current = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true);
+          // Déconnecter après la première apparition
+          observerRef.current?.disconnect();
+        }
+      },
+      {
+        rootMargin: CONFIG.lazyLoadThreshold,
+        threshold: 0.1,
+        ...options
+      }
+    );
+
+    observerRef.current.observe(element);
+
+    return () => {
+      observerRef.current?.disconnect();
+    };
+  }, [ref, options]);
+
+  return isVisible;
+};
+
+// ============================================
+// HOOK PERSONNALISÉ : PRÉCHARGEMENT D'IMAGE
+// ============================================
+const useImagePreload = (src, shouldLoad) => {
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!shouldLoad || !src) return;
+
+    const img = new Image();
+    
+    const handleLoad = () => {
+      setLoaded(true);
+      setError(false);
+    };
+    
+    const handleError = () => {
+      setError(true);
+      setLoaded(false);
+    };
+
+    img.addEventListener('load', handleLoad);
+    img.addEventListener('error', handleError);
+    
+    // Délai pour éviter de bloquer le thread principal
+    const timer = setTimeout(() => {
+      img.src = src;
+    }, CONFIG.imagePreloadDelay);
+
+    return () => {
+      clearTimeout(timer);
+      img.removeEventListener('load', handleLoad);
+      img.removeEventListener('error', handleError);
+    };
+  }, [src, shouldLoad]);
+
+  return { loaded, error };
+};
+
+// ============================================
+// COMPOSANT PUB DÉMO OPTIMISÉ
+// ============================================
+const DemoAd = memo(({ canClose, isDarkMode }) => {
+  const containerRef = useRef(null);
+  const [isVisible, setIsVisible] = useState(true);
+  const [currentAdIndex, setCurrentAdIndex] = useState(() => 
+    Math.floor(Math.random() * DEMO_ADS.length)
+  );
+  
+  // Lazy loading : charger uniquement quand visible
+  const isInViewport = useIntersectionObserver(containerRef);
+  
+  // Pub actuelle (mémorisée)
+  const currentAd = useMemo(() => DEMO_ADS[currentAdIndex], [currentAdIndex]);
+  
+  // Préchargement d'image optimisé
+  const { loaded: imageLoaded } = useImagePreload(currentAd.image, isInViewport);
+
+  // Rotation automatique des pubs (optionnel)
+  useEffect(() => {
+    if (!CONFIG.enableAdRotation || !isInViewport) return;
+
+    const interval = setInterval(() => {
+      setCurrentAdIndex(prev => (prev + 1) % DEMO_ADS.length);
+    }, CONFIG.adRotationInterval);
+
+    return () => clearInterval(interval);
+  }, [isInViewport]);
+
+  // Handler de fermeture (mémorisé)
+  const handleClose = useCallback(() => {
+    setIsVisible(false);
+  }, []);
+
+  // Handler de clic (mémorisé)
+  const handleClick = useCallback((e) => {
+    e.preventDefault();
+    // Analytics ici si besoin
+    console.log('Ad clicked:', currentAd.id);
+  }, [currentAd.id]);
+
+  if (!isVisible) return null;
+
+  // Composant Icon dynamique
+  const IconComponent = currentAd.icon;
+
+  return (
+    <div ref={containerRef} className="w-full">
+      <div className={`rounded-none overflow-hidden border-b transition-all ${
+        isDarkMode ? 'bg-black border-gray-800' : 'bg-white border-gray-200'
+      }`}>
+        {/* Header */}
+        <div className={`px-4 py-2 flex items-center justify-between ${
+          isDarkMode ? 'bg-gray-900/50' : 'bg-gray-50/50'
+        }`}>
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-medium ${
+              isDarkMode ? 'text-gray-500' : 'text-gray-400'
+            }`}>
+              Publicité
+            </span>
+            {IconComponent && <IconComponent className="w-4 h-4 text-gray-400" />}
+          </div>
+          {canClose && (
+            <button
+              onClick={handleClose}
+              className={`p-1 rounded-full transition-colors ${
+                isDarkMode ? 'hover:bg-gray-800 text-gray-500' : 'hover:bg-gray-100 text-gray-400'
+              }`}
+              aria-label="Fermer la publicité"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Image */}
+        <a 
+          href="#" 
+          className="block group" 
+          onClick={handleClick}
+          aria-label={currentAd.title}
+        >
+          <div className="relative aspect-square overflow-hidden bg-gray-200 dark:bg-gray-800">
+            {/* Loader optimisé */}
+            {!imageLoaded && isInViewport && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className="w-8 h-8 border-4 border-gray-300 border-t-orange-500 rounded-full animate-spin" />
+              </div>
+            )}
+            
+            {/* Image avec lazy loading natif + Intersection Observer */}
+            {isInViewport && (
+              <img
+                src={currentAd.image}
+                alt={currentAd.title}
+                className={`w-full h-full object-cover transition-all duration-500 group-hover:scale-105 ${
+                  imageLoaded ? 'opacity-100' : 'opacity-0'
+                }`}
+                loading="lazy"
+                decoding="async"
+              />
+            )}
+            
+            {/* Overlay gradient */}
+            <div className={`absolute inset-0 bg-gradient-to-t ${currentAd.bgGradient} opacity-0 group-hover:opacity-20 transition-opacity duration-300`} />
+            
+            {/* CTA Button */}
+            <div className="absolute bottom-4 left-4">
+              <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full font-semibold text-sm bg-gradient-to-r ${currentAd.bgGradient} text-white shadow-xl group-hover:scale-105 transition-all`}>
+                {currentAd.cta}
+                <ExternalLink size={14} />
+              </div>
+            </div>
+          </div>
+
+          {/* Texte */}
+          <div className="p-4">
+            <h3 className={`text-base font-bold mb-1 line-clamp-1 ${
+              isDarkMode ? 'text-white' : 'text-gray-900'
+            }`}>
+              {currentAd.title}
+            </h3>
+            <p className={`text-sm line-clamp-2 ${
+              isDarkMode ? 'text-gray-400' : 'text-gray-600'
+            }`}>
+              {currentAd.description}
+            </p>
+          </div>
+        </a>
+
+        {/* Footer */}
+        <div className={`px-4 py-2 border-t flex items-center justify-between text-xs ${
+          isDarkMode ? 'border-gray-800 text-gray-600' : 'border-gray-200 text-gray-400'
+        }`}>
+          <span>Annonce sponsorisée</span>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+DemoAd.displayName = 'DemoAd';
+
+// ============================================
+// COMPOSANT PUB GOOGLE OPTIMISÉ
+// ============================================
+const GoogleAd = memo(({ slot, isDarkMode }) => {
+  const adRef = useRef(null);
+  const containerRef = useRef(null);
+  const adLoadedRef = useRef(false);
+  
+  // Lazy loading pour Google Ads aussi
+  const isInViewport = useIntersectionObserver(containerRef);
+
+  useEffect(() => {
+    // Charger uniquement si visible et pas déjà chargé
+    if (!isInViewport || adLoadedRef.current) return;
+
+    try {
+      const loadAd = () => {
+        if (typeof window !== 'undefined' && window.adsbygoogle && adRef.current) {
+          (window.adsbygoogle = window.adsbygoogle || []).push({});
+          adLoadedRef.current = true;
+        }
+      };
+      
+      // Délai pour éviter de bloquer le rendu initial
+      const timer = setTimeout(loadAd, 100);
+      return () => clearTimeout(timer);
+    } catch (error) {
+      console.error('Erreur AdSense:', error);
+    }
+  }, [isInViewport]);
+
+  return (
+    <div ref={containerRef} className="w-full">
+      <div className={`rounded-none overflow-hidden border-b ${
+        isDarkMode ? 'bg-black border-gray-800' : 'bg-white border-gray-200'
+      }`}>
+        <div className={`px-4 py-2 text-xs font-medium ${
+          isDarkMode ? 'text-gray-500' : 'text-gray-400'
+        }`}>
+          Publicité
+        </div>
+        <div className="px-4 pb-4 min-h-[250px]">
+          {isInViewport && (
+            <ins
+              ref={adRef}
+              className="adsbygoogle"
+              style={{ display: 'block', minHeight: '250px' }}
+              data-ad-client={CONFIG.googlePublisherId}
+              data-ad-slot={slot}
+              data-ad-format="auto"
+              data-full-width-responsive="true"
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+GoogleAd.displayName = 'GoogleAd';
+
+// ============================================
+// COMPOSANT SMART AD (PRINCIPAL) OPTIMISÉ
+// ============================================
+const SmartAd = memo(({ 
+  slot = 'feedInline',
+  canClose = true,
+  className = '',
+  style = {}
+}) => {
+  const isDarkMode = useDarkMode();
+
+  // Early return si désactivé
+  if (!CONFIG.enabled) return null;
+
+  // Déterminer quel type de pub afficher (mémorisé)
+  const slotId = useMemo(() => CONFIG.googleSlots[slot], [slot]);
+  const shouldUseDemoAds = useMemo(() => 
+    CONFIG.useDemoAds || !slotId || slotId.includes('XXXXXXXXXX'),
+    [slotId]
+  );
+
+  return (
+    <div className={className} style={style}>
+      {shouldUseDemoAds ? (
+        <DemoAd canClose={canClose} isDarkMode={isDarkMode} />
+      ) : (
+        <GoogleAd slot={slotId} isDarkMode={isDarkMode} />
+      )}
+    </div>
+  );
+});
+
+SmartAd.displayName = 'SmartAd';
+
+export default SmartAd;

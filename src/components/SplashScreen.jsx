@@ -1,8 +1,34 @@
-import React, { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+// 📁 src/components/SplashScreen.jsx
+// ✅ VERSION OPTIMISÉE LCP - Précharge le logo
+
+import { useEffect, useState } from "react";
 
 export default function SplashScreen({ onFinish }) {
   const [isVisible, setIsVisible] = useState(true);
+  const [fadeOut, setFadeOut] = useState(false);
+  const [logoLoaded, setLogoLoaded] = useState(false);
+
+  // ✅ PRÉCHARGER LE LOGO IMMÉDIATEMENT
+  useEffect(() => {
+    const link = document.createElement('link');
+    link.rel = 'preload';
+    link.as = 'image';
+    link.href = '/chantilink-logo.png';
+    link.fetchPriority = 'high';
+    document.head.appendChild(link);
+
+    // Précharger l'image
+    const img = new Image();
+    img.fetchPriority = 'high';
+    img.src = '/chantilink-logo.png';
+    img.onload = () => setLogoLoaded(true);
+
+    return () => {
+      if (link.parentNode) {
+        link.parentNode.removeChild(link);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     // Masquer le splash natif immédiatement si présent
@@ -10,103 +36,131 @@ export default function SplashScreen({ onFinish }) {
       window.hideSplashScreen();
     }
 
-    // Afficher le splash React pendant 1.2s minimum
-    const timer = setTimeout(() => {
-      setIsVisible(false);
-      // Attendre la fin de l'animation de fade-out avant d'appeler onFinish
-      setTimeout(() => onFinish?.(), 300);
-    }, 1200);
+    // ✅ Attendre que le logo soit chargé avant de commencer le timer
+    if (!logoLoaded) return;
 
-    return () => clearTimeout(timer);
-  }, [onFinish]);
+    // Commencer le fade-out après 800ms (réduit de 1200ms)
+    const fadeTimer = setTimeout(() => {
+      setFadeOut(true);
+    }, 800);
+
+    // Masquer complètement et appeler onFinish après l'animation
+    const hideTimer = setTimeout(() => {
+      setIsVisible(false);
+      onFinish?.();
+    }, 1100); // Réduit de 1500ms
+
+    return () => {
+      clearTimeout(fadeTimer);
+      clearTimeout(hideTimer);
+    };
+  }, [onFinish, logoLoaded]);
+
+  if (!isVisible) return null;
 
   return (
-    <AnimatePresence>
-      {isVisible && (
-        <motion.div
-          initial={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.3 }}
-          className="fixed inset-0 z-[9999] flex flex-col items-center justify-center"
+    <div
+      className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center transition-opacity duration-300 ${
+        fadeOut ? 'opacity-0' : 'opacity-100'
+      }`}
+      style={{
+        background: 'linear-gradient(135deg, #2B2D42 0%, #1a1b2e 100%)'
+      }}
+    >
+      {/* Logo avec animation fluide */}
+      <div className="flex flex-col items-center animate-fade-in">
+        {/* ✅ Logo OPTIMISÉ pour LCP */}
+        <img 
+          src="/chantilink-logo.png" 
+          alt="ChantiLink"
+          className="w-32 h-32 md:w-40 md:h-40 object-contain mb-6"
+          loading="eager" // ✅ Charge immédiatement
+          fetchpriority="high" // ✅ Priorité haute
+          width="160" // ✅ Dimensions explicites
+          height="160"
+          decoding="async"
           style={{
-            background: 'linear-gradient(135deg, #2B2D42 0%, #1a1b2e 100%)'
+            filter: logoLoaded ? 'drop-shadow(0 10px 40px rgba(230, 126, 60, 0.4))' : 'none',
+            animation: logoLoaded ? 'float 2s ease-in-out infinite' : 'none', // ✅ Pas d'animation avant chargement
+            contentVisibility: 'auto' // ✅ Performance
           }}
-        >
-          {/* Logo avec animation fluide */}
-          <motion.div
-            initial={{ scale: 0.8, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ 
-              duration: 0.6, 
-              ease: [0, 0.71, 0.2, 1.01]
+        />
+        
+        {/* Texte avec gradient */}
+        <div className="text-center">
+          <h1 className="text-4xl font-black tracking-tight text-white uppercase">
+            CHANTI<span className="bg-gradient-to-r from-[#E67E3C] to-[#ff9966] bg-clip-text text-transparent">LINK</span>
+          </h1>
+          
+          {/* Barre animée */}
+          <div 
+            className="mt-3 h-1 bg-gradient-to-r from-transparent via-[#E67E3C] to-transparent mx-auto rounded-full animate-expand"
+            style={{
+              width: '60px'
             }}
-            className="flex flex-col items-center"
-          >
-            {/* Logo avec effet de flottement */}
-            <motion.img 
-              src="/chantilink-logo.png" 
-              alt="ChantiLink"
-              className="w-32 h-32 md:w-40 md:h-40 object-contain mb-6"
-              animate={{ 
-                y: [0, -10, 0],
-                scale: [1, 1.05, 1]
-              }}
-              transition={{
-                duration: 2,
-                repeat: Infinity,
-                ease: "easeInOut"
-              }}
+          />
+        </div>
+      </div>
+
+      {/* Indicateur de chargement avec effet néon */}
+      <div className="absolute bottom-16">
+        <div className="flex gap-2">
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="w-2.5 h-2.5 rounded-full bg-[#E67E3C] animate-pulse"
               style={{
-                filter: 'drop-shadow(0 10px 40px rgba(230, 126, 60, 0.4))'
+                boxShadow: '0 0 10px rgba(230, 126, 60, 0.5)',
+                animationDelay: `${i * 150}ms`
               }}
             />
-            
-            {/* Texte avec gradient */}
-            <motion.div
-              initial={{ y: 20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              transition={{ delay: 0.3 }}
-              className="text-center"
-            >
-              <h1 className="text-4xl font-black tracking-tight text-white uppercase">
-                CHANTI<span className="bg-gradient-to-r from-[#E67E3C] to-[#ff9966] bg-clip-text text-transparent">LINK</span>
-              </h1>
-              
-              {/* Barre animée */}
-              <motion.div 
-                className="mt-3 h-1 bg-gradient-to-r from-transparent via-[#E67E3C] to-transparent mx-auto rounded-full"
-                initial={{ width: 0 }}
-                animate={{ width: 60 }}
-                transition={{ delay: 0.5, duration: 0.4 }}
-              />
-            </motion.div>
-          </motion.div>
+          ))}
+        </div>
+      </div>
 
-          {/* Indicateur de chargement avec effet néon */}
-          <div className="absolute bottom-16">
-            <div className="flex gap-2">
-              {[0, 1, 2].map((i) => (
-                <motion.div
-                  key={i}
-                  animate={{ 
-                    opacity: [0.3, 1, 0.3],
-                    scale: [1, 1.2, 1]
-                  }}
-                  transition={{ 
-                    repeat: Infinity, 
-                    duration: 1.2, 
-                    delay: i * 0.15 
-                  }}
-                  className="w-2.5 h-2.5 rounded-full bg-[#E67E3C]"
-                  style={{
-                    boxShadow: '0 0 10px rgba(230, 126, 60, 0.5)'
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+      {/* Ajout des keyframes CSS */}
+      <style>{`
+        @keyframes float {
+          0%, 100% {
+            transform: translateY(0) scale(1);
+          }
+          50% {
+            transform: translateY(-10px) scale(1.05);
+          }
+        }
+
+        @keyframes fade-in {
+          from {
+            opacity: 0;
+            transform: scale(0.8);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+
+        @keyframes expand {
+          from {
+            width: 0;
+          }
+          to {
+            width: 60px;
+          }
+        }
+
+        .animate-fade-in {
+          animation: fade-in 0.6s ease-out;
+        }
+
+        .animate-expand {
+          animation: expand 0.4s ease-out 0.5s backwards;
+        }
+
+        .animate-float {
+          animation: float 2s ease-in-out infinite;
+        }
+      `}</style>
+    </div>
   );
 }

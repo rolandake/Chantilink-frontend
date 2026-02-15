@@ -1,4 +1,7 @@
-// src/pages/Home/PostCard.jsx - VERSION LAYOUT INSTAGRAM
+// src/pages/Home/PostCard.jsx - VERSION OPTIMISÉE V3
+// ✅ Double sécurité: Filtre utilisateurs invalides
+// ✅ Espacement uniforme sans séparation excessive
+// Posts fictifs = Posts réels (interactions complètes)
 import React, { forwardRef, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -64,6 +67,9 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
   }, [username]);
 
   const url = useMemo(() => {
+    if (photo && photo.startsWith('data:image')) {
+      return photo;
+    }
     return photo ? getCloudinaryUrl(photo, { width: size * 2, height: size * 2, crop: 'thumb', gravity: 'face' }) : null;
   }, [photo, size]);
 
@@ -90,11 +96,10 @@ const SimpleAvatar = React.memo(({ username, photo, size = 40 }) => {
 
 // === SKELETON LOADER COMPONENT ===
 const SkeletonPostCard = ({ isDarkMode }) => (
-  <div className={`relative w-full max-w-[630px] mx-auto border-b ${
-    isDarkMode ? 'bg-black border-gray-800' : 'bg-white border-gray-200'
-  } animate-pulse overflow-hidden`}>
-    {/* Header */}
-    <div className="flex justify-between items-center p-4">
+  <div className={`relative w-full max-w-[630px] mx-auto ${
+    isDarkMode ? 'bg-black' : 'bg-white'
+  } animate-pulse`} style={{ margin: 0, padding: 0 }}>
+    <div className="flex justify-between items-center p-3">
       <div className="flex items-center gap-3">
         <div className={`rounded-full w-10 h-10 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
         <div className="flex flex-col gap-1.5">
@@ -103,20 +108,14 @@ const SkeletonPostCard = ({ isDarkMode }) => (
         </div>
       </div>
     </div>
-    
-    {/* Media Placeholder */}
     <div className={`w-full aspect-square ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
-    
-    {/* Actions Bar */}
-    <div className="flex items-center p-4 gap-4">
+    <div className="flex items-center p-3 gap-4">
       <div className={`h-6 w-6 rounded ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
       <div className={`h-6 w-6 rounded ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
       <div className={`h-6 w-6 rounded ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
       <div className={`h-6 w-6 rounded ml-auto ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
     </div>
-    
-    {/* Content Text */}
-    <div className="px-4 pb-4 space-y-2">
+    <div className="px-3 pb-3 space-y-2">
       <div className={`h-3 rounded w-full ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`}></div>
       <div className={`h-3 rounded w-3/4 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
     </div>
@@ -124,10 +123,9 @@ const SkeletonPostCard = ({ isDarkMode }) => (
 );
 
 // === POST CARD PRINCIPALE ===
-const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, ref) => {
+const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
   
-  // ✅ SKELETON LOADER
   if (loading) {
     return <SkeletonPostCard isDarkMode={isDarkMode} />;
   }
@@ -138,17 +136,54 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
   const navigate = useNavigate();
   const cardRef = useRef(null);
 
-  // Normalisation des données utilisateur du post
+  // Détection si c'est un post fictif
+  const isMockPost = mockPost || post._id.startsWith('post_') || post.isMockPost;
+
   const postUser = useMemo(() => {
     const u = post.user || post.author || {};
+    const fullName = u.fullName || post.fullName || "";
+    
+    // 🔥 Détection d'utilisateur invalide
+    const isInvalidName = fullName === "Utilisateur Inconnu" || 
+                         fullName === "Unknown User" ||
+                         fullName.trim() === "" ||
+                         fullName === "undefined" ||
+                         fullName === "null";
+    
+    const isInvalidId = !u._id || 
+                       u._id === 'unknown' || 
+                       u._id === 'null' || 
+                       u._id === 'undefined';
+    
+    const isBannedDeleted = u.isBanned || 
+                           u.isDeleted || 
+                           u.status === 'deleted' ||
+                           u.status === 'banned' ||
+                           u.accountStatus === 'deleted' ||
+                           u.accountStatus === 'banned';
+    
     return {
       _id: u._id || post.userId || post.author?._id || "unknown",
-      fullName: u.fullName || post.fullName || "Utilisateur Inconnu",
-      profilePhoto: u.profilePhoto || post.userProfilePhoto || null,
-      isVerified: !!(u.isVerified || post.isVerified),
-      isPremium: !!(u.isPremium || post.isPremium)
+      fullName: fullName || "Utilisateur Inconnu",
+      profilePhoto: u.profilePhoto || u.profilePicture || post.userProfilePhoto || null,
+      isVerified: !!(u.isVerified || u.verified || post.isVerified),
+      isPremium: !!(u.isPremium || post.isPremium),
+      isMock: isMockPost,
+      isUnknown: isInvalidName || isInvalidId,
+      isBannedOrDeleted: isBannedDeleted
     };
-  }, [post]);
+  }, [post, isMockPost]);
+
+  // ✅ DOUBLE SÉCURITÉ: Ne pas afficher les posts d'utilisateurs invalides
+  if (!isMockPost && (postUser.isUnknown || postUser.isBannedOrDeleted)) {
+    console.log('🚫 [PostCard] Post ignoré:', {
+      postId: post._id,
+      reason: postUser.isBannedOrDeleted ? 'Banni/Supprimé' : 'Utilisateur Inconnu',
+      fullName: postUser.fullName,
+      userId: postUser._id
+    });
+    return null;
+  }
 
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
@@ -168,12 +203,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [saved, setSaved] = useState(false);
-
-  const boostPlans = [
-    { id: 1, duration: 24, amount: 1000, label: "24h Flash", description: "Visibilité boostée pendant 24h", icon: <RocketLaunchIcon className="w-5 h-5 text-orange-500"/> },
-    { id: 2, duration: 72, amount: 2500, label: "3 Jours (Populaire)", description: "Idéal pour vendre un service", popular: true, icon: <FireIcon className="w-5 h-5 text-red-500"/> },
-    { id: 3, duration: 168, amount: 5000, label: "Semaine Pro", description: "Domination totale du feed", icon: <CheckBadgeIcon className="w-5 h-5 text-purple-500"/> }
-  ];
 
   const MAX_CHARS = 280;
   const content = post.content || "";
@@ -199,7 +228,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
     }
   }, [post, currentUser]);
 
-  // Synchronisation du state "following"
   useEffect(() => {
     if (!currentUser || !postUser._id || postUser._id === 'unknown') {
       setIsFollowing(false);
@@ -224,7 +252,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
     setIsFollowing(isCurrentlyFollowing);
   }, [currentUser, postUser._id, currentUser?.following]);
 
-  // Observer Vidéos
   useEffect(() => {
     if (!cardRef.current) return;
     const observer = new IntersectionObserver((entries) => {
@@ -242,19 +269,30 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
     return () => observer.disconnect();
   }, []);
 
-  // Handle Like
+  // ✅ HANDLE LIKE
   const handleLike = useCallback(async (e) => {
     e?.stopPropagation();
-    if (!currentUser) return showToast?.("Connectez-vous pour aimer", "info");
+    
+    if (!currentUser) {
+      showToast?.("Connectez-vous pour aimer", "info");
+      return;
+    }
+    
     if (loadingLike) return;
 
     const prevLiked = liked;
     const prevCount = likesCount;
+    
     setLiked(!prevLiked);
     setLikesCount(c => prevLiked ? c - 1 : c + 1);
     setAnimateHeart(!prevLiked);
-    setLoadingLike(true);
 
+    if (isMockPost) {
+      setTimeout(() => setAnimateHeart(false), 800);
+      return;
+    }
+
+    setLoadingLike(true);
     try {
       await axiosClient.post(`/posts/${post._id}/like`);
     } catch (err) {
@@ -267,9 +305,9 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
       setLoadingLike(false);
       setTimeout(() => setAnimateHeart(false), 800);
     }
-  }, [currentUser, liked, likesCount, loadingLike, post._id, showToast]);
+  }, [currentUser, liked, likesCount, loadingLike, post._id, showToast, isMockPost]);
 
-  // Handle Follow
+  // ✅ HANDLE FOLLOW
   const handleFollow = useCallback(async (e) => {
     e?.stopPropagation();
 
@@ -291,9 +329,20 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
     }
 
     const wasFollowing = isFollowing;
-    const action = wasFollowing ? 'unfollow' : 'follow';
-
+    
     setIsFollowing(!wasFollowing);
+    showToast?.(
+      wasFollowing 
+        ? `Vous ne suivez plus ${postUser.fullName}` 
+        : `Vous suivez ${postUser.fullName}`, 
+      "success"
+    );
+
+    if (isMockPost) {
+      return;
+    }
+
+    const action = wasFollowing ? 'unfollow' : 'follow';
     setLoadingFollow(true);
 
     try {
@@ -320,13 +369,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
           following: updatedFollowing
         });
       }
-
-      showToast?.(
-        wasFollowing 
-          ? `Vous ne suivez plus ${postUser.fullName}` 
-          : `Vous suivez ${postUser.fullName}`, 
-        "success"
-      );
       
     } catch (err) {
       console.error(`❌ [Follow] Erreur ${action}:`, err);
@@ -341,42 +383,19 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
     } finally {
       setLoadingFollow(false);
     }
-  }, [currentUser, isFollowing, loadingFollow, postUser, showToast, updateUserProfile]);
-
-  const handleBoostPayment = useCallback(async () => {
-    if (!selectedBoost) return;
-    setBoostLoading(true);
-    try {
-      const token = await getToken();
-      const res = await axiosClient.post('/boost/create-session', {
-        postId: post._id, 
-        planId: selectedBoost.id, 
-        amount: selectedBoost.amount, 
-        duration: selectedBoost.duration
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      
-      const data = res.data;
-      
-      if (!data.success) throw new Error(data.message);
-      if (data.url) { 
-        window.location.href = data.url; 
-      } else {
-        setIsBoosted(true);
-        showToast?.("🚀 Post boosté avec succès !", "success");
-        setShowBoostModal(false);
-      }
-    } catch (err) {
-      const errorMsg = err.response?.data?.message || err.message || "Erreur de paiement";
-      showToast?.(errorMsg, "error");
-    } finally {
-      setBoostLoading(false);
-    }
-  }, [selectedBoost, getToken, post._id, showToast]);
+  }, [currentUser, isFollowing, loadingFollow, postUser, showToast, updateUserProfile, isMockPost]);
 
   // ✅ HANDLE DELETE POST
   const handleDeletePost = useCallback(async () => {
+    if (isMockPost) {
+      showToast?.("Post supprimé", "success");
+      setShowDeleteModal(false);
+      if (onDeleted) {
+        onDeleted(post._id);
+      }
+      return;
+    }
+    
     setIsDeleting(true);
     try {
       await axiosClient.delete(`/posts/${post._id}`);
@@ -409,15 +428,32 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
     } finally {
       setIsDeleting(false);
     }
-  }, [post._id, showToast, onDeleted]);
+  }, [post._id, showToast, onDeleted, isMockPost]);
+
+  const handleProfileClick = useCallback((e) => {
+    e?.stopPropagation();
+    navigate(`/profile/${postUser._id}`);
+  }, [navigate, postUser._id]);
 
   const isOwner = currentUser && (post.userId === currentUser._id || postUser._id === currentUser._id);
   const canFollow = currentUser && !isOwner && postUser._id !== 'unknown';
 
-  const mediaUrls = useMemo(() => 
-    (Array.isArray(post.media) ? post.media : [post.media]).filter(Boolean).map(m => 
-        getCloudinaryUrl(typeof m === 'string' ? m : m.url, { width: 1080, format: 'auto' })
-    ), [post.media]);
+  const mediaUrls = useMemo(() => {
+    const mediaSource = post.images || post.media;
+    const mediaArray = Array.isArray(mediaSource) ? mediaSource : (mediaSource ? [mediaSource] : []);
+    
+    return mediaArray.filter(Boolean).map(m => {
+      if (typeof m === 'string') {
+        if (m.startsWith('data:image')) return m;
+        return getCloudinaryUrl(m, { width: 1080, format: 'auto' });
+      }
+      if (m.url) {
+        if (m.url.startsWith('data:image')) return m.url;
+        return getCloudinaryUrl(m.url, { width: 1080, format: 'auto' });
+      }
+      return null;
+    }).filter(Boolean);
+  }, [post.images, post.media]);
 
   const formattedDate = useMemo(() => {
     if (!post.createdAt) return "";
@@ -430,9 +466,10 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
       ref={node => { cardRef.current = node; if (ref) ref.current = node; }}
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      className={`relative w-full max-w-[630px] mx-auto border-b ${
-        isDarkMode ? 'bg-black border-gray-800' : 'bg-white border-gray-200'
-      } overflow-hidden`}
+      className={`relative w-full max-w-[630px] mx-auto ${
+        isDarkMode ? 'bg-black' : 'bg-white'
+      }`}
+      style={{ margin: 0, padding: 0 }}
     >
       {isBoosted && (
         <div className="absolute top-0 right-0 z-10 p-2">
@@ -445,7 +482,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
       {/* HEADER */}
       <div className="flex justify-between items-center p-3">
         <div className="flex items-center gap-3">
-          <button onClick={() => navigate(`/profile/${postUser._id}`)} className="relative shrink-0">
+          <button onClick={handleProfileClick} className="relative shrink-0">
             <SimpleAvatar username={postUser.fullName} photo={postUser.profilePhoto} size={38} />
             {postUser.isPremium && (
                  <div className="absolute -bottom-1 -right-1 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-full p-[2px] border border-black z-10">
@@ -456,7 +493,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
           
           <div className="flex flex-col">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span onClick={() => navigate(`/profile/${postUser._id}`)}
+              <span onClick={handleProfileClick}
                 className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                 {postUser.fullName}
               </span>
@@ -467,7 +504,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
         </div>
 
         <div className="flex items-center gap-2">
-          {isOwner && !isBoosted && (
+          {isOwner && !isBoosted && !isMockPost && (
              <button onClick={(e) => { e.stopPropagation(); setShowBoostModal(true); }}
                 className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 hover:shadow-lg transition-all active:scale-95">
                  <RocketLaunchIcon className="w-3 h-3" /> Booster
@@ -499,33 +536,32 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
         </div>
       </div>
 
-      {/* CONTENU TEXTE - Déplacé en haut */}
+      {/* ✅ TEXTE EN HAUT (juste après header) */}
       {content && (
         <div className="px-3 pb-2">
           <p className={`text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-            <span className="font-semibold mr-2">{postUser.fullName}</span>
             <span className={isDarkMode ? 'text-gray-200' : 'text-gray-800'}>{displayContent}</span>
           </p>
           {shouldTruncate && (
             <button onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-              className="text-gray-500 text-sm hover:text-gray-400">
-              {expanded ? "moins" : "plus"}
+              className="text-gray-500 text-sm hover:text-gray-400 mt-1">
+              {expanded ? "voir moins" : "voir plus"}
             </button>
           )}
         </div>
       )}
 
-      {/* MEDIA */}
+      {/* ✅ MEDIA (après le texte) */}
       {mediaUrls.length > 0 && (
           <div className="w-full">
-             <PostMedia mediaUrls={mediaUrls} />
+             <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} />
           </div>
       )}
 
-      {/* ACTIONS BAR - Style Instagram */}
+      {/* ✅ ACTIONS BAR */}
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-4">
-          <button onClick={handleLike} disabled={loadingLike} className="group active:scale-90 transition-transform">
+          <button onClick={handleLike} disabled={loadingLike && !isMockPost} className="group active:scale-90 transition-transform">
             {liked ? <HeartSolid className={`w-7 h-7 text-red-500 ${animateHeart ? 'animate-bounce' : ''}`} /> 
                    : <HeartIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'} group-hover:text-gray-500`} />}
           </button>
@@ -545,11 +581,11 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
         </button>
       </div>
 
-      {/* LIKES COUNT */}
+      {/* ✅ LIKES COUNT */}
       {likesCount > 0 && (
         <div className="px-3 pb-1">
           <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-            {likesCount} {likesCount === 1 ? 'mention J\'aime' : 'mentions J\'aime'}
+            {likesCount.toLocaleString()} {likesCount === 1 ? 'mention J\'aime' : 'mentions J\'aime'}
           </span>
         </div>
       )}
@@ -558,9 +594,9 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
       {commentsCount > 0 && !showComments && (
         <button 
           onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
-          className="px-3 pb-2 text-sm text-gray-500 hover:text-gray-400 text-left"
+          className="px-3 pb-3 text-sm text-gray-500 hover:text-gray-400 text-left"
         >
-          Afficher {commentsCount === 1 ? 'le commentaire' : `les ${commentsCount} commentaires`}
+          Afficher {commentsCount === 1 ? 'le commentaire' : `les ${commentsCount.toLocaleString()} commentaires`}
         </button>
       )}
 
@@ -609,13 +645,19 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
           )}
       </AnimatePresence>
 
-      {/* COMMENTAIRES & PARTAGE */}
+      {/* COMMENTAIRES */}
       <AnimatePresence>
         {showComments && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden border-t border-gray-200 dark:border-gray-800">
+          <motion.div 
+            initial={{ height: 0, opacity: 0 }} 
+            animate={{ height: "auto", opacity: 1 }} 
+            exit={{ height: 0, opacity: 0 }} 
+            className="overflow-hidden border-t border-gray-200 dark:border-gray-800"
+          >
             <ErrorBoundary>
                 <PostComments 
-                    postId={post._id} comments={comments}
+                    postId={post._id} 
+                    comments={comments}
                     setComments={(newComments) => {
                         if (typeof newComments === 'function') {
                             setComments(prev => {
@@ -628,13 +670,22 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false }, re
                             setCommentsCount(newComments.length);
                         }
                     }}
-                    currentUser={currentUser} getToken={getToken} showToast={showToast} navigate={navigate}
+                    currentUser={currentUser} 
+                    getToken={getToken} 
+                    showToast={showToast} 
+                    navigate={navigate}
+                    isMockPost={isMockPost}
                 />
             </ErrorBoundary>
           </motion.div>
         )}
         {showShare && (
-           <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-gray-200 dark:border-gray-800">
+           <motion.div 
+            initial={{ height: 0 }} 
+            animate={{ height: "auto" }} 
+            exit={{ height: 0 }} 
+            className="overflow-hidden border-t border-gray-200 dark:border-gray-800"
+           >
               <PostShareSection postId={post._id} showToast={showToast} />
            </motion.div>
         )}

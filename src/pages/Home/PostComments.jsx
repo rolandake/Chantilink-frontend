@@ -1,4 +1,4 @@
-// src/pages/Home/PostComments.jsx - VERSION COMPLÈTE CORRIGÉE
+// src/pages/Home/PostComments.jsx - VERSION COMPLÈTE AVEC SUPPORT POSTS FICTIFS
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { TrashIcon, XMarkIcon, HeartIcon } from "@heroicons/react/24/outline";
@@ -57,7 +57,8 @@ const PostComments = ({
   currentUser,
   getToken,
   showToast,
-  navigate
+  navigate,
+  isMockPost = false // ✅ NOUVEAU: Indique si c'est un post fictif
 }) => {
   const { isDarkMode } = useDarkMode();
   const [newComment, setNewComment] = useState("");
@@ -93,6 +94,7 @@ const PostComments = ({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showEmojiPicker]);
 
+  // ✅ AJOUT DE COMMENTAIRE - Fonctionne pour posts fictifs ET réels
   const handleAddComment = async () => {
     if (!currentUser) return showToast?.("Connectez-vous pour commenter", "error");
     if (!newComment.trim()) return;
@@ -111,15 +113,23 @@ const PostComments = ({
         isPremium: currentUser.isPremium
       },
       createdAt: new Date().toISOString(),
-      isOptimistic: true,
+      isOptimistic: !isMockPost, // Pour les posts fictifs, le commentaire est définitif
       likes: []
     };
 
+    // Mise à jour optimiste de l'UI
     setComments(prev => [...prev, optimisticComment]);
     setNewComment("");
     setShowEmojiPicker(false);
-    setLoadingComment(true);
 
+    // ✅ Pour les posts fictifs, on s'arrête là (pas d'appel serveur)
+    if (isMockPost) {
+      showToast?.("Commentaire ajouté", "success");
+      return;
+    }
+
+    // Pour les vrais posts, appel serveur
+    setLoadingComment(true);
     try {
       const token = await getToken();
       if (!token) throw new Error("Non authentifié");
@@ -138,6 +148,7 @@ const PostComments = ({
       const responseData = await res.json();
       const savedComment = responseData.data || responseData;
       
+      // Remplacer le commentaire temporaire par celui du serveur
       setComments(prev => prev.map(c => 
         c._id === tempId ? savedComment : c
       ));
@@ -146,6 +157,7 @@ const PostComments = ({
 
     } catch (err) {
       console.error("❌ Erreur ajout commentaire:", err);
+      // Rollback en cas d'erreur
       setComments(prev => prev.filter(c => c._id !== tempId));
       setNewComment(commentContent);
       showToast?.("Impossible de publier le commentaire", "error");
@@ -154,14 +166,24 @@ const PostComments = ({
     }
   };
 
+  // ✅ SUPPRESSION DE COMMENTAIRE - Fonctionne pour posts fictifs ET réels
   const handleDeleteComment = async (commentId) => {
     if (!window.confirm("Supprimer ce commentaire ?")) return;
     
     setDeletingCommentId(commentId);
     const previousComments = [...comments];
 
+    // Mise à jour optimiste de l'UI
     setComments(prev => prev.filter(c => c._id !== commentId));
 
+    // ✅ Pour les posts fictifs, on s'arrête là
+    if (isMockPost) {
+      showToast?.("Commentaire supprimé", "success");
+      setDeletingCommentId(null);
+      return;
+    }
+
+    // Pour les vrais posts, appel serveur
     try {
       const token = await getToken();
       const res = await fetch(`${base}/api/posts/${postId}/comment/${commentId}`, {
@@ -173,6 +195,8 @@ const PostComments = ({
       showToast?.("Commentaire supprimé", "success");
 
     } catch (err) {
+      console.error("❌ Erreur suppression commentaire:", err);
+      // Rollback en cas d'erreur
       setComments(previousComments);
       showToast?.("Erreur lors de la suppression", "error");
     } finally {
@@ -180,6 +204,7 @@ const PostComments = ({
     }
   };
 
+  // ✅ LIKE DE COMMENTAIRE - Fonctionne pour posts fictifs ET réels
   const handleLikeComment = async (commentId) => {
     if (!currentUser) return showToast?.("Connectez-vous pour réagir", "info");
     if (reactingCommentId) return;
@@ -206,6 +231,13 @@ const PostComments = ({
       };
     }));
 
+    // ✅ Pour les posts fictifs, on s'arrête là
+    if (isMockPost) {
+      setReactingCommentId(null);
+      return;
+    }
+
+    // Pour les vrais posts, appel serveur
     try {
       const token = await getToken();
       if (!token) throw new Error("Non authentifié");
@@ -287,9 +319,15 @@ const PostComments = ({
                 exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.1 } }}
                 className="flex gap-3 group relative"
               >
+                {/* Avatar cliquable */}
                 <div 
                   className="flex-shrink-0 cursor-pointer pt-1"
-                  onClick={() => userObj._id && navigate(`/profile/${userObj._id}`)}
+                  onClick={() => {
+                    if (userObj._id) {
+                      // ✅ Navigation fonctionne pour utilisateurs fictifs ET réels
+                      navigate(`/profile/${userObj._id}`);
+                    }
+                  }}
                 >
                   <SimpleAvatar
                     username={userObj.fullName || "User"}
@@ -307,7 +345,12 @@ const PostComments = ({
                         className={`text-sm font-bold cursor-pointer hover:underline truncate ${
                           isDarkMode ? 'text-gray-200' : 'text-gray-800'
                         }`}
-                        onClick={() => userObj._id && navigate(`/profile/${userObj._id}`)}
+                        onClick={() => {
+                          if (userObj._id) {
+                            // ✅ Navigation fonctionne pour utilisateurs fictifs ET réels
+                            navigate(`/profile/${userObj._id}`);
+                          }
+                        }}
                       >
                         {userObj.fullName || "Utilisateur"}
                       </span>
@@ -324,6 +367,7 @@ const PostComments = ({
                   </div>
                   
                   <div className="flex items-center gap-3 mt-1 px-1">
+                    {/* Bouton Like */}
                     {!isTemp && (
                       <button
                         onClick={() => handleLikeComment(c._id)}
@@ -343,6 +387,7 @@ const PostComments = ({
                       </button>
                     )}
 
+                    {/* Bouton Supprimer (uniquement pour ses propres commentaires) */}
                     {isMe && !isTemp && (
                       <button
                         onClick={() => handleDeleteComment(c._id)}
@@ -360,6 +405,7 @@ const PostComments = ({
         </AnimatePresence>
       </div>
 
+      {/* Zone d'ajout de commentaire */}
       <div className={`p-3 border-t relative ${
         isDarkMode ? 'border-gray-700 bg-gray-850' : 'border-gray-200 bg-white'
       }`}>
@@ -386,6 +432,7 @@ const PostComments = ({
           </div>
 
           <div className="flex items-center gap-1 pb-1">
+            {/* Bouton Emoji */}
             <button
               ref={emojiButtonRef}
               onClick={(e) => {
@@ -401,6 +448,7 @@ const PostComments = ({
               <span className="text-xl leading-none">😊</span>
             </button>
             
+            {/* Bouton Envoyer */}
             <button
               onClick={handleAddComment}
               disabled={loadingComment || !newComment.trim()}
@@ -417,6 +465,7 @@ const PostComments = ({
           </div>
         </div>
 
+        {/* Emoji Picker */}
         <AnimatePresence>
           {showEmojiPicker && (
             <motion.div

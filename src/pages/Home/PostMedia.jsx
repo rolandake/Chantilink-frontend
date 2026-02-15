@@ -1,6 +1,6 @@
 // ============================================
 // 📁 src/pages/Home/PostMedia.jsx
-// VERSION OPTIMISÉE LCP + SWIPE + CLOUDINARY + WATERMARK
+// VERSION COMPATIBLE VRAIS POSTS + POSTS FICTIFS (SVG base64)
 // ============================================
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
@@ -12,8 +12,14 @@ const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 const isVideo = url => url && /\.(mp4|webm|mov|avi)$/i.test(url);
 
+// ✅ MODIFICATION CRITIQUE : Ne pas transformer les SVG base64
 const getUltraHDUrl = (url) => {
   if (!url) return null;
+  
+  // ✅ Si c'est un SVG base64 (posts fictifs), le retourner tel quel
+  if (url.startsWith('data:image/svg+xml')) return url;
+  
+  // ✅ Si c'est déjà une URL complète, la retourner telle quelle
   if (url.includes('res.cloudinary.com') || url.startsWith('http')) return url;
 
   const id = url.replace(/^\/+/, '');
@@ -29,7 +35,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
   const [index, setIndex] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [loadedImages, setLoadedImages] = useState({});
-  const [videoStates, setVideoStates] = useState({}); // 🎬 États des vidéos
+  const [videoStates, setVideoStates] = useState({});
   const containerRef = useRef(null);
   const videoRefs = useRef({});
   const touch = useRef({ x: 0, y: 0, time: 0 });
@@ -60,16 +66,18 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
     };
   }, []);
 
-  // === PRÉCHARGEMENT IMAGE SUIVANTE ===
+  // === PRÉCHARGEMENT IMAGE SUIVANTE (sauf pour SVG base64) ===
   useEffect(() => {
     const next = (index + 1) % total;
-    if (!isVideo(urls[next])) {
+    const nextUrl = urls[next];
+    // ✅ Ne pas précharger les SVG base64 (déjà en mémoire)
+    if (!isVideo(nextUrl) && !nextUrl.startsWith('data:image')) {
       const img = new Image();
-      img.src = urls[next];
+      img.src = nextUrl;
     }
   }, [index, urls, total]);
 
-  // === 🎬 GESTION VIDÉOS : PLAY/PAUSE + AUTOPLAY MUET + TRACKING ÉTAT ===
+  // === 🎬 GESTION VIDÉOS ===
   useEffect(() => {
     const currentVideo = videoRefs.current[index];
     const otherVideos = Object.values(videoRefs.current).filter((_, i) => i !== index);
@@ -87,7 +95,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
     }
   }, [index]);
 
-  // === 🎬 ÉCOUTE DES ÉVÉNEMENTS VIDÉO ===
   const handleVideoPlay = useCallback((videoSrc) => {
     setVideoStates(prev => ({ ...prev, [videoSrc]: { isPlaying: true, hasEnded: false } }));
   }, []);
@@ -107,7 +114,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
     }));
   }, []);
 
-  // === SWIPE MOBILE/DESKTOP ===
+  // === SWIPE ===
   useEffect(() => {
     if (total <= 1) return;
     const el = containerRef.current;
@@ -188,12 +195,13 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
       >
         {urls.map((url, i) => {
           const isVideoItem = isVideo(url);
+          const isSVG = url.startsWith('data:image/svg+xml');
           const videoState = videoStates[url] || { isPlaying: false, hasEnded: false };
 
           return (
             <div key={i} className="w-full flex-shrink-0 flex items-center justify-center bg-black relative">
-              {/* 🔥 PLACEHOLDER PENDANT CHARGEMENT */}
-              {!isVideoItem && !loadedImages[i] && (
+              {/* 🔥 PLACEHOLDER PENDANT CHARGEMENT (sauf SVG qui sont instantanés) */}
+              {!isVideoItem && !isSVG && !loadedImages[i] && (
                 <div className="absolute inset-0 animate-pulse bg-gray-800" />
               )}
               
@@ -233,10 +241,11 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
                   src={url}
                   alt=""
                   className={`w-full h-auto max-h-[600px] transition-opacity duration-300 ${
-                    loadedImages[i] ? 'opacity-100' : 'opacity-0'
+                    isSVG || loadedImages[i] ? 'opacity-100' : 'opacity-0'
                   }`}
                   style={{
-                    objectFit: 'contain',
+                    // ✅ Pour les SVG, on utilise 'contain' pour qu'ils soient centrés
+                    objectFit: isSVG ? 'contain' : 'contain',
                     imageRendering: 'high-quality',
                     userSelect: 'none',
                     pointerEvents: dragging ? 'none' : 'auto'
@@ -244,7 +253,13 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false }) => {
                   loading={isFirstPost && i === 0 ? 'eager' : 'lazy'}
                   fetchpriority={isFirstPost && i === 0 ? 'high' : 'auto'}
                   decoding={isFirstPost && i === 0 ? 'sync' : 'async'}
-                  onLoad={() => setLoadedImages(prev => ({ ...prev, [i]: true }))}
+                  onLoad={() => {
+                    // ✅ Marquer comme chargé même pour les SVG
+                    setLoadedImages(prev => ({ ...prev, [i]: true }));
+                  }}
+                  onError={(e) => {
+                    console.error('❌ Erreur chargement image:', url.substring(0, 100));
+                  }}
                   draggable="false"
                 />
               )}

@@ -1,7 +1,6 @@
-// ============================================
-// 📁 src/pages/Home/Home.final.jsx
-// VERSION FINALE - Avec système de publicités intelligent
-// ============================================
+// 📁 src/pages/Home/Home.jsx - VERSION OPTIMISÉE ✅
+// Corrections : Génération lazy + Protection double appel + Performance INP
+
 import React, {
   useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense
 } from "react";
@@ -15,31 +14,110 @@ import { useAuth } from "../../context/AuthContext";
 import PostCard from "./PostCard";
 import StoryContainer from "./StoryContainer";
 import StoryCreator from "./StoryCreator";
-import SmartAd from "./Publicite/SmartAd"; // 🎯 Utilise SmartAd au lieu de DemoAdCard
+import SmartAd from "./Publicite/SmartAd";
+
+// ✅ Un seul import de MOCK_POSTS
+import MOCK_POSTS, { generateFullDataset } from "../../data/mockPosts";
+import { MOCK_CONFIG as DEFAULT_MOCK_CONFIG, AD_CONFIG as DEFAULT_AD_CONFIG } from "../../data/mockConfig";
+
+// ✅ Import de NewsSection
+import NewsSection from "../../info/NewsSection";
 
 const StoryViewer = lazy(() => import("./StoryViewer"));
 const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
 
+const AD_CONFIG = DEFAULT_AD_CONFIG;
+const MOCK_CONFIG = DEFAULT_MOCK_CONFIG;
+
 // ============================================
-// Configuration des publicités
+// OPTIMISATION LCP: Préchargement images critiques
 // ============================================
-const AD_CONFIG = {
-  enabled: true, // Activer/désactiver les pubs
-  frequency: 3, // Une pub tous les X posts
+const preloadCriticalImages = (posts) => {
+  if (!posts || posts.length === 0) return;
+  
+  const firstImagePost = posts.find(p => {
+    const media = p.images?.[0] || p.media?.[0];
+    if (!media) return false;
+    const url = media.url || media;
+    return url && !/\.(mp4|webm|mov|avi)$/i.test(url);
+  });
+  
+  if (!firstImagePost) return;
+  
+  const img = firstImagePost.images?.[0] || firstImagePost.media?.[0];
+  const imgUrl = img?.url || img;
+  
+  if (imgUrl) {
+    const link = document.createElement('link');
+    link.rel = 'preload';
+    link.as = 'image';
+    link.href = imgUrl;
+    link.fetchPriority = 'high';
+    document.head.appendChild(link);
+    
+    const preloadImg = new Image();
+    preloadImg.fetchPriority = 'high';
+    preloadImg.src = imgUrl;
+  }
 };
 
 // ============================================
-// Skeleton LCP SAFE
+// Skeleton - HAUTEUR FIXE pour CLS
 // ============================================
-const SkeletonPosts = ({ count = 3 }) =>
-  [...Array(count)].map((_, i) => (
-    <div key={i}>
-      <PostCard loading />
-    </div>
-  ));
+const SkeletonPosts = memo(({ count = 3, isDarkMode }) => (
+  <div style={{ minHeight: `${count * 700}px` }}>
+    {[...Array(count)].map((_, i) => (
+      <div 
+        key={i} 
+        className={`mb-4 rounded-xl overflow-hidden ${
+          isDarkMode ? 'bg-gray-900' : 'bg-white'
+        }`}
+        style={{ 
+          margin: 0, 
+          padding: 0,
+          minHeight: '600px'
+        }}
+      >
+        <div className="p-3 flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-full animate-pulse ${
+            isDarkMode ? 'bg-gray-800' : 'bg-gray-300'
+          }`} />
+          <div className="flex-1 space-y-2">
+            <div className={`h-4 rounded w-32 animate-pulse ${
+              isDarkMode ? 'bg-gray-800' : 'bg-gray-300'
+            }`} />
+            <div className={`h-3 rounded w-20 animate-pulse ${
+              isDarkMode ? 'bg-gray-700' : 'bg-gray-200'
+            }`} />
+          </div>
+        </div>
+        
+        <div 
+          className={`w-full animate-pulse ${
+            isDarkMode ? 'bg-gray-800' : 'bg-gray-300'
+          }`}
+          style={{ aspectRatio: '1 / 1' }}
+        />
+        
+        <div className="p-3 flex items-center gap-4">
+          {[1, 2, 3].map(i => (
+            <div 
+              key={i}
+              className={`h-6 w-6 rounded animate-pulse ${
+                isDarkMode ? 'bg-gray-800' : 'bg-gray-300'
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+    ))}
+  </div>
+));
+
+SkeletonPosts.displayName = 'SkeletonPosts';
 
 // ============================================
-// Pull to Refresh Indicator
+// Pull to Refresh
 // ============================================
 const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, threshold = 100 }) => {
   const progress = Math.min((pullDistance / threshold) * 100, 100);
@@ -54,6 +132,7 @@ const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, thre
           exit={{ opacity: 0, scale: 0.8 }}
           transition={{ duration: 0.2 }}
           className="fixed top-24 left-1/2 -translate-x-1/2 z-[45] pointer-events-none"
+          style={{ willChange: 'transform, opacity' }}
         >
           <div className={`relative w-10 h-10 rounded-full flex items-center justify-center ${
             isDarkMode ? 'bg-gray-800/95' : 'bg-white/95'
@@ -61,28 +140,15 @@ const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, thre
             isDarkMode ? 'border-gray-700' : 'border-gray-200'
           }`}>
             <svg className="absolute inset-0 -rotate-90" viewBox="0 0 40 40">
+              <circle cx="20" cy="20" r="16" fill="none" stroke={isDarkMode ? '#374151' : '#e5e7eb'} strokeWidth="2" />
               <circle
-                cx="20"
-                cy="20"
-                r="16"
-                fill="none"
-                stroke={isDarkMode ? '#374151' : '#e5e7eb'}
-                strokeWidth="2"
-              />
-              <circle
-                cx="20"
-                cy="20"
-                r="16"
-                fill="none"
-                stroke="#f97316"
-                strokeWidth="2"
+                cx="20" cy="20" r="16" fill="none" stroke="#f97316" strokeWidth="2"
                 strokeDasharray={`${2 * Math.PI * 16}`}
                 strokeDashoffset={`${2 * Math.PI * 16 * (1 - progress / 100)}`}
                 strokeLinecap="round"
                 style={{ transition: 'stroke-dashoffset 0.1s linear' }}
               />
             </svg>
-            
             <ArrowPathIcon
               className={`w-5 h-5 ${isPulling ? 'text-orange-500' : 'text-gray-400'}`}
               style={{ 
@@ -97,57 +163,55 @@ const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, thre
   );
 });
 
+PullToRefreshIndicator.displayName = 'PullToRefreshIndicator';
+
 // ============================================
 // Post Wrapper
 // ============================================
-const PostWrapper = ({ post, onDeleted, showToast }) => (
-  <PostCard
-    post={post}
-    onDeleted={onDeleted}
-    showToast={showToast}
-  />
-);
+const PostWrapper = memo(({ post, onDeleted, showToast, isPriority = false, forceImageLCP = false }) => (
+  <div style={{ margin: 0, padding: 0 }}>
+    <PostCard
+      post={post}
+      onDeleted={onDeleted}
+      showToast={showToast}
+      mockPost={false}
+      priority={isPriority}
+      forcePosterForVideo={forceImageLCP}
+    />
+  </div>
+));
+
+PostWrapper.displayName = 'PostWrapper';
 
 // ============================================
-// Composant pour insérer les publicités (VERSION SMART)
+// Post avec Pub
 // ============================================
-const PostWithAd = memo(({ 
-  post, 
-  index, 
-  onDeleted, 
-  showToast, 
-  adConfig 
-}) => {
-  const shouldShowAd = adConfig.enabled && 
-                       index > 0 && 
-                       (index % adConfig.frequency === 0);
+const PostWithAd = memo(({ post, index, onDeleted, showToast, adConfig }) => {
+  const shouldShowAd = adConfig.enabled && index > 0 && (index % adConfig.frequency === 0);
 
   return (
     <>
-      <PostWrapper
-        post={post}
-        onDeleted={onDeleted}
-        showToast={showToast}
-      />
-      
+      <PostWrapper post={post} onDeleted={onDeleted} showToast={showToast} />
       {shouldShowAd && (
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -20 }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
           transition={{ duration: 0.3 }}
+          style={{ 
+            margin: 0, 
+            padding: 0, 
+            minHeight: '250px'
+          }}
         >
-          {/* 🎯 SmartAd choisit automatiquement entre Demo et Google */}
-          <SmartAd 
-            slot="feedInline" 
-            canClose={true}
-            autoRotate={false}
-          />
+          <SmartAd slot="feedInline" canClose={true} />
         </motion.div>
       )}
     </>
   );
 });
+
+PostWithAd.displayName = 'PostWithAd';
 
 // ============================================
 // Toast
@@ -159,7 +223,6 @@ const Toast = ({ message, type = "info", onClose }) => {
   }, [onClose]);
 
   const bgColor = type === "error" ? "bg-red-500" : type === "success" ? "bg-green-500" : "bg-blue-500";
-
   return (
     <div className={`fixed bottom-4 right-4 ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-slide-up`}>
       {message}
@@ -172,9 +235,9 @@ const Toast = ({ message, type = "info", onClose }) => {
 // ============================================
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const { isDarkMode } = useDarkMode();
-  const { fetchStories, stories = [], myStories } = useStories();
+  const { fetchStories, stories = [] } = useStories();
   const {
-    posts = [],
+    posts: realPosts = [],
     fetchNextPage,
     hasMore,
     loading: postsLoading,
@@ -191,29 +254,166 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const [initialLoad, setInitialLoad] = useState(true);
   const [toast, setToast] = useState(null);
 
-  // États Pull to Refresh
+  const [mockPostsCount, setMockPostsCount] = useState(MOCK_CONFIG.initialCount);
+  const showMockPosts = MOCK_CONFIG.enabled;
+
   const [isPulling, setIsPulling] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
   const touchStartY = useRef(0);
-  const touchStartTime = useRef(0);
   const isRefreshingPull = useRef(false);
-  const lastScrollY = useRef(0);
   const canPull = useRef(true);
 
   const observerRef = useRef(null);
   const loadingRef = useRef(false);
+  const containerRef = useRef(null);
+  const mockGenStarted = useRef(false);
 
+  const showNews = !!user;
+
+  // ============================================
+  // 🎯 GESTION CHARGEMENT INITIAL
+  // ============================================
   useEffect(() => {
     loadingRef.current = postsLoading;
-    if (!postsLoading && posts.length > 0) setInitialLoad(false);
-  }, [postsLoading, posts.length]);
+    
+    if (!postsLoading && realPosts.length > 0) {
+      setInitialLoad(false);
+      preloadCriticalImages(realPosts);
+    }
+  }, [postsLoading, realPosts]);
+
+  // ============================================
+  // 🚀 GÉNÉRATION LAZY DES MOCKS (CORRIGÉ)
+  // ============================================
+  useEffect(() => {
+    if (mockGenStarted.current || initialLoad || !MOCK_CONFIG.enabled) {
+      return;
+    }
+    
+    const shouldGenerate = MOCK_CONFIG.totalPosts > 100 && 
+                          MOCK_CONFIG.lazyGeneration?.enabled !== false;
+    
+    if (!shouldGenerate) {
+      console.log('💡 Dataset minimal - pas de génération complète nécessaire');
+      return;
+    }
+    
+    const startGeneration = () => {
+      if (mockGenStarted.current) {
+        console.warn('⚠️ Génération déjà en cours, ignorée');
+        return;
+      }
+      
+      mockGenStarted.current = true;
+      console.log('🚀 Démarrage génération lazy des mocks...');
+      
+      if (typeof requestIdleCallback !== 'undefined') {
+        requestIdleCallback(() => {
+          console.log('⏳ Génération mock démarrée (idle callback)...');
+          
+          generateFullDataset((progress) => {
+            if (progress.percent % 25 === 0 || progress.percent === 100) {
+              console.log(`📊 Génération: ${progress.phase} - ${progress.percent.toFixed(0)}%`);
+            }
+            
+            if (progress.percent === 100) {
+              console.log('✅ Génération mock terminée avec succès');
+            }
+          }).catch(error => {
+            console.error('❌ Erreur génération mock:', error);
+            mockGenStarted.current = false;
+          });
+        }, { timeout: 10000 });
+      } else {
+        setTimeout(() => {
+          console.log('⏳ Génération mock démarrée (setTimeout fallback)...');
+          
+          generateFullDataset((progress) => {
+            if (progress.percent === 100) {
+              console.log('✅ Génération mock terminée');
+            }
+          }).catch(error => {
+            console.error('❌ Erreur génération mock:', error);
+            mockGenStarted.current = false;
+          });
+        }, 5000);
+      }
+    };
+    
+    const generationDelay = MOCK_CONFIG.lazyGeneration?.delayMs || 5000;
+    console.log(`⏰ Génération programmée dans ${generationDelay}ms`);
+    
+    const timer = setTimeout(startGeneration, generationDelay);
+    
+    return () => {
+      clearTimeout(timer);
+      console.log('🧹 Timer de génération nettoyé');
+    };
+  }, [initialLoad]);
+
+  const isValidPost = useCallback((post) => {
+    if (!post || !post._id) return false;
+    if (post._isMock || post.isMockPost || post._id?.startsWith('post_')) return true;
+    
+    const user = post.user || post.author || {};
+    const fullName = user.fullName || post.fullName || "";
+    
+    const isUnknownUser = fullName === "Utilisateur Inconnu" || 
+                         fullName === "Unknown User" ||
+                         fullName.trim() === "" ||
+                         fullName === "undefined" ||
+                         fullName === "null";
+    
+    const hasNoUserId = !user._id && !post.userId && !post.author?._id;
+    const isBannedOrDeleted = user.isBanned || user.isDeleted || 
+                              user.status === 'deleted' || user.status === 'banned';
+    const isInvalidUserId = user._id === 'unknown' || user._id === 'null' || user._id === 'undefined';
+    
+    if ((isUnknownUser || hasNoUserId || isInvalidUserId) && !post._isMock) return false;
+    if (isBannedOrDeleted) return false;
+    
+    return true;
+  }, []);
+
+  const combinedPosts = useMemo(() => {
+    const validRealPosts = realPosts.filter(isValidPost);
+    
+    if (realPosts.length !== validRealPosts.length) {
+      console.log(`✅ ${realPosts.length - validRealPosts.length} posts invalides filtrés`);
+    }
+    
+    if (!showMockPosts) return validRealPosts;
+
+    const mockPostsSlice = MOCK_POSTS.slice(0, mockPostsCount);
+    if (MOCK_CONFIG.mixWithRealPosts && validRealPosts.length > 0) {
+      const combined = [];
+      let mockIndex = 0;
+      let realIndex = 0;
+      const ratio = MOCK_CONFIG.realPostsRatio || 2;
+
+      while (mockIndex < mockPostsSlice.length || realIndex < validRealPosts.length) {
+        for (let i = 0; i < ratio && realIndex < validRealPosts.length; i++) {
+          combined.push({ ...validRealPosts[realIndex], _isMock: false });
+          realIndex++;
+        }
+        if (mockIndex < mockPostsSlice.length) {
+          combined.push({ ...mockPostsSlice[mockIndex], _isMock: true });
+          mockIndex++;
+        }
+      }
+      return combined;
+    }
+    return mockPostsSlice.map(post => ({ ...post, _isMock: true }));
+  }, [realPosts, mockPostsCount, showMockPosts, isValidPost]);
 
   const showToast = useCallback((message, type = "info") => {
     setToast({ message, type });
   }, []);
 
   const handlePostDeleted = useCallback(
-    (postId) => removePost?.(postId),
+    (postId) => {
+      removePost?.(postId);
+    },
     [removePost]
   );
 
@@ -228,262 +428,213 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const handleRefresh = useCallback(async () => {
     if (isRefreshing) return;
     setIsRefreshing(true);
-    
     try {
-      await Promise.allSettled([
-        fetchStories(true),
-        refetch?.(),
-      ]);
+      await Promise.allSettled([fetchStories(true), refetch?.()]);
       showToast("Actualisé !", "success");
     } catch (error) {
-      console.error('Erreur refresh:', error);
-      showToast("Erreur", "error");
+      showToast("Erreur lors de l'actualisation", "error");
     } finally {
       setIsRefreshing(false);
     }
   }, [isRefreshing, refetch, fetchStories, showToast]);
 
-  // Pull to Refresh Logic
   useEffect(() => {
     const THRESHOLD = 100;
-    const MIN_PULL_DURATION = 300;
+    let rafId = null;
+    let lastY = 0;
 
-    const resetPull = () => {
-      setPullDistance(0);
-      setIsPulling(false);
-      canPull.current = true;
+    const resetPull = () => { 
+      setPullDistance(0); 
+      setIsPulling(false); 
+      canPull.current = true; 
     };
 
     const triggerRefresh = async () => {
       if (isRefreshingPull.current) return;
-      
       isRefreshingPull.current = true;
       setIsPulling(false);
       canPull.current = false;
-      
-      try {
-        await handleRefresh();
-      } catch (error) {
-        console.error('❌ Erreur refresh:', error);
-      } finally {
-        isRefreshingPull.current = false;
-        setTimeout(() => resetPull(), 500);
-      }
+      await handleRefresh();
+      isRefreshingPull.current = false;
+      setTimeout(() => resetPull(), 500);
     };
 
     const handleTouchStart = (e) => {
-      const scrollTop = window.scrollY || document.documentElement.scrollTop;
-      
-      if (scrollTop <= 2 && canPull.current && !isRefreshingPull.current) {
+      if ((window.scrollY || document.documentElement.scrollTop) <= 2 && canPull.current) {
         touchStartY.current = e.touches[0].clientY;
-        touchStartTime.current = Date.now();
-      } else {
-        touchStartY.current = 0;
+        lastY = e.touches[0].clientY;
       }
     };
 
     const handleTouchMove = (e) => {
-      if (isRefreshingPull.current || !canPull.current || touchStartY.current === 0) return;
-
-      const scrollTop = window.scrollY || document.documentElement.scrollTop;
-      const touchY = e.touches[0].clientY;
-      const pullDown = touchY - touchStartY.current;
-
-      if (scrollTop <= 2 && pullDown > 20) {
-        if (pullDown > 40) {
-          e.preventDefault();
-        }
+      if (!canPull.current || touchStartY.current === 0) return;
+      
+      const currentY = e.touches[0].clientY;
+      const pullDown = currentY - touchStartY.current;
+      
+      if (pullDown > 20) {
+        if (pullDown > 40) e.preventDefault();
         
-        const resistance = 0.4;
-        const distance = Math.min(pullDown * resistance, THRESHOLD * 1.5);
-        setPullDistance(distance);
-        setIsPulling(distance > THRESHOLD);
-      } else if (pullDown < -10) {
-        resetPull();
+        if (Math.abs(currentY - lastY) > 2) {
+          if (rafId) cancelAnimationFrame(rafId);
+          rafId = requestAnimationFrame(() => {
+            const distance = Math.min(pullDown * 0.4, THRESHOLD * 1.5);
+            setPullDistance(distance);
+            setIsPulling(distance > THRESHOLD);
+          });
+          lastY = currentY;
+        }
       }
     };
 
     const handleTouchEnd = () => {
-      const pullDuration = Date.now() - touchStartTime.current;
-      
-      if (
-        pullDistance > THRESHOLD && 
-        pullDuration >= MIN_PULL_DURATION &&
-        !isRefreshingPull.current
-      ) {
-        triggerRefresh();
-      } else {
-        resetPull();
-      }
-      
+      if (rafId) cancelAnimationFrame(rafId);
+      if (pullDistance > THRESHOLD && !isRefreshingPull.current) triggerRefresh();
+      else resetPull();
       touchStartY.current = 0;
-    };
-
-    const handleScroll = () => {
-      const scrollTop = window.scrollY || document.documentElement.scrollTop;
-      
-      if (
-        scrollTop === 0 && 
-        lastScrollY.current > 200 && 
-        !isRefreshingPull.current &&
-        canPull.current
-      ) {
-        setTimeout(() => {
-          const finalScrollTop = window.scrollY || document.documentElement.scrollTop;
-          if (finalScrollTop === 0 && canPull.current) {
-            triggerRefresh();
-          }
-        }, 150);
-      }
-      
-      lastScrollY.current = scrollTop;
     };
 
     window.addEventListener('touchstart', handleTouchStart, { passive: true });
     window.addEventListener('touchmove', handleTouchMove, { passive: false });
     window.addEventListener('touchend', handleTouchEnd, { passive: true });
-    window.addEventListener('scroll', handleScroll, { passive: true });
-
+    
     return () => {
+      if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('touchstart', handleTouchStart);
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleTouchEnd);
-      window.removeEventListener('scroll', handleScroll);
     };
   }, [pullDistance, handleRefresh]);
 
   const filteredPosts = useMemo(() => {
-    if (!searchQuery.trim()) return posts;
+    if (!searchQuery.trim()) return combinedPosts;
     const q = searchQuery.toLowerCase();
-    return posts.filter(p =>
+    return combinedPosts.filter(p =>
       (p.content || "").toLowerCase().includes(q) ||
-      (p.user?.fullName || "").toLowerCase().includes(q) ||
-      (p.user?.username || "").toLowerCase().includes(q)
+      (p.user?.fullName || "").toLowerCase().includes(q)
     );
-  }, [posts, searchQuery]);
+  }, [combinedPosts, searchQuery]);
 
   const handleObserver = useCallback(
     (entries) => {
-      if (
-        entries[0].isIntersecting &&
-        hasMore &&
-        !loadingRef.current &&
-        !isRefreshing
-      ) {
-        fetchNextPage();
+      if (entries[0].isIntersecting && !loadingRef.current && !isRefreshing) {
+        if (showMockPosts && mockPostsCount < MOCK_POSTS.length) {
+          setMockPostsCount(prev => Math.min(prev + MOCK_CONFIG.loadMoreCount, MOCK_POSTS.length));
+        }
+        if (hasMore) fetchNextPage();
       }
     },
-    [hasMore, fetchNextPage, isRefreshing]
+    [hasMore, fetchNextPage, isRefreshing, showMockPosts, mockPostsCount]
   );
 
   useEffect(() => {
     if (!observerRef.current) return;
-    const obs = new IntersectionObserver(handleObserver, {
-      rootMargin: "200px",
-      threshold: 0.1,
-    });
+    const obs = new IntersectionObserver(handleObserver, { rootMargin: "200px" });
     obs.observe(observerRef.current);
     return () => obs.disconnect();
   }, [handleObserver]);
 
+  const firstPostIsVideo = useMemo(() => {
+    if (!filteredPosts[0]) return false;
+    const media = filteredPosts[0].images?.[0] || filteredPosts[0].media?.[0];
+    if (!media) return false;
+    const url = media.url || media;
+    return url && /\.(mp4|webm|mov|avi)$/i.test(url);
+  }, [filteredPosts]);
+
   return (
-    <div className="flex flex-col h-full scrollbar-hide">
-      {/* Pull to Refresh Indicator */}
+    <div 
+      ref={containerRef}
+      className="flex flex-col h-full scrollbar-hide"
+      style={{ minHeight: '100vh' }}
+    >
       <PullToRefreshIndicator 
         isPulling={isPulling} 
         pullDistance={pullDistance} 
-        isDarkMode={isDarkMode}
-        threshold={100}
+        isDarkMode={isDarkMode} 
       />
 
       {!showPyramid && (
         <>
-          {/* STORIES */}
-          <div className={`sticky top-0 z-30 ${
-            isDarkMode ? "bg-black" : "bg-white"
-          }`}>
-            <div className="h-full overflow-x-auto scrollbar-hide">
-              <StoryContainer
-                onOpenStory={handleOpenStory}
-                onOpenCreator={() => setShowCreator(true)}
-                onOpenPyramid={() => setShowPyramid(true)}
-                isDarkMode={isDarkMode}
-              />
-            </div>
+          <div 
+            className={`sticky top-0 z-30 ${isDarkMode ? "bg-black" : "bg-white"}`}
+            style={{ 
+              height: '120px', 
+              minHeight: '120px'
+            }}
+          >
+            <StoryContainer
+              onOpenStory={handleOpenStory}
+              onOpenCreator={() => setShowCreator(true)}
+              onOpenPyramid={() => setShowPyramid(true)}
+              isDarkMode={isDarkMode}
+            />
           </div>
 
-          {/* FEED AVEC PUBLICITÉS */}
           <div className="flex-1 overflow-y-auto scrollbar-hide">
             <div className="w-full lg:max-w-[630px] lg:mx-auto">
-
+              
               {searchQuery && (
                 <div className={`p-4 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  <p className="text-sm">
-                    {filteredPosts.length} résultat{filteredPosts.length > 1 ? 's' : ''} pour "{searchQuery}"
-                  </p>
+                  <p className="text-sm">{filteredPosts.length} résultat(s) pour "{searchQuery}"</p>
                 </div>
               )}
 
-              {initialLoad && postsLoading ? (
-                <SkeletonPosts />
+              {initialLoad && postsLoading && !showMockPosts ? (
+                <SkeletonPosts count={3} isDarkMode={isDarkMode} />
               ) : filteredPosts.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20">
-                  <div className={`text-6xl mb-4 ${isDarkMode ? 'opacity-20' : 'opacity-10'}`}>
-                    🔍
-                  </div>
+                <div 
+                  className="flex flex-col items-center justify-center py-20"
+                  style={{ minHeight: '400px' }}
+                >
                   <p className={`text-lg font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    {searchQuery ? "Aucun résultat trouvé" : "Aucun post à afficher"}
+                    Aucun post à afficher
                   </p>
                 </div>
               ) : (
                 <>
-                  {/* Premier post sans pub */}
-                  {filteredPosts[0] && (
-                    <PostCard
-                      post={filteredPosts[0]}
-                      onDeleted={handlePostDeleted}
-                      showToast={showToast}
-                    />
+                  {showNews && (
+                    <div className="mb-4">
+                      <NewsSection 
+                        maxArticles={3} 
+                        showCategories={true}
+                        enabled={showNews}
+                      />
+                    </div>
                   )}
 
-                  {/* Posts suivants avec publicités intercalées */}
-                  <AnimatePresence>
-                    {filteredPosts.slice(1).map((post, index) => (
-                      <PostWithAd
-                        key={post._id}
-                        post={post}
-                        index={index + 1}
+                  {filteredPosts[0] && (
+                    <div style={{ margin: 0, padding: 0 }}>
+                      <PostCard
+                        post={filteredPosts[0]}
                         onDeleted={handlePostDeleted}
                         showToast={showToast}
-                        adConfig={AD_CONFIG}
+                        priority={true}
+                        forcePosterForVideo={firstPostIsVideo}
                       />
-                    ))}
-                  </AnimatePresence>
+                    </div>
+                  )}
+
+                  {filteredPosts.slice(1).map((post, index) => (
+                    <PostWithAd
+                      key={post._id}
+                      post={post}
+                      index={index + 1}
+                      onDeleted={handlePostDeleted}
+                      showToast={showToast}
+                      adConfig={AD_CONFIG}
+                    />
+                  ))}
                 </>
               )}
 
-              {!searchQuery && hasMore && (
-                <div ref={observerRef} className="h-20 flex items-center justify-center">
-                  {postsLoading && (
-                    <ArrowPathIcon className="w-6 h-6 animate-spin text-orange-500" />
-                  )}
-                </div>
-              )}
-
-              {!postsLoading && posts.length > 0 && (
-                <div className="py-8 flex justify-center">
-                  <button
-                    onClick={handleRefresh}
-                    disabled={isRefreshing}
-                    className={`px-6 py-3 rounded-full font-semibold transition-all flex items-center gap-2 ${
-                      isDarkMode 
-                        ? 'bg-gray-800 text-white hover:bg-gray-700' 
-                        : 'bg-gray-100 text-gray-900 hover:bg-gray-200'
-                    } disabled:opacity-50`}
-                  >
-                    <ArrowPathIcon className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                    {isRefreshing ? "Actualisation..." : "Actualiser"}
-                  </button>
+              {!searchQuery && (hasMore || mockPostsCount < MOCK_POSTS.length) && (
+                <div 
+                  ref={observerRef} 
+                  className="h-20 flex items-center justify-center"
+                  style={{ minHeight: '80px' }}
+                >
+                  <ArrowPathIcon className="w-6 h-6 animate-spin text-orange-500" />
                 </div>
               )}
             </div>
@@ -491,45 +642,28 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         </>
       )}
 
-      {/* MODALS */}
       <AnimatePresence>
         {showCreator && <StoryCreator onClose={() => setShowCreator(false)} />}
-      </AnimatePresence>
-
-      <AnimatePresence>
         {showStoryViewer && (
           <Suspense fallback={null}>
-            <StoryViewer
-              stories={viewerData.stories}
-              currentUser={user}
-              onClose={() => setShowStoryViewer(false)}
+            <StoryViewer 
+              stories={viewerData.stories} 
+              currentUser={user} 
+              onClose={() => setShowStoryViewer(false)} 
             />
           </Suspense>
         )}
-      </AnimatePresence>
-
-      <AnimatePresence>
         {showPyramid && (
           <Suspense fallback={null}>
-            <ImmersivePyramidUniverse
-              onClose={() => setShowPyramid(false)}
-              stories={stories}
-              currentUser={user}
-              onOpenStory={handleOpenStory}
+            <ImmersivePyramidUniverse 
+              onClose={() => setShowPyramid(false)} 
+              stories={stories} 
+              currentUser={user} 
+              onOpenStory={handleOpenStory} 
             />
           </Suspense>
         )}
-      </AnimatePresence>
-
-      {/* TOAST */}
-      <AnimatePresence>
-        {toast && (
-          <Toast
-            message={toast.message}
-            type={toast.type}
-            onClose={() => setToast(null)}
-          />
-        )}
+        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       </AnimatePresence>
     </div>
   );

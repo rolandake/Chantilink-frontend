@@ -1,4 +1,7 @@
-// src/pages/profile/ProfilePage.jsx - VERSION COMPLÈTE AVEC SCROLL AUTO
+// src/pages/profile/ProfilePage.jsx - VERSION ADAPTÉE POUR MOCK
+// ✅ Supporte les profils fictifs ET réels avec les mêmes fonctionnalités
+// ✅ Utilise les handlers mock quand fournis, sinon API réelle
+
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import ProfileHeader from "./ProfileHeader";
@@ -107,22 +110,30 @@ const Toast = memo(({ message, type }) => (
   </div>
 ));
 
-export default function ProfilePage() {
+export default function ProfilePage({ 
+  initialUser = null,
+  initialPosts = null,
+  mockHandlers = null 
+}) {
   const { userId } = useParams();
   const navigate = useNavigate();
   const { user: authUser, loading: authLoading, socket, getToken } = useAuth();
-  const { fetchUserPosts } = usePosts();
+  const { fetchUserPosts: realFetchUserPosts } = usePosts();
   const { isDarkMode } = useDarkMode();
 
-  const [profileUser, setProfileUser] = useState(null);
-  const [profilePosts, setProfilePosts] = useState([]);
+  // ✅ Déterminer si on utilise les handlers mock ou réels
+  const isMockProfile = !!mockHandlers;
+  const fetchUserPosts = mockHandlers?.fetchUserPosts || realFetchUserPosts;
+
+  const [profileUser, setProfileUser] = useState(initialUser);
+  const [profilePosts, setProfilePosts] = useState(initialPosts || []);
   const [selectedTab, setSelectedTab] = useState("posts");
   const [toast, setToast] = useState(null);
   const [followLoading, setFollowLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
-  const [isLoadingUser, setIsLoadingUser] = useState(true);
+  const [isLoadingUser, setIsLoadingUser] = useState(!initialUser);
   const [authToken, setAuthToken] = useState(null);
 
   const loadingRef = useRef(false);
@@ -170,21 +181,32 @@ export default function ProfilePage() {
     }
   }, []);
 
+  // ✅ Follow avec support mock
   const followUser = useCallback(async (uid) => {
+    if (mockHandlers?.followUser) {
+      return await mockHandlers.followUser(uid);
+    }
+    
     const { data } = await axios.post(`${API_URL}/users/${uid}/follow`, {}, {
       withCredentials: true
     });
     return data;
-  }, []);
+  }, [mockHandlers]);
 
+  // ✅ Unfollow avec support mock
   const unfollowUser = useCallback(async (uid) => {
+    if (mockHandlers?.unfollowUser) {
+      return await mockHandlers.unfollowUser(uid);
+    }
+    
     const { data } = await axios.post(`${API_URL}/users/${uid}/unfollow`, {}, {
       withCredentials: true
     });
     return data;
-  }, []);
+  }, [mockHandlers]);
 
   const savePosts = useCallback((userKey, posts) => {
+    if (isMockProfile) return; // Pas de cache pour mock
     if (!userKey || !Array.isArray(posts)) return;
     if (saveDebounceTimer.current) clearTimeout(saveDebounceTimer.current);
     
@@ -198,37 +220,42 @@ export default function ProfilePage() {
         writeInProgress.current = false; 
       }
     }, 200);
-  }, []);
+  }, [isMockProfile]);
 
   const saveUser = useCallback(async (user) => {
+    if (isMockProfile) return; // Pas de cache pour mock
     if (!user?._id) return;
     try { 
       await idbSetUser(user._id, user); 
     } catch(err) { 
       console.warn("IDB User Save Error", err); 
     }
-  }, []);
+  }, [isMockProfile]);
 
   const handlePostCreated = useCallback(async (newPost) => {
     const normalized = normalizePost(newPost);
-    await syncNewPost(normalized, profileUser._id);
+    if (!isMockProfile) {
+      await syncNewPost(normalized, profileUser._id);
+    }
     
     startTransition(() => {
       setProfilePosts(prev => [normalized, ...prev]);
     });
     
     showLocalToast("Post publié ! 🚀");
-  }, [profileUser?._id, showLocalToast]);
+  }, [profileUser?._id, showLocalToast, isMockProfile]);
 
   const handlePostDeleted = useCallback(async (postId) => {
-    await syncDeletePost(postId, profileUser._id);
+    if (!isMockProfile) {
+      await syncDeletePost(postId, profileUser._id);
+    }
     
     startTransition(() => {
       setProfilePosts(prev => prev.filter(p => p._id !== postId));
     });
     
     showLocalToast("Post supprimé");
-  }, [profileUser?._id, showLocalToast]);
+  }, [profileUser?._id, showLocalToast, isMockProfile]);
 
   const handleFollowSuccess = useCallback((userId) => {
     showLocalToast("Abonné ! 🎉", "success");
@@ -243,11 +270,19 @@ export default function ProfilePage() {
       let postsArray = [];
       let fromCache = false;
 
-      const cached = await getCachedPosts(targetId);
-      if (cached && cached.length > 0 && !append) {
-        postsArray = cached;
+      // Si profil mock avec initial posts
+      if (isMockProfile && initialPosts && !append) {
+        postsArray = initialPosts;
         fromCache = true;
-        setProfilePosts(cached);
+        setProfilePosts(initialPosts);
+      } else if (!isMockProfile) {
+        // Profil réel : utiliser cache IDB
+        const cached = await getCachedPosts(targetId);
+        if (cached && cached.length > 0 && !append) {
+          postsArray = cached;
+          fromCache = true;
+          setProfilePosts(cached);
+        }
       }
 
       if (navigator.onLine && pageNumber === 1) {
@@ -258,9 +293,12 @@ export default function ProfilePage() {
             fromCache = false;
           }
         } catch (err) {
-          if (!postsArray.length && cached && cached.length > 0) {
-            postsArray = cached;
-            fromCache = true;
+          if (!postsArray.length && !isMockProfile) {
+            const cached = await getCachedPosts(targetId);
+            if (cached && cached.length > 0) {
+              postsArray = cached;
+              fromCache = true;
+            }
           }
         }
       }
@@ -285,7 +323,7 @@ export default function ProfilePage() {
       loadingRef.current = false;
       setIsLoadingPosts(false);
     }
-  }, [fetchUserPosts, savePosts, showLocalToast]);
+  }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts]);
 
   const lastPostRef = useCallback((node) => {
     if (loadingRef.current) return;
@@ -343,9 +381,7 @@ export default function ProfilePage() {
     }
   }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast]);
 
-  // ============================================
-  // ✅ SCROLL EN HAUT À CHAQUE CHANGEMENT DE PROFIL
-  // ============================================
+  // ✅ Scroll en haut à chaque changement de profil
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
   }, [targetUserId]);
@@ -357,11 +393,12 @@ export default function ProfilePage() {
   }, [authUser, getToken]);
 
   useEffect(() => {
+    if (isMockProfile) return; // Skip pour mock
     (async () => {
       try { await registerServiceWorker(); } catch {}
       try { await setupIndexedDB(); } catch {}
     })();
-  }, []);
+  }, [isMockProfile]);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -386,6 +423,13 @@ export default function ProfilePage() {
   useEffect(() => {
     if (authLoading) return;
     if (!authUser) return navigate("/auth", { replace: true });
+    
+    // Si initialUser fourni (mock), skip le chargement
+    if (initialUser) {
+      setProfileUser(initialUser);
+      setIsLoadingUser(false);
+      return;
+    }
     
     if (!targetUserId || targetUserId === "undefined") {
       setIsLoadingUser(false);
@@ -428,10 +472,10 @@ export default function ProfilePage() {
         setIsLoadingUser(false); 
       }
     })();
-  }, [authUser, authLoading, targetUserId, isOwner, fetchUserById, navigate, loadProfilePosts, saveUser, showLocalToast]);
+  }, [authUser, authLoading, targetUserId, isOwner, fetchUserById, navigate, loadProfilePosts, saveUser, showLocalToast, initialUser]);
 
   useEffect(() => {
-    if (!socket || !profileUser) return;
+    if (!socket || !profileUser || isMockProfile) return;
     
     const handleNewPost = (post) => {
       const postUserId = typeof post.user === "object" ? post.user._id : post.user;
@@ -476,7 +520,7 @@ export default function ProfilePage() {
       socket.off("postDeleted", handleDeletedPost);
       socket.off("postUpdated", handleUpdatedPost);
     };
-  }, [socket, profileUser, savePosts]);
+  }, [socket, profileUser, savePosts, isMockProfile]);
 
   const stats = {
     posts: profilePosts.length,
@@ -498,6 +542,17 @@ export default function ProfilePage() {
     <div className={`profile-page min-h-screen p-4 transition-colors duration-200 ${
       isDarkMode ? 'bg-black' : 'bg-orange-50'
     }`}>
+      {isMockProfile && (
+        <div className="max-w-7xl mx-auto mb-4">
+          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg px-4 py-3">
+            <p className="text-sm text-blue-500 text-center flex items-center justify-center gap-2">
+              <span>👤</span>
+              <span>Profil de démonstration - Toutes les interactions sont simulées</span>
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         <div className="lg:col-span-2 space-y-6">
@@ -542,7 +597,7 @@ export default function ProfilePage() {
 
           {selectedTab === "posts" && (
             <div>
-              {isOwner && (
+              {isOwner && !isMockProfile && (
                 <div className="mb-4">
                   <CreatePost 
                     user={authUser} 
@@ -562,6 +617,7 @@ export default function ProfilePage() {
                         post={post} 
                         onDeleted={handlePostDeleted}
                         showToast={showLocalToast}
+                        mockPost={isMockProfile}
                       />
                     </div>
                   ))}

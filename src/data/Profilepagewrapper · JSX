@@ -1,0 +1,240 @@
+// src/data/ProfilePageWrapper.jsx - VERSION AMÉLIORÉE
+// ✅ Les profils fictifs fonctionnent exactement comme les vrais profils
+// ✅ Followers, likes, commentaires, follow/unfollow - tout fonctionne
+import React, { useState, useEffect, useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import ProfilePage from "./ProfilePage";
+import { 
+  getMockUserById, 
+  getMockUserPosts, 
+  isMockUser,
+  mockFollowUser,
+  formatMockUserForAPI,
+  mockLikePost,
+  mockCommentPost,
+  mockDeleteComment,
+  mockSavePost
+} from "../../utils/mockProfileHandler";
+import { useAuth } from "../../context/AuthContext";
+import { useDarkMode } from "../../context/DarkModeContext";
+import { usePosts } from "../../context/PostsContext";
+
+const LoadingSpinner = ({ isDarkMode }) => (
+  <div className={`min-h-screen flex items-center justify-center ${
+    isDarkMode ? 'bg-black' : 'bg-orange-50'
+  }`}>
+    <div className="text-center">
+      <div className={`inline-block w-12 h-12 border-4 rounded-full animate-spin ${
+        isDarkMode 
+          ? 'border-orange-400 border-t-transparent' 
+          : 'border-orange-500 border-t-transparent'
+      }`}></div>
+      <p className={`mt-4 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+        Chargement du profil...
+      </p>
+    </div>
+  </div>
+);
+
+/**
+ * Wrapper qui intercepte les actions sur les profils fictifs
+ * et simule les comportements de l'API
+ */
+export default function ProfilePageWrapper() {
+  const { userId } = useParams();
+  const navigate = useNavigate();
+  const { user: authUser, loading: authLoading } = useAuth();
+  const { isDarkMode } = useDarkMode();
+  const { fetchUserPosts } = usePosts();
+
+  const [isMock, setIsMock] = useState(false);
+  const [mockProfile, setMockProfile] = useState(null);
+  const [mockPosts, setMockPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const targetUserId = userId || authUser?.id;
+
+  // Détecter si c'est un profil mock et charger les données
+  useEffect(() => {
+    if (authLoading) return;
+    
+    const loadProfile = async () => {
+      setLoading(true);
+      
+      if (!targetUserId) {
+        setLoading(false);
+        return;
+      }
+
+      // Vérifier si c'est un utilisateur mock
+      const isMockUserId = isMockUser(targetUserId);
+      setIsMock(isMockUserId);
+
+      if (isMockUserId) {
+        const mockUser = getMockUserById(targetUserId);
+        if (mockUser) {
+          const formattedUser = formatMockUserForAPI(mockUser);
+          setMockProfile(formattedUser);
+          
+          const userPosts = getMockUserPosts(targetUserId);
+          setMockPosts(userPosts);
+        } else {
+          console.warn('Mock user not found:', targetUserId);
+          navigate('/');
+        }
+      } else {
+        setMockProfile(null);
+        setMockPosts([]);
+      }
+      
+      setLoading(false);
+    };
+
+    loadProfile();
+  }, [targetUserId, authLoading, navigate]);
+
+  // ===================================
+  // INTERCEPTEURS POUR PROFILS FICTIFS
+  // ===================================
+
+  /**
+   * Intercepte fetchUserPosts pour les utilisateurs mock
+   */
+  const mockFetchUserPosts = useCallback(async (userId, page = 1) => {
+    if (!isMockUser(userId)) {
+      // Utilisateur réel, utiliser la vraie fonction
+      return fetchUserPosts(userId, page);
+    }
+
+    // Simuler un délai réseau
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    // Retourner les posts mock
+    const posts = getMockUserPosts(userId);
+    const startIndex = (page - 1) * 20;
+    const endIndex = startIndex + 20;
+    
+    return posts.slice(startIndex, endIndex);
+  }, [fetchUserPosts]);
+
+  /**
+   * Mock des actions utilisateur (follow/unfollow)
+   */
+  const handleMockUserAction = useCallback(async (action, targetUserId) => {
+    if (!authUser) return { success: false, error: 'Not authenticated' };
+    if (!isMockUser(targetUserId)) return { success: false, error: 'Not a mock user' };
+
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    if (action === 'follow' || action === 'unfollow') {
+      const updatedUser = mockFollowUser(authUser.id, targetUserId, action);
+      if (updatedUser) {
+        setMockProfile(formatMockUserForAPI(updatedUser));
+        return { success: true, user: updatedUser };
+      }
+    }
+
+    return { success: false, error: 'Action failed' };
+  }, [authUser]);
+
+  /**
+   * Mock des actions sur les posts
+   */
+  const handleMockPostAction = useCallback(async (action, postId, data = {}) => {
+    if (!authUser) return { success: false, error: 'Not authenticated' };
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    switch (action) {
+      case 'like':
+        const likeResult = mockLikePost(postId, authUser.id);
+        if (likeResult) {
+          // Mettre à jour le post dans la liste
+          setMockPosts(prev => prev.map(p => 
+            p._id === postId ? likeResult : p
+          ));
+          return { success: true, post: likeResult };
+        }
+        break;
+
+      case 'comment':
+        const commentResult = mockCommentPost(postId, authUser.id, data.text);
+        if (commentResult) {
+          setMockPosts(prev => prev.map(p => 
+            p._id === postId ? commentResult : p
+          ));
+          return { success: true, post: commentResult };
+        }
+        break;
+
+      case 'delete_comment':
+        const deleteCommentResult = mockDeleteComment(postId, data.commentId);
+        if (deleteCommentResult) {
+          setMockPosts(prev => prev.map(p => 
+            p._id === postId ? deleteCommentResult : p
+          ));
+          return { success: true, post: deleteCommentResult };
+        }
+        break;
+
+      case 'save':
+        const saveResult = mockSavePost(postId, authUser.id);
+        if (saveResult) {
+          setMockPosts(prev => prev.map(p => 
+            p._id === postId ? saveResult : p
+          ));
+          return { success: true, post: saveResult };
+        }
+        break;
+
+      default:
+        return { success: false, error: 'Unknown action' };
+    }
+
+    return { success: false, error: 'Action failed' };
+  }, [authUser]);
+
+  if (authLoading || loading) {
+    return <LoadingSpinner isDarkMode={isDarkMode} />;
+  }
+
+  // ===================================
+  // RENDU : Profil fictif ou réel
+  // ===================================
+
+  if (isMock && mockProfile) {
+    // Créer un context mock pour ProfilePage
+    const mockContext = {
+      isMockProfile: true,
+      mockData: {
+        user: mockProfile,
+        posts: mockPosts,
+        fetchUserPosts: mockFetchUserPosts,
+        handleUserAction: handleMockUserAction,
+        handlePostAction: handleMockPostAction
+      }
+    };
+
+    // Injecter les données et handlers mock dans ProfilePage
+    return (
+      <div data-mock-profile="true">
+        <ProfilePage 
+          initialUser={mockProfile}
+          initialPosts={mockPosts}
+          mockHandlers={{
+            fetchUserPosts: mockFetchUserPosts,
+            followUser: (uid) => handleMockUserAction('follow', uid),
+            unfollowUser: (uid) => handleMockUserAction('unfollow', uid),
+            likePost: (pid) => handleMockPostAction('like', pid),
+            commentPost: (pid, text) => handleMockPostAction('comment', pid, { text }),
+            deleteComment: (pid, cid) => handleMockPostAction('delete_comment', pid, { commentId: cid }),
+            savePost: (pid) => handleMockPostAction('save', pid)
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Profil réel, rendu normal
+  return <ProfilePage />;
+}
