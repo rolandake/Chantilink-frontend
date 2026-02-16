@@ -1,4 +1,4 @@
-// src/components/ProfileHeader.jsx - AVEC BOUTON SIGNALEMENT
+// src/components/ProfileHeader.jsx - VERSION COMPLÈTE AVEC BOUTON MESSAGE
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -14,14 +14,15 @@ import {
   ChartBarIcon,
   UserGroupIcon,
   UserPlusIcon,
-  FlagIcon,  // ✅ NOUVEAU
-  EllipsisVerticalIcon  // ✅ NOUVEAU
+  FlagIcon,
+  EllipsisVerticalIcon,
+  ChatBubbleLeftRightIcon  // ✅ ICÔNE MESSAGE
 } from '@heroicons/react/24/outline';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { useDarkMode } from '../../context/DarkModeContext';
 import { useAuth } from '../../context/AuthContext';
-import { ReportUserModal } from './ReportUserModal';  // ✅ NOUVEAU
+import { ReportUserModal } from './ReportUserModal';
 import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
@@ -297,7 +298,6 @@ export default function ProfileHeader({
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState(null);
   
-  // ✅ NOUVEAUX STATES POUR LE SIGNALEMENT
   const [showReportModal, setShowReportModal] = useState(false);
   const [showOptionsMenu, setShowOptionsMenu] = useState(false);
   
@@ -318,6 +318,36 @@ export default function ProfileHeader({
   const profileInputRef = useRef(null);
   const coverInputRef = useRef(null);
   const optionsMenuRef = useRef(null);
+
+  // ============================================
+  // 💬 NOUVELLE FONCTION: OUVRIR CONVERSATION
+  // ============================================
+  const handleSendMessage = useCallback(() => {
+    if (!user) {
+      showToast?.('Impossible d\'envoyer un message', 'error');
+      return;
+    }
+
+    // Créer l'objet contact pour la conversation
+    const contact = {
+      id: user._id || user.id,
+      fullName: user.fullName,
+      username: user.username,
+      profilePhoto: user.profilePhoto,
+      isOnline: user.isOnline,
+      lastSeen: user.lastSeen
+    };
+
+    console.log('💬 [ProfileHeader] Ouverture conversation avec:', contact);
+
+    // Naviguer vers la page Messages avec le contact pré-sélectionné
+    navigate('/messages', { 
+      state: { 
+        selectedContact: contact,
+        openChat: true 
+      } 
+    });
+  }, [user, navigate, showToast]);
 
   // ============================================
   // 🚨 GESTION DU SIGNALEMENT
@@ -363,10 +393,6 @@ export default function ProfileHeader({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [showOptionsMenu]);
-
-  // ============================================
-  // [... RESTE DU CODE INCHANGÉ ...]
-  // ============================================
 
   const fetchUserStats = useCallback(async () => {
     if (!user?._id) return;
@@ -469,8 +495,6 @@ export default function ProfileHeader({
     { name: "Abonnements", value: stats.following },
     { name: "Likes", value: stats.likes }
   ], [stats]);
-
-  // [... Fonctions upload photos, save profile, etc - INCHANGÉES ...]
 
   const handleProfilePhotoChange = async (e) => {
     const file = e.target.files?.[0];
@@ -632,86 +656,108 @@ export default function ProfileHeader({
               : 'bg-gradient-to-t from-gray-900/60 via-gray-900/20 to-transparent'
           }`} />
 
-          {/* ✅ BOUTON OPTIONS (pour profils non-propriétaires) */}
-          {!isOwnProfile && (
-            <div className="absolute top-4 right-4" ref={optionsMenuRef}>
+          {/* BOUTONS HEADER */}
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            
+            {/* ✅ BOUTON MESSAGE (profils non-propriétaires) */}
+            {!isOwnProfile && (
               <motion.button
-                onClick={() => setShowOptionsMenu(!showOptionsMenu)}
+                onClick={handleSendMessage}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                className={`p-3 rounded-2xl backdrop-blur-xl border transition-all ${
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl backdrop-blur-xl border transition-all ${
                   isDarkMode
-                    ? 'bg-black/50 border-white/20 hover:bg-black/70 text-white'
-                    : 'bg-white/50 border-gray-300 hover:bg-white/70 text-gray-800'
-                }`}
+                    ? 'bg-blue-600/90 border-blue-500/30 hover:bg-blue-700 text-white'
+                    : 'bg-blue-500/90 border-blue-400/30 hover:bg-blue-600 text-white'
+                } shadow-lg hover:shadow-xl`}
+                title="Envoyer un message"
               >
-                <EllipsisVerticalIcon className="w-5 h-5" />
+                <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                <span className="font-semibold text-sm hidden sm:inline">Message</span>
               </motion.button>
+            )}
 
-              {/* MENU DÉROULANT */}
-              <AnimatePresence>
-                {showOptionsMenu && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                    transition={{ duration: 0.15 }}
-                    className={`absolute top-full right-0 mt-2 w-56 rounded-2xl shadow-2xl border overflow-hidden ${
-                      isDarkMode
-                        ? 'bg-gray-800 border-white/10'
-                        : 'bg-white border-gray-200'
-                    }`}
-                  >
-                    <button
-                      onClick={() => {
-                        setShowReportModal(true);
-                        setShowOptionsMenu(false);
-                      }}
-                      className={`w-full px-4 py-3 text-left flex items-center gap-3 transition-colors ${
+            {/* BOUTON OPTIONS (profils non-propriétaires) */}
+            {!isOwnProfile && (
+              <div className="relative" ref={optionsMenuRef}>
+                <motion.button
+                  onClick={() => setShowOptionsMenu(!showOptionsMenu)}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  className={`p-3 rounded-2xl backdrop-blur-xl border transition-all ${
+                    isDarkMode
+                      ? 'bg-black/50 border-white/20 hover:bg-black/70 text-white'
+                      : 'bg-white/50 border-gray-300 hover:bg-white/70 text-gray-800'
+                  }`}
+                >
+                  <EllipsisVerticalIcon className="w-5 h-5" />
+                </motion.button>
+
+                {/* MENU DÉROULANT */}
+                <AnimatePresence>
+                  {showOptionsMenu && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                      transition={{ duration: 0.15 }}
+                      className={`absolute top-full right-0 mt-2 w-56 rounded-2xl shadow-2xl border overflow-hidden z-10 ${
                         isDarkMode
-                          ? 'hover:bg-gray-700 text-gray-300'
-                          : 'hover:bg-gray-50 text-gray-700'
+                          ? 'bg-gray-800 border-white/10'
+                          : 'bg-white border-gray-200'
                       }`}
                     >
-                      <FlagIcon className="w-5 h-5 text-red-500" />
-                      <span className="font-medium">Signaler cet utilisateur</span>
-                    </button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
+                      <button
+                        onClick={() => {
+                          setShowReportModal(true);
+                          setShowOptionsMenu(false);
+                        }}
+                        className={`w-full px-4 py-3 text-left flex items-center gap-3 transition-colors ${
+                          isDarkMode
+                            ? 'hover:bg-gray-700 text-gray-300'
+                            : 'hover:bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        <FlagIcon className="w-5 h-5 text-red-500" />
+                        <span className="font-medium">Signaler cet utilisateur</span>
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )}
 
-          {/* BOUTON UPLOAD COUVERTURE (pour propriétaires) */}
-          {isOwnProfile && (
-            <>
-              <input 
-                ref={coverInputRef} 
-                type="file" 
-                accept="image/*" 
-                onChange={handleCoverPhotoChange} 
-                className="hidden" 
-              />
-              <motion.button
-                onClick={() => coverInputRef.current?.click()}
-                disabled={isUploadingCover}
-                className={`absolute top-4 right-4 p-3 rounded-2xl backdrop-blur-xl border transition-all ${
-                  isDarkMode
-                    ? 'bg-black/50 border-white/20 hover:bg-black/70 text-white'
-                    : 'bg-white/50 border-gray-300 hover:bg-white/70 text-gray-800'
-                } ${isUploadingCover ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-              >
-                {isUploadingCover ? (
-                  <div className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <CameraIcon className="w-5 h-5" />
-                )}
-              </motion.button>
-            </>
-          )}
+            {/* BOUTON UPLOAD COUVERTURE (propriétaires) */}
+            {isOwnProfile && (
+              <>
+                <input 
+                  ref={coverInputRef} 
+                  type="file" 
+                  accept="image/*" 
+                  onChange={handleCoverPhotoChange} 
+                  className="hidden" 
+                />
+                <motion.button
+                  onClick={() => coverInputRef.current?.click()}
+                  disabled={isUploadingCover}
+                  className={`p-3 rounded-2xl backdrop-blur-xl border transition-all ${
+                    isDarkMode
+                      ? 'bg-black/50 border-white/20 hover:bg-black/70 text-white'
+                      : 'bg-white/50 border-gray-300 hover:bg-white/70 text-gray-800'
+                  } ${isUploadingCover ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                  {isUploadingCover ? (
+                    <div className="w-5 h-5 border-2 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <CameraIcon className="w-5 h-5" />
+                  )}
+                </motion.button>
+              </>
+            )}
+          </div>
         </div>
 
-        {/* [... RESTE DU CODE PROFIL INCHANGÉ ...] */}
+        {/* PHOTO DE PROFIL & INFOS */}
         <div className="relative px-6 sm:px-8 pb-8">
           <div className="relative -mt-20 sm:-mt-24 mb-6">
             <div className="relative inline-block group">
@@ -1029,7 +1075,7 @@ export default function ProfileHeader({
         isDarkMode={isDarkMode}
       />
 
-      {/* ✅ MODAL DE SIGNALEMENT */}
+      {/* MODAL DE SIGNALEMENT */}
       <ReportUserModal
         isOpen={showReportModal}
         onClose={() => setShowReportModal(false)}

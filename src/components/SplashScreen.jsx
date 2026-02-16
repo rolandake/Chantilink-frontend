@@ -1,5 +1,5 @@
 // 📁 src/components/SplashScreen.jsx
-// ✅ VERSION OPTIMISÉE LCP - Précharge le logo
+// ✅ VERSION ULTRA-OPTIMISÉE LCP + INP
 
 import { useEffect, useState } from "react";
 
@@ -36,19 +36,19 @@ export default function SplashScreen({ onFinish }) {
       window.hideSplashScreen();
     }
 
-    // ✅ Attendre que le logo soit chargé avant de commencer le timer
+    // ✅ Attendre que le logo soit chargé
     if (!logoLoaded) return;
 
-    // Commencer le fade-out après 800ms (réduit de 1200ms)
+    // ✅ DURÉE RÉDUITE (600ms au lieu de 800ms)
     const fadeTimer = setTimeout(() => {
       setFadeOut(true);
-    }, 800);
+    }, 600);
 
-    // Masquer complètement et appeler onFinish après l'animation
+    // ✅ Masquer complètement (900ms au lieu de 1100ms)
     const hideTimer = setTimeout(() => {
       setIsVisible(false);
       onFinish?.();
-    }, 1100); // Réduit de 1500ms
+    }, 900);
 
     return () => {
       clearTimeout(fadeTimer);
@@ -74,15 +74,15 @@ export default function SplashScreen({ onFinish }) {
           src="/chantilink-logo.png" 
           alt="ChantiLink"
           className="w-32 h-32 md:w-40 md:h-40 object-contain mb-6"
-          loading="eager" // ✅ Charge immédiatement
-          fetchpriority="high" // ✅ Priorité haute
-          width="160" // ✅ Dimensions explicites
+          loading="eager"
+          fetchpriority="high"
+          width="160"
           height="160"
           decoding="async"
           style={{
             filter: logoLoaded ? 'drop-shadow(0 10px 40px rgba(230, 126, 60, 0.4))' : 'none',
-            animation: logoLoaded ? 'float 2s ease-in-out infinite' : 'none', // ✅ Pas d'animation avant chargement
-            contentVisibility: 'auto' // ✅ Performance
+            animation: logoLoaded ? 'float 2s ease-in-out infinite' : 'none',
+            contentVisibility: 'auto'
           }}
         />
         
@@ -95,9 +95,7 @@ export default function SplashScreen({ onFinish }) {
           {/* Barre animée */}
           <div 
             className="mt-3 h-1 bg-gradient-to-r from-transparent via-[#E67E3C] to-transparent mx-auto rounded-full animate-expand"
-            style={{
-              width: '60px'
-            }}
+            style={{ width: '60px' }}
           />
         </div>
       </div>
@@ -118,7 +116,7 @@ export default function SplashScreen({ onFinish }) {
         </div>
       </div>
 
-      {/* Ajout des keyframes CSS */}
+      {/* ✅ CSS INLINÉ pour performance */}
       <style>{`
         @keyframes float {
           0%, 100% {

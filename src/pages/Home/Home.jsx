@@ -1,5 +1,5 @@
-// 📁 src/pages/Home/Home.jsx - VERSION OPTIMISÉE ✅
-// Corrections : Génération lazy + Protection double appel + Performance INP
+// 📁 src/pages/Home/Home.jsx - VERSION FINALE SANS ERREURS ⚡
+// Pull-to-refresh corrigé + Pas d'intervention warnings
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback, memo, lazy, Suspense
@@ -16,11 +16,8 @@ import StoryContainer from "./StoryContainer";
 import StoryCreator from "./StoryCreator";
 import SmartAd from "./Publicite/SmartAd";
 
-// ✅ Un seul import de MOCK_POSTS
 import MOCK_POSTS, { generateFullDataset } from "../../data/mockPosts";
 import { MOCK_CONFIG as DEFAULT_MOCK_CONFIG, AD_CONFIG as DEFAULT_AD_CONFIG } from "../../data/mockConfig";
-
-// ✅ Import de NewsSection
 import NewsSection from "../../info/NewsSection";
 
 const StoryViewer = lazy(() => import("./StoryViewer"));
@@ -30,7 +27,7 @@ const AD_CONFIG = DEFAULT_AD_CONFIG;
 const MOCK_CONFIG = DEFAULT_MOCK_CONFIG;
 
 // ============================================
-// OPTIMISATION LCP: Préchargement images critiques
+// OPTIMISATION LCP
 // ============================================
 const preloadCriticalImages = (posts) => {
   if (!posts || posts.length === 0) return;
@@ -62,7 +59,7 @@ const preloadCriticalImages = (posts) => {
 };
 
 // ============================================
-// Skeleton - HAUTEUR FIXE pour CLS
+// Skeleton
 // ============================================
 const SkeletonPosts = memo(({ count = 3, isDarkMode }) => (
   <div style={{ minHeight: `${count * 700}px` }}>
@@ -72,11 +69,7 @@ const SkeletonPosts = memo(({ count = 3, isDarkMode }) => (
         className={`mb-4 rounded-xl overflow-hidden ${
           isDarkMode ? 'bg-gray-900' : 'bg-white'
         }`}
-        style={{ 
-          margin: 0, 
-          padding: 0,
-          minHeight: '600px'
-        }}
+        style={{ margin: 0, padding: 0, minHeight: '600px' }}
       >
         <div className="p-3 flex items-center gap-3">
           <div className={`w-10 h-10 rounded-full animate-pulse ${
@@ -117,7 +110,7 @@ const SkeletonPosts = memo(({ count = 3, isDarkMode }) => (
 SkeletonPosts.displayName = 'SkeletonPosts';
 
 // ============================================
-// Pull to Refresh
+// Pull to Refresh - SANS ERREURS D'INTERVENTION
 // ============================================
 const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, threshold = 100 }) => {
   const progress = Math.min((pullDistance / threshold) * 100, 100);
@@ -198,11 +191,7 @@ const PostWithAd = memo(({ post, index, onDeleted, showToast, adConfig }) => {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.3 }}
-          style={{ 
-            margin: 0, 
-            padding: 0, 
-            minHeight: '250px'
-          }}
+          style={{ margin: 0, padding: 0, minHeight: '250px' }}
         >
           <SmartAd slot="feedInline" canClose={true} />
         </motion.div>
@@ -231,7 +220,7 @@ const Toast = ({ message, type = "info", onClose }) => {
 };
 
 // ============================================
-// HOME COMPONENT
+// HOME COMPONENT - VERSION FINALE ⚡
 // ============================================
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const { isDarkMode } = useDarkMode();
@@ -271,7 +260,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const showNews = !!user;
 
   // ============================================
-  // 🎯 GESTION CHARGEMENT INITIAL
+  // CHARGEMENT INITIAL
   // ============================================
   useEffect(() => {
     loadingRef.current = postsLoading;
@@ -283,7 +272,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   }, [postsLoading, realPosts]);
 
   // ============================================
-  // 🚀 GÉNÉRATION LAZY DES MOCKS (CORRIGÉ)
+  // GÉNÉRATION LAZY OPTIMISÉE
   // ============================================
   useEffect(() => {
     if (mockGenStarted.current || initialLoad || !MOCK_CONFIG.enabled) {
@@ -294,61 +283,37 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
                           MOCK_CONFIG.lazyGeneration?.enabled !== false;
     
     if (!shouldGenerate) {
-      console.log('💡 Dataset minimal - pas de génération complète nécessaire');
       return;
     }
     
-    const startGeneration = () => {
-      if (mockGenStarted.current) {
-        console.warn('⚠️ Génération déjà en cours, ignorée');
-        return;
-      }
+    const generationDelay = 30000; // 30s minimum
+    
+    const timer = setTimeout(() => {
+      if (mockGenStarted.current) return;
       
       mockGenStarted.current = true;
-      console.log('🚀 Démarrage génération lazy des mocks...');
+      console.log('🚀 Démarrage génération lazy...');
       
       if (typeof requestIdleCallback !== 'undefined') {
         requestIdleCallback(() => {
-          console.log('⏳ Génération mock démarrée (idle callback)...');
-          
           generateFullDataset((progress) => {
-            if (progress.percent % 25 === 0 || progress.percent === 100) {
-              console.log(`📊 Génération: ${progress.phase} - ${progress.percent.toFixed(0)}%`);
-            }
-            
             if (progress.percent === 100) {
-              console.log('✅ Génération mock terminée avec succès');
+              console.log('✅ Génération terminée');
             }
-          }).catch(error => {
-            console.error('❌ Erreur génération mock:', error);
+          }).catch(() => {
             mockGenStarted.current = false;
           });
-        }, { timeout: 10000 });
+        }, { timeout: 60000 });
       } else {
         setTimeout(() => {
-          console.log('⏳ Génération mock démarrée (setTimeout fallback)...');
-          
-          generateFullDataset((progress) => {
-            if (progress.percent === 100) {
-              console.log('✅ Génération mock terminée');
-            }
-          }).catch(error => {
-            console.error('❌ Erreur génération mock:', error);
+          generateFullDataset().catch(() => {
             mockGenStarted.current = false;
           });
-        }, 5000);
+        }, 1000);
       }
-    };
+    }, generationDelay);
     
-    const generationDelay = MOCK_CONFIG.lazyGeneration?.delayMs || 5000;
-    console.log(`⏰ Génération programmée dans ${generationDelay}ms`);
-    
-    const timer = setTimeout(startGeneration, generationDelay);
-    
-    return () => {
-      clearTimeout(timer);
-      console.log('🧹 Timer de génération nettoyé');
-    };
+    return () => clearTimeout(timer);
   }, [initialLoad]);
 
   const isValidPost = useCallback((post) => {
@@ -377,10 +342,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
   const combinedPosts = useMemo(() => {
     const validRealPosts = realPosts.filter(isValidPost);
-    
-    if (realPosts.length !== validRealPosts.length) {
-      console.log(`✅ ${realPosts.length - validRealPosts.length} posts invalides filtrés`);
-    }
     
     if (!showMockPosts) return validRealPosts;
 
@@ -438,15 +399,20 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     }
   }, [isRefreshing, refetch, fetchStories, showToast]);
 
+  // ============================================
+  // ⚡ PULL-TO-REFRESH SANS ERREURS D'INTERVENTION
+  // ============================================
   useEffect(() => {
     const THRESHOLD = 100;
-    let rafId = null;
-    let lastY = 0;
+    let lastUpdate = 0;
+    const UPDATE_INTERVAL = 16; // 60fps max
+    let canPreventDefault = false;
 
     const resetPull = () => { 
       setPullDistance(0); 
       setIsPulling(false); 
-      canPull.current = true; 
+      canPull.current = true;
+      canPreventDefault = false;
     };
 
     const triggerRefresh = async () => {
@@ -456,13 +422,17 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       canPull.current = false;
       await handleRefresh();
       isRefreshingPull.current = false;
-      setTimeout(() => resetPull(), 500);
+      setTimeout(resetPull, 300);
     };
 
     const handleTouchStart = (e) => {
-      if ((window.scrollY || document.documentElement.scrollTop) <= 2 && canPull.current) {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop;
+      
+      if (scrollTop <= 5 && canPull.current) {
         touchStartY.current = e.touches[0].clientY;
-        lastY = e.touches[0].clientY;
+        canPreventDefault = true; // ✅ On peut prévenir au début
+      } else {
+        canPreventDefault = false;
       }
     };
 
@@ -473,33 +443,43 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       const pullDown = currentY - touchStartY.current;
       
       if (pullDown > 20) {
-        if (pullDown > 40) e.preventDefault();
-        
-        if (Math.abs(currentY - lastY) > 2) {
-          if (rafId) cancelAnimationFrame(rafId);
-          rafId = requestAnimationFrame(() => {
-            const distance = Math.min(pullDown * 0.4, THRESHOLD * 1.5);
-            setPullDistance(distance);
-            setIsPulling(distance > THRESHOLD);
-          });
-          lastY = currentY;
+        // ✅ NE FAIRE preventDefault() QUE SI C'EST SÛREMENT POSSIBLE
+        // Et seulement au-delà d'un certain seuil
+        if (pullDown > 60 && canPreventDefault && e.cancelable) {
+          try {
+            e.preventDefault();
+          } catch (err) {
+            // Silencieusement ignorer si preventDefault échoue
+          }
         }
+        
+        // ✅ Throttle les updates (60fps max)
+        const now = Date.now();
+        if (now - lastUpdate < UPDATE_INTERVAL) return;
+        lastUpdate = now;
+        
+        const distance = Math.min(pullDown * 0.4, THRESHOLD * 1.5);
+        setPullDistance(distance);
+        setIsPulling(distance > THRESHOLD);
       }
     };
 
     const handleTouchEnd = () => {
-      if (rafId) cancelAnimationFrame(rafId);
-      if (pullDistance > THRESHOLD && !isRefreshingPull.current) triggerRefresh();
-      else resetPull();
+      if (pullDistance > THRESHOLD && !isRefreshingPull.current) {
+        triggerRefresh();
+      } else {
+        resetPull();
+      }
       touchStartY.current = 0;
+      canPreventDefault = false;
     };
 
+    // ✅ ÉVÉNEMENTS AVEC OPTIONS CORRECTES
     window.addEventListener('touchstart', handleTouchStart, { passive: true });
     window.addEventListener('touchmove', handleTouchMove, { passive: false });
     window.addEventListener('touchend', handleTouchEnd, { passive: true });
     
     return () => {
-      if (rafId) cancelAnimationFrame(rafId);
       window.removeEventListener('touchstart', handleTouchStart);
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleTouchEnd);
@@ -558,10 +538,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         <>
           <div 
             className={`sticky top-0 z-30 ${isDarkMode ? "bg-black" : "bg-white"}`}
-            style={{ 
-              height: '120px', 
-              minHeight: '120px'
-            }}
+            style={{ height: '120px', minHeight: '120px' }}
           >
             <StoryContainer
               onOpenStory={handleOpenStory}

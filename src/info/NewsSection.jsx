@@ -1,9 +1,8 @@
 // 📁 src/info/NewsSection.jsx
-// ✅ VERSION FINALE - Catégorie BTP = Génie Civil, Construction, Travaux Publics
-// Lecture complète de l'article dans un modal avec scroll fonctionnel
+// ✅ OPTIMISÉ CLS - Dimensions fixes pour éviter les décalages
 
 import React, { useState, memo, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { AnimatePresence } from 'framer-motion'; // ✅ Retirer motion.div pour réduire CLS
 import { 
   NewspaperIcon, 
   ClockIcon, 
@@ -18,11 +17,11 @@ import { useNews } from '../hooks/useNews';
 import { useDarkMode } from '../context/DarkModeContext';
 
 // ============================================
-// HELPERS PARTAGÉS
+// HELPERS
 // ============================================
 const getCategoryColor = (category) => {
   const colors = {
-    genieCivil: 'from-orange-500 to-red-500',      // BTP, Construction
+    genieCivil: 'from-orange-500 to-red-500',
     sport: 'from-blue-500 to-cyan-500',
     politique: 'from-purple-500 to-pink-500',
     technologie: 'from-green-500 to-emerald-500',
@@ -34,7 +33,7 @@ const getCategoryColor = (category) => {
 
 const getCategoryLabel = (category) => {
   const labels = {
-    genieCivil: '🏗️ Génie Civil & BTP',           // Construction, Bâtiment, Travaux Publics
+    genieCivil: '🏗️ Génie Civil & BTP',
     sport: '⚽ Sport',
     politique: '🏛️ Politique',
     technologie: '💻 Tech',
@@ -45,246 +44,9 @@ const getCategoryLabel = (category) => {
 };
 
 // ============================================
-// LECTEUR D'ARTICLE COMPLET (MODAL)
+// CARD ACTUALITÉ - OPTIMISÉE CLS
 // ============================================
-const ArticleReader = memo(({ article, onClose }) => {
-  const { isDarkMode } = useDarkMode();
-  const [imageLoaded, setImageLoaded] = useState(false);
-
-  useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = 'unset';
-    };
-  }, []);
-
-  const formatDate = (date) => {
-    return new Date(date).toLocaleDateString('fr-FR', { 
-      weekday: 'long',
-      day: 'numeric', 
-      month: 'long',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  const handleShare = () => {
-    if (navigator.share && article.url) {
-      navigator.share({
-        title: article.title,
-        text: article.description,
-        url: article.url
-      }).catch(() => {
-        navigator.clipboard.writeText(article.url);
-        alert('Lien copié !');
-      });
-    } else if (article.url) {
-      navigator.clipboard.writeText(article.url);
-      alert('Lien copié dans le presse-papier !');
-    }
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[100] flex items-end md:items-center justify-center"
-      onClick={onClose}
-      style={{ 
-        backdropFilter: 'blur(8px)',
-        WebkitBackdropFilter: 'blur(8px)'
-      }}
-    >
-      <div className="absolute inset-0 bg-black/60" />
-
-      <motion.div
-        initial={{ y: '100%', opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        exit={{ y: '100%', opacity: 0 }}
-        transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-        className={`relative w-full max-w-2xl rounded-t-3xl md:rounded-3xl shadow-2xl flex flex-col ${
-          isDarkMode ? 'bg-gray-900' : 'bg-white'
-        }`}
-        style={{
-          height: '90vh',
-          maxHeight: '90vh'
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header fixe */}
-        <div className={`flex-shrink-0 ${
-          isDarkMode ? 'bg-gray-900/95' : 'bg-white/95'
-        } backdrop-blur-xl border-b ${
-          isDarkMode ? 'border-gray-800' : 'border-gray-200'
-        }`}>
-          <div className="flex items-center justify-between p-4">
-            <button
-              onClick={onClose}
-              className={`flex items-center gap-2 px-3 py-2 rounded-full transition-colors ${
-                isDarkMode 
-                  ? 'bg-gray-800 hover:bg-gray-700 text-white' 
-                  : 'bg-gray-100 hover:bg-gray-200 text-gray-900'
-              }`}
-            >
-              <ChevronLeftIcon className="w-5 h-5" />
-              <span className="text-sm font-semibold">Retour</span>
-            </button>
-
-            <button
-              onClick={handleShare}
-              className={`p-2 rounded-full transition-colors ${
-                isDarkMode 
-                  ? 'bg-gray-800 hover:bg-gray-700' 
-                  : 'bg-gray-100 hover:bg-gray-200'
-              }`}
-            >
-              <ShareIcon className={`w-5 h-5 ${
-                isDarkMode ? 'text-white' : 'text-gray-900'
-              }`} />
-            </button>
-          </div>
-        </div>
-
-        {/* Contenu scrollable */}
-        <div 
-          className="flex-1 overflow-y-auto overscroll-contain"
-          style={{
-            WebkitOverflowScrolling: 'touch',
-            scrollbarWidth: 'thin'
-          }}
-        >
-          {/* Image principale */}
-          {article.image && (
-            <div className="relative w-full h-64 md:h-80 flex-shrink-0">
-              {!imageLoaded && (
-                <div className={`absolute inset-0 animate-pulse ${
-                  isDarkMode ? 'bg-gray-800' : 'bg-gray-200'
-                }`} />
-              )}
-              <img
-                src={article.image}
-                alt={article.title}
-                className={`w-full h-full object-cover transition-opacity duration-300 ${
-                  imageLoaded ? 'opacity-100' : 'opacity-0'
-                }`}
-                onLoad={() => setImageLoaded(true)}
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent" />
-              
-              <div className="absolute bottom-4 left-4">
-                <div className={`px-3 py-1.5 rounded-full bg-gradient-to-r ${getCategoryColor(article.category)} text-white text-sm font-bold shadow-lg`}>
-                  {getCategoryLabel(article.category)}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Contenu de l'article */}
-          <div className="p-6">
-            {/* Source + Date */}
-            <div className="flex items-center gap-3 mb-4">
-              <span className={`text-sm font-bold ${
-                isDarkMode ? 'text-orange-400' : 'text-orange-600'
-              }`}>
-                {article.source}
-              </span>
-              <span className={`text-sm ${
-                isDarkMode ? 'text-gray-500' : 'text-gray-400'
-              }`}>•</span>
-              <div className="flex items-center gap-2">
-                <ClockIcon className={`w-4 h-4 ${
-                  isDarkMode ? 'text-gray-500' : 'text-gray-400'
-                }`} />
-                <span className={`text-sm ${
-                  isDarkMode ? 'text-gray-500' : 'text-gray-500'
-                }`}>
-                  {formatDate(article.publishedAt)}
-                </span>
-              </div>
-            </div>
-
-            {/* Titre */}
-            <h1 className={`text-2xl md:text-3xl font-bold mb-4 leading-tight ${
-              isDarkMode ? 'text-white' : 'text-gray-900'
-            }`}>
-              {article.title}
-            </h1>
-
-            {/* Description */}
-            {article.description && (
-              <p className={`text-lg mb-6 leading-relaxed font-medium ${
-                isDarkMode ? 'text-gray-300' : 'text-gray-700'
-              }`}>
-                {article.description}
-              </p>
-            )}
-
-            {/* Contenu complet */}
-            {article.content ? (
-              <div className={`prose max-w-none ${
-                isDarkMode ? 'prose-invert' : ''
-              }`}>
-                {article.content.split('\n\n').map((paragraph, index) => (
-                  <p 
-                    key={index}
-                    className={`mb-4 leading-relaxed text-base ${
-                      isDarkMode ? 'text-gray-400' : 'text-gray-600'
-                    }`}
-                  >
-                    {paragraph}
-                  </p>
-                ))}
-              </div>
-            ) : (
-              <p className={`text-base leading-relaxed mb-6 ${
-                isDarkMode ? 'text-gray-400' : 'text-gray-600'
-              }`}>
-                {article.description}
-              </p>
-            )}
-
-            {/* Source originale */}
-            {article.url && (
-              <div className={`mt-8 p-4 rounded-xl border ${
-                isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'
-              }`}>
-                <p className={`text-xs mb-2 ${
-                  isDarkMode ? 'text-gray-500' : 'text-gray-500'
-                }`}>
-                  Article original publié par {article.source}
-                </p>
-                <a
-                  href={article.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`inline-flex items-center gap-2 text-sm font-semibold transition-colors ${
-                    isDarkMode 
-                      ? 'text-orange-400 hover:text-orange-300' 
-                      : 'text-orange-600 hover:text-orange-700'
-                  }`}
-                >
-                  <span>Voir sur {article.source}</span>
-                  <ArrowTopRightOnSquareIcon className="w-4 h-4" />
-                </a>
-              </div>
-            )}
-
-            <div className="h-20" />
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
-  );
-});
-
-ArticleReader.displayName = 'ArticleReader';
-
-// ============================================
-// CARD ACTUALITÉ
-// ============================================
-const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
+const NewsCard = memo(({ article, onRead, priority = false }) => {
   const { isDarkMode } = useDarkMode();
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -304,10 +66,8 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20 }}
+    // ✅ DIV SIMPLE au lieu de motion.div pour réduire CLS
+    <div
       className={`relative overflow-hidden rounded-2xl shadow-xl cursor-pointer transition-transform hover:scale-[1.02] active:scale-[0.98] ${
         isDarkMode ? 'bg-gradient-to-br from-gray-900 to-gray-800' : 'bg-white'
       }`}
@@ -315,7 +75,9 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
       style={{ 
         margin: 0, 
         padding: 0,
-        minHeight: '300px'
+        // ✅ HAUTEUR FIXE pour éviter CLS
+        minHeight: '320px',
+        height: '320px'
       }}
     >
       {/* Badge "Actualité" */}
@@ -332,40 +94,36 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
         </div>
       </div>
 
-      {onClose && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
-          className="absolute top-3 right-3 z-20 p-2 rounded-full bg-black/50 hover:bg-black/70 backdrop-blur-sm transition-colors"
-        >
-          <XMarkIcon className="w-5 h-5 text-white" />
-        </button>
-      )}
-
-      {/* Image */}
+      {/* Image - DIMENSIONS FIXES */}
       <div 
-        className="relative w-full" 
+        className="relative w-full flex-shrink-0" 
         style={{ 
+          // ✅ HAUTEUR FIXE - CRITIQUE POUR CLS
           height: '180px',
-          minHeight: '180px'
+          minHeight: '180px',
+          maxHeight: '180px'
         }}
       >
         {!imageError && article.image ? (
           <>
-            {!imageLoaded && (
-              <div 
-                className={`absolute inset-0 animate-pulse ${
-                  isDarkMode ? 'bg-gray-800' : 'bg-gray-200'
-                }`}
-                style={{ height: '180px' }}
-              />
-            )}
+            {/* Placeholder pendant chargement */}
+            <div 
+              className={`absolute inset-0 ${
+                isDarkMode ? 'bg-gray-800' : 'bg-gray-200'
+              }`}
+              style={{ 
+                height: '180px',
+                opacity: imageLoaded ? 0 : 1,
+                transition: 'opacity 0.3s'
+              }}
+            />
             
+            {/* ✅ Image avec width/height explicites */}
             <img
               src={article.image}
               alt={article.title}
+              width="630"
+              height="180"
               className={`w-full h-full object-cover transition-opacity duration-300 ${
                 imageLoaded ? 'opacity-100' : 'opacity-0'
               }`}
@@ -375,7 +133,8 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
               decoding="async"
               style={{ 
                 height: '180px',
-                contentVisibility: 'auto'
+                objectFit: 'cover',
+                aspectRatio: '630/180'
               }}
             />
             
@@ -402,9 +161,17 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
         </div>
       </div>
 
-      {/* Contenu */}
-      <div className="p-3">
-        <div className="flex items-center gap-2 mb-2">
+      {/* Contenu - HAUTEUR FIXE */}
+      <div 
+        className="p-3 flex flex-col"
+        style={{
+          // ✅ HAUTEUR RESTANTE FIXE
+          height: '140px',
+          minHeight: '140px',
+          maxHeight: '140px'
+        }}
+      >
+        <div className="flex items-center gap-2 mb-2 flex-shrink-0">
           <span className={`text-xs font-semibold ${
             isDarkMode ? 'text-orange-400' : 'text-orange-600'
           }`}>
@@ -425,14 +192,20 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
           </div>
         </div>
 
-        <h3 className={`text-base font-bold mb-2 line-clamp-2 ${
+        <h3 className={`text-base font-bold mb-2 line-clamp-2 flex-shrink-0 ${
           isDarkMode ? 'text-white' : 'text-gray-900'
-        }`}>
+        }`}
+        style={{
+          // ✅ Hauteur fixe pour le titre (2 lignes max)
+          minHeight: '44px',
+          maxHeight: '44px'
+        }}
+        >
           {article.title}
         </h3>
 
         {article.description && (
-          <p className={`text-sm mb-3 line-clamp-2 ${
+          <p className={`text-sm mb-3 line-clamp-2 flex-1 ${
             isDarkMode ? 'text-gray-400' : 'text-gray-600'
           }`}>
             {article.description}
@@ -444,7 +217,7 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
             e.stopPropagation();
             onRead(article);
           }}
-          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold transition-all ${
+          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-semibold transition-all flex-shrink-0 self-start ${
             isDarkMode 
               ? 'bg-orange-600 hover:bg-orange-700 text-white' 
               : 'bg-orange-500 hover:bg-orange-600 text-white'
@@ -454,7 +227,7 @@ const NewsCard = memo(({ article, onClose, onRead, priority = false }) => {
           <ArrowTopRightOnSquareIcon className="w-4 h-4" />
         </button>
       </div>
-    </motion.div>
+    </div>
   );
 });
 
@@ -483,7 +256,7 @@ const NewsSection = memo(({ maxArticles = 3, showCategories = true, enabled = tr
 
   const categories = [
     { id: 'all', label: '📰 Toutes' },
-    { id: 'genieCivil', label: '🏗️ Génie Civil & BTP' }, // Construction, Bâtiment, Travaux Publics
+    { id: 'genieCivil', label: '🏗️ Génie Civil & BTP' },
     { id: 'sport', label: '⚽ Sport' },
     { id: 'technologie', label: '💻 Tech' },
     { id: 'politique', label: '🏛️ Politique' },
@@ -501,15 +274,16 @@ const NewsSection = memo(({ maxArticles = 3, showCategories = true, enabled = tr
           className={`mb-4 rounded-2xl overflow-hidden ${
             isDarkMode ? 'bg-gray-900' : 'bg-white'
           }`}
-          style={{ minHeight: '300px', height: '300px' }}
+          // ✅ HAUTEUR FIXE pour le skeleton aussi
+          style={{ minHeight: '320px', height: '320px', maxHeight: '320px' }}
         >
           <div 
             className={`w-full animate-pulse ${
               isDarkMode ? 'bg-gray-800' : 'bg-gray-300'
             }`} 
-            style={{ height: '180px' }}
+            style={{ height: '180px', minHeight: '180px' }}
           />
-          <div className="p-3 space-y-2">
+          <div className="p-3 space-y-2" style={{ height: '140px' }}>
             <div className={`h-3 rounded w-3/4 animate-pulse ${
               isDarkMode ? 'bg-gray-800' : 'bg-gray-300'
             }`} />
@@ -548,7 +322,7 @@ const NewsSection = memo(({ maxArticles = 3, showCategories = true, enabled = tr
             isDarkMode ? 'bg-gray-900' : 'bg-white'
           }`}>
             <div 
-              className="flex gap-2 pb-1"
+              className="flex gap-2 pb-1 news-categories-scroll"
               style={{
                 overflowX: 'auto',
                 scrollbarWidth: 'none',
@@ -556,8 +330,8 @@ const NewsSection = memo(({ maxArticles = 3, showCategories = true, enabled = tr
                 WebkitOverflowScrolling: 'touch',
               }}
             >
-              <style jsx>{`
-                div::-webkit-scrollbar {
+              <style>{`
+                .news-categories-scroll::-webkit-scrollbar {
                   display: none;
                 }
               `}</style>
@@ -585,30 +359,36 @@ const NewsSection = memo(({ maxArticles = 3, showCategories = true, enabled = tr
           </div>
         )}
 
-        {/* Articles */}
-        <AnimatePresence mode="popLayout">
-          {articles.length > 0 ? (
-            articles.map((article, index) => (
-              <div key={article.id} className="mb-3">
-                <NewsCard 
-                  article={article} 
-                  priority={index === 0}
-                  onRead={setSelectedArticle}
-                />
-              </div>
-            ))
-          ) : (
-            <div className={`p-8 rounded-2xl text-center ${
-              isDarkMode ? 'bg-gray-900 text-gray-400' : 'bg-white text-gray-600'
-            }`}>
-              <NewspaperIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
-              <p className="text-sm font-medium">Aucune actualité disponible</p>
+        {/* Articles - SANS AnimatePresence pour réduire CLS */}
+        {articles.length > 0 ? (
+          articles.map((article, index) => (
+            // ✅ Wrapper avec hauteur fixe
+            <div 
+              key={article.id} 
+              className="mb-3"
+              style={{
+                minHeight: '320px',
+                height: '320px'
+              }}
+            >
+              <NewsCard 
+                article={article} 
+                priority={index === 0}
+                onRead={setSelectedArticle}
+              />
             </div>
-          )}
-        </AnimatePresence>
+          ))
+        ) : (
+          <div className={`p-8 rounded-2xl text-center ${
+            isDarkMode ? 'bg-gray-900 text-gray-400' : 'bg-white text-gray-600'
+          }`}>
+            <NewspaperIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+            <p className="text-sm font-medium">Aucune actualité disponible</p>
+          </div>
+        )}
       </div>
 
-      {/* Lecteur d'article en modal */}
+      {/* Lecteur d'article en modal - GARDÉ */}
       <AnimatePresence>
         {selectedArticle && (
           <ArticleReader
@@ -622,5 +402,53 @@ const NewsSection = memo(({ maxArticles = 3, showCategories = true, enabled = tr
 });
 
 NewsSection.displayName = 'NewsSection';
+
+// ============================================
+// ARTICLE READER (simplifié, pas affiché ici)
+// ============================================
+const ArticleReader = memo(({ article, onClose }) => {
+  const { isDarkMode } = useDarkMode();
+  
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
+      onClick={onClose}
+    >
+      <div
+        className={`relative w-full max-w-2xl h-[90vh] rounded-3xl shadow-2xl overflow-hidden ${
+          isDarkMode ? 'bg-gray-900' : 'bg-white'
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-gray-700">
+          <button
+            onClick={onClose}
+            className="flex items-center gap-2 px-3 py-2 rounded-full bg-gray-800 hover:bg-gray-700 text-white"
+          >
+            <ChevronLeftIcon className="w-5 h-5" />
+            <span className="text-sm font-semibold">Retour</span>
+          </button>
+        </div>
+        
+        <div className="overflow-y-auto h-[calc(100%-80px)] p-6">
+          <h1 className="text-2xl font-bold mb-4 text-white">{article.title}</h1>
+          {article.image && (
+            <img src={article.image} alt={article.title} className="w-full rounded-xl mb-4" />
+          )}
+          <p className="text-gray-300">{article.description}</p>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+ArticleReader.displayName = 'ArticleReader';
 
 export default NewsSection;

@@ -1,11 +1,11 @@
 // ============================================
-// 📁 src/pages/Chat/Messages.jsx
-// VERSION FINALE - AVEC CACHE IndexedDB ET SUPPRESSION
+// 📁 src/Pages/chat/Messages.jsx
+// VERSION FINALE - AVEC OUVERTURE AUTO CONVERSATION
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { 
   ArrowLeft, X, Users, MessageSquare, Lock, ShieldCheck, Home, List,
   Phone, Video
@@ -40,18 +40,19 @@ import {
 } from "../../utils/callSounds";
 
 export default function Messages() {
-  // ========== 1. CONTEXTS (TOUJOURS EN PREMIER) ==========
+  // ========== 1. CONTEXTS ==========
   const { user, token, socket, updateUserProfile } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
 
-  // ========== 2. TOUS LES REFS ==========
+  // ========== 2. REFS ==========
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
-  const ringtoneRef = useRef(null); // ✅ NOUVEAU: Référence pour la sonnerie
+  const ringtoneRef = useRef(null);
 
-  // ========== 3. TOUS LES STATES (ORDRE FIXE) ==========
+  // ========== 3. STATES ==========
   const [view, setView] = useState('contacts');
   const [contacts, setContacts] = useState([]);
   const [conversations, setConversations] = useState([]);
@@ -69,7 +70,7 @@ export default function Messages() {
   const [showEmoji, setShowEmoji] = useState(false);
   const [typingUsers, setTypingUsers] = useState([]);
 
-  // ========== 4. HOOKS PERSONNALISÉS (ORDRE FIXE) ==========
+  // ========== 4. HOOKS ==========
   const {
     recording,
     audioBlob,
@@ -82,10 +83,8 @@ export default function Messages() {
     pausePreview
   } = useAudioRecording(token, showToast);
 
-  // ========== 5. VALEURS DÉRIVÉES ==========
   const connected = socket?.connected || false;
 
-  // ========== 6. CALLBACKS SOCKET (AVANT useCallManager) ==========
   const initiateCall = useCallback((recipientId, callType) => {
     if (!socket || !socket.connected) {
       showToast("Connexion socket requise", "error");
@@ -111,7 +110,6 @@ export default function Messages() {
     socket.emit("sendMessage", messageData);
   }, [socket, showToast]);
 
-  // ========== 7. HOOK CALL MANAGER ==========
   const {
     call,
     setCall,
@@ -131,23 +129,18 @@ export default function Messages() {
     showToast
   );
 
-  // ========== 8. CALLBACKS AVEC CACHE ==========
+  // ========== 5. CALLBACKS ==========
 
-  /**
-   * ✅ CHARGER CONTACTS AVEC CACHE
-   */
   const loadContacts = useCallback(async () => {
     if (!token) return;
     
     try {
-      // 1️⃣ Charger depuis le cache d'abord
       const cachedContacts = await messageCache.getContacts();
       if (cachedContacts.length > 0) {
         console.log(`📦 [Messages] ${cachedContacts.length} contacts depuis cache`);
         setContacts(cachedContacts);
       }
 
-      // 2️⃣ Synchroniser avec le serveur
       const result = await API.getContacts(token);
       const contactsList = result.contacts || [];
       
@@ -163,22 +156,17 @@ export default function Messages() {
     }
   }, [token]);
 
-  /**
-   * ✅ CHARGER CONVERSATIONS AVEC CACHE
-   */
   const loadConversations = useCallback(async () => {
     if (!token) return;
     
     try {
       setLoading(true);
 
-      // 1️⃣ Charger depuis le cache d'abord
       const cachedConversations = await messageCache.getConversations();
       if (cachedConversations.length > 0) {
         console.log(`📦 [Messages] ${cachedConversations.length} conversations depuis cache`);
         setConversations(cachedConversations);
         
-        // Mettre à jour les compteurs non lus
         const counts = {};
         cachedConversations.forEach(conv => {
           if (conv.unreadCount > 0) {
@@ -189,7 +177,6 @@ export default function Messages() {
         setLoading(false);
       }
 
-      // 2️⃣ Synchroniser avec le serveur
       const result = await API.getConversations(token);
       const freshConversations = result.conversations || [];
       
@@ -216,16 +203,12 @@ export default function Messages() {
     }
   }, [token, showToast]);
 
-  /**
-   * ✅ CHARGER MESSAGES AVEC CACHE
-   */
   const loadMessages = useCallback(async (contactId) => {
     if (!contactId || !token || !user?.id) return;
     
     setLoading(true);
     
     try {
-      // 1️⃣ Charger depuis le cache d'abord
       const cachedMessages = await messageCache.getMessages(user.id, contactId);
       if (cachedMessages.length > 0) {
         console.log(`📦 [Messages] ${cachedMessages.length} messages depuis cache`);
@@ -237,7 +220,6 @@ export default function Messages() {
         }, 100);
       }
 
-      // 2️⃣ Synchroniser avec le serveur
       const result = await API.getMessages(token, contactId);
       const msgList = Array.isArray(result) ? result : (result.messages || []);
       
@@ -248,7 +230,6 @@ export default function Messages() {
         setMessages(msgList);
       }
       
-      // Marquer comme lu
       if (socket && socket.connected) {
         socket.emit("markMessagesAsRead", { senderId: contactId });
       }
@@ -301,9 +282,6 @@ export default function Messages() {
     }
   }, [socket, selectedContact]);
 
-  /**
-   * ✅ ENVOYER MESSAGE AVEC CACHE ET SON
-   */
   const handleSendMessage = useCallback(async () => {
     if (!selectedContact || !input.trim() || !socket || !socket.connected || !user?.id) return;
     
@@ -323,24 +301,20 @@ export default function Messages() {
       timestamp: new Date().toISOString()
     };
     
-    // Ajouter immédiatement à l'UI
     setMessages(prev => [...prev, tempMessage]);
     
-    // ✅ JOUER SON D'ENVOI
     try {
       playSendSound();
     } catch (e) {
       console.warn('Son non disponible:', e);
     }
     
-    // Ajouter au cache
     try {
       await messageCache.addMessage(user.id, selectedContact.id, tempMessage);
     } catch (error) {
       console.error('❌ [Messages] Erreur ajout cache:', error);
     }
     
-    // Envoyer via socket
     socket.emit("sendMessage", messageData);
     setInput("");
     
@@ -472,14 +446,12 @@ export default function Messages() {
     }
     console.log('📹 [Messages] Démarrage appel vidéo vers:', selectedContact.fullName);
     
-    // ✅ JOUER SON D'APPEL SORTANT
     try {
       playCallConnectedSound();
     } catch (e) {
       console.warn('Son non disponible:', e);
     }
     
-    // Configure l'appel sortant
     setCall({
       on: true,
       type: 'video',
@@ -490,7 +462,6 @@ export default function Messages() {
       callId: null
     });
     
-    // Initie l'appel via socket
     startCall('video');
   }, [selectedContact, startCall, showToast, setCall]);
 
@@ -501,14 +472,12 @@ export default function Messages() {
     }
     console.log('📞 [Messages] Démarrage appel audio vers:', selectedContact.fullName);
     
-    // ✅ JOUER SON D'APPEL SORTANT
     try {
       playCallConnectedSound();
     } catch (e) {
       console.warn('Son non disponible:', e);
     }
     
-    // Configure l'appel sortant
     setCall({
       on: true,
       type: 'audio',
@@ -519,7 +488,6 @@ export default function Messages() {
       callId: null
     });
     
-    // Initie l'appel via socket
     startCall('audio');
   }, [selectedContact, startCall, showToast, setCall]);
 
@@ -527,14 +495,12 @@ export default function Messages() {
     if (incomingCall && socket) {
       console.log('✅ [Messages] Acceptation appel:', incomingCall.callId);
       
-      // ✅ ARRÊTER LA SONNERIE
       if (ringtoneRef.current) {
         ringtoneRef.current.stop();
         ringtoneRef.current = null;
       }
       stopVibration();
       
-      // ✅ JOUER SON DE CONNEXION
       try {
         playCallConnectedSound();
       } catch (e) {
@@ -562,14 +528,12 @@ export default function Messages() {
     if (incomingCall && socket) {
       console.log('❌ [Messages] Rejet appel:', incomingCall.callId);
       
-      // ✅ ARRÊTER LA SONNERIE
       if (ringtoneRef.current) {
         ringtoneRef.current.stop();
         ringtoneRef.current = null;
       }
       stopVibration();
       
-      // ✅ JOUER SON DE REJET
       try {
         playCallRejectedSound();
       } catch (e) {
@@ -602,20 +566,13 @@ export default function Messages() {
     setSelectedContact(null);
   }, []);
 
-  /**
-   * ✅ NOUVEAU: Fonction pour supprimer un message
-   */
   const handleDeleteMessage = useCallback(async (messageId) => {
     if (!selectedContact || !user?.id) return;
     
     try {
-      // 1️⃣ Supprimer de l'UI immédiatement
       setMessages(prev => prev.filter(msg => msg._id !== messageId));
-      
-      // 2️⃣ Supprimer du cache
       await messageCache.deleteMessage(user.id, selectedContact.id, messageId);
       
-      // 3️⃣ Notifier le serveur via socket (optionnel, selon votre backend)
       if (socket && socket.connected) {
         socket.emit("deleteMessage", {
           messageId,
@@ -630,12 +587,29 @@ export default function Messages() {
     }
   }, [selectedContact, user, socket, showToast]);
 
-  // ========== 9. TOUS LES useEffect À LA FIN ==========
+  // ========== 6. EFFECTS ==========
   
   useEffect(() => {
     loadContacts();
     loadConversations();
   }, [loadContacts, loadConversations]);
+
+  // ✅ GESTION OUVERTURE AUTO DEPUIS PROFILEHEADER
+  useEffect(() => {
+    if (location.state?.selectedContact && location.state?.openChat) {
+      const contact = location.state.selectedContact;
+      
+      console.log('💬 [Messages] Ouverture automatique conversation depuis profil:', contact);
+      
+      setSelectedContact(contact);
+      setMessages([]);
+      loadMessages(contact.id);
+      setView('chat');
+      
+      // Nettoyer le state de navigation
+      navigate('/messages', { replace: true, state: {} });
+    }
+  }, [location.state, navigate, loadMessages]);
 
   useEffect(() => {
     if (!socket || !socket.connected) return;
@@ -652,9 +626,6 @@ export default function Messages() {
     };
   }, [socket]);
 
-  /**
-   * ✅ GESTION MESSAGES REÇUS AVEC CACHE ET SON
-   */
   useEffect(() => {
     if (!socket || !socket.connected || !user?.id) return;
 
@@ -664,14 +635,12 @@ export default function Messages() {
       const isCurrentChat = selectedContact && (senderId === selectedContact.id || recipientId === selectedContact.id);
 
       if (isCurrentChat) {
-        // ✅ JOUER SON DE RÉCEPTION
         try {
           playReceiveSound();
         } catch (e) {
           console.warn('Son non disponible:', e);
         }
         
-        // Ajouter au cache
         try {
           await messageCache.addMessage(user.id, selectedContact.id, message);
         } catch (error) {
@@ -696,7 +665,6 @@ export default function Messages() {
     };
 
     const handleMessageSent = async (message) => {
-      // Remplacer le message temporaire et mettre à jour le cache
       try {
         if (selectedContact?.id && user?.id) {
           await messageCache.addMessage(user.id, selectedContact.id, message);
@@ -747,13 +715,11 @@ export default function Messages() {
         fullName: caller?.fullName || "Anonyme" 
       };
 
-      // ✅ DÉMARRER LA SONNERIE
       if (!ringtoneRef.current) {
         ringtoneRef.current = new CallRingtone();
         ringtoneRef.current.start();
       }
       
-      // ✅ VIBRATION MOBILE
       try {
         vibrateCall();
       } catch (e) {
@@ -766,7 +732,6 @@ export default function Messages() {
     const handleCallRejected = () => {
       console.log('❌ [Messages] Appel rejeté');
       
-      // ✅ JOUER SON DE REJET
       try {
         playCallRejectedSound();
       } catch (e) {
@@ -789,14 +754,12 @@ export default function Messages() {
     const handleCallEnded = () => {
       console.log('📴 [Messages] Appel terminé');
       
-      // ✅ JOUER SON DE FIN D'APPEL
       try {
         playCallEndedSound();
       } catch (e) {
         console.warn('Son non disponible:', e);
       }
       
-      // ✅ ARRÊTER LA SONNERIE SI ELLE EST ACTIVE
       if (ringtoneRef.current) {
         ringtoneRef.current.stop();
         ringtoneRef.current = null;
@@ -821,7 +784,6 @@ export default function Messages() {
   useEffect(() => {
     return () => {
       cleanupCallRingtone();
-      // ✅ NETTOYAGE COMPLET DE LA SONNERIE
       if (ringtoneRef.current) {
         ringtoneRef.current.stop();
         ringtoneRef.current = null;
@@ -830,21 +792,17 @@ export default function Messages() {
     };
   }, [cleanupCallRingtone]);
 
-  /**
-   * ✅ NETTOYAGE AUTOMATIQUE DU CACHE (tous les jours)
-   */
   useEffect(() => {
     const cleanupInterval = setInterval(() => {
       messageCache.cleanOldMessages(30).catch(console.error);
-    }, 24 * 60 * 60 * 1000); // 24 heures
+    }, 24 * 60 * 60 * 1000);
 
-    // Nettoyage initial au montage
     messageCache.cleanOldMessages(30).catch(console.error);
 
     return () => clearInterval(cleanupInterval);
   }, []);
 
-  // ========== 10. RENDU ==========
+  // ========== 7. RENDU ==========
   return (
     <div className="flex h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 text-white overflow-hidden">
       
@@ -1090,7 +1048,6 @@ export default function Messages() {
         />
       )}
 
-      {/* COMPOSANT CALLMANAGER - GESTION WEBRTC */}
       {call.on && (
         <CallManager
           call={call}
@@ -1100,7 +1057,6 @@ export default function Messages() {
         />
       )}
 
-      {/* MODAL D'APPEL ENTRANT */}
       {incomingCall && (
         <IncomingCallModal
           caller={incomingCall.caller}
