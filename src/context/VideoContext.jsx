@@ -22,14 +22,18 @@ export const VideosProvider = ({ children }) => {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
+  // ✅ initialLoad commence à true pour afficher le loading screen
   const [initialLoad, setInitialLoad] = useState(true);
 
   const socketRef = useRef(null);
   const fetchingRef = useRef(false);
   const abortController = useRef(null);
   const initialFetchDone = useRef(false);
+  // ✅ Stocker page dans un ref pour que fetchVideos soit stable (pas de boucle infinie)
+  const pageRef = useRef(0);
+  const hasMoreRef = useRef(true);
 
-  // === SOCKET.IO CONNECTION ===
+  // === SOCKET.IO ===
   useEffect(() => {
     let socket = null;
 
@@ -46,45 +50,43 @@ export const VideosProvider = ({ children }) => {
       socketRef.current = socket;
 
       socket.on('connect', () => console.log('✅ [VideoContext] Socket Connecté'));
-      
       socket.on('newVideo', (video) => setVideos(prev => [video, ...prev]));
-      
       socket.on('videoLiked', ({ videoId, likes }) => {
         setVideos(prev => prev.map(v => v._id === videoId ? { ...v, likes } : v));
       });
-
       socket.on('commentAdded', ({ videoId, comment }) => {
-        setVideos(prev => prev.map(v => 
+        setVideos(prev => prev.map(v =>
           v._id === videoId ? { ...v, comments: [...(v.comments || []), comment] } : v
         ));
       });
     };
 
-    if (currentUser) {
-      connectSocket();
-    }
+    if (currentUser) connectSocket();
 
-    return () => {
-      if (socket) socket.disconnect();
-    };
+    return () => { if (socket) socket.disconnect(); };
   }, [currentUser, getToken]);
 
   // === FETCH VIDÉOS ===
+  // ✅ STABLE : utilise des refs pour page/hasMore → pas de boucle infinie
   const fetchVideos = useCallback(async (reset = false) => {
     if (fetchingRef.current) return;
-    if (!reset && !hasMore) return;
+    if (!reset && !hasMoreRef.current) return;
 
     fetchingRef.current = true;
-    if (reset) setLoading(true);
+    if (reset) {
+      setLoading(true);
+      pageRef.current = 0;
+      hasMoreRef.current = true;
+    }
 
-    const targetPage = reset ? 1 : page + 1;
+    const targetPage = pageRef.current + 1;
 
     if (abortController.current) abortController.current.abort();
     abortController.current = new AbortController();
 
     try {
-      // ✅ Utilise API_ENDPOINTS.VIDEOS.LIST au lieu de construire l'URL manuellement
-      const { data } = await axiosClient.get(`${API_ENDPOINTS.VIDEOS.LIST}?page=${targetPage}&limit=${LIMIT}`, {
+      const endpoint = API_ENDPOINTS?.VIDEOS?.LIST || '/videos';
+      const { data } = await axiosClient.get(`${endpoint}?page=${targetPage}&limit=${LIMIT}`, {
         signal: abortController.current.signal,
       });
 
@@ -93,27 +95,42 @@ export const VideosProvider = ({ children }) => {
       else if (Array.isArray(data.videos)) newVideos = data.videos;
       else if (Array.isArray(data.data)) newVideos = data.data;
 
+      // ✅ S'assurer que chaque vidéo a videoUrl résolu
+      const normalizedVideos = newVideos.map(v => ({
+        ...v,
+        // videoUrl peut venir de plusieurs champs selon l'upload
+        videoUrl: v.videoUrl || v.url || 
+          (v.mediaType === 'video' && v.media?.[0]) ||
+          (Array.isArray(v.media) && v.media.find(u => /\.(mp4|webm|mov)(\?|$)/i.test(u))) ||
+          v.cloudinaryUrl || v.secure_url || null,
+      }));
+
       setVideos(prev => {
-        if (reset) return newVideos;
+        if (reset) return normalizedVideos;
         const existingIds = new Set(prev.map(v => v._id));
-        const filtered = newVideos.filter(v => !existingIds.has(v._id));
-        return [...prev, ...filtered];
+        return [...prev, ...normalizedVideos.filter(v => !existingIds.has(v._id))];
       });
 
+      pageRef.current = targetPage;
+      hasMoreRef.current = newVideos.length >= LIMIT;
       setPage(targetPage);
       setHasMore(newVideos.length >= LIMIT);
-      if (initialLoad) setInitialLoad(false);
+
+      // ✅ Éteindre initialLoad après le premier fetch réussi
+      setInitialLoad(false);
 
     } catch (err) {
-      if (err.name === 'CanceledError') return;
+      if (err.name === 'CanceledError' || err.name === 'AbortError') return;
       console.error('❌ [VideoContext] Erreur Fetch:', err);
+      // ✅ Éteindre initialLoad même en cas d'erreur pour ne pas bloquer l'UI
+      setInitialLoad(false);
     } finally {
       setLoading(false);
       fetchingRef.current = false;
     }
-  }, [page, hasMore, initialLoad]);
+  }, []); // ✅ Aucune dépendance → fonction 100% stable
 
-  // Chargement Initial
+  // ✅ Chargement initial — fetchVideos est stable donc pas de boucle
   useEffect(() => {
     if (!initialFetchDone.current) {
       initialFetchDone.current = true;
@@ -121,126 +138,96 @@ export const VideosProvider = ({ children }) => {
     }
   }, [fetchVideos]);
 
-  // === ACTIONS UTILISATEUR ===
-
-  // 1. LIKE
+  // === LIKE ===
   const likeVideo = useCallback(async (videoId) => {
     if (!currentUser) return alert("Connectez-vous !");
 
     setVideos(prev => prev.map(v => {
-      if (v._id === videoId) {
-        const likesArr = Array.isArray(v.likes) ? v.likes : []; 
-        const isLiked = likesArr.includes(currentUser._id);
-        
-        let newLikes;
-        if (Array.isArray(v.likes)) {
-             newLikes = isLiked 
-                ? v.likes.filter(id => id !== currentUser._id)
-                : [...v.likes, currentUser._id];
-        } else {
-             newLikes = isLiked ? v.likes - 1 : v.likes + 1;
-        }
-
-        return { ...v, likes: newLikes, userLiked: !isLiked };
-      }
-      return v;
+      if (v._id !== videoId) return v;
+      const likesArr = Array.isArray(v.likes) ? v.likes : [];
+      const isLiked = likesArr.includes(currentUser._id);
+      return {
+        ...v,
+        likes: isLiked
+          ? likesArr.filter(id => id !== currentUser._id)
+          : [...likesArr, currentUser._id],
+        userLiked: !isLiked,
+      };
     }));
 
     try {
-      // ✅ Utilise API_ENDPOINTS
       const { data } = await axiosClient.post(`/videos/${videoId}/like`);
-      setVideos(prev => prev.map(v => 
-        v._id === videoId ? { ...v, likes: data.likes } : v
-      ));
+      setVideos(prev => prev.map(v => v._id === videoId ? { ...v, likes: data.likes } : v));
     } catch (err) {
       console.error("❌ Erreur Like:", err);
     }
   }, [currentUser]);
 
-  // 2. COMMENT
+  // === COMMENT ===
   const commentVideo = useCallback(async (videoId, text) => {
-    if (!text?.trim()) return;
-    if (!currentUser) return alert("Connectez-vous !");
-
+    if (!text?.trim() || !currentUser) return;
     const cleanText = text.trim();
     const tempId = `temp-${Date.now()}`;
-    const optimisticComment = {
-      _id: tempId,
-      text: cleanText,
-      user: currentUser,
-      createdAt: new Date().toISOString()
-    };
 
-    setVideos(prev => prev.map(v => 
-      v._id === videoId ? { ...v, comments: [...(v.comments || []), optimisticComment] } : v
+    setVideos(prev => prev.map(v =>
+      v._id === videoId
+        ? { ...v, comments: [...(v.comments || []), { _id: tempId, text: cleanText, user: currentUser, createdAt: new Date().toISOString() }] }
+        : v
     ));
 
     try {
-      // ✅ Utilise axiosClient
-      const { data } = await axiosClient.post(`/videos/${videoId}/comment`, { 
-        text: cleanText,
-        content: cleanText
-      });
-
+      const { data } = await axiosClient.post(`/videos/${videoId}/comment`, { text: cleanText, content: cleanText });
       setVideos(prev => prev.map(v => {
-        if (v._id === videoId) {
-          const others = v.comments.filter(c => c._id !== tempId);
-          const serverComment = data.comment || data; 
-          return { ...v, comments: [...others, serverComment] };
-        }
-        return v;
+        if (v._id !== videoId) return v;
+        const others = v.comments.filter(c => c._id !== tempId);
+        return { ...v, comments: [...others, data.comment || data] };
       }));
-      
       socketRef.current?.emit('commentVideo', { videoId, comment: data.comment || data });
-
     } catch (err) {
       console.error("❌ Erreur Commentaire:", err);
-      setVideos(prev => prev.map(v => 
+      setVideos(prev => prev.map(v =>
         v._id === videoId ? { ...v, comments: v.comments.filter(c => c._id !== tempId) } : v
       ));
     }
   }, [currentUser]);
 
-  // 3. DELETE
+  // === DELETE ===
   const deleteVideo = useCallback(async (videoId) => {
     try {
-      // ✅ Utilise API_ENDPOINTS
-      await axiosClient.delete(API_ENDPOINTS.VIDEOS.DELETE(videoId));
+      const endpoint = API_ENDPOINTS?.VIDEOS?.DELETE?.(videoId) || `/videos/${videoId}`;
+      await axiosClient.delete(endpoint);
       setVideos(prev => prev.filter(v => v._id !== videoId));
     } catch (err) {
       console.error("Erreur suppression:", err);
     }
   }, []);
 
-  // 4. INCREMENT VIEWS
+  // === INCREMENT VIEWS ===
   const incrementViews = useCallback(async (videoId) => {
     if (!videoId) return;
-
-    // Mise à jour optimiste locale
-    setVideos((prev) => prev.map(v => 
+    setVideos(prev => prev.map(v =>
       v._id === videoId ? { ...v, views: (v.views || 0) + 1 } : v
     ));
-
     try {
-      // ✅ Utilise axiosClient
       await axiosClient.post(`/videos/${videoId}/view`);
     } catch (err) {
-      console.warn("Erreur incrémentation vue:", err);
+      console.warn("Erreur vue:", err.message);
     }
   }, []);
 
-  // === VALEURS EXPORTÉES ===
+  // ✅ initialLoad EST MAINTENANT EXPORTÉ
   const value = useMemo(() => ({
     videos,
     loading,
     hasMore,
+    initialLoad,      // ✅ MANQUAIT dans la version originale
     fetchVideos,
     likeVideo,
     commentVideo,
     deleteVideo,
     incrementViews,
-    currentUser
-  }), [videos, loading, hasMore, fetchVideos, likeVideo, commentVideo, deleteVideo, incrementViews, currentUser]);
+    currentUser,
+  }), [videos, loading, hasMore, initialLoad, fetchVideos, likeVideo, commentVideo, deleteVideo, incrementViews, currentUser]);
 
   return <VideosContext.Provider value={value}>{children}</VideosContext.Provider>;
 };

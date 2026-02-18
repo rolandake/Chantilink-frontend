@@ -1,3 +1,5 @@
+// 📁 src/pages/Videos/VideoCard.jsx  
+// VERSION SIMPLIFIÉE - Sans gestion mocks
 import React, { useEffect, useRef, useState, useMemo, memo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -11,12 +13,10 @@ import {
 import { HiDotsVertical } from "react-icons/hi";
 import { IoSend } from "react-icons/io5";
 
-// Configuration Stripe sécurisée
 const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
 const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
-// === UTILITAIRES ===
 const generateDefaultAvatar = (username = "U") => {
   const char = (username || "U").charAt(0).toUpperCase();
   const colors = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
@@ -24,43 +24,35 @@ const generateDefaultAvatar = (username = "U") => {
   return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${encodeURIComponent(color)}"/><text x="50%" y="50%" font-size="50" fill="white" text-anchor="middle" dy=".3em" font-family="Arial">${char}</text></svg>`;
 };
 
-// === COMPOSANT PRINCIPAL ===
-const VideoCard = memo(({ video, isActive }) => {
+const VideoCard = memo(({ video, isActive, isAutoPost }) => {
   if (!video) return null;
 
   const navigate = useNavigate();
   const videoRef = useRef(null);
   
-  // Contextes
   const { user: currentUser, getToken } = useAuth();
   const { likeVideo, commentVideo, deleteVideo, incrementViews } = useVideos();
 
-  // États UI
   const [muted, setMuted] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
   const [showHeart, setShowHeart] = useState(false);
   const [progress, setProgress] = useState(0);
   
-  // États Modales
   const [showComments, setShowComments] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [showBoostModal, setShowBoostModal] = useState(false);
   
-  // États Données
   const [localLikes, setLocalLikes] = useState(0);
   const [isLiked, setIsLiked] = useState(false);
   const [localComments, setLocalComments] = useState([]);
   const [newComment, setNewComment] = useState("");
   
-  // États Follow
   const [isFollowing, setIsFollowing] = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
 
-  // États Boost
   const [boostLoading, setBoostLoading] = useState(false);
   const [selectedBoost, setSelectedBoost] = useState(null);
 
-  // Normalisation Propriétaire
   const owner = useMemo(() => {
     const u = video.user || video.uploadedBy || {};
     return {
@@ -73,15 +65,12 @@ const VideoCard = memo(({ video, isActive }) => {
 
   const isOwner = currentUser && owner._id && (owner._id === currentUser._id);
 
-  // === INITIALISATION ===
   useEffect(() => {
     const likesList = Array.isArray(video.likes) ? video.likes : [];
     setLocalLikes(likesList.length || (typeof video.likes === 'number' ? video.likes : 0));
     
     if (currentUser) {
         setIsLiked(likesList.some(id => id === currentUser._id || (typeof id === 'object' && id._id === currentUser._id)));
-        
-        // Initialisation de l'état abonné
         if (currentUser.following && Array.isArray(currentUser.following) && owner._id) {
             setIsFollowing(currentUser.following.includes(owner._id));
         }
@@ -89,7 +78,6 @@ const VideoCard = memo(({ video, isActive }) => {
     setLocalComments(video.comments || []);
   }, [video, currentUser, owner._id]);
 
-  // === LECTURE ===
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -107,7 +95,9 @@ const VideoCard = memo(({ video, isActive }) => {
             }
           });
       }
-      if (incrementViews && video._id) {
+      
+      // ✅ Tracker vues uniquement pour vidéos utilisateurs
+      if (incrementViews && video._id && !isAutoPost) {
          const timer = setTimeout(() => incrementViews(video._id), 2000);
          return () => clearTimeout(timer);
       }
@@ -116,9 +106,8 @@ const VideoCard = memo(({ video, isActive }) => {
       vid.currentTime = 0;
       setIsPaused(false);
     }
-  }, [isActive, video._id, incrementViews]);
+  }, [isActive, video._id, incrementViews, isAutoPost]);
 
-  // === HANDLERS ===
   const handleTimeUpdate = useCallback(() => {
     const vid = videoRef.current;
     if (vid && vid.duration) setProgress((vid.currentTime / vid.duration) * 100);
@@ -147,6 +136,15 @@ const VideoCard = memo(({ video, isActive }) => {
     e?.stopPropagation();
     if (!currentUser) return alert("Connectez-vous pour aimer !");
     
+    // ✅ Like local uniquement pour auto-posts
+    if (isAutoPost) {
+      console.log('📹 Auto-post - like local uniquement');
+      const wasLiked = isLiked;
+      setIsLiked(!wasLiked);
+      setLocalLikes(prev => wasLiked ? prev - 1 : prev + 1);
+      return;
+    }
+    
     const wasLiked = isLiked;
     setIsLiked(!wasLiked);
     setLocalLikes(prev => wasLiked ? prev - 1 : prev + 1);
@@ -157,9 +155,8 @@ const VideoCard = memo(({ video, isActive }) => {
         setIsLiked(wasLiked); 
         setLocalLikes(prev => wasLiked ? prev + 1 : prev - 1); 
     }
-  }, [currentUser, isLiked, video._id, likeVideo]);
+  }, [currentUser, isLiked, video._id, likeVideo, isAutoPost]);
 
-  // ✅ HANDLER FOLLOW CORRIGÉ (Compatible avec votre backend)
   const handleFollow = async (e) => {
     e.stopPropagation();
     e.preventDefault();
@@ -169,21 +166,23 @@ const VideoCard = memo(({ video, isActive }) => {
     if (isOwner) return console.warn("Vous ne pouvez pas vous suivre vous-même");
     if (followLoading) return;
 
+    if (isAutoPost) {
+      console.log('📹 Auto-post - follow désactivé');
+      setIsFollowing(!isFollowing);
+      return;
+    }
+
     setFollowLoading(true);
     const wasFollowing = isFollowing;
-    
     setIsFollowing(!wasFollowing);
 
     try {
         const token = await getToken();
         if (!token) throw new Error("Token manquant");
 
-        // ✅ CORRECTION : Routes exactes de votre backend
         const endpoint = wasFollowing 
           ? `${API_URL}/users/unfollow/${owner._id}`
           : `${API_URL}/users/follow/${owner._id}`;
-
-        console.log(`🔄 ${wasFollowing ? 'Unfollow' : 'Follow'}:`, endpoint);
 
         const res = await fetch(endpoint, {
             method: 'POST',
@@ -195,30 +194,16 @@ const VideoCard = memo(({ video, isActive }) => {
 
         const contentType = res.headers.get('content-type');
         if (!contentType || !contentType.includes('application/json')) {
-            const text = await res.text();
-            console.error('❌ Réponse non-JSON:', text.substring(0, 200));
             throw new Error("Le serveur a retourné une erreur");
         }
 
         const data = await res.json();
-
-        if (!res.ok) {
-            throw new Error(data.message || `Erreur ${res.status}`);
-        }
-
-        console.log('✅ Follow réussi:', data);
+        if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
 
     } catch (err) {
         console.error("❌ Erreur Follow:", err);
         setIsFollowing(wasFollowing);
-        
-        if (err.message.includes('serveur')) {
-            alert("⚠️ Impossible de contacter le serveur. Vérifiez votre connexion.");
-        } else if (err.message.includes('Token')) {
-            alert("🔒 Session expirée. Reconnectez-vous.");
-        } else {
-            alert(err.message || "Impossible de suivre cet utilisateur");
-        }
+        alert(err.message || "Impossible de suivre cet utilisateur");
     } finally {
         setFollowLoading(false);
     }
@@ -237,6 +222,11 @@ const VideoCard = memo(({ video, isActive }) => {
     
     setLocalComments(prev => [...prev, tempComment]);
     setNewComment("");
+    
+    if (isAutoPost) {
+      console.log('📹 Auto-post - commentaire local uniquement');
+      return;
+    }
     
     try { 
         await commentVideo(video._id, newComment); 
@@ -258,6 +248,11 @@ const VideoCard = memo(({ video, isActive }) => {
 
   const handleBoost = async () => {
     if (!selectedBoost || !stripePromise) return;
+    if (isAutoPost) {
+      alert("Cette fonctionnalité n'est disponible que pour vos vidéos");
+      return;
+    }
+    
     setBoostLoading(true);
     try {
         const token = await getToken();
@@ -276,9 +271,16 @@ const VideoCard = memo(({ video, isActive }) => {
   return (
     <div className="relative w-full h-full bg-black overflow-hidden select-none">
       
+      {/* ✅ Badge Auto-Post */}
+      {isAutoPost && (
+        <div className="absolute top-16 left-4 z-50 bg-blue-500/90 text-white text-xs font-bold px-3 py-1 rounded-full backdrop-blur-sm">
+          📡 Trending
+        </div>
+      )}
+      
       <video
         ref={videoRef}
-        src={video.url}
+        src={video.videoUrl || video.url}
         className="w-full h-full object-cover"
         style={{ filter: video.filter || "none" }}
         loop
@@ -306,12 +308,12 @@ const VideoCard = memo(({ video, isActive }) => {
          </AnimatePresence>
       </div>
 
-      {/* --- INFOS UTILISATEUR (Bas Gauche) --- */}
+      {/* INFOS UTILISATEUR */}
       <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
         <div 
             onClick={(e) => {
                 e.stopPropagation();
-                if (owner._id) navigate(`/profile/${owner._id}`);
+                if (owner._id && !isAutoPost) navigate(`/profile/${owner._id}`);
             }}
             className="flex items-center gap-3 mb-3 cursor-pointer group"
         >
@@ -328,7 +330,6 @@ const VideoCard = memo(({ video, isActive }) => {
                  </h3>
              </div>
              
-             {/* BOUTON SUIVRE */}
              {!isOwner && currentUser && (
                  <button 
                     onClick={handleFollow} 
@@ -354,10 +355,10 @@ const VideoCard = memo(({ video, isActive }) => {
         </div>
       </div>
 
-      {/* --- ACTIONS (Droite) --- */}
+      {/* ACTIONS */}
       <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe pointer-events-auto">
          
-         {isOwner && (
+         {isOwner && !isAutoPost && (
             <motion.div whileTap={{ scale: 0.9 }} className="flex flex-col items-center">
                 <button onClick={(e) => { e.stopPropagation(); setShowBoostModal(true); }} className="w-10 h-10 rounded-full bg-gradient-to-tr from-orange-400 to-pink-600 flex items-center justify-center text-white shadow-lg shadow-orange-500/40">
                     <FaRocket />
@@ -396,7 +397,7 @@ const VideoCard = memo(({ video, isActive }) => {
          </button>
       </div>
 
-      {/* --- MODALES --- */}
+      {/* MODALES */}
       <AnimatePresence>
         {showComments && (
             <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center pointer-events-auto" onClick={(e) => e.stopPropagation()}>
@@ -430,7 +431,7 @@ const VideoCard = memo(({ video, isActive }) => {
         {showOptions && (
             <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm" onClick={() => setShowOptions(false)}>
                 <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="absolute bottom-0 inset-x-0 bg-gray-900 rounded-t-3xl p-6 space-y-3" onClick={(e) => e.stopPropagation()}>
-                    {isOwner && (
+                    {isOwner && !isAutoPost && (
                         <button onClick={async () => { if(confirm("Supprimer ?")) await deleteVideo(video._id); }} className="w-full py-3 bg-red-500/10 text-red-500 rounded-xl font-bold flex items-center justify-center gap-2"><FaTrash /> Supprimer la vidéo</button>
                     )}
                     <button onClick={() => { navigator.clipboard.writeText(window.location.href); setShowOptions(false); }} className="w-full py-3 bg-gray-800 text-white rounded-xl font-bold">Copier le lien</button>
@@ -441,7 +442,7 @@ const VideoCard = memo(({ video, isActive }) => {
       </AnimatePresence>
       
       <AnimatePresence>
-          {showBoostModal && (
+          {showBoostModal && !isAutoPost && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowBoostModal(false)}>
                   <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }} className="bg-gray-900 border border-gray-700 p-6 rounded-2xl w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
                       <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2"><FaRocket className="text-orange-500" /> Booster cette vidéo</h2>
