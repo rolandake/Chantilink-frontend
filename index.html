@@ -2,11 +2,13 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
+    
     <!-- Google Search Console -->
     <meta name="google-site-verification" content="-TJF6m4T1RWHWSeJ-QUZ1yX01w79GP815nDhTo3dmWc" />
 
+    <!-- Viewport -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
-    <meta name="description" content="ChantiLink - Votre réseau social" />
+    <meta name="description" content="ChantiLink - Votre réseau social et outils collaboratifs pour le génie civil." />
 
     <!-- PWA -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -19,8 +21,14 @@
     <meta property="og:type" content="website" />
     <meta property="og:title" content="ChantiLink" />
     <meta property="og:description" content="Le réseau social nouvelle génération" />
-    <meta property="og:image" content="/portrait-roland.png" />
-    <meta name="twitter:image" content="/portrait-roland.png" />
+    <meta property="og:image" content="https://chantilink-frontend.vercel.app/portrait-roland.png" />
+    <meta property="og:url" content="https://chantilink-frontend.vercel.app" />
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ChantiLink" />
+    <meta name="twitter:description" content="Le réseau social nouvelle génération" />
+    <meta name="twitter:image" content="https://chantilink-frontend.vercel.app/portrait-roland.png" />
 
     <title>ChantiLink</title>
 
@@ -58,20 +66,6 @@
       #splash-native { display:none !important; }
       input, textarea, select { font-size:16px !important; }
       * { -webkit-tap-highlight-color: transparent; }
-      footer {
-        text-align: center;
-        padding: 15px;
-        font-size: 14px;
-        color: #aaa;
-        background: #1f1f1f;
-        display: flex;
-        justify-content:center;
-        align-items:center;
-        gap:10px;
-      }
-      footer img { width:40px; height:40px; border-radius:50%; }
-      footer a { color:#E67E3C; text-decoration:none; }
-      footer a:hover { text-decoration:underline; }
     </style>
   </head>
 
@@ -88,10 +82,12 @@
       </div>
     </noscript>
 
+    <!-- Footer visible seulement si tu veux -->
+    <!--
     <footer>
-      <img src="/portrait-roland.png" alt="Roland Ake" />
       © 2026 ChantiLink — Créé par 
       <a href="https://github.com/rolandake" target="_blank" rel="noopener">Roland Ake</a>
     </footer>
+    -->
   </body>
 </html>
