@@ -31,6 +31,7 @@
     "date-fns": "^4.1.0",
     "emoji-picker-react": "^4.15.0",
     "framer-motion": "^11.18.2",
+    "hls.js": "^1.6.15",
     "idb": "^8.0.3",
     "js-cookie": "^3.0.5",
     "jspdf": "^3.0.3",

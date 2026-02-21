@@ -1,5 +1,6 @@
 // 📁 src/pages/Videos/AggregatedCard.jsx
-// Carte universelle : vidéo / image / texte / article — contenu agrégé externe
+// ✅ Son activé par défaut
+// ✅ Badge source supprimé
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
@@ -9,6 +10,7 @@ import {
   FaReddit, FaVimeo, FaRss,
 } from 'react-icons/fa';
 import { IoSend } from 'react-icons/io5';
+import Hls from 'hls.js';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
@@ -27,48 +29,73 @@ const generateAvatar = (name = 'U') => {
 };
 
 // ─────────────────────────────────────────────
-// DirectVideo
+// DirectVideo — son activé par défaut + HLS Reddit
 // ─────────────────────────────────────────────
-// RESTRICTION NAVIGATEUR MOBILE :
-// autoplay est autorisé UNIQUEMENT si la vidéo est muted.
-// vid.muted = false via JS est BLOQUÉ sauf si exécuté dans un vrai click handler.
-// On remonte videoRef au parent (AggregatedCard) pour que le bouton mute
-// puisse déclencher la séquence pause → unmute → play directement dans son onClick.
-// ─────────────────────────────────────────────
-const DirectVideo = memo(({ content, isActive, onTogglePlay, onTimeUpdate, onDoubleTap, videoRef }) => {
+const DirectVideo = memo(({ content, isActive, muted, onTogglePlay, onTimeUpdate, onDoubleTap, videoRef }) => {
+  const hlsRef = useRef(null);
+  const isHLS  = content.isHLS || content.videoUrl?.includes('.m3u8');
 
-  // Montage : démarrer silencieux (obligatoire pour autoplay mobile)
+  // Init source (HLS ou MP4)
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
-    vid.muted = true;
-    vid.volume = 0;
-  }, []);
 
-  // Play/pause selon slide active
+    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+
+    // Toujours démarrer muted pour autoplay, puis on active le son après
+    vid.muted  = true;
+    vid.volume = 1;
+
+    if (isHLS && Hls.isSupported()) {
+      const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+      hls.loadSource(content.videoUrl);
+      hls.attachMedia(vid);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (isActive) vid.play().then(() => { vid.muted = false; vid.volume = 1; }).catch(() => {});
+      });
+      hlsRef.current = hls;
+    } else if (isHLS && vid.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari natif
+      vid.src = content.videoUrl;
+    } else {
+      vid.src = content.videoUrl;
+    }
+
+    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
+  }, [content.videoUrl]); // eslint-disable-line
+
+  // Play/pause + activation son après autoplay réussi
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
     if (isActive) {
-      vid.muted = true; // re-forcer muted pour garantir l'autorisation autoplay
-      vid.play().catch(() => {});
+      vid.muted = true; // requis pour autoplay
+      vid.play()
+        .then(() => {
+          // ✅ Autoplay accepté → activer le son si pas muté
+          if (!muted) { vid.muted = false; vid.volume = 1; }
+        })
+        .catch(() => {});
     } else {
       vid.pause();
-      // Réinitialiser le son quand on quitte la slide
-      vid.muted = true;
-      vid.volume = 0;
+      vid.muted  = true;
+      vid.volume = 1;
     }
-  }, [isActive]);
+  }, [isActive]); // eslint-disable-line
+
+  // Sync prop muted → élément vidéo
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    vid.muted  = muted;
+    vid.volume = muted ? 0 : 1;
+  }, [muted]);
 
   return (
     <video
       ref={videoRef}
-      src={content.videoUrl}
       className="w-full h-full object-cover"
-      loop
-      playsInline
-      muted            // attribut HTML initial — requis pour autoplay navigateur
-      autoPlay={false}
+      loop playsInline muted autoPlay={false}
       onClick={onTogglePlay}
       onDoubleClick={onDoubleTap}
       onTimeUpdate={onTimeUpdate}
@@ -80,34 +107,22 @@ const DirectVideo = memo(({ content, isActive, onTogglePlay, onTimeUpdate, onDou
 DirectVideo.displayName = 'DirectVideo';
 
 // ─────────────────────────────────────────────
-// EmbedVideo (Vimeo) — background=1 dans l'URL = toujours muted
+// EmbedVideo (Vimeo)
 // ─────────────────────────────────────────────
 const EmbedVideo = memo(({ content, isActive }) => {
   const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    if (!isActive) setLoaded(false);
-  }, [isActive]);
-
+  useEffect(() => { if (!isActive) setLoaded(false); }, [isActive]);
   return (
     <div className="w-full h-full relative bg-black">
       {!loaded && (
         <div className="absolute inset-0 flex items-center justify-center z-10">
-          {content.thumbnail && (
-            <img src={content.thumbnail} alt="" className="w-full h-full object-cover opacity-50" />
-          )}
+          {content.thumbnail && <img src={content.thumbnail} alt="" className="w-full h-full object-cover opacity-50" />}
           <div className="absolute w-14 h-14 border-4 border-gray-600 border-t-white rounded-full animate-spin" />
         </div>
       )}
       {isActive && (
-        <iframe
-          src={content.videoUrl}
-          className="w-full h-full border-0"
-          allow="autoplay; fullscreen"
-          allowFullScreen
-          onLoad={() => setLoaded(true)}
-          title={content.title}
-        />
+        <iframe src={content.videoUrl} className="w-full h-full border-0"
+          allow="autoplay; fullscreen" allowFullScreen onLoad={() => setLoaded(true)} title={content.title} />
       )}
     </div>
   );
@@ -128,17 +143,12 @@ const ImageContent = memo(({ content, onDoubleTap }) => {
         </div>
       )}
       {!error ? (
-        <img
-          src={content.imageUrl || content.thumbnail}
-          alt={content.title}
+        <img src={content.imageUrl || content.thumbnail} alt={content.title}
           className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
-          onLoad={() => setLoaded(true)}
-          onError={() => setError(true)}
-        />
+          onLoad={() => setLoaded(true)} onError={() => setError(true)} />
       ) : (
         <div className="flex flex-col items-center gap-3 text-gray-500">
-          <FaImage className="text-5xl" />
-          <p className="text-sm">Image non disponible</p>
+          <FaImage className="text-5xl" /><p className="text-sm">Image non disponible</p>
         </div>
       )}
       {content.isGallery && (
@@ -160,11 +170,8 @@ const ArticleContent = memo(({ content }) => {
     <div className="w-full h-full flex flex-col bg-gray-950" style={{ borderTop: `4px solid ${cfg.color}` }}>
       {content.thumbnail && (
         <div className="flex-shrink-0 h-48 overflow-hidden">
-          <img
-            src={content.thumbnail} alt={content.title}
-            className="w-full h-full object-cover"
-            onError={(e) => { e.target.style.display = 'none'; }}
-          />
+          <img src={content.thumbnail} alt={content.title} className="w-full h-full object-cover"
+            onError={(e) => { e.target.style.display = 'none'; }} />
         </div>
       )}
       <div className="flex-1 overflow-y-auto p-6 pt-16">
@@ -199,7 +206,8 @@ const AggregatedCard = ({ content, isActive }) => {
 
   const { user: currentUser, getToken } = useAuth();
 
-  const [muted, setMuted]                 = useState(true);
+  // ✅ Son activé par défaut (false = pas muté)
+  const [muted, setMuted]                 = useState(false);
   const [isPaused, setIsPaused]           = useState(false);
   const [showHeart, setShowHeart]         = useState(false);
   const [showComments, setShowComments]   = useState(false);
@@ -209,7 +217,6 @@ const AggregatedCard = ({ content, isActive }) => {
   const [newComment, setNewComment]       = useState('');
   const [progress, setProgress]           = useState(0);
 
-  // ✅ videoRef remonté ici — accessible par handleToggleMute dans un vrai click
   const videoRef = useRef(null);
 
   const cfg     = SOURCE_CONFIG[content.source] || SOURCE_CONFIG.rss;
@@ -217,7 +224,6 @@ const AggregatedCard = ({ content, isActive }) => {
   const isImage = content.contentType === 'image';
   const isText  = content.contentType === 'text' || content.contentType === 'article';
 
-  // Tracking vues
   useEffect(() => {
     if (!isActive || !content._id) return;
     const timer = setTimeout(async () => {
@@ -226,9 +232,9 @@ const AggregatedCard = ({ content, isActive }) => {
     return () => clearTimeout(timer);
   }, [isActive, content._id]);
 
-  // Remettre muted à true quand on change de slide
+  // Reset son au défaut (activé) quand on change de slide
   useEffect(() => {
-    if (!isActive) setMuted(true);
+    if (!isActive) setMuted(false);
   }, [isActive]);
 
   const handleTimeUpdate = useCallback((e) => {
@@ -240,13 +246,8 @@ const AggregatedCard = ({ content, isActive }) => {
     e?.stopPropagation();
     const vid = videoRef.current;
     if (!vid) return;
-    if (vid.paused) {
-      vid.play().catch(() => {});
-      setIsPaused(false);
-    } else {
-      vid.pause();
-      setIsPaused(true);
-    }
+    if (vid.paused) { vid.play().catch(() => {}); setIsPaused(false); }
+    else            { vid.pause(); setIsPaused(true); }
   }, []);
 
   const handleDoubleTap = useCallback((e) => {
@@ -265,8 +266,7 @@ const AggregatedCard = ({ content, isActive }) => {
     try {
       const token = await getToken();
       await fetch(`${API_URL}/aggregated/${content._id}/like`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
       });
     } catch {
       setIsLiked(wasLiked);
@@ -274,39 +274,20 @@ const AggregatedCard = ({ content, isActive }) => {
     }
   }, [currentUser, isLiked, content._id, getToken]);
 
-  // ─────────────────────────────────────────────────────────────────
-  // handleToggleMute — fix son mobile
-  // ─────────────────────────────────────────────────────────────────
-  // Les navigateurs mobiles (iOS Safari, Android Chrome) bloquent
-  // vid.muted = false via JS sauf si l'appel est dans un vrai click handler.
-  // La séquence obligatoire pour débloquer le son :
-  //   1. vid.pause()       — synchrone, dans le handler
-  //   2. vid.muted = false — autorisé car on est dans un click utilisateur
-  //   3. vid.play()        — relance avec son
-  // ─────────────────────────────────────────────────────────────────
   const handleToggleMute = useCallback((e) => {
     e.stopPropagation();
-    const vid = videoRef.current;
+    const vid      = videoRef.current;
     const newMuted = !muted;
     setMuted(newMuted);
-
-    if (!vid) return; // Vimeo embed — pas de contrôle direct
-
+    if (!vid) return;
     if (newMuted) {
-      // Remute simple
-      vid.muted = true;
+      vid.muted  = true;
       vid.volume = 0;
     } else {
-      // Séquence débloquage son mobile
       vid.pause();
-      vid.muted = false;
+      vid.muted  = false;
       vid.volume = 1;
-      vid.play().catch(() => {
-        // Navigateur a refusé malgré le click — retour muted
-        vid.muted = true;
-        vid.volume = 0;
-        setMuted(true);
-      });
+      vid.play().catch(() => { vid.muted = true; vid.volume = 0; setMuted(true); });
     }
   }, [muted]);
 
@@ -322,91 +303,58 @@ const AggregatedCard = ({ content, isActive }) => {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ text: temp.text }),
       });
-    } catch {
-      setLocalComments(p => p.filter(c => c._id !== temp._id));
-    }
+    } catch { setLocalComments(p => p.filter(c => c._id !== temp._id)); }
   };
 
   const handleShare = async (e) => {
     e.stopPropagation();
     const url = content.externalUrl || window.location.href;
-    if (navigator.share) {
-      try { await navigator.share({ title: content.title, url }); } catch {}
-    } else {
-      navigator.clipboard.writeText(url);
-      alert('Lien copié !');
-    }
+    if (navigator.share) { try { await navigator.share({ title: content.title, url }); } catch {} }
+    else { navigator.clipboard.writeText(url); alert('Lien copié !'); }
   };
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden select-none">
 
-      {/* ── Média principal ── */}
       {isVideo && content.isEmbed && <EmbedVideo content={content} isActive={isActive} />}
       {isVideo && !content.isEmbed && (
-        <DirectVideo
-          content={content}
-          isActive={isActive}
-          videoRef={videoRef}
-          onTogglePlay={handleTogglePlay}
-          onTimeUpdate={handleTimeUpdate}
-          onDoubleTap={handleDoubleTap}
-        />
+        <DirectVideo content={content} isActive={isActive} muted={muted} videoRef={videoRef}
+          onTogglePlay={handleTogglePlay} onTimeUpdate={handleTimeUpdate} onDoubleTap={handleDoubleTap} />
       )}
       {isImage && <ImageContent content={content} onDoubleTap={handleDoubleTap} />}
       {isText  && <ArticleContent content={content} />}
 
-      {/* Overlay gradient */}
-      {!isText && (
-        <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />
-      )}
+      {!isText && <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />}
 
-      {/* Barre de progression */}
       {isVideo && !content.isEmbed && (
         <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30 z-20">
           <div className="h-full transition-all duration-100" style={{ width: `${progress}%`, backgroundColor: cfg.color }} />
         </div>
       )}
 
-      {/* Icône pause */}
       {isVideo && !content.isEmbed && isPaused && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <FaPlay className="text-white/50 text-6xl animate-pulse" />
         </div>
       )}
 
-      {/* Badge source */}
-      <div
-        className="absolute top-16 left-4 z-40 flex items-center gap-1.5 px-3 py-1 rounded-full text-white text-xs font-bold backdrop-blur-sm"
-        style={{ backgroundColor: `${cfg.color}DD` }}
-      >
-        <cfg.Icon />
-        {cfg.label}
-        {content.subreddit && <span className="opacity-80"> · r/{content.subreddit}</span>}
-      </div>
+      {/* ✅ Badge source supprimé */}
 
-      {/* Double tap cœur */}
       <AnimatePresence>
         {showHeart && (
-          <motion.div
-            initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1.5, opacity: 1 }} exit={{ scale: 2, opacity: 0 }}
-            className="absolute inset-0 flex items-center justify-center pointer-events-none z-10"
-          >
+          <motion.div initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1.5, opacity: 1 }} exit={{ scale: 2, opacity: 0 }}
+            className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
             <FaHeart className="text-red-500 text-8xl drop-shadow-2xl" />
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Infos auteur */}
       {!isText && (
         <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
           <div className="flex items-center gap-3 mb-3">
-            <img
-              src={content.channelAvatar || generateAvatar(content.channelName)}
-              alt={content.channelName}
+            <img src={content.channelAvatar || generateAvatar(content.channelName)} alt={content.channelName}
               className="w-10 h-10 rounded-full border-2 border-white/50 object-cover bg-gray-700"
-              onError={(e) => { e.target.onerror = null; e.target.src = generateAvatar(content.channelName); }}
-            />
+              onError={(e) => { e.target.onerror = null; e.target.src = generateAvatar(content.channelName); }} />
             <div>
               <p className="font-bold text-white text-sm drop-shadow-md">{content.channelName}</p>
               {content.subreddit && <p className="text-white/60 text-xs">r/{content.subreddit}</p>}
@@ -427,10 +375,7 @@ const AggregatedCard = ({ content, isActive }) => {
         </div>
       )}
 
-      {/* ── Actions ── */}
       <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe pointer-events-auto">
-
-        {/* Like */}
         <div className="flex flex-col items-center gap-1">
           <motion.button whileTap={{ scale: 0.8 }} onClick={handleLike}
             className={`w-10 h-10 rounded-full flex items-center justify-center text-3xl drop-shadow-xl ${isLiked ? 'text-red-500' : 'text-white'}`}>
@@ -439,7 +384,6 @@ const AggregatedCard = ({ content, isActive }) => {
           <span className="text-xs font-bold text-white drop-shadow-md">{localLikes}</span>
         </div>
 
-        {/* Commentaires */}
         <div className="flex flex-col items-center gap-1">
           <motion.button whileTap={{ scale: 0.8 }} onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
             className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
@@ -450,7 +394,6 @@ const AggregatedCard = ({ content, isActive }) => {
           </span>
         </div>
 
-        {/* Partage */}
         <div className="flex flex-col items-center gap-1">
           <motion.button whileTap={{ scale: 0.8 }} onClick={handleShare}
             className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
@@ -459,19 +402,14 @@ const AggregatedCard = ({ content, isActive }) => {
           <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
         </div>
 
-        {/* ✅ Bouton mute — séquence pause→unmute→play pour débloquer le son mobile */}
         {isVideo && !content.isEmbed && (
-          <motion.button
-            whileTap={{ scale: 0.9 }}
-            onClick={handleToggleMute}
-            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2"
-          >
+          <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
+            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
             {muted ? <FaVolumeMute /> : <FaVolumeUp />}
           </motion.button>
         )}
       </div>
 
-      {/* ── Modale commentaires ── */}
       <AnimatePresence>
         {showComments && (
           <div className="fixed inset-0 z-50 flex items-end justify-center pointer-events-auto" onClick={(e) => e.stopPropagation()}>
@@ -490,11 +428,9 @@ const AggregatedCard = ({ content, isActive }) => {
                 )}
                 {localComments.map((c, i) => (
                   <div key={c._id || i} className="flex gap-3 items-start">
-                    <img
-                      src={c.user?.profilePhoto || generateAvatar(c.user?.username)}
+                    <img src={c.user?.profilePhoto || generateAvatar(c.user?.username)}
                       className="w-8 h-8 rounded-full bg-gray-700 object-cover" alt="user"
-                      onError={(e) => { e.target.onerror = null; e.target.src = generateAvatar(c.user?.username); }}
-                    />
+                      onError={(e) => { e.target.onerror = null; e.target.src = generateAvatar(c.user?.username); }} />
                     <div>
                       <p className="text-xs font-bold text-gray-400">{c.user?.username || 'Utilisateur'}</p>
                       <p className="text-sm text-gray-200">{c.text}</p>
@@ -503,17 +439,12 @@ const AggregatedCard = ({ content, isActive }) => {
                 ))}
               </div>
               <div className="p-4 bg-gray-800 flex gap-2 items-center">
-                <input
-                  value={newComment}
-                  onChange={(e) => setNewComment(e.target.value)}
+                <input value={newComment} onChange={(e) => setNewComment(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleCommentSubmit()}
                   placeholder="Votre commentaire..."
-                  className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-pink-500"
-                />
+                  className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-pink-500" />
                 <button onClick={handleCommentSubmit} disabled={!newComment.trim()}
-                  className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50">
-                  <IoSend />
-                </button>
+                  className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50"><IoSend /></button>
               </div>
             </motion.div>
           </div>

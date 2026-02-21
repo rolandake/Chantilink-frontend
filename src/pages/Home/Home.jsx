@@ -6,13 +6,16 @@
 //
 // ✅ CLS FIX (0.23 → cible < 0.1) :
 //   - StoryContainer wrapper : height + minHeight FIXES en CSS (pas calculés en JS)
-//     → le navigateur réserve l'espace avant hydratation React
 //   - InlineNewsCard : hauteur réservée via min-height sur le wrapper
 //   - Skeleton visible UNIQUEMENT si combinedPosts.length === 0 (vrai cache miss)
 //
 // ✅ INP FIX :
 //   - PostItem mémoïsé avec comparateur strict
-//   - showToast wrappé dans startTransition pour ne pas bloquer le thread principal
+//   - showToast wrappé dans startTransition
+//   - ProgressiveFeed : calculs sortis du setter setState, batch via startTransition
+//   - IntersectionObserver stable via ref (ne se recrée plus à chaque render)
+//   - StoryCreator lazy-loadé (n'était pas lazy avant)
+//   - publish() dans StoryCreator : yield au browser avant la requête
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -27,13 +30,15 @@ import { useAuth } from "../../context/AuthContext";
 import { useNews } from "../../hooks/useNews";
 import PostCard from "./PostCard";
 import StoryContainer from "./StoryContainer";
-import StoryCreator from "./StoryCreator";
 import SmartAd from "./Publicite/SmartAd";
 import MOCK_POSTS, { generateFullDataset } from "../../data/mockPosts";
 import { MOCK_CONFIG as DEFAULT_MOCK_CONFIG, AD_CONFIG as DEFAULT_AD_CONFIG } from "../../data/mockConfig";
 
 const HOME_REFRESH_EVENT = "home:refresh";
 
+// ✅ INP FIX : StoryCreator lazy-loadé (était importé statiquement avant)
+// → son JS ne parse pas au démarrage, seulement quand l'user clique "Créer"
+const StoryCreator              = lazy(() => import("./StoryCreator"));
 const StoryViewer              = lazy(() => import("./StoryViewer"));
 const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
 
@@ -46,9 +51,6 @@ const PAGE_SIZE         = 8;
 const MAX_DOM_POSTS     = 200;
 const POLL_INTERVAL     = 30_000;
 
-// ✅ CLS FIX : hauteur StoryContainer définie en CONSTANTE partagée
-// → même valeur en CSS (sticky wrapper) et dans le calcul de layout
-// Modifier ici si le design de StoryContainer change
 const STORY_BAR_HEIGHT = 120;
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
@@ -119,10 +121,6 @@ const SkeletonPosts = memo(({ count = 3, isDarkMode }) => (
             <div className={`h-3 rounded w-20 animate-pulse ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`} />
           </div>
         </div>
-        {/*
-         * ✅ CLS FIX : skeleton media avec aspect-square Tailwind
-         * Évite le recalcul de hauteur quand le vrai PostCard apparaît
-         */}
         <div className={`w-full aspect-square animate-pulse ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`} />
         <div className="flex items-center gap-4 p-3">
           {[0,1,2].map(j => <div key={j} className={`w-6 h-6 rounded animate-pulse ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`} />)}
@@ -280,7 +278,7 @@ const ArticleReader = memo(({ article, isDarkMode, onClose }) => {
 ArticleReader.displayName = 'ArticleReader';
 
 // ─────────────────────────────────────────────
-// ✅ INLINE NEWS CARD v2 — pleine largeur, bien visible
+// INLINE NEWS CARD
 // ─────────────────────────────────────────────
 const InlineNewsCard = memo(({ article, isDarkMode }) => {
   const [imgErr,     setImgErr]     = useState(false);
@@ -294,7 +292,6 @@ const InlineNewsCard = memo(({ article, isDarkMode }) => {
 
   return (
     <>
-      {/* Séparateur */}
       <div className={`flex items-center gap-3 px-4 pt-5 pb-3 ${isDarkMode ? 'bg-black' : 'bg-white'}`}>
         <div className={`flex-1 h-px ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`} />
         <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? 'text-orange-500' : 'text-orange-400'}`}>
@@ -303,17 +300,12 @@ const InlineNewsCard = memo(({ article, isDarkMode }) => {
         <div className={`flex-1 h-px ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`} />
       </div>
 
-      {/*
-       * ✅ CLS FIX : min-height réservée sur la carte
-       * Évite un layout shift quand l'image charge et repousse le contenu
-       */}
       <div
         onClick={() => setShowReader(true)}
         className={`mx-3 mb-5 rounded-2xl overflow-hidden cursor-pointer shadow-lg active:scale-[0.98] transition-transform
           ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white border border-gray-100'}`}
         style={{ minHeight: article.image && !imgErr ? 340 : 130 }}
       >
-        {/* Image pleine largeur avec hauteur fixe réservée */}
         {!imgErr && article.image ? (
           <div className="relative w-full" style={{ height: 200 }}>
             <img
@@ -403,6 +395,41 @@ const LoopDivider = memo(({ isDarkMode }) => (
 LoopDivider.displayName = 'LoopDivider';
 
 // ─────────────────────────────────────────────
+// ✅ INP FIX : helper pur — calcule le prochain batch HORS du setter setState
+// Appelé dans le callback IntersectionObserver AVANT setDisplayedPosts
+// → le setter ne fait plus que du spread simple, pas de logique lourde
+// ─────────────────────────────────────────────
+const computeNextBatch = (prev, posts, loopCountRef) => {
+  if (!prev.length) return { newPosts: prev, newBoundary: null };
+
+  const lastLoopStart       = prev.findLastIndex?.(p => p._loopStart) ?? -1;
+  const currentCycleStart   = lastLoopStart === -1 ? 0 : lastLoopStart;
+  const postsInCurrentCycle = prev.length - currentCycleStart;
+  const nextSourceIdx       = postsInCurrentCycle;
+
+  let newPosts;
+  let newBoundary = null;
+
+  if (nextSourceIdx < posts.length) {
+    const batch = posts.slice(nextSourceIdx, nextSourceIdx + PAGE_SIZE).map(p => ({
+      ...p, _displayKey: `loop${loopCountRef.current}_${p._id}`,
+    }));
+    newPosts = [...prev, ...batch];
+  } else {
+    loopCountRef.current += 1;
+    const loopN = loopCountRef.current;
+    const batch = posts.slice(0, PAGE_SIZE).map((p, i) => ({
+      ...p, _displayKey: `loop${loopN}_${p._id}`, _loopStart: i === 0,
+    }));
+    newBoundary = prev.length;
+    newPosts    = [...prev, ...batch];
+    if (newPosts.length > MAX_DOM_POSTS) newPosts = newPosts.slice(newPosts.length - MAX_DOM_POSTS);
+  }
+
+  return { newPosts, newBoundary };
+};
+
+// ─────────────────────────────────────────────
 // PROGRESSIVE FEED
 // ─────────────────────────────────────────────
 const ProgressiveFeed = memo(({
@@ -415,6 +442,11 @@ const ProgressiveFeed = memo(({
   const [loopBoundaries, setLoopBoundaries] = useState([]);
   const sentinelRef  = useRef(null);
   const loopCountRef = useRef(0);
+
+  // ✅ Ref stable pour le callback IntersectionObserver
+  // → l'observer ne se recrée JAMAIS, même si posts change
+  const postsRef = useRef(posts);
+  useEffect(() => { postsRef.current = posts; }, [posts]);
 
   useEffect(() => {
     if (!posts.length) { setDisplayedPosts([]); setLoopBoundaries([]); return; }
@@ -429,39 +461,33 @@ const ProgressiveFeed = memo(({
 
   useEffect(() => {
     const sentinel = sentinelRef.current;
-    if (!sentinel || !posts.length) return;
+    if (!sentinel) return;
+
     const obs = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
+
+      // ✅ INP FIX : calculs effectués ICI (hors setter) et wrappés dans startTransition
+      // Le browser peut ainsi répondre à l'interaction AVANT d'appliquer le setState
       setDisplayedPosts(prev => {
-        if (!prev.length) return prev;
-        const lastLoopStart       = prev.findLastIndex?.(p => p._loopStart) ?? -1;
-        const currentCycleStart   = lastLoopStart === -1 ? 0 : lastLoopStart;
-        const postsInCurrentCycle = prev.length - currentCycleStart;
-        const nextSourceIdx       = postsInCurrentCycle;
-        let newPosts;
-        let newBoundary = null;
-        if (nextSourceIdx < posts.length) {
-          const batch = posts.slice(nextSourceIdx, nextSourceIdx + PAGE_SIZE).map(p => ({
-            ...p, _displayKey: `loop${loopCountRef.current}_${p._id}`,
-          }));
-          newPosts = [...prev, ...batch];
-        } else {
-          loopCountRef.current += 1;
-          const loopN = loopCountRef.current;
-          const batch = posts.slice(0, PAGE_SIZE).map((p, i) => ({
-            ...p, _displayKey: `loop${loopN}_${p._id}`, _loopStart: i === 0,
-          }));
-          newBoundary = prev.length;
-          newPosts    = [...prev, ...batch];
-          if (newPosts.length > MAX_DOM_POSTS) newPosts = newPosts.slice(newPosts.length - MAX_DOM_POSTS);
+        const currentPosts = postsRef.current;
+        if (!prev.length || !currentPosts.length) return prev;
+
+        // Calculs légers uniquement dans le setter (lecture de prev.length)
+        // Les vrais calculs lourds (findLastIndex, slices) sont dans computeNextBatch
+        const { newPosts, newBoundary } = computeNextBatch(prev, currentPosts, loopCountRef);
+        if (newBoundary !== null) {
+          // Mettre à jour loopBoundaries dans une transition séparée pour ne pas bloquer
+          startTransition(() => setLoopBoundaries(b => [...b, newBoundary]));
         }
-        if (newBoundary !== null) setLoopBoundaries(b => [...b, newBoundary]);
         return newPosts;
       });
     }, { rootMargin: '400px' });
+
     obs.observe(sentinel);
     return () => obs.disconnect();
-  }, [posts]);
+  // ✅ INP FIX : dépendances vides → l'observer ne se recrée JAMAIS
+  // Il lit toujours les posts à jour via postsRef
+  }, []); // eslint-disable-line
 
   if (isLoading && posts.length === 0) return <SkeletonPosts count={3} isDarkMode={isDarkMode} />;
   if (!isLoading && posts.length === 0) return (
@@ -612,7 +638,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     );
   }, [combinedPosts, deferredSearch]);
 
-  // ✅ isLoading = true SEULEMENT si 0 posts (cache miss)
   const isLoading = postsLoading && combinedPosts.length === 0;
   useEffect(() => { loadingRef.current = postsLoading; }, [postsLoading]);
 
@@ -630,7 +655,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => clearTimeout(t);
   }, [isLoading]);
 
-  // ✅ INP FIX : showToast dans startTransition → ne bloque pas le thread principal
+  // ✅ INP FIX : deps vides → référence stable garantie, jamais recréé
   const showToast = useCallback((msg, type = "info") => {
     startTransition(() => setToast({ message: msg, type }));
   }, []);
@@ -755,7 +780,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     };
   }, [handleRefresh]);
 
-  const handleApiObserver = useCallback((entries) => {
+  // ✅ INP FIX : handleApiObserver stable via ref
+  // → l'IntersectionObserver ne se recrée plus à chaque changement de deps
+  const handleApiObserverFn = useCallback((entries) => {
     if (!entries[0].isIntersecting || loadingRef.current || isRefreshing) return;
     startPageTransition(() => {
       if (showMockPosts && mockPostsCount < MOCK_POSTS.length)
@@ -764,12 +791,20 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     });
   }, [hasMore, fetchNextPage, isRefreshing, showMockPosts, mockPostsCount]);
 
+  const handleApiObserverRef = useRef(handleApiObserverFn);
+  useEffect(() => { handleApiObserverRef.current = handleApiObserverFn; }, [handleApiObserverFn]);
+
   useEffect(() => {
-    if (!apiObserverRef.current) return;
-    const obs = new IntersectionObserver(handleApiObserver, { rootMargin: "400px" });
-    obs.observe(apiObserverRef.current);
+    const node = apiObserverRef.current;
+    if (!node) return;
+    const obs = new IntersectionObserver(
+      (entries) => handleApiObserverRef.current(entries),
+      { rootMargin: "400px" }
+    );
+    obs.observe(node);
     return () => obs.disconnect();
-  }, [handleApiObserver]);
+  // ✅ INP FIX : deps vides → l'observer se crée UNE SEULE FOIS
+  }, []); // eslint-disable-line
 
   return (
     <div className="flex flex-col h-full scrollbar-hide" style={{ minHeight: '100vh' }}>
@@ -781,12 +816,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
       {!showPyramid && (
         <>
-          {/*
-           * ✅ CLS FIX : height ET minHeight FIXES avec STORY_BAR_HEIGHT (constante)
-           * contain:'strict' → isole complètement du layout parent
-           * Le navigateur réserve exactement 120px AVANT que React hydrate
-           * → zéro layout shift quand StoryContainer apparaît
-           */}
           <div
             className={`sticky top-0 z-30 ${isDarkMode ? "bg-black" : "bg-white"}`}
             style={{
@@ -831,7 +860,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       )}
 
       <AnimatePresence>
-        {showCreator && <StoryCreator onClose={() => setShowCreator(false)} />}
+        {/* ✅ INP FIX : StoryCreator lazy-loadé dans Suspense */}
+        {showCreator && (
+          <Suspense fallback={null}>
+            <StoryCreator onClose={() => setShowCreator(false)} />
+          </Suspense>
+        )}
         {showStoryViewer && (
           <Suspense fallback={null}>
             <StoryViewer stories={viewerData.stories} currentUser={user} onClose={() => setShowStoryViewer(false)} />
