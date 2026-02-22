@@ -1,111 +1,195 @@
 <!DOCTYPE html>
-
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
+    <meta name="google-site-verification" content="-TJF6m4T1RWHWSeJ-QUZ1yX01w79GP815nDhTo3dmWc" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+    <meta name="description" content="ChantiLink - Réseau social et plateforme collaborative dédiée au génie civil et aux professionnels du chantier." />
+    <meta name="application-name" content="ChantiLink" />
+    <meta name="author" content="Roland Ake" />
+    <meta name="creator" content="Roland Ake" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ChantiLink" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#E67E3C" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="ChantiLink" />
+    <meta property="og:description" content="Le réseau social nouvelle génération pour le génie civil." />
+    <meta property="og:url" content="https://chantilink-frontend.vercel.app" />
+    <meta property="og:image" content="https://chantilink-frontend.vercel.app/portrait-roland.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ChantiLink" />
+    <meta name="twitter:description" content="Le réseau social nouvelle génération pour le génie civil." />
+    <meta name="twitter:image" content="https://chantilink-frontend.vercel.app/portrait-roland.png" />
 
-```
-<!-- Google Search Console -->
-<meta name="google-site-verification" content="-TJF6m4T1RWHWSeJ-QUZ1yX01w79GP815nDhTo3dmWc" />
+    <title>ChantiLink</title>
 
-<!-- Viewport -->
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
-<meta name="description" content="ChantiLink - Réseau social et plateforme collaborative dédiée au génie civil et aux professionnels du chantier." />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 
-<!-- App Identity -->
-<meta name="application-name" content="ChantiLink" />
-<meta name="author" content="Roland Ake" />
-<meta name="creator" content="Roland Ake" />
+    <link rel="preconnect" href="https://res.cloudinary.com" crossorigin />
+    <link rel="dns-prefetch" href="https://res.cloudinary.com" />
+    <link rel="preconnect" href="https://chantilink-backend.onrender.com" crossorigin />
+    <link rel="dns-prefetch" href="https://chantilink-backend.onrender.com" />
+    <link rel="dns-prefetch" href="https://videos.pexels.com" />
+    <link rel="dns-prefetch" href="https://images.pexels.com" />
+    <link rel="dns-prefetch" href="https://cdn.pixabay.com" />
 
-<!-- PWA -->
-<meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="ChantiLink" />
-<meta name="mobile-web-app-capable" content="yes" />
-<meta name="theme-color" content="#E67E3C" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
 
-<!-- SEO Open Graph -->
-<meta property="og:type" content="website" />
-<meta property="og:title" content="ChantiLink" />
-<meta property="og:description" content="Le réseau social nouvelle génération pour le génie civil." />
-<meta property="og:url" content="https://chantilink-frontend.vercel.app" />
-<meta property="og:image" content="https://chantilink-frontend.vercel.app/portrait-roland.png" />
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "ChantiLink",
+      "applicationCategory": "SocialNetworkingApplication",
+      "operatingSystem": "Web, Android",
+      "url": "https://chantilink-frontend.vercel.app",
+      "image": "https://chantilink-frontend.vercel.app/portrait-roland.png",
+      "description": "ChantiLink est un réseau social et une plateforme collaborative dédiée au génie civil.",
+      "author": {
+        "@type": "Person",
+        "name": "Roland Ake",
+        "url": "https://github.com/rolandake"
+      },
+      "publisher": {
+        "@type": "Organization",
+        "name": "ChantiLink"
+      },
+      "sameAs": ["https://github.com/rolandake"]
+    }
+    </script>
 
-<!-- Twitter Card -->
-<meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="ChantiLink" />
-<meta name="twitter:description" content="Le réseau social nouvelle génération pour le génie civil." />
-<meta name="twitter:image" content="https://chantilink-frontend.vercel.app/portrait-roland.png" />
-
-<title>ChantiLink</title>
-
-<!-- Icons -->
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
-<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
-
-<!-- Fonts -->
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
-
-<!-- STRUCTURED DATA (SEO PRO) -->
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "ChantiLink",
-  "applicationCategory": "SocialNetworkingApplication",
-  "operatingSystem": "Web, Android",
-  "url": "https://chantilink-frontend.vercel.app",
-  "image": "https://chantilink-frontend.vercel.app/portrait-roland.png",
-  "description": "ChantiLink est un réseau social et une plateforme collaborative dédiée au génie civil.",
-  "author": {
-    "@type": "Person",
-    "name": "Roland Ake",
-    "url": "https://github.com/rolandake"
-  },
-  "publisher": {
-    "@type": "Organization",
-    "name": "ChantiLink"
-  },
-  "sameAs": [
-    "https://github.com/rolandake"
-  ]
-}
-</script>
-
-<style>
-  * { box-sizing: border-box; margin:0; padding:0; }
-  html, body { height:100%; width:100%; overflow:hidden; }
-  body {
-    font-family:"Inter", sans-serif;
-    background:#2b2d42;
-    -webkit-font-smoothing:antialiased;
-  }
-  #splash-native { display:none !important; }
-  input, textarea, select { font-size:16px !important; }
-  * { -webkit-tap-highlight-color: transparent; }
-</style>
-```
-
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html, body {
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+      }
+      body {
+        font-family: "Inter", sans-serif;
+        background: #111111;
+        -webkit-font-smoothing: antialiased;
+      }
+      #splash-native {
+        display: none !important;
+      }
+      input, textarea, select {
+        font-size: 16px !important;
+      }
+      #app-splash {
+        position: fixed;
+        inset: 0;
+        background: #111111;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        gap: 24px;
+        opacity: 1;
+        transition: opacity 0.3s ease;
+      }
+      #app-splash.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #splash-logo {
+        width: 80px;
+        height: 80px;
+        background: linear-gradient(135deg, #f97316, #ec4899);
+        border-radius: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 40px;
+        font-weight: 900;
+        color: white;
+        font-family: "Inter", sans-serif;
+        box-shadow: 0 8px 32px rgba(249, 115, 22, 0.4);
+      }
+      #splash-title {
+        font-size: 24px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #f97316, #ec4899);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        font-family: "Inter", sans-serif;
+      }
+      #splash-bar {
+        width: 160px;
+        height: 3px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      #splash-bar-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #f97316, #ec4899);
+        border-radius: 2px;
+        animation: splash-progress 2.5s ease-out forwards;
+      }
+      @keyframes splash-progress {
+        0%   { width: 0%; }
+        40%  { width: 60%; }
+        70%  { width: 80%; }
+        100% { width: 95%; }
+      }
+    </style>
   </head>
 
   <body>
+
+    <div id="app-splash" role="progressbar" aria-label="Chargement de ChantiLink">
+      <div id="splash-logo">C</div>
+      <div id="splash-title">ChantiLink</div>
+      <div id="splash-bar">
+        <div id="splash-bar-fill"></div>
+      </div>
+    </div>
+
     <div id="root"></div>
 
-```
-<script type="module" src="/src/main.jsx"></script>
+    <script>
+      window.__hideSplash = function () {
+        var el = document.getElementById('app-splash');
+        if (!el) return;
+        el.classList.add('hidden');
+        setTimeout(function () {
+          if (el && el.parentNode) {
+            el.parentNode.removeChild(el);
+          }
+        }, 400);
+      };
+      setTimeout(function () {
+        if (typeof window.__hideSplash === 'function') {
+          window.__hideSplash();
+        }
+      }, 8000);
+    </script>
 
-<noscript>
-  <div style="position: fixed; inset:0; background:#2b2d42; color:white; display:flex; align-items:center; justify-content:center; text-align:center; padding:20px;">
-    <div>
-      <h1 style="margin-bottom:10px; font-size:24px">JavaScript requis</h1>
-      <p>Veuillez activer JavaScript pour utiliser ChantiLink.</p>
-    </div>
-  </div>
-</noscript>
-```
+    <script type="module" src="/src/main.jsx"></script>
+
+    <noscript>
+      <div style="position:fixed;inset:0;background:#111;color:white;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;">
+        <div>
+          <h1 style="margin-bottom:10px;font-size:24px;">JavaScript requis</h1>
+          <p>Veuillez activer JavaScript pour utiliser ChantiLink.</p>
+        </div>
+      </div>
+    </noscript>
 
   </body>
 </html>

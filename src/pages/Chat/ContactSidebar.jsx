@@ -1,10 +1,12 @@
 // ============================================
-// 📁 ContactSidebar.jsx - VERSION CORRIGÉE
-// Permission native directe (comme Telegram)
+// 📁 ContactSidebar.jsx
+// ✅ Onglet "Sur l'app"  = contacts venus de ProfileHeader + sync téléphone Chantilink
+// ✅ Onglet "Téléphone"  = uniquement contacts natifs du carnet téléphonique
+// ✅ Rechargement auto depuis localStorage (window focus + clic onglet)
 // ============================================
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  ShieldCheck, RefreshCw, UserCheck, UserPlus,
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import {
+  ShieldCheck, RefreshCw, UserCheck,
   Search, Users, MessageSquare, Send, Smartphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -12,312 +14,226 @@ import { useToast } from '../../context/ToastContext';
 import { Capacitor } from '@capacitor/core';
 import nativeContactsService from '../../services/nativeContactsService';
 
-// ============================================
-// API SERVICE
-// ============================================
-const getAPIService = () => {
-  const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-  
-  const fetchWithAuth = async (url, options = {}) => {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-    });
-
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      const text = await response.text();
-      console.error('❌ Réponse non-JSON:', text.substring(0, 200));
-      throw new Error(`Erreur serveur (${response.status}): Réponse invalide`);
-    }
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.message || `Erreur ${response.status}`);
-    }
-
-    return data;
-  };
-
-  return {
-    syncContacts: async (token, contacts) => {
-      return fetchWithAuth(`${BASE_URL}/contacts/sync`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ contacts }),
-      });
-    }
-  };
+// ─────────────────────────────────────────────
+// ✅ HELPER — lire onAppContacts depuis localStorage
+// ─────────────────────────────────────────────
+const readOnAppContacts = () => {
+  try {
+    const raw = localStorage.getItem('onAppContacts');
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
 };
 
-const API = getAPIService();
+// ─────────────────────────────────────────────
+// API SERVICE
+// ─────────────────────────────────────────────
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const syncContactsAPI = async (token, contacts) => {
+  const res = await fetch(`${BASE_URL}/contacts/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ contacts }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
+  return data;
+};
 
-export const ContactSidebar = ({ 
-  token, 
-  onContactSelect, 
-  contacts = [], 
+// ============================================
+// COMPOSANT PRINCIPAL
+// ============================================
+export const ContactSidebar = ({
+  token,
+  onContactSelect,
+  contacts = [],
   unreadCounts = {},
   user,
   onSyncComplete
 }) => {
-  const [loading, setLoading] = useState(false);
+  const [loading,          setLoading]          = useState(false);
   const [allPhoneContacts, setAllPhoneContacts] = useState([]);
-  const [onAppContacts, setOnAppContacts] = useState([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState("phone");
-  const [syncProgress, setSyncProgress] = useState(0);
-  const [isNativeSync, setIsNativeSync] = useState(false);
+  const [onAppContacts,    setOnAppContacts]    = useState([]);
+  const [searchQuery,      setSearchQuery]      = useState('');
+  const [activeTab,        setActiveTab]        = useState('onapp'); // ✅ "Sur l'app" par défaut
+  const [syncProgress,     setSyncProgress]     = useState(0);
+  const [isNativeSync,     setIsNativeSync]     = useState(false);
   const { showToast } = useToast();
 
-  // ============================================
-  // 🔍 FILTRAGE DES CONTACTS
-  // ============================================
-  const filteredPhoneContacts = useMemo(() => {
-    return allPhoneContacts.filter(c => 
-      c.name?.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [allPhoneContacts, searchQuery]);
+  // ─────────────────────────────────────────────
+  // ✅ CHARGEMENT depuis localStorage
+  // ─────────────────────────────────────────────
+  const reloadOnAppContacts = useCallback(() => {
+    setOnAppContacts(readOnAppContacts());
+  }, []);
 
-  const filteredOnAppContacts = useMemo(() => {
-    return onAppContacts.filter(c => 
-      c.fullName?.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [onAppContacts, searchQuery]);
+  useEffect(() => {
+    // Contacts téléphone
+    try {
+      const saved = localStorage.getItem('allPhoneContacts');
+      if (saved) setAllPhoneContacts(JSON.parse(saved));
+    } catch {}
+    // Contacts "Sur l'app"
+    reloadOnAppContacts();
+  }, [reloadOnAppContacts]);
 
-  // ============================================
+  // ✅ Rechargement quand la fenêtre reprend le focus
+  // (ex : retour depuis ProfilePage après clic "Message")
+  useEffect(() => {
+    window.addEventListener('focus', reloadOnAppContacts);
+    return () => window.removeEventListener('focus', reloadOnAppContacts);
+  }, [reloadOnAppContacts]);
+
+  // ─────────────────────────────────────────────
+  // Changement d'onglet — recharge "Sur l'app" à chaque activation
+  // ─────────────────────────────────────────────
+  const handleTabClick = (tab) => {
+    if (tab === 'onapp') reloadOnAppContacts();
+    setActiveTab(tab);
+  };
+
+  // ─────────────────────────────────────────────
+  // 🔍 FILTRAGE
+  // ─────────────────────────────────────────────
+  const filteredPhoneContacts = useMemo(() =>
+    allPhoneContacts.filter(c =>
+      (c.name || '').toLowerCase().includes(searchQuery.toLowerCase())
+    ), [allPhoneContacts, searchQuery]);
+
+  const filteredOnAppContacts = useMemo(() =>
+    onAppContacts.filter(c =>
+      (c.fullName || c.name || '').toLowerCase().includes(searchQuery.toLowerCase())
+    ), [onAppContacts, searchQuery]);
+
+  // ─────────────────────────────────────────────
   // 🔍 DÉTECTION ENVIRONNEMENT
-  // ============================================
+  // ─────────────────────────────────────────────
   useEffect(() => {
     const isNative = Capacitor.isNativePlatform();
     setIsNativeSync(isNative);
-    
-    console.log(`📱 [ContactSidebar] Environnement: ${isNative ? 'NATIF (iOS/Android)' : 'WEB'}`);
-    
     if (!isNative) {
-      const savedContacts = localStorage.getItem('allPhoneContacts');
-      if (savedContacts) {
-        console.log('🧹 [ContactSidebar] Nettoyage des contacts web du cache');
+      // Web : vider les contacts téléphone (pas pertinents)
+      if (localStorage.getItem('allPhoneContacts')) {
         localStorage.removeItem('allPhoneContacts');
-        localStorage.removeItem('onAppContacts');
         setAllPhoneContacts([]);
-        setOnAppContacts([]);
       }
     }
   }, []);
 
-  // ============================================
-  // 💾 RESTAURATION DES CONTACTS
-  // ============================================
-  useEffect(() => {
-    const savedPhoneContacts = localStorage.getItem('allPhoneContacts');
-    const savedOnAppContacts = localStorage.getItem('onAppContacts');
-    
-    if (savedPhoneContacts) {
-      try {
-        setAllPhoneContacts(JSON.parse(savedPhoneContacts));
-      } catch (e) {
-        console.error('Erreur chargement contacts téléphone:', e);
-      }
-    }
-    
-    if (savedOnAppContacts) {
-      try {
-        setOnAppContacts(JSON.parse(savedOnAppContacts));
-      } catch (e) {
-        console.error('Erreur chargement contacts app:', e);
-      }
-    }
-  }, []);
-
-  // ============================================
-  // 🔥 SYNCHRONISATION NATIVE (demande directe comme Telegram)
-  // ============================================
+  // ─────────────────────────────────────────────
+  // 🔥 SYNCHRONISATION CONTACTS NATIFS (téléphone)
+  // ─────────────────────────────────────────────
   const handleSyncProcess = async () => {
     setLoading(true);
     setSyncProgress(0);
-    
     try {
-      console.log("📱 [ContactSidebar] Démarrage synchronisation...");
-      
-      // ✅ ÉTAPE 1 : Vérifier si on a déjà la permission
       const hasPermission = await nativeContactsService.checkPermissions();
-      console.log("🔐 [ContactSidebar] Permission actuelle:", hasPermission);
-      
       if (!hasPermission) {
-        // ✅ ÉTAPE 2 : Demander DIRECTEMENT la permission (popup système native)
-        console.log("🔐 [ContactSidebar] Demande de permission système native...");
-        showToast("📱 Demande d'accès aux contacts...", "info");
-        
-        // 🎯 CETTE LIGNE DÉCLENCHE LA POPUP NATIVE (comme Telegram)
+        showToast("📱 Demande d'accès aux contacts...", 'info');
         const granted = await nativeContactsService.requestPermissions();
-        console.log("🔐 [ContactSidebar] Réponse utilisateur:", granted);
-        
         if (!granted) {
-          // L'utilisateur a refusé dans la popup native
-          setLoading(false);
-          setSyncProgress(0);
-          showToast(
-            "❌ Accès refusé. Pour synchroniser, activez l'accès dans Paramètres > Chantilink > Contacts",
-            "warning"
-          );
+          showToast("❌ Accès refusé. Activez dans Paramètres > Chantilink > Contacts", 'warning');
+          setLoading(false); setSyncProgress(0);
           return;
         }
-        
-        showToast("✅ Accès autorisé !", "success");
+        showToast('✅ Accès autorisé !', 'success');
       }
-      
-      // ✅ ÉTAPE 3 : Lancer la synchronisation
       await performSync();
-
     } catch (err) {
-      console.error("❌ Erreur sync:", err);
-      handleSyncError(err);
-      setLoading(false);
-      setSyncProgress(0);
+      if (err.message?.includes('Permission')) {
+        showToast("❌ Permission refusée.", 'error');
+      } else if (err.message?.includes('not available')) {
+        showToast('⚠️ Non disponible sur cet appareil', 'warning');
+      } else {
+        showToast(err.message || 'Erreur de synchronisation', 'error');
+      }
+      setLoading(false); setSyncProgress(0);
     }
   };
 
-  // ============================================
-  // 📡 EFFECTUER LA SYNCHRONISATION
-  // ============================================
   const performSync = async () => {
-    showToast("📱 Lecture des contacts...", "info");
-    
-    const result = await nativeContactsService.syncWithBackend(
-      token,
-      (progress) => {
-        setSyncProgress(progress);
-        console.log(`📊 Progression: ${progress}%`);
-      }
-    );
+    showToast('📱 Lecture des contacts...', 'info');
+    const result = await nativeContactsService.syncWithBackend(token, (p) => setSyncProgress(p));
+    if (!result.success) throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
 
-    if (!result.success) {
-      throw new Error(result.errors?.[0] || 'Échec de la synchronisation');
-    }
-
-    console.log(`✅ [ContactSidebar] Sync réussie:`, result.stats);
-
-    const onChantilink = result.onChantilink || [];
+    const onChantilink    = result.onChantilink    || [];
     const notOnChantilink = result.notOnChantilink || [];
-    
-    const allContacts = [];
-    
-    onChantilink.forEach(contact => {
-      allContacts.push({
-        name: contact.fullName,
-        phone: contact.phone,
-        isOnApp: true,
-        appData: contact
-      });
-    });
-    
-    notOnChantilink.forEach(contact => {
-      allContacts.push({
-        name: contact.name,
-        phone: contact.phone,
-        isOnApp: false
-      });
-    });
 
-    console.log(`✅ Traitement: ${allContacts.length} contacts téléphone, ${onChantilink.length} sur app`);
-
+    // ✅ Onglet "Téléphone" = TOUS les contacts du carnet
+    const allContacts = [
+      ...onChantilink.map(c    => ({ name: c.fullName, phone: c.phone, isOnApp: true,  appData: c })),
+      ...notOnChantilink.map(c => ({ name: c.name,     phone: c.phone, isOnApp: false })),
+    ];
     setAllPhoneContacts(allContacts);
-    setOnAppContacts(onChantilink);
-    
     localStorage.setItem('allPhoneContacts', JSON.stringify(allContacts));
-    localStorage.setItem('onAppContacts', JSON.stringify(onChantilink));
-    
+
+    // ✅ Onglet "Sur l'app" = fusionner nouveaux contacts Chantilink + contacts déjà là (venus de profils)
+    const existingOnApp = readOnAppContacts();
+    const syncedIds     = new Set(onChantilink.map(c => c.id || c._id));
+    const keepExisting  = existingOnApp.filter(c => !syncedIds.has(c.id)); // éviter doublons
+    const normalizedNew = onChantilink.map(c => ({
+      id: c.id || c._id,
+      fullName: c.fullName,
+      username: c.username,
+      profilePhoto: c.profilePhoto,
+      isOnline: c.isOnline,
+      lastSeen: c.lastSeen,
+    }));
+    const merged = [...normalizedNew, ...keepExisting];
+    setOnAppContacts(merged);
+    localStorage.setItem('onAppContacts', JSON.stringify(merged));
+
     if (onChantilink.length > 0) {
-      setActiveTab("onapp");
-      showToast(
-        `✅ ${onChantilink.length} ami${onChantilink.length > 1 ? 's' : ''} trouvé${onChantilink.length > 1 ? 's' : ''} sur Chantilink !`, 
-        "success"
-      );
-      
-      if (onSyncComplete) {
-        onSyncComplete(onChantilink);
-      }
+      setActiveTab('onapp');
+      showToast(`✅ ${onChantilink.length} ami${onChantilink.length > 1 ? 's' : ''} trouvé${onChantilink.length > 1 ? 's' : ''} sur Chantilink !`, 'success');
+      if (onSyncComplete) onSyncComplete(onChantilink);
     } else if (allContacts.length > 0) {
-      showToast(`📱 ${allContacts.length} contact${allContacts.length > 1 ? 's' : ''} synchronisé${allContacts.length > 1 ? 's' : ''}`, "info");
-      setActiveTab("phone");
+      setActiveTab('phone');
+      showToast(`📱 ${allContacts.length} contact${allContacts.length > 1 ? 's' : ''} synchronisé${allContacts.length > 1 ? 's' : ''}`, 'info');
     } else {
-      showToast("Aucun contact trouvé", "info");
+      showToast('Aucun contact trouvé', 'info');
     }
-    
-    setLoading(false);
-    setSyncProgress(0);
+
+    setLoading(false); setSyncProgress(0);
   };
 
-  // ============================================
-  // ❌ GESTION DES ERREURS
-  // ============================================
-  const handleSyncError = (err) => {
-    if (err.message?.includes('Permission')) {
-      showToast("❌ Permission refusée. Activez l'accès aux contacts dans les paramètres de votre téléphone.", "error");
-    } else if (err.message?.includes('not available')) {
-      showToast("⚠️ Fonctionnalité non disponible sur cet appareil", "warning");
-    } else {
-      showToast(err.message || "Erreur de synchronisation", "error");
-    }
+  const handleInvite = (contact) => {
+    const text = `Salut ! Rejoins-moi sur Chantilink 🔒\n\n${window.location.origin}/register`;
+    const phone = contact.phone.replace(/\D/g, '');
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank');
+    showToast(`Invitation envoyée à ${contact.name}`, 'success');
   };
 
-  // ============================================
-  // 📲 INVITER UN CONTACT
-  // ============================================
-  const handleInvite = async (contact) => {
-    try {
-      const inviteText = `Salut ! Rejoins-moi sur Chantilink pour discuter en toute sécurité 🔒\n\n${window.location.origin}/register`;
-      const phoneDigits = contact.phone.replace(/\D/g, '');
-      const whatsappUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(inviteText)}`;
-      
-      window.open(whatsappUrl, '_blank');
-      showToast(`Invitation envoyée à ${contact.name}`, "success");
-    } catch (err) {
-      console.error("❌ Erreur invitation:", err);
-      showToast("Erreur lors de l'invitation", "error");
-    }
-  };
-
+  // ─────────────────────────────────────────────
+  // RENDU
+  // ─────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full bg-[#0b0d10] border-r border-white/5">
-      
+
       {/* HEADER */}
       <div className="p-5 bg-[#12151a]/80 backdrop-blur-xl border-b border-white/5">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-black tracking-tighter flex items-center gap-2">
-            <ShieldCheck className="text-blue-500" size={22} /> 
+            <ShieldCheck className="text-blue-500" size={22} />
             <span className="bg-gradient-to-r from-white to-gray-500 bg-clip-text text-transparent">
               CONTACTS
             </span>
           </h2>
-          
           <div className="flex items-center gap-2">
-            {/* Indicateur de mode */}
             {isNativeSync && (
               <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-green-500/10 text-green-500">
                 <Smartphone size={14} />
-                <span className="text-[9px] font-black uppercase tracking-wider">
-                  NATIF
-                </span>
+                <span className="text-[9px] font-black uppercase tracking-wider">NATIF</span>
               </div>
             )}
-
-            {/* Bouton sync */}
-            <motion.button 
+            <motion.button
               whileTap={{ scale: 0.9 }}
-              onClick={handleSyncProcess} 
+              onClick={handleSyncProcess}
               disabled={loading}
               className="p-2 hover:bg-white/5 rounded-xl transition-colors relative"
-              title="Synchroniser vos contacts"
+              title="Synchroniser les contacts téléphone"
             >
               <RefreshCw size={20} className={`${loading ? 'animate-spin' : ''} text-gray-400`} />
-              {loading && (
-                <span className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
-              )}
+              {loading && <span className="absolute -top-1 -right-1 w-3 h-3 bg-blue-500 rounded-full animate-pulse" />}
             </motion.button>
           </div>
         </div>
@@ -326,149 +242,135 @@ export const ContactSidebar = ({
         {loading && syncProgress > 0 && (
           <div className="mb-3">
             <div className="bg-[#0b0d10] rounded-full h-2 overflow-hidden border border-white/5">
-              <motion.div 
+              <motion.div
                 className="h-full bg-gradient-to-r from-blue-500 to-indigo-600"
                 initial={{ width: 0 }}
                 animate={{ width: `${syncProgress}%` }}
                 transition={{ duration: 0.3 }}
               />
             </div>
-            <p className="text-xs text-gray-500 text-center mt-1">
-              {syncProgress}% 📱 Lecture de la puce téléphonique...
-            </p>
+            <p className="text-xs text-gray-500 text-center mt-1">{syncProgress}% 📱</p>
           </div>
         )}
 
-        {/* BARRE DE RECHERCHE */}
+        {/* RECHERCHE */}
         <div className="relative group">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-blue-500 transition-colors" size={16} />
-          <input 
+          <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={e => setSearchQuery(e.target.value)}
             placeholder="Rechercher..."
-            className="w-full bg-[#0b0d10] border border-white/5 rounded-xl py-2.5 pl-10 pr-4 text-sm outline-none focus:border-blue-500/50 transition-all"
+            className="w-full bg-[#0b0d10] border border-white/5 rounded-xl py-2.5 pl-10 pr-4 text-sm outline-none focus:border-blue-500/50 transition-all text-white"
           />
         </div>
       </div>
 
-      {/* TABS */}
+      {/* TABS — "Sur l'app" en premier */}
       <div className="flex p-2 gap-2 bg-[#12151a]/30">
-        <TabButton 
-          active={activeTab === "phone"} 
-          onClick={() => setActiveTab("phone")} 
-          label="Téléphone" 
-          icon={<Smartphone size={14} />} 
-          badge={allPhoneContacts.length}
-        />
-        <TabButton 
-          active={activeTab === "onapp"} 
-          onClick={() => setActiveTab("onapp")} 
-          label="Sur l'app" 
-          icon={<Users size={14} />} 
+        <TabButton
+          active={activeTab === 'onapp'}
+          onClick={() => handleTabClick('onapp')}
+          label="Sur l'app"
+          icon={<Users size={14} />}
           badge={onAppContacts.length}
+          highlight
+        />
+        <TabButton
+          active={activeTab === 'phone'}
+          onClick={() => handleTabClick('phone')}
+          label="Téléphone"
+          icon={<Smartphone size={14} />}
+          badge={allPhoneContacts.length}
         />
       </div>
 
-      {/* CONTENU */}
+      {/* LISTES */}
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <AnimatePresence mode="wait">
-          
-          {/* TAB 1: CONTACTS TÉLÉPHONE */}
-          {activeTab === "phone" && (
-            <motion.div 
-              key="phone"
-              initial={{ opacity: 0, x: -10 }} 
-              animate={{ opacity: 1, x: 0 }} 
-              exit={{ opacity: 0, x: -10 }}
-              className="p-2"
-            >
-              <p className="text-[10px] font-black text-gray-500 uppercase px-3 mb-3 tracking-[0.2em] flex items-center gap-2">
-                <Smartphone size={12} />
-                Tous vos contacts ({allPhoneContacts.length})
-              </p>
-              
-              {filteredPhoneContacts.length > 0 ? (
-                filteredPhoneContacts.map((contact, idx) => (
-                  <PhoneContactItem 
-                    key={idx}
-                    contact={contact}
-                    onInvite={() => handleInvite(contact)}
-                    onSelect={() => {
-                      if (contact.isOnApp && contact.appData) {
-                        onContactSelect(contact.appData);
-                      }
-                    }}
-                  />
-                ))
-              ) : (
-                <EmptyState 
-                  icon={<Smartphone size={40} />} 
-                  text={isNativeSync ? "Aucun contact synchronisé" : "Synchronisation mobile uniquement"}
-                  subtext={isNativeSync 
-                    ? "Appuyez sur Synchroniser pour importer vos contacts" 
-                    : "Ouvrez l'app sur iOS ou Android"
-                  }
-                />
-              )}
-            </motion.div>
-          )}
 
-          {/* TAB 2: CONTACTS SUR L'APP */}
-          {activeTab === "onapp" && (
-            <motion.div 
+          {/* ✅ "Sur l'app" — contacts venus de profils + contacts synchro Chantilink */}
+          {activeTab === 'onapp' && (
+            <motion.div
               key="onapp"
-              initial={{ opacity: 0, x: 10 }} 
-              animate={{ opacity: 1, x: 0 }} 
-              exit={{ opacity: 0, x: 10 }}
+              initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}
               className="p-2"
             >
               <p className="text-[10px] font-black text-blue-500 uppercase px-3 mb-3 tracking-[0.2em] flex items-center gap-2">
                 <Users size={12} />
-                Disponibles sur Chantilink ({onAppContacts.length})
+                Disponibles sur Chantilink ({filteredOnAppContacts.length})
               </p>
-              
-              {filteredOnAppContacts.length > 0 ? (
-                filteredOnAppContacts.map(user => (
-                  <ContactItem 
-                    key={user.id} 
-                    user={user} 
-                    unread={unreadCounts[user.id]}
-                    onClick={() => onContactSelect(user)} 
+              {filteredOnAppContacts.length > 0
+                ? filteredOnAppContacts.map(u => (
+                    <ContactItem
+                      key={u.id || u._id}
+                      user={u}
+                      unread={unreadCounts[u.id || u._id]}
+                      onClick={() => onContactSelect(u)}
+                    />
+                  ))
+                : <EmptyState
+                    icon={<Users size={40} />}
+                    text="Aucun contact sur l'app"
+                    subtext="Envoyez un message depuis un profil, ou synchronisez vos contacts"
                   />
-                ))
-              ) : (
-                <EmptyState 
-                  icon={<Users size={40} />} 
-                  text="Aucun ami sur l'app"
-                  subtext="Synchronisez vos contacts pour trouver vos amis"
-                />
-              )}
+              }
             </motion.div>
           )}
-          
+
+          {/* ✅ "Téléphone" — uniquement contacts natifs du carnet */}
+          {activeTab === 'phone' && (
+            <motion.div
+              key="phone"
+              initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }}
+              className="p-2"
+            >
+              <p className="text-[10px] font-black text-gray-500 uppercase px-3 mb-3 tracking-[0.2em] flex items-center gap-2">
+                <Smartphone size={12} />
+                Contacts téléphone ({filteredPhoneContacts.length})
+              </p>
+              {filteredPhoneContacts.length > 0
+                ? filteredPhoneContacts.map((c, i) => (
+                    <PhoneContactItem
+                      key={i}
+                      contact={c}
+                      onInvite={() => handleInvite(c)}
+                      onSelect={() => c.isOnApp && c.appData && onContactSelect(c.appData)}
+                    />
+                  ))
+                : <EmptyState
+                    icon={<Smartphone size={40} />}
+                    text={isNativeSync ? 'Aucun contact synchronisé' : 'Synchronisation mobile uniquement'}
+                    subtext={isNativeSync ? 'Appuyez sur ↻ pour importer' : 'Ouvrez l\'app sur iOS ou Android'}
+                  />
+              }
+            </motion.div>
+          )}
+
         </AnimatePresence>
       </div>
     </div>
   );
 };
 
-// ============================================
+// ─────────────────────────────────────────────
 // SOUS-COMPOSANTS
-// ============================================
+// ─────────────────────────────────────────────
 
-const TabButton = ({ active, onClick, label, icon, badge }) => (
-  <button 
+const TabButton = ({ active, onClick, label, icon, badge, highlight }) => (
+  <button
     onClick={onClick}
-    className={`
-      flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all
-      ${active ? 'bg-white/5 text-white shadow-inner' : 'text-gray-500 hover:text-gray-300'}
-    `}
+    className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-bold transition-all
+      ${active
+        ? highlight
+          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/20'
+          : 'bg-white/5 text-white'
+        : 'text-gray-500 hover:text-gray-300'
+      }`}
   >
-    {icon}
-    {label}
+    {icon}{label}
     {badge > 0 && (
-      <span className="bg-blue-600 text-white text-[9px] px-1.5 py-0.5 rounded-full">
+      <span className={`text-white text-[9px] px-1.5 py-0.5 rounded-full ${highlight ? 'bg-blue-600' : 'bg-gray-600'}`}>
         {badge}
       </span>
     )}
@@ -476,100 +378,52 @@ const TabButton = ({ active, onClick, label, icon, badge }) => (
 );
 
 const PhoneContactItem = ({ contact, onInvite, onSelect }) => (
-  <div className="flex items-center gap-3 p-4 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl mb-2 transition-all group">
+  <div className="flex items-center gap-3 p-4 bg-white/[0.02] hover:bg-white/[0.04] rounded-xl mb-2 transition-all">
     <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg ${
-      contact.isOnApp 
-        ? 'bg-blue-600 border border-blue-500/30' 
-        : 'bg-gray-700/50 border border-gray-600/30'
+      contact.isOnApp ? 'bg-blue-600 border border-blue-500/30' : 'bg-gray-700/50 border border-gray-600/30'
     }`}>
-      {contact.name[0]?.toUpperCase() || '?'}
+      {contact.name?.[0]?.toUpperCase() || '?'}
     </div>
-    
     <div className="flex-1 min-w-0">
       <p className="text-sm font-bold text-gray-100 truncate">{contact.name}</p>
-      <div className="flex items-center gap-2 mt-0.5">
-        {contact.isOnApp ? (
-          <span className="text-[9px] text-blue-500 font-black uppercase tracking-wider flex items-center gap-1">
-            <UserCheck size={10} /> Sur Chantilink
-          </span>
-        ) : (
-          <span className="text-[9px] text-gray-600 font-bold uppercase tracking-wider">
-            Pas encore sur l'app
-          </span>
-        )}
-      </div>
+      {contact.isOnApp
+        ? <span className="text-[9px] text-blue-500 font-black uppercase tracking-wider flex items-center gap-1"><UserCheck size={10} /> Sur Chantilink</span>
+        : <span className="text-[9px] text-gray-600 font-bold uppercase">Pas encore sur l'app</span>
+      }
     </div>
-
-    {contact.isOnApp ? (
-      <button
-        onClick={onSelect}
-        className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-95"
-        title="Envoyer un message"
-      >
-        <MessageSquare size={16} />
-      </button>
-    ) : (
-      <button
-        onClick={onInvite}
-        className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl transition-all active:scale-95"
-        title="Inviter sur Chantilink"
-      >
-        <Send size={16} />
-      </button>
-    )}
+    {contact.isOnApp
+      ? <button onClick={onSelect} className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-95"><MessageSquare size={16} /></button>
+      : <button onClick={onInvite} className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl transition-all active:scale-95"><Send size={16} /></button>
+    }
   </div>
 );
 
-const ContactItem = ({ user, unread, onClick }) => {
-  const handleClick = () => {
-    const contact = {
-      id: user.id || user._id,
-      fullName: user.fullName,
-      username: user.username,
-      profilePhoto: user.profilePhoto,
-      isOnline: user.isOnline,
-      lastSeen: user.lastSeen,
-      isOnChantilink: true
-    };
-    onClick(contact);
-  };
-
-  return (
-    <div 
-      onClick={handleClick}
-      className="flex items-center gap-3 p-4 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all group"
-    >
-      <div className="relative">
-        <div className="w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg shadow-xl border border-white/5 bg-gradient-to-br from-blue-600 to-indigo-700">
-          {user.fullName?.[0]?.toUpperCase() || '?'}
-        </div>
-        {user.isOnline && (
-          <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-[3px] border-[#0b0d10]" />
-        )}
+const ContactItem = ({ user, unread, onClick }) => (
+  <div
+    onClick={() => onClick({ id: user.id || user._id, fullName: user.fullName, username: user.username, profilePhoto: user.profilePhoto, isOnline: user.isOnline, lastSeen: user.lastSeen })}
+    className="flex items-center gap-3 p-4 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all group"
+  >
+    <div className="relative">
+      <div className="w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg border border-white/5 bg-gradient-to-br from-blue-600 to-indigo-700 overflow-hidden">
+        {user.profilePhoto
+          ? <img src={user.profilePhoto} alt="" className="w-full h-full object-cover" />
+          : (user.fullName?.[0]?.toUpperCase() || '?')
+        }
       </div>
-      
-      <div className="flex-1 min-w-0">
-        <div className="flex justify-between items-baseline">
-          <p className="text-sm font-bold text-gray-100 truncate group-hover:text-white transition-colors">
-            {user.fullName}
-          </p>
-          {unread > 0 && (
-            <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md">
-              {unread}
-            </span>
-          )}
-        </div>
-        <p className="text-[11px] text-gray-500 truncate flex items-center gap-1">
-          {user.lastSeen 
-            ? `Vu ${new Date(user.lastSeen).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` 
-            : 'Disponible'
-          }
-        </p>
-      </div>
-      <UserCheck size={16} className="text-blue-500/50" />
+      {user.isOnline && <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-[3px] border-[#0b0d10]" />}
     </div>
-  );
-};
+    <div className="flex-1 min-w-0">
+      <div className="flex justify-between items-baseline">
+        <p className="text-sm font-bold text-gray-100 truncate group-hover:text-white">{user.fullName}</p>
+        {unread > 0 && <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md">{unread}</span>}
+      </div>
+      <p className="text-[11px] text-gray-500 truncate">
+        {user.username ? `@${user.username}` : 'Disponible'}
+      </p>
+    </div>
+    <UserCheck size={16} className="text-blue-500/50" />
+  </div>
+);
 
 const EmptyState = ({ icon, text, subtext }) => (
   <div className="flex flex-col items-center justify-center py-12 opacity-20 grayscale">

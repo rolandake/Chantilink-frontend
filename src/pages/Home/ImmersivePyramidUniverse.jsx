@@ -1,6 +1,14 @@
 // 📁 src/pages/Home/ImmersivePyramidUniverse.jsx
+// ✅ MODAL PORTAL — rendu via createPortal dans document.body
+// ✅ Backdrop séparé avec AnimatePresence (comme PostCommentsModal)
+// ✅ Body scroll lock pendant l'ouverture
+// ✅ Fermeture via backdrop click ou bouton X
+// ✅ isOpen prop pour contrôler l'affichage depuis le parent
+// ✅ Toute la logique interne inchangée (parallaxe, constellation, stories)
+
 import React, { useEffect, useState, useMemo } from "react";
-import { motion, useMotionValue, useTransform, useSpring } from "framer-motion";
+import { createPortal } from "react-dom";
+import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from "framer-motion";
 import { X, Plus, Sparkles, Zap } from "lucide-react";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
@@ -12,26 +20,26 @@ const MEDIA_URL = (path) => {
   return `${SERVER_URL}/${path.replace(/^\/+/, "")}`;
 };
 
-const ImmersivePyramidUniverse = ({ 
-  stories = [], 
+// ─────────────────────────────────────────────
+// CONTENU INTERNE DU MODAL
+// (extrait dans un sous-composant pour garder le code propre)
+// ─────────────────────────────────────────────
+const PyramidContent = ({
+  stories = [],
   myStories = [],
   user,
-  onClose, 
-  onOpenStory, 
-  onOpenCreator, 
-  isDarkMode 
+  onClose,
+  onOpenStory,
+  onOpenCreator,
+  isDarkMode,
 }) => {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
-  // --- LOGIQUE PARALLAXE ---
+  // --- PARALLAXE ---
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
-
-  // Amortissement pour un mouvement fluide
   const springX = useSpring(mouseX, { stiffness: 60, damping: 25 });
   const springY = useSpring(mouseY, { stiffness: 60, damping: 25 });
-
-  // Translation légère de l'univers (effet profondeur)
   const rotateX = useTransform(springY, [-400, 400], [8, -8]);
   const rotateY = useTransform(springX, [-400, 400], [-8, 8]);
 
@@ -49,56 +57,43 @@ const ImmersivePyramidUniverse = ({
     mouseY.set(clientY - centerY);
   };
 
-  // Coordonnées de la constellation (Pyramide souple)
+  // Coordonnées de la constellation (Pyramide)
   const levels = useMemo(() => [
-    [{ x: 50, y: 18 }], // Sommet (Créer)
-    [{ x: isMobile ? 32 : 38, y: 32 }, { x: isMobile ? 68 : 62, y: 32 }], // Niveau 2
-    [{ x: isMobile ? 22 : 28, y: 46 }, { x: 50, y: 46 }, { x: isMobile ? 78 : 72, y: 46 }], // Niveau 3
-    [{ x: 15, y: 60 }, { x: 38, y: 60 }, { x: 62, y: 60 }, { x: 85, y: 60 }], // Niveau 4
-    [{ x: 10, y: 74 }, { x: 30, y: 74 }, { x: 50, y: 74 }, { x: 70, y: 74 }, { x: 90, y: 74 }], // Base
+    [{ x: 50, y: 18 }],
+    [{ x: isMobile ? 32 : 38, y: 32 }, { x: isMobile ? 68 : 62, y: 32 }],
+    [{ x: isMobile ? 22 : 28, y: 46 }, { x: 50, y: 46 }, { x: isMobile ? 78 : 72, y: 46 }],
+    [{ x: 15, y: 60 }, { x: 38, y: 60 }, { x: 62, y: 60 }, { x: 85, y: 60 }],
+    [{ x: 10, y: 74 }, { x: 30, y: 74 }, { x: 50, y: 74 }, { x: 70, y: 74 }, { x: 90, y: 74 }],
   ], [isMobile]);
 
   // Regrouper les stories par utilisateur
   const groupedStories = useMemo(() => {
     const grouped = {};
-    
     stories.forEach(story => {
       const ownerId = story.owner?._id || story.owner;
       if (!grouped[ownerId]) {
-        grouped[ownerId] = {
-          owner: story.owner,
-          stories: []
-        };
+        grouped[ownerId] = { owner: story.owner, stories: [] };
       }
       grouped[ownerId].stories.push(story);
     });
 
     return Object.values(grouped).map(group => {
-      // Vérifier si l'utilisateur a vu toutes les slides
       const allSlides = group.stories.flatMap(s => s.slides || []);
-      const unviewed = allSlides.some(slide => 
+      const unviewed = allSlides.some(slide =>
         !(slide.views || []).some(v => {
           const viewerId = typeof v === 'string' ? v : v._id;
           return viewerId === user?._id;
         })
       );
-
-      // Trier par date et prendre la plus récente
-      const sortedStories = [...group.stories].sort((a, b) => 
+      const sortedStories = [...group.stories].sort((a, b) =>
         new Date(b.createdAt) - new Date(a.createdAt)
       );
-      
       const latestStory = sortedStories[0];
-      const isFresh = latestStory ? (Date.now() - new Date(latestStory.createdAt).getTime()) < 3600000 : false;
-
-      return {
-        owner: group.owner,
-        stories: sortedStories,
-        unviewed,
-        isFresh
-      };
+      const isFresh = latestStory
+        ? (Date.now() - new Date(latestStory.createdAt).getTime()) < 3600000
+        : false;
+      return { owner: group.owner, stories: sortedStories, unviewed, isFresh };
     }).sort((a, b) => {
-      // Prioriser: non vues d'abord, puis par date
       if (a.unviewed !== b.unviewed) return b.unviewed - a.unviewed;
       return new Date(b.stories[0].createdAt) - new Date(a.stories[0].createdAt);
     });
@@ -108,18 +103,34 @@ const ImmersivePyramidUniverse = ({
 
   return (
     <motion.div
+      key="pyramid-content"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
+      transition={{ duration: 0.25 }}
       onMouseMove={handleInteraction}
       onTouchMove={handleInteraction}
-      className="fixed inset-0 z-[99999] bg-[#02040a] overflow-hidden select-none touch-none"
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: "100vw",
+        height: "100vh",
+        zIndex: 401,
+        backgroundColor: "#02040a",
+        overflow: "hidden",
+      }}
+      className="select-none touch-none"
+      // ⚠️ On arrête la propagation pour ne pas déclencher le backdrop
+      onClick={e => e.stopPropagation()}
     >
       {/* Fond : Nébuleuse & Poussière d'étoiles */}
       <div className="absolute inset-0 pointer-events-none">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,#1e293b_0%,transparent_75%)] opacity-40" />
         {[...Array(isMobile ? 30 : 70)].map((_, i) => (
-          <motion.div 
+          <motion.div
             key={i}
             className="absolute bg-white rounded-full"
             style={{
@@ -127,7 +138,7 @@ const ImmersivePyramidUniverse = ({
               height: Math.random() * 2 + 1,
               top: Math.random() * 100 + '%',
               left: Math.random() * 100 + '%',
-              opacity: Math.random() * 0.4 + 0.1
+              opacity: Math.random() * 0.4 + 0.1,
             }}
             animate={{ opacity: [0.1, 0.4, 0.1] }}
             transition={{ duration: 2 + Math.random() * 3, repeat: Infinity }}
@@ -143,8 +154,8 @@ const ImmersivePyramidUniverse = ({
           </h1>
           <p className="text-orange-400/50 text-[10px] font-bold tracking-[0.3em] uppercase">Cosmos Live</p>
         </motion.div>
-        
-        <button 
+
+        <button
           onClick={onClose}
           className="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white backdrop-blur-xl hover:bg-white/10 active:scale-90 transition-all"
         >
@@ -153,12 +164,12 @@ const ImmersivePyramidUniverse = ({
       </div>
 
       {/* Constellation de Stories */}
-      <motion.div 
+      <motion.div
         style={{ rotateX, rotateY, perspective: 1000 }}
         className="relative w-full h-full flex items-center justify-center pointer-events-none"
       >
         <div className="relative w-full max-w-5xl h-[85vh] pointer-events-none">
-          
+
           {/* Étoile de Création (Le Sommet) */}
           <motion.div
             className="absolute z-[60] pointer-events-auto"
@@ -167,26 +178,28 @@ const ImmersivePyramidUniverse = ({
             whileTap={{ scale: 0.95 }}
             onClick={(e) => {
               e.stopPropagation();
-              onOpenCreator();
+              onOpenCreator?.();
             }}
           >
             <div className="relative cursor-pointer group">
-              <motion.div 
+              <motion.div
                 animate={{ scale: [1, 1.3, 1], opacity: [0.3, 0.6, 0.3] }}
                 transition={{ duration: 4, repeat: Infinity }}
-                className="absolute inset-[-20px] bg-orange-600/20 blur-2xl rounded-full" 
+                className="absolute inset-[-20px] bg-orange-600/20 blur-2xl rounded-full"
               />
               <div className="w-20 h-20 md:w-28 md:h-28 rounded-full bg-gradient-to-tr from-yellow-400 via-orange-500 to-red-600 p-[3px] shadow-[0_0_30px_rgba(249,115,22,0.3)]">
                 <div className="w-full h-full rounded-full bg-black flex items-center justify-center border-2 border-black/50">
                   <Plus className="text-white" size={isMobile ? 32 : 44} strokeWidth={3} />
                 </div>
               </div>
-              <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-orange-400 font-black text-[10px] tracking-widest bg-orange-950/20 px-3 py-1 rounded-full border border-orange-500/10">CRÉER</span>
+              <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-orange-400 font-black text-[10px] tracking-widest bg-orange-950/20 px-3 py-1 rounded-full border border-orange-500/10">
+                CRÉER
+              </span>
             </div>
           </motion.div>
 
           {/* Rendu des Stories (Étoiles) */}
-          {levels.slice(1).map((level, lIdx) => 
+          {levels.slice(1).map((level, lIdx) =>
             level.map((pos, pIdx) => {
               const storyData = groupedStories[storyIdx++];
               if (!storyData) return null;
@@ -200,48 +213,45 @@ const ImmersivePyramidUniverse = ({
                   className="absolute cursor-pointer pointer-events-auto"
                   style={{ left: `${pos.x}%`, top: `${pos.y}%`, transform: 'translate(-50%, -50%)' }}
                   initial={{ scale: 0, opacity: 0 }}
-                  animate={{ 
-                    scale: 1, 
+                  animate={{
+                    scale: 1,
                     opacity: 1,
-                    y: [0, -12, 0]
+                    y: [0, -12, 0],
                   }}
-                  transition={{ 
+                  transition={{
                     scale: { delay: storyIdx * 0.06 },
-                    y: { duration: 4 + Math.random() * 3, repeat: Infinity, ease: "easeInOut", delay: driftDelay }
+                    y: { duration: 4 + Math.random() * 3, repeat: Infinity, ease: "easeInOut", delay: driftDelay },
                   }}
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.95 }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    console.log('Story clicked:', storyData);
                     onOpenStory(storyData.stories, storyData.owner);
                   }}
                 >
                   <div className="relative group">
                     {/* Halo lumineux si non vu */}
-                    <motion.div 
+                    <motion.div
                       className={`absolute inset-[-8px] rounded-full blur-lg ${storyData.unviewed ? 'bg-orange-500/40' : 'bg-gray-400/20'}`}
                       animate={storyData.unviewed ? { opacity: [0.3, 0.6, 0.3] } : {}}
                       transition={{ duration: 3, repeat: Infinity }}
                     />
 
                     {/* Avatar Bubble */}
-                    <div 
+                    <div
                       style={{ width: size, height: size }}
                       className={`relative rounded-full p-[3px] transition-all ${
-                        storyData.unviewed 
-                          ? 'bg-gradient-to-tr from-purple-600 via-pink-500 to-orange-500' 
+                        storyData.unviewed
+                          ? 'bg-gradient-to-tr from-purple-600 via-pink-500 to-orange-500'
                           : 'bg-gray-600/30'
                       }`}
                     >
                       <div className="w-full h-full rounded-full overflow-hidden bg-gray-950 border-[3px] border-black relative">
-                        <img 
+                        <img
                           src={MEDIA_URL(storyData.owner?.profilePhoto) || '/default-avatar.png'}
                           className={`w-full h-full object-cover transition-all duration-700 ${!storyData.unviewed && 'grayscale opacity-50'}`}
                           alt={storyData.owner?.username || 'user'}
-                          onError={(e) => {
-                            e.target.src = '/default-avatar.png';
-                          }}
+                          onError={(e) => { e.target.src = '/default-avatar.png'; }}
                         />
                       </div>
 
@@ -252,7 +262,7 @@ const ImmersivePyramidUniverse = ({
                       )}
                     </div>
 
-                    {/* Username (Mobile-friendly) */}
+                    {/* Username */}
                     <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap">
                       <span className={`text-[9px] font-bold tracking-tight uppercase ${storyData.unviewed ? 'text-orange-300' : 'text-gray-500/70'}`}>
                         {storyData.owner?.username || storyData.owner?.fullName?.split(' ')[0] || 'Utilisateur'}
@@ -277,6 +287,61 @@ const ImmersivePyramidUniverse = ({
       </div>
     </motion.div>
   );
+};
+
+// ─────────────────────────────────────────────
+// MODAL PRINCIPAL — portal + backdrop + body lock
+// ─────────────────────────────────────────────
+const ImmersivePyramidUniverse = ({
+  isOpen,       // ✅ prop contrôlée depuis le parent
+  onClose,
+  stories = [],
+  myStories = [],
+  user,
+  onOpenStory,
+  onOpenCreator,
+  isDarkMode,
+}) => {
+  // ── Body scroll lock ──
+  useEffect(() => {
+    if (!isOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [isOpen]);
+
+  const content = (
+    <AnimatePresence>
+      {isOpen && (
+        <>
+          {/* Backdrop — clic pour fermer */}
+          <motion.div
+            key="pyramid-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-[400] bg-black/90"
+            onClick={onClose}
+          />
+
+          {/* Contenu */}
+          <PyramidContent
+            key="pyramid-main"
+            stories={stories}
+            myStories={myStories}
+            user={user}
+            onClose={onClose}
+            onOpenStory={onOpenStory}
+            onOpenCreator={onOpenCreator}
+            isDarkMode={isDarkMode}
+          />
+        </>
+      )}
+    </AnimatePresence>
+  );
+
+  return createPortal(content, document.body);
 };
 
 export default ImmersivePyramidUniverse;

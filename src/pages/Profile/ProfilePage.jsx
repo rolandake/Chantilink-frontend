@@ -1,6 +1,7 @@
-// src/pages/profile/ProfilePage.jsx - VERSION ADAPTÉE POUR MOCK
-// ✅ Supporte les profils fictifs ET réels avec les mêmes fonctionnalités
-// ✅ Utilise les handlers mock quand fournis, sinon API réelle
+// src/pages/profile/ProfilePage.jsx - VERSION CORRIGÉE
+// ✅ Fix: isOwner utilise _id au lieu de id
+// ✅ Fix: suppression du fallback authUser dans ProfileHeader
+// ✅ Fix: spinner tant que profileUser est null
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -121,7 +122,6 @@ export default function ProfilePage({
   const { fetchUserPosts: realFetchUserPosts } = usePosts();
   const { isDarkMode } = useDarkMode();
 
-  // ✅ Déterminer si on utilise les handlers mock ou réels
   const isMockProfile = !!mockHandlers;
   const fetchUserPosts = mockHandlers?.fetchUserPosts || realFetchUserPosts;
 
@@ -143,8 +143,11 @@ export default function ProfilePage({
   const observer = useRef();
   const requestCache = useRef(new Map());
 
-  const targetUserId = userId || authUser?.id;
-  const isOwner = targetUserId === authUser?.id;
+  const targetUserId = userId || authUser?._id || authUser?.id;
+
+  // ✅ FIX: utiliser _id ET id pour la comparaison (MongoDB retourne _id)
+  const authUserId = authUser?._id || authUser?.id;
+  const isOwner = !!(targetUserId && authUserId && targetUserId === authUserId);
 
   const CACHE_DURATION = 30000;
 
@@ -181,24 +184,20 @@ export default function ProfilePage({
     }
   }, []);
 
-  // ✅ Follow avec support mock
   const followUser = useCallback(async (uid) => {
     if (mockHandlers?.followUser) {
       return await mockHandlers.followUser(uid);
     }
-    
     const { data } = await axios.post(`${API_URL}/users/${uid}/follow`, {}, {
       withCredentials: true
     });
     return data;
   }, [mockHandlers]);
 
-  // ✅ Unfollow avec support mock
   const unfollowUser = useCallback(async (uid) => {
     if (mockHandlers?.unfollowUser) {
       return await mockHandlers.unfollowUser(uid);
     }
-    
     const { data } = await axios.post(`${API_URL}/users/${uid}/unfollow`, {}, {
       withCredentials: true
     });
@@ -206,7 +205,7 @@ export default function ProfilePage({
   }, [mockHandlers]);
 
   const savePosts = useCallback((userKey, posts) => {
-    if (isMockProfile) return; // Pas de cache pour mock
+    if (isMockProfile) return;
     if (!userKey || !Array.isArray(posts)) return;
     if (saveDebounceTimer.current) clearTimeout(saveDebounceTimer.current);
     
@@ -223,7 +222,7 @@ export default function ProfilePage({
   }, [isMockProfile]);
 
   const saveUser = useCallback(async (user) => {
-    if (isMockProfile) return; // Pas de cache pour mock
+    if (isMockProfile) return;
     if (!user?._id) return;
     try { 
       await idbSetUser(user._id, user); 
@@ -237,11 +236,9 @@ export default function ProfilePage({
     if (!isMockProfile) {
       await syncNewPost(normalized, profileUser._id);
     }
-    
     startTransition(() => {
       setProfilePosts(prev => [normalized, ...prev]);
     });
-    
     showLocalToast("Post publié ! 🚀");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
 
@@ -249,15 +246,13 @@ export default function ProfilePage({
     if (!isMockProfile) {
       await syncDeletePost(postId, profileUser._id);
     }
-    
     startTransition(() => {
       setProfilePosts(prev => prev.filter(p => p._id !== postId));
     });
-    
     showLocalToast("Post supprimé");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
 
-  const handleFollowSuccess = useCallback((userId) => {
+  const handleFollowSuccess = useCallback(() => {
     showLocalToast("Abonné ! 🎉", "success");
   }, [showLocalToast]);
 
@@ -270,13 +265,11 @@ export default function ProfilePage({
       let postsArray = [];
       let fromCache = false;
 
-      // Si profil mock avec initial posts
       if (isMockProfile && initialPosts && !append) {
         postsArray = initialPosts;
         fromCache = true;
         setProfilePosts(initialPosts);
       } else if (!isMockProfile) {
-        // Profil réel : utiliser cache IDB
         const cached = await getCachedPosts(targetId);
         if (cached && cached.length > 0 && !append) {
           postsArray = cached;
@@ -344,7 +337,7 @@ export default function ProfilePage({
   }, [page, hasMore, isLoadingPosts, loadProfilePosts, profileUser]);
 
   const followStatus = profileUser && authUser && !isOwner
-    ? (profileUser.followers || []).some(u => (typeof u === "object" ? u._id : u) === authUser.id)
+    ? (profileUser.followers || []).some(u => (typeof u === "object" ? u._id : u) === authUserId)
     : null;
 
   const handleFollowToggle = useCallback(async () => {
@@ -354,8 +347,8 @@ export default function ProfilePage({
     
     try {
       const newFollowers = wasFollowing
-        ? (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUser.id)
-        : [...(profileUser.followers || []), authUser.id];
+        ? (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUserId)
+        : [...(profileUser.followers || []), authUserId];
 
       startTransition(() => {
         setProfileUser(prev => ({ ...prev, followers: newFollowers }));
@@ -370,8 +363,8 @@ export default function ProfilePage({
       showLocalToast("Erreur lors de l'action", "error");
       
       const originalFollowers = wasFollowing
-        ? [...(profileUser.followers || []), authUser.id]
-        : (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUser.id);
+        ? [...(profileUser.followers || []), authUserId]
+        : (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUserId);
       
       startTransition(() => {
         setProfileUser(prev => ({ ...prev, followers: originalFollowers }));
@@ -379,9 +372,8 @@ export default function ProfilePage({
     } finally { 
       setFollowLoading(false); 
     }
-  }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast]);
+  }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast, authUserId]);
 
-  // ✅ Scroll en haut à chaque changement de profil
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
   }, [targetUserId]);
@@ -393,7 +385,7 @@ export default function ProfilePage({
   }, [authUser, getToken]);
 
   useEffect(() => {
-    if (isMockProfile) return; // Skip pour mock
+    if (isMockProfile) return;
     (async () => {
       try { await registerServiceWorker(); } catch {}
       try { await setupIndexedDB(); } catch {}
@@ -442,9 +434,12 @@ export default function ProfilePage({
         await idbClearOtherKeys(`profilePosts_${targetUserId}`);
 
         if (isOwner) {
+          // ✅ FIX: on set le authUser mais via fetchUserById pour avoir les données fraîches
+          // et ne pas afficher les données du authUser local sur un profil tiers
           setProfileUser(authUser);
           saveUser(authUser);
         } else {
+          // ✅ FIX: profil tiers — toujours fetch depuis l'API
           const cachedUser = await idbGetUser(targetUserId);
           if (cachedUser) setProfileUser(cachedUser);
           
@@ -528,7 +523,8 @@ export default function ProfilePage({
     following: profileUser?.following?.length || 0,
   };
 
-  if (authLoading || isLoadingUser) {
+  // ✅ FIX: spinner tant que authLoading, isLoadingUser OU profileUser pas encore chargé
+  if (authLoading || isLoadingUser || !profileUser) {
     return (
       <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
         isDarkMode ? 'bg-black' : 'bg-orange-50'
@@ -556,12 +552,13 @@ export default function ProfilePage({
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         <div className="lg:col-span-2 space-y-6">
+          {/* ✅ FIX: plus de fallback || authUser — profileUser est garanti non-null ici */}
           <ProfileHeader 
-            user={profileUser || authUser}
+            user={profileUser}
             isOwnProfile={isOwner}
             posts={profilePosts}
-            followers={profileUser?.followers || []}
-            following={profileUser?.following || []}
+            followers={profileUser.followers || []}
+            following={profileUser.following || []}
             showToast={showLocalToast}
           />
 

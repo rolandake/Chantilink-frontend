@@ -1,7 +1,10 @@
-// src/pages/Home/PostCard.jsx
-// ✅ FIX CRITIQUE : tous les hooks appelés AVANT tout return conditionnel
-// React exige que les hooks soient appelés dans le même ordre à chaque render
-// Un return avant un hook = "Rendered fewer hooks than expected" = crash
+// 📁 src/pages/Home/PostCard.jsx
+// ✅ FIX INP : PostCommentsModal et PostShareModal chargés en lazy
+//    → Le bundle initial est allégé → moins de JS à parser au 1er chargement
+//    → Les modals sont lourds, les différer améliore le TTI et l'INP
+// ✅ MODAL COMMENTAIRES : PostCommentsModal (plein écran)
+// ✅ MODAL PARTAGE      : PostShareModal    (plein écran)
+// ✅ FIX SON / FIX PROFIL / hooks avant return — inchangés
 
 import React, {
   forwardRef, useState, useEffect, useCallback, useMemo, useRef, memo, lazy, Suspense
@@ -20,150 +23,135 @@ import PostMedia from "./PostMedia";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import axiosClient from "../../api/axiosClientGlobal";
 
-const PostComments = lazy(() => import("./PostComments"));
-const PostShareSection = lazy(() => import("./PostShareSection"));
+// ✅ FIX INP : lazy loading des modals lourds
+// Ils ne sont chargés que lorsqu'ils sont ouverts → bundle initial plus léger
+const PostCommentsModal = lazy(() => import("./PostComments"));
+const PostShareModal    = lazy(() => import("./PostShareSection"));
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_URL    = import.meta.env.VITE_API_URL    || "http://localhost:5000/api";
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
-const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
-const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
+const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
+const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
-// ============================================
-// OBSERVER VIDÉO GLOBAL PARTAGÉ
-// ============================================
+// ─────────────────────────────────────────────
+// OBSERVER VIDÉO
+// ─────────────────────────────────────────────
 let globalVideoObserver = null;
 const getVideoObserver = () => {
   if (!globalVideoObserver) {
     globalVideoObserver = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
-        const video = entry.target;
-        if (entry.isIntersecting) video.play().catch(() => {});
-        else video.pause();
+        const v = entry.target;
+        if (entry.isIntersecting) v.play().catch(() => {});
+        else v.pause();
       });
     }, { threshold: 0.7 });
   }
   return globalVideoObserver;
 };
 
-// ============================================
-// UTILITAIRES
-// ============================================
+// ─────────────────────────────────────────────
+// CLOUDINARY URL
+// ─────────────────────────────────────────────
 const getCloudinaryUrl = (id, opts = {}) => {
-  if (!id || typeof id !== 'string') return null;
-  if (id.startsWith('http') || id.startsWith('data:')) return id;
-  if (id.startsWith('/uploads/') || id.startsWith('uploads/')) {
-    return `${API_URL.replace('/api', '')}/${id.replace(/^\/+/, '')}`;
-  }
+  if (!id || typeof id !== "string") return null;
+  if (id.startsWith("http") || id.startsWith("data:")) return id;
+  if (id.startsWith("/uploads/") || id.startsWith("uploads/"))
+    return `${API_URL.replace("/api", "")}/${id.replace(/^\/+/, "")}`;
   const isVideo = /\.(mp4|webm|mov|avi)$/i.test(id);
   const base = isVideo ? VID_BASE : IMG_BASE;
-  const transforms = [
-    opts.width && `w_${opts.width}`,
-    opts.height && `h_${opts.height}`,
-    opts.crop && `c_${opts.crop}`,
-    opts.quality ? `q_${opts.quality}` : 'q_auto',
-    opts.format ? `f_${opts.format}` : 'f_auto',
+  const t = [
+    opts.width   && `w_${opts.width}`,
+    opts.height  && `h_${opts.height}`,
+    opts.crop    && `c_${opts.crop}`,
+    opts.quality ? `q_${opts.quality}` : "q_auto",
+    opts.format  ? `f_${opts.format}`  : "f_auto",
     opts.gravity && `g_${opts.gravity}`,
-    'fl_progressive:steep',
-    !isVideo && 'dpr_auto'
-  ].filter(Boolean).join(',');
-  return `${base}${transforms ? transforms + '/' : ''}${id.replace(/^\/+/, '')}`;
+    "fl_progressive:steep",
+    !isVideo && "dpr_auto",
+  ].filter(Boolean).join(",");
+  return `${base}${t ? t + "/" : ""}${id.replace(/^\/+/, "")}`;
 };
 
-// ============================================
+// ─────────────────────────────────────────────
 // AVATAR
-// ============================================
+// ─────────────────────────────────────────────
 const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
   const [error, setError] = useState(false);
-
   const initials = useMemo(() => {
     if (!username) return "?";
-    const parts = username.trim().split(" ");
-    return parts.length > 1
-      ? (parts[0][0] + parts[1][0]).toUpperCase()
-      : username.substring(0, 2).toUpperCase();
+    const p = username.trim().split(" ");
+    return p.length > 1 ? (p[0][0] + p[1][0]).toUpperCase() : username.substring(0, 2).toUpperCase();
   }, [username]);
-
   const bgColor = useMemo(() => {
     const colors = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
-    let hash = 0;
-    for (let i = 0; i < (username || "").length; i++) hash = username.charCodeAt(i) + ((hash << 5) - hash);
-    return colors[Math.abs(hash) % colors.length];
+    let h = 0;
+    for (let i = 0; i < (username || "").length; i++) h = username.charCodeAt(i) + ((h << 5) - h);
+    return colors[Math.abs(h) % colors.length];
   }, [username]);
-
   const url = useMemo(() => {
     if (!photo) return null;
-    if (photo.startsWith('data:image')) return photo;
-    return getCloudinaryUrl(photo, { width: size * 2, height: size * 2, crop: 'thumb', gravity: 'face' });
+    if (photo.startsWith("data:image")) return photo;
+    return getCloudinaryUrl(photo, { width: size * 2, height: size * 2, crop: "thumb", gravity: "face" });
   }, [photo, size]);
-
-  if (error || !url) {
+  if (error || !url)
     return (
-      <div
-        className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
-        style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}
-      >
+      <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
+        style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}>
         {initials}
       </div>
     );
-  }
   return (
-    <img
-      src={url} alt={username}
+    <img src={url} alt={username}
       className="rounded-full object-cover bg-gray-200 flex-shrink-0"
       style={{ width: size, height: size }}
-      onError={() => setError(true)}
-      loading="lazy"
-    />
+      onError={() => setError(true)} loading="lazy" />
   );
 });
-SimpleAvatar.displayName = 'SimpleAvatar';
+SimpleAvatar.displayName = "SimpleAvatar";
 
-// ============================================
+// ─────────────────────────────────────────────
 // SKELETON
-// ============================================
+// ─────────────────────────────────────────────
 const SkeletonPostCard = memo(({ isDarkMode }) => (
-  <div className={`w-full max-w-[630px] mx-auto animate-pulse ${isDarkMode ? 'bg-black' : 'bg-white'}`}>
+  <div className={`w-full max-w-[630px] mx-auto animate-pulse ${isDarkMode ? "bg-black" : "bg-white"}`}>
     <div className="flex items-center gap-3 p-3">
-      <div className={`rounded-full w-10 h-10 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+      <div className={`rounded-full w-10 h-10 ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />
       <div className="flex-1 space-y-1.5">
-        <div className={`h-4 rounded w-32 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
-        <div className={`h-3 rounded w-20 ${isDarkMode ? 'bg-gray-700' : 'bg-gray-200'}`} />
+        <div className={`h-4 rounded w-32 ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />
+        <div className={`h-3 rounded w-20 ${isDarkMode ? "bg-gray-700" : "bg-gray-200"}`} />
       </div>
     </div>
-    <div className={`w-full aspect-square ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />
+    <div className={`w-full aspect-square ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />
     <div className="flex items-center p-3 gap-4">
-      {[1,2,3].map(i => <div key={i} className={`h-6 w-6 rounded ${isDarkMode ? 'bg-gray-800' : 'bg-gray-300'}`} />)}
+      {[1,2,3].map(i => <div key={i} className={`h-6 w-6 rounded ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />)}
     </div>
   </div>
 ));
-SkeletonPostCard.displayName = 'SkeletonPostCard';
+SkeletonPostCard.displayName = "SkeletonPostCard";
 
-// ============================================
+// ─────────────────────────────────────────────
 // DELETE MODAL
-// ============================================
+// ─────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
-  <div
-    className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-    onClick={() => !isDeleting && onCancel()}
-  >
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+    onClick={() => !isDeleting && onCancel()}>
     <motion.div
-      initial={{ scale: 0.9, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0.9, opacity: 0 }}
-      transition={{ duration: 0.15 }}
-      className={`w-full max-w-sm rounded-2xl p-6 shadow-2xl ${isDarkMode ? 'bg-gray-900 border border-gray-800' : 'bg-white'}`}
+      initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+      exit={{ scale: 0.9, opacity: 0 }} transition={{ duration: 0.15 }}
+      className={`w-full max-w-sm rounded-2xl p-6 shadow-2xl ${isDarkMode ? "bg-gray-900 border border-gray-800" : "bg-white"}`}
       onClick={e => e.stopPropagation()}
     >
       <div className="text-center mb-6">
         <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
           <TrashIcon className="w-8 h-8 text-red-500" />
         </div>
-        <h2 className={`text-xl font-bold mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Supprimer ce post ?</h2>
+        <h2 className={`text-xl font-bold mb-2 ${isDarkMode ? "text-white" : "text-gray-900"}`}>Supprimer ce post ?</h2>
         <p className="text-sm text-gray-500">Cette action est irréversible.</p>
       </div>
       <div className="flex gap-3">
         <button onClick={onCancel} disabled={isDeleting}
-          className={`flex-1 py-3 rounded-xl font-bold ${isDarkMode ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-900'} disabled:opacity-50`}>
+          className={`flex-1 py-3 rounded-xl font-bold ${isDarkMode ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} disabled:opacity-50`}>
           Annuler
         </button>
         <button onClick={onConfirm} disabled={isDeleting}
@@ -174,153 +162,136 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
     </motion.div>
   </div>
 ));
-DeleteModal.displayName = 'DeleteModal';
+DeleteModal.displayName = "DeleteModal";
 
-// ============================================
+// ─────────────────────────────────────────────
 // ACTIONS BAR
-// ============================================
-const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, showComments, isDarkMode, onLike, onToggleComments, onToggleShare, onSave }) => (
+// ─────────────────────────────────────────────
+const ActionsBar = memo(({
+  liked, likesCount, saved, commentsCount,
+  isDarkMode, onLike, onOpenComments, onOpenShare, onSave,
+}) => (
   <>
     <div className="flex items-center justify-between px-3 py-2">
       <div className="flex items-center gap-4">
-        <button onClick={onLike} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: 'transparent' }}>
+        <button onClick={onLike} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
           {liked
             ? <HeartSolid className="w-7 h-7 text-red-500" />
-            : <HeartIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'}`} />}
+            : <HeartIcon className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />}
         </button>
-        <button onClick={onToggleComments} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: 'transparent' }}>
-          <ChatBubbleLeftIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'}`} />
+        <button onClick={onOpenComments} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
+          <ChatBubbleLeftIcon className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />
         </button>
-        <button onClick={onToggleShare} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: 'transparent' }}>
-          <ShareIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'}`} />
+        <button onClick={onOpenShare} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
+          <ShareIcon className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />
         </button>
       </div>
-      <button onClick={onSave} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: 'transparent' }}>
+      <button onClick={onSave} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
         {saved
-          ? <BookmarkSolid className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'}`} />
-          : <BookmarkIcon className={`w-7 h-7 ${isDarkMode ? 'text-white' : 'text-gray-900'}`} />}
+          ? <BookmarkSolid className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />
+          : <BookmarkIcon  className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />}
       </button>
     </div>
     {likesCount > 0 && (
       <div className="px-3 pb-1">
-        <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+        <span className={`text-sm font-semibold ${isDarkMode ? "text-white" : "text-gray-900"}`}>
           {likesCount.toLocaleString()} {likesCount === 1 ? "mention J'aime" : "mentions J'aime"}
         </span>
       </div>
     )}
-    {commentsCount > 0 && !showComments && (
-      <button onClick={onToggleComments} className="px-3 pb-3 text-sm text-gray-500 hover:text-gray-400 text-left">
-        Afficher {commentsCount === 1 ? 'le commentaire' : `les ${commentsCount.toLocaleString()} commentaires`}
+    {commentsCount > 0 && (
+      <button onClick={onOpenComments} className="px-3 pb-3 text-sm text-gray-500 hover:text-gray-400 text-left">
+        Afficher {commentsCount === 1 ? "le commentaire" : `les ${commentsCount.toLocaleString()} commentaires`}
       </button>
     )}
   </>
 ));
-ActionsBar.displayName = 'ActionsBar';
+ActionsBar.displayName = "ActionsBar";
 
-// ============================================
-// ✅ POST CARD INNER — contient TOUS les hooks, jamais de return conditionnel
-// Séparé de PostCard pour permettre les guards post/loading sans violer les règles hooks
-// ============================================
+// ─────────────────────────────────────────────
+// POST CARD INNER
+// ─────────────────────────────────────────────
 const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
   const { user: currentUser, getToken, updateUserProfile } = useAuth();
   const navigate = useNavigate();
-  const cardRef = useRef(null);
+  const cardRef  = useRef(null);
 
-  const isMockPost = mockPost || post._id?.startsWith('post_') || post.isMockPost;
+  const isMockPost = mockPost || post._id?.startsWith("post_") || post.isMockPost;
 
-  // ✅ postUser mémoïsé — calculé TOUJOURS, même si on va return null ensuite
   const postUser = useMemo(() => {
     const u = post.user || post.author || {};
     const fullName = u.fullName || post.fullName || "";
     const isInvalidName = !fullName ||
       ["Utilisateur Inconnu","Unknown User","undefined","null"].includes(fullName) ||
       fullName.trim() === "";
-    const isInvalidId = !u._id || ['unknown','null','undefined'].includes(u._id);
-    const isBannedDeleted = u.isBanned || u.isDeleted ||
-      u.status === 'deleted' || u.status === 'banned';
+    const resolvedId = u._id || u.id || post.userId || post.author?._id || null;
+    const isInvalidId = !resolvedId || ["unknown","null","undefined"].includes(String(resolvedId));
+    const isBannedDeleted = u.isBanned || u.isDeleted || u.status === "deleted" || u.status === "banned";
     return {
-      _id: u._id || post.userId || post.author?._id || "unknown",
-      fullName: fullName || "Utilisateur Inconnu",
-      profilePhoto: u.profilePhoto || u.profilePicture || post.userProfilePhoto || null,
-      isVerified: !!(u.isVerified || u.verified || post.isVerified),
-      isPremium: !!(u.isPremium || post.isPremium),
-      isInvalid: !isMockPost && (isInvalidName || isInvalidId),
+      _id:              resolvedId || "unknown",
+      fullName:         fullName || "Utilisateur Inconnu",
+      profilePhoto:     u.profilePhoto || u.profilePicture || post.userProfilePhoto || null,
+      isVerified:       !!(u.isVerified || u.verified || post.isVerified),
+      isPremium:        !!(u.isPremium || post.isPremium),
+      isInvalid:        !isMockPost && (isInvalidName || isInvalidId),
       isBannedOrDeleted: isBannedDeleted,
     };
-  }, [post._id, post.user?._id, post.fullName, isMockPost]);
+  }, [post._id, post.user?._id, post.user?.id, post.userId, post.author?._id, post.fullName, isMockPost]);
 
-  // ✅ TOUS LES ÉTATS — déclarés avant tout return conditionnel
-  const [liked, setLiked] = useState(() =>
+  const [liked,             setLiked]             = useState(() =>
     currentUser && Array.isArray(post.likes)
-      ? post.likes.some(l => (typeof l === 'object' ? l._id : l)?.toString() === currentUser._id?.toString())
+      ? post.likes.some(l => (typeof l === "object" ? l._id : l)?.toString() === currentUser._id?.toString())
       : false
   );
-  const [likesCount, setLikesCount] = useState(() =>
-    Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0)
-  );
-  const [commentsCount, setCommentsCount] = useState(() =>
-    Array.isArray(post.comments) ? post.comments.length : (post.commentsCount || 0)
-  );
-  const [comments, setComments] = useState(() =>
-    Array.isArray(post.comments) ? post.comments : []
-  );
-  const [saved, setSaved] = useState(false);
-  const [showComments, setShowComments] = useState(false);
-  const [showShare, setShowShare] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(() => {
-    if (!currentUser || !postUser._id || postUser._id === 'unknown') return false;
+  const [likesCount,        setLikesCount]        = useState(() => Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0));
+  const [commentsCount,     setCommentsCount]     = useState(() => Array.isArray(post.comments) ? post.comments.length : (post.commentsCount || 0));
+  const [comments,          setComments]          = useState(() => Array.isArray(post.comments) ? post.comments : []);
+  const [saved,             setSaved]             = useState(false);
+  const [showCommentsModal, setShowCommentsModal] = useState(false);
+  const [showShareModal,    setShowShareModal]    = useState(false);
+  const [showDeleteModal,   setShowDeleteModal]   = useState(false);
+  const [isDeleting,        setIsDeleting]        = useState(false);
+  const [isFollowing,       setIsFollowing]       = useState(() => {
+    if (!currentUser || !postUser._id || postUser._id === "unknown") return false;
     if (currentUser._id === postUser._id) return false;
     return (currentUser.following || []).some(id => {
-      const idStr = typeof id === 'object' ? (id._id || id) : id;
-      return idStr?.toString() === postUser._id.toString();
+      const s = typeof id === "object" ? (id._id || id) : id;
+      return s?.toString() === postUser._id.toString();
     });
   });
   const [loadingFollow, setLoadingFollow] = useState(false);
-  const [loadingLike, setLoadingLike] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [loadingLike,   setLoadingLike]   = useState(false);
+  const [expanded,      setExpanded]      = useState(false);
 
-  // ✅ TOUS LES REFS — déclarés avant tout return conditionnel
   const stateRef = useRef({ liked, likesCount, loadingLike, isFollowing, loadingFollow });
-  const postRef = useRef({ post, postUser, currentUser, isMockPost, onDeleted, showToast, updateUserProfile });
-
-  // ✅ TOUS LES EFFETS — déclarés avant tout return conditionnel
-  useEffect(() => {
-    stateRef.current = { liked, likesCount, loadingLike, isFollowing, loadingFollow };
-  });
-
-  useEffect(() => {
-    postRef.current = { post, postUser, currentUser, isMockPost, onDeleted, showToast, updateUserProfile };
-  });
+  const postRef  = useRef({ post, postUser, currentUser, isMockPost, onDeleted, showToast, updateUserProfile });
+  useEffect(() => { stateRef.current = { liked, likesCount, loadingLike, isFollowing, loadingFollow }; });
+  useEffect(() => { postRef.current  = { post, postUser, currentUser, isMockPost, onDeleted, showToast, updateUserProfile }; });
 
   useEffect(() => {
     if (!cardRef.current) return;
-    const observer = getVideoObserver();
-    const videos = cardRef.current.querySelectorAll('video');
-    videos.forEach(v => { v.muted = true; observer.observe(v); });
-    return () => videos.forEach(v => observer.unobserve(v));
+    const obs = getVideoObserver();
+    const vids = cardRef.current.querySelectorAll("video");
+    vids.forEach(v => obs.observe(v));
+    return () => vids.forEach(v => obs.unobserve(v));
   }, []);
 
-  // ✅ TOUS LES CALLBACKS — déclarés avant tout return conditionnel
+  useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
+
   const handleLike = useCallback((e) => {
     e?.stopPropagation();
     const { liked, likesCount, loadingLike } = stateRef.current;
     const { post, currentUser, isMockPost, showToast } = postRef.current;
     if (!currentUser) { showToast?.("Connectez-vous pour aimer", "info"); return; }
     if (loadingLike) return;
-    const newLiked = !liked;
-    setLiked(newLiked);
-    setLikesCount(c => newLiked ? c + 1 : c - 1);
+    const nl = !liked;
+    setLiked(nl);
+    setLikesCount(c => nl ? c + 1 : c - 1);
     if (isMockPost) return;
     setLoadingLike(true);
     axiosClient.post(`/posts/${post._id}/like`)
-      .catch(err => {
-        setLiked(liked);
-        setLikesCount(likesCount);
-        showToast?.(err.response?.data?.message || "Erreur lors du like", "error");
-      })
+      .catch(err => { setLiked(liked); setLikesCount(likesCount); showToast?.(err.response?.data?.message || "Erreur", "error"); })
       .finally(() => setLoadingLike(false));
   }, []);
 
@@ -328,286 +299,249 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     e?.stopPropagation();
     const { isFollowing, loadingFollow } = stateRef.current;
     const { postUser, currentUser, isMockPost, showToast, updateUserProfile } = postRef.current;
-    if (!currentUser) { showToast?.("Connectez-vous pour suivre", "info"); return; }
+    if (!currentUser) { showToast?.("Connectez-vous", "info"); return; }
     if (loadingFollow) return;
     if (!postUser._id || postUser._id === "unknown") { showToast?.("Utilisateur introuvable", "error"); return; }
     if (currentUser._id === postUser._id) { showToast?.("Vous ne pouvez pas vous suivre", "info"); return; }
-    const wasFollowing = isFollowing;
-    setIsFollowing(!wasFollowing);
-    showToast?.(!wasFollowing ? `Vous suivez ${postUser.fullName}` : `Vous ne suivez plus ${postUser.fullName}`, "success");
+    const was = isFollowing;
+    setIsFollowing(!was);
+    showToast?.(!was ? `Vous suivez ${postUser.fullName}` : `Vous ne suivez plus ${postUser.fullName}`, "success");
     if (isMockPost) return;
-    const action = wasFollowing ? 'unfollow' : 'follow';
     setLoadingFollow(true);
-    axiosClient.post(`/follow/${action}/${postUser._id}`)
+    axiosClient.post(`/follow/${was ? "unfollow" : "follow"}/${postUser._id}`)
       .then(({ data }) => {
         if (!data.success) throw new Error(data.error || "Échec");
-        const currentFollowing = currentUser.following || [];
-        const updatedFollowing = wasFollowing
-          ? currentFollowing.filter(id => {
-              const s = typeof id === 'object' ? (id._id || id) : id;
-              return s?.toString() !== postUser._id.toString();
-            })
-          : [...currentFollowing, postUser._id];
-        updateUserProfile?.(currentUser._id, { following: updatedFollowing });
+        const cf = currentUser.following || [];
+        const uf = was
+          ? cf.filter(id => { const s = typeof id === "object" ? (id._id || id) : id; return s?.toString() !== postUser._id.toString(); })
+          : [...cf, postUser._id];
+        updateUserProfile?.(currentUser._id, { following: uf });
       })
-      .catch(err => {
-        setIsFollowing(wasFollowing);
-        showToast?.(err.response?.data?.error || err.message || "Erreur", "error");
-      })
+      .catch(err => { setIsFollowing(was); showToast?.(err.response?.data?.error || err.message || "Erreur", "error"); })
       .finally(() => setLoadingFollow(false));
   }, []);
 
   const handleDeletePost = useCallback(async () => {
     const { post, isMockPost, onDeleted, showToast } = postRef.current;
-    if (isMockPost) {
-      showToast?.("Post supprimé", "success");
-      setShowDeleteModal(false);
-      onDeleted?.(post._id);
-      return;
-    }
+    if (isMockPost) { showToast?.("Post supprimé", "success"); setShowDeleteModal(false); onDeleted?.(post._id); return; }
     setIsDeleting(true);
     try {
       await axiosClient.delete(`/posts/${post._id}`);
-      showToast?.("Post supprimé avec succès", "success");
+      showToast?.("Post supprimé", "success");
       setShowDeleteModal(false);
       onDeleted?.(post._id);
     } catch (err) {
-      const status = err.response?.status;
-      if (status === 404) {
-        setShowDeleteModal(false);
-        onDeleted?.(post._id);
-      } else {
-        showToast?.(
-          status === 403 ? "Permission refusée" :
-          err.response?.data?.message || "Erreur lors de la suppression",
-          "error"
-        );
-      }
-    } finally {
-      setIsDeleting(false);
-    }
+      const s = err.response?.status;
+      if (s === 404) { setShowDeleteModal(false); onDeleted?.(post._id); }
+      else showToast?.(s === 403 ? "Permission refusée" : err.response?.data?.message || "Erreur", "error");
+    } finally { setIsDeleting(false); }
   }, []);
 
   const handleProfileClick = useCallback((e) => {
     e?.stopPropagation();
-    navigate(`/profile/${postRef.current.postUser._id}`);
+    const { postUser } = postRef.current;
+    const id = postUser._id;
+    if (!id || id === "unknown" || id === "null" || id === "undefined") return;
+    navigate(`/profile/${id}`);
   }, [navigate]);
 
-  const handleToggleComments = useCallback((e) => { e?.stopPropagation(); setShowComments(v => !v); }, []);
-  const handleToggleShare    = useCallback((e) => { e?.stopPropagation(); setShowShare(v => !v); }, []);
-  const handleSave           = useCallback(() => setSaved(v => !v), []);
-  const handleToggleExpanded = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
-  const handleOpenDelete     = useCallback((e) => { e?.stopPropagation(); setShowDeleteModal(true); }, []);
+  const handleOpenComments = useCallback((e) => { e?.stopPropagation(); setShowCommentsModal(true); }, []);
+  const handleOpenShare    = useCallback((e) => { e?.stopPropagation(); setShowShareModal(true);    }, []);
+  const handleSave         = useCallback(() => setSaved(v => !v), []);
+  const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
+  const handleOpenDelete   = useCallback((e) => { e?.stopPropagation(); setShowDeleteModal(true); }, []);
 
-  // ✅ DONNÉES DÉRIVÉES — après tous les hooks
-  const MAX_CHARS = 280;
-  const content = post.content || "";
-  const shouldTruncate = content.length > MAX_CHARS;
-  const displayContent = shouldTruncate && !expanded ? content.substring(0, MAX_CHARS) + "..." : content;
-
-  const isOwner  = currentUser && (post.userId === currentUser._id || postUser._id === currentUser._id);
-  const canFollow = currentUser && !isOwner && postUser._id !== 'unknown';
+  const content        = post.content || "";
+  const shouldTruncate = content.length > 280;
+  const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
+  const isOwner   = currentUser && (String(post.userId) === String(currentUser._id) || String(postUser._id) === String(currentUser._id));
+  const canFollow = currentUser && !isOwner && postUser._id !== "unknown";
   const isBoosted = !!post.isBoosted;
 
   const mediaUrls = useMemo(() => {
     const src = post.images || post.media;
     const arr = Array.isArray(src) ? src : (src ? [src] : []);
     return arr.filter(Boolean).map(m => {
-      const raw = typeof m === 'string' ? m : m.url;
+      const raw = typeof m === "string" ? m : m.url;
       if (!raw) return null;
-      if (raw.startsWith('data:image')) return raw;
-      return getCloudinaryUrl(raw, { width: 1080, format: 'auto' });
+      if (raw.startsWith("data:image")) return raw;
+      return getCloudinaryUrl(raw, { width: 1080, format: "auto" });
     }).filter(Boolean);
   }, [post.images, post.media]);
 
   const formattedDate = useMemo(() => {
     if (!post.createdAt) return "";
-    try { return new Date(post.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
+    try { return new Date(post.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "short" }); }
     catch { return ""; }
   }, [post.createdAt]);
 
-  // ✅ GUARDS APRÈS TOUS LES HOOKS — on peut maintenant return null sans violer les règles
   if (!isMockPost && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
 
-  // ============================================
-  // RENDU
-  // ============================================
   return (
-    <div
-      ref={node => { cardRef.current = node; if (ref) { if (typeof ref === 'function') ref(node); else ref.current = node; } }}
-      className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? 'bg-black' : 'bg-white'}`}
-      style={{ margin: 0, padding: 0, contain: 'content' }}
-    >
-      {isBoosted && (
-        <div className="absolute top-0 right-0 z-10 p-2">
-          <div className="flex items-center gap-1 bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-xl shadow-lg select-none">
-            <RocketLaunchIcon className="w-3 h-3" /> SPONSORISÉ
-          </div>
-        </div>
-      )}
-
-      {/* HEADER */}
-      <div className="flex justify-between items-center p-3">
-        <div className="flex items-center gap-3">
-          <button onClick={handleProfileClick} className="relative shrink-0">
-            <SimpleAvatar username={postUser.fullName} photo={postUser.profilePhoto} size={38} />
-            {postUser.isPremium && (
-              <div className="absolute -bottom-1 -right-1 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-full p-[2px] border border-black z-10">
-                <CheckBadgeIcon className="w-3 h-3 text-white" />
-              </div>
-            )}
-          </button>
-          <div className="flex flex-col">
-            <div className="flex items-center gap-1.5">
-              <span onClick={handleProfileClick}
-                className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                {postUser.fullName}
-              </span>
-              {postUser.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500" />}
+    <>
+      <div
+        ref={node => { cardRef.current = node; if (ref) { if (typeof ref === "function") ref(node); else ref.current = node; } }}
+        className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? "bg-black" : "bg-white"}`}
+        style={{ margin: 0, padding: 0, contain: "content" }}
+      >
+        {isBoosted && (
+          <div className="absolute top-0 right-0 z-10 p-2">
+            <div className="flex items-center gap-1 bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-xl shadow-lg select-none">
+              <RocketLaunchIcon className="w-3 h-3" /> SPONSORISÉ
             </div>
-            <span className="text-xs text-gray-500">{formattedDate}</span>
+          </div>
+        )}
+
+        {/* HEADER */}
+        <div className="flex justify-between items-center p-3">
+          <div className="flex items-center gap-3">
+            <button onClick={handleProfileClick} className="relative shrink-0">
+              <SimpleAvatar username={postUser.fullName} photo={postUser.profilePhoto} size={38} />
+              {postUser.isPremium && (
+                <div className="absolute -bottom-1 -right-1 bg-gradient-to-r from-yellow-400 to-orange-500 rounded-full p-[2px] border border-black z-10">
+                  <CheckBadgeIcon className="w-3 h-3 text-white" />
+                </div>
+              )}
+            </button>
+            <div className="flex flex-col">
+              <div className="flex items-center gap-1.5">
+                <span onClick={handleProfileClick}
+                  className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? "text-white" : "text-gray-900"}`}>
+                  {postUser.fullName}
+                </span>
+                {postUser.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500" />}
+              </div>
+              <span className="text-xs text-gray-500">{formattedDate}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {isOwner && !isBoosted && !isMockPost && (
+              <button onClick={e => e.stopPropagation()}
+                className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 active:scale-95 transition-transform">
+                <RocketLaunchIcon className="w-3 h-3" /> Booster
+              </button>
+            )}
+            {canFollow && (
+              <button onClick={handleFollow} disabled={loadingFollow}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                  isFollowing
+                    ? isDarkMode ? "bg-gray-800 text-gray-300" : "bg-gray-100 text-gray-600"
+                    : isDarkMode ? "bg-white text-black"       : "bg-black text-white"
+                }`}>
+                {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
+              </button>
+            )}
+            {isOwner && (
+              <button onClick={handleOpenDelete} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                <TrashIcon className="w-5 h-5 text-gray-400" />
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {isOwner && !isBoosted && !isMockPost && (
-            <button
-              onClick={(e) => { e.stopPropagation(); }}
-              className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 active:scale-95 transition-transform"
-            >
-              <RocketLaunchIcon className="w-3 h-3" /> Booster
-            </button>
+        {/* TEXTE */}
+        {content && (
+          <div className="px-3 pb-2">
+            <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>{displayContent}</p>
+            {shouldTruncate && (
+              <button onClick={handleExpand} className="text-gray-500 text-sm hover:text-gray-400 mt-1">
+                {expanded ? "voir moins" : "voir plus"}
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* MEDIA */}
+        {mediaUrls.length > 0 && (
+          <div className="w-full">
+            <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} />
+          </div>
+        )}
+
+        <ActionsBar
+          liked={liked} likesCount={likesCount} saved={saved}
+          commentsCount={commentsCount} isDarkMode={isDarkMode}
+          onLike={handleLike}
+          onOpenComments={handleOpenComments}
+          onOpenShare={handleOpenShare}
+          onSave={handleSave}
+        />
+
+        <AnimatePresence>
+          {showDeleteModal && (
+            <DeleteModal
+              isDarkMode={isDarkMode} isDeleting={isDeleting}
+              onConfirm={handleDeletePost} onCancel={() => setShowDeleteModal(false)}
+            />
           )}
-          {canFollow && (
-            <button onClick={handleFollow} disabled={loadingFollow}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
-                isFollowing
-                  ? isDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'
-                  : isDarkMode ? 'bg-white text-black' : 'bg-black text-white'
-              }`}>
-              {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
-            </button>
-          )}
-          {isOwner && (
-            <button onClick={handleOpenDelete} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-              <TrashIcon className="w-5 h-5 text-gray-400" />
-            </button>
-          )}
-        </div>
+        </AnimatePresence>
       </div>
 
-      {/* TEXTE */}
-      {content && (
-        <div className="px-3 pb-2">
-          <p className={`text-sm ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{displayContent}</p>
-          {shouldTruncate && (
-            <button onClick={handleToggleExpanded} className="text-gray-500 text-sm hover:text-gray-400 mt-1">
-              {expanded ? "voir moins" : "voir plus"}
-            </button>
-          )}
-        </div>
+      {/* ✅ Modal commentaires — lazy chargé, Suspense avec fallback null */}
+      {showCommentsModal && (
+        <ErrorBoundary>
+          <Suspense fallback={null}>
+            <PostCommentsModal
+              isOpen={showCommentsModal}
+              onClose={() => setShowCommentsModal(false)}
+              postId={post._id}
+              postUser={postUser}
+              postContent={content}
+              postMediaUrl={mediaUrls[0] || null}
+              likesCount={likesCount}
+              comments={comments}
+              setComments={setComments}
+              currentUser={currentUser}
+              getToken={getToken}
+              showToast={showToast}
+              navigate={navigate}
+              isMockPost={isMockPost}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
-      {/* MEDIA */}
-      {mediaUrls.length > 0 && (
-        <div className="w-full">
-          <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} />
-        </div>
+      {/* ✅ Modal partage — lazy chargé, Suspense avec fallback null */}
+      {showShareModal && (
+        <ErrorBoundary>
+          <Suspense fallback={null}>
+            <PostShareModal
+              isOpen={showShareModal}
+              onClose={() => setShowShareModal(false)}
+              postId={post._id}
+              postUser={postUser}
+              postContent={content}
+              postMediaUrl={mediaUrls[0] || null}
+              likesCount={likesCount}
+              commentsCount={commentsCount}
+              navigate={navigate}
+              showToast={showToast}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
-
-      <ActionsBar
-        liked={liked} likesCount={likesCount} saved={saved}
-        commentsCount={commentsCount} showComments={showComments}
-        isDarkMode={isDarkMode}
-        onLike={handleLike} onToggleComments={handleToggleComments}
-        onToggleShare={handleToggleShare} onSave={handleSave}
-      />
-
-      <AnimatePresence>
-        {showComments && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.15 }}
-            className="overflow-hidden border-t border-gray-200 dark:border-gray-800"
-          >
-            <Suspense fallback={<div className="p-4 text-center text-sm text-gray-400">Chargement...</div>}>
-              <ErrorBoundary>
-                <PostComments
-                  postId={post._id} comments={comments}
-                  setComments={(newComments) => {
-                    if (typeof newComments === 'function') {
-                      setComments(prev => { const next = newComments(prev); setCommentsCount(next.length); return next; });
-                    } else {
-                      setComments(newComments);
-                      setCommentsCount(newComments.length);
-                    }
-                  }}
-                  currentUser={currentUser} getToken={getToken}
-                  showToast={showToast} navigate={navigate} isMockPost={isMockPost}
-                />
-              </ErrorBoundary>
-            </Suspense>
-          </motion.div>
-        )}
-
-        {showShare && (
-          <motion.div
-            initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }}
-            transition={{ duration: 0.15 }}
-            className="overflow-hidden border-t border-gray-200 dark:border-gray-800"
-          >
-            <Suspense fallback={null}>
-              <PostShareSection postId={post._id} showToast={showToast} />
-            </Suspense>
-          </motion.div>
-        )}
-
-        {showDeleteModal && (
-          <DeleteModal
-            isDarkMode={isDarkMode} isDeleting={isDeleting}
-            onConfirm={handleDeletePost} onCancel={() => setShowDeleteModal(false)}
-          />
-        )}
-      </AnimatePresence>
-    </div>
+    </>
   );
 });
-PostCardInner.displayName = 'PostCardInner';
+PostCardInner.displayName = "PostCardInner";
 
-// ============================================
-// ✅ POSTCARD — wrapper léger qui gère les guards loading/post nuls
-// Les guards sont ICI, AVANT de monter PostCardInner qui contient les hooks
-// => React ne voit jamais un composant avec des hooks conditionnels
-// ============================================
+// ─────────────────────────────────────────────
+// POSTCARD wrapper
+// ─────────────────────────────────────────────
 const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
-
-  // ✅ Ces guards sont dans le wrapper, PAS dans le composant avec les hooks
-  if (loading) return <SkeletonPostCard isDarkMode={isDarkMode} />;
+  if (loading)            return <SkeletonPostCard isDarkMode={isDarkMode} />;
   if (!post || !post._id) return null;
-
-  return (
-    <PostCardInner
-      ref={ref}
-      post={post}
-      onDeleted={onDeleted}
-      showToast={showToast}
-      mockPost={mockPost}
-      priority={priority}
-    />
-  );
+  return <PostCardInner ref={ref} post={post} onDeleted={onDeleted} showToast={showToast} mockPost={mockPost} priority={priority} />;
 });
-PostCard.displayName = 'PostCard';
+PostCard.displayName = "PostCard";
 
-// ✅ Comparateur stable pour React.memo
-export default memo(PostCard, (prev, next) => {
-  return (
-    prev.post?._id === next.post?._id &&
-    prev.post?.likes?.length === next.post?.likes?.length &&
-    prev.post?.comments?.length === next.post?.comments?.length &&
-    prev.post?.content === next.post?.content &&
-    prev.post?.isBoosted === next.post?.isBoosted &&
-    prev.priority === next.priority &&
-    prev.loading === next.loading
-  );
-});
+export default memo(PostCard, (prev, next) =>
+  prev.post?._id              === next.post?._id              &&
+  prev.post?.likes?.length    === next.post?.likes?.length    &&
+  prev.post?.comments?.length === next.post?.comments?.length &&
+  prev.post?.content          === next.post?.content          &&
+  prev.post?.isBoosted        === next.post?.isBoosted        &&
+  prev.priority               === next.priority               &&
+  prev.loading                === next.loading
+);

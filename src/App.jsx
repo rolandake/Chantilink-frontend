@@ -4,6 +4,7 @@
 // ✅ Fix: suppression key={location.pathname} (stop remount des pages)
 // ✅ Fix: navbar toggle via CSS visibility (pas AnimatePresence)
 // ✅ Fix: clic sur "Accueil" quand déjà sur "/" → refresh du feed (comme Instagram)
+// ✅ Fix LCP: window.__hideSplash() appelé dès que AppContent est monté
 
 import React, { useState, Suspense, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -27,16 +28,12 @@ import {
   Home as HomePage, Profile, ChatPage, VideosPage, CalculsPage, Messages, AuthPage
 } from "./imports/importsPages.js";
 
+import About from "./pages/About";
 import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
 import StoryViewer from "./pages/Home/StoryViewer";
 
 const fastTransition = { duration: 0.15, ease: "easeOut" };
 
-// ============================================
-// ÉVÉNEMENT GLOBAL : refresh du feed Home
-// Émis quand l'user clique sur "Accueil" alors qu'il y est déjà.
-// Home.jsx écoute cet événement pour scroller en haut + refetch.
-// ============================================
 export const HOME_REFRESH_EVENT = "home:refresh";
 export const emitHomeRefresh = () =>
   window.dispatchEvent(new CustomEvent(HOME_REFRESH_EVENT));
@@ -120,15 +117,14 @@ export default function App() {
   }, [authReady]);
 
   if (!ready) {
-    return (
-      <div className="fixed inset-0 bg-gray-900 flex items-center justify-center">
-        <LoadingSpinner />
-      </div>
-    );
+    // ✅ Pendant que authReady est false, le splash HTML reste visible.
+    // On ne rend rien ici (pas de LoadingSpinner qui crée un div gris
+    // par-dessus le splash). Le splash index.html gère l'affichage.
+    return null;
   }
 
   return (
-    <Suspense fallback={<div className="fixed inset-0 bg-gray-900" />}>
+    <Suspense fallback={null}>
       <AppContent />
     </Suspense>
   );
@@ -146,6 +142,16 @@ function AppContent() {
   const [liveNotifications, setLiveNotifications] = useState([]);
 
   const isNavVisible = useSmartScroll(10);
+
+  // ✅ FIX LCP : masquer le splash HTML dès que AppContent est monté
+  // AppContent se monte quand authReady=true ET React a bootstrappé.
+  // À ce stade, l'app est prête à afficher quelque chose de réel.
+  // Le splash disparaît avec une transition douce (opacity 0.3s).
+  useEffect(() => {
+    if (typeof window.__hideSplash === 'function') {
+      window.__hideSplash();
+    }
+  }, []); // [] = une seule fois au montage
 
   // ✅ useMessagesData CENTRALISÉ — 1 seul fetch pour toute l'app
   const { data: messagesData } = useMessagesData(token, null);
@@ -250,12 +256,6 @@ function AppContent() {
     paddingBottom: "env(safe-area-inset-bottom)",
   }), [showNav]);
 
-  // ─────────────────────────────────────────────
-  // Handler clic "Accueil" — comportement Instagram :
-  //   • Si on est ailleurs → navigate("/")
-  //   • Si on est déjà sur "/" → émet HOME_REFRESH_EVENT
-  //     (Home.jsx écoute et scrolle en haut + refetch)
-  // ─────────────────────────────────────────────
   const handleHomeClick = useCallback(() => {
     if (location.pathname === "/") {
       emitHomeRefresh();
@@ -298,7 +298,7 @@ function AppContent() {
           isDarkMode={isDarkMode}
           isAdminUser={isAdmin}
           unreadCount={liveUnreadCount}
-          onHomeClick={handleHomeClick}   // ✅ passé en prop
+          onHomeClick={handleHomeClick}
         />
       )}
 
@@ -321,6 +321,7 @@ function AppContent() {
               <Route path="/messages"        element={<AuthRoute><Messages /></AuthRoute>} />
               <Route path="/profile/:userId" element={<AuthRoute><Profile /></AuthRoute>} />
               <Route path="/admin/*"         element={<AuthRoute><ProtectedAdminRoute><AdminDashboard /></ProtectedAdminRoute></AuthRoute>} />
+              <Route path="/about"           element={<About />} />
               <Route path="*"               element={<Navigate to={user ? "/" : "/auth"} replace />} />
             </Routes>
           </Suspense>
@@ -339,7 +340,7 @@ function AppContent() {
             user={user}
             location={location}
             unreadCount={liveUnreadCount}
-            onHomeClick={handleHomeClick}   // ✅ passé en prop
+            onHomeClick={handleHomeClick}
           />
         </div>
       )}
@@ -417,7 +418,6 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
   );
 });
 
-// ✅ onHomeClick en prop pour différencier navigate vs refresh
 const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unreadCount, onHomeClick }) => {
   const navigate     = useNavigate();
   const [isMenuOpen, setMenuOpen] = useState(false);
@@ -428,7 +428,6 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unread
       <nav className={`lg:hidden h-16 flex justify-around items-center backdrop-blur-xl border-t ${
         isDarkMode ? "bg-gray-900/90 border-gray-800" : "bg-white/90 border-gray-200"
       }`}>
-        {/* ✅ Accueil → onHomeClick au lieu de navigate directement */}
         <NavBtn icon={Home} label="Accueil" active={isActive("/")} onClick={onHomeClick} />
         <NavBtn icon={Video}         label="Vidéos"  active={isActive("/videos")} onClick={() => navigate("/videos")} />
         <NavBtn icon={MessageSquare} label="Chat"    active={isActive("/chat")}   onClick={() => navigate("/chat")} />
@@ -483,7 +482,6 @@ const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
   </motion.button>
 ));
 
-// ✅ onHomeClick en prop
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick }) => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -493,7 +491,6 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
     <aside className={`hidden lg:flex fixed left-0 top-[72px] bottom-0 w-64 flex-col py-8 px-6 gap-2 z-30 border-r ${
       isDarkMode ? 'bg-gray-900/50 border-gray-800' : 'bg-white border-gray-100'
     }`}>
-      {/* ✅ Accueil → onHomeClick */}
       <NavItemDesktop icon={Home}          label="Accueil"    onClick={onHomeClick}                                      isDarkMode={isDarkMode} active={isActive("/")} />
       <NavItemDesktop icon={MessageSquare} label="Chat"       onClick={() => navigate("/chat")}                          isDarkMode={isDarkMode} active={isActive("/chat")} />
       <NavItemDesktop icon={Video}         label="Vidéos"     onClick={() => navigate("/videos")}                        isDarkMode={isDarkMode} active={isActive("/videos")} />
@@ -589,7 +586,7 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
 
 function AuthRoute({ children, redirectIfAuthenticated = false }) {
   const { user, ready } = useAuth();
-  if (!ready) return <LoadingSpinner fullScreen />;
+  if (!ready) return null; // ✅ null au lieu de LoadingSpinner → le splash HTML reste visible
   if (redirectIfAuthenticated && user) return <Navigate to="/" replace />;
   if (!redirectIfAuthenticated && !user) return <Navigate to="/auth" replace />;
   return children;

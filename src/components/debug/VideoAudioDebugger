@@ -1,0 +1,541 @@
+// 📁 src/components/debug/VideoAudioDebugger.jsx
+//
+// 🔬 OUTIL DE DIAGNOSTIC — Son des vidéos Pexels/Pixabay
+//
+// USAGE :
+//   1. Importer dans App.jsx ou n'importe quel composant :
+//      import VideoAudioDebugger from './components/debug/VideoAudioDebugger';
+//   2. Ajouter <VideoAudioDebugger /> quelque part dans le JSX
+//   3. Ouvrir le panneau, tester les vidéos, copier les logs
+//   4. SUPPRIMER une fois le problème résolu
+//
+// Ce composant teste :
+//   ✅ CORS headers réels de l'URL vidéo
+//   ✅ Présence de piste audio dans le flux (AudioContext)
+//   ✅ Comportement muted / volume / play()
+//   ✅ État après interaction utilisateur
+//   ✅ Politique autoplay du navigateur
+//   ✅ Résumé des erreurs claires
+
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+
+// ── Vidéos de test (Pexels, Pixabay, Cloudinary, externe) ─────────
+const TEST_VIDEOS = [
+  {
+    label:  'Pexels #1 — Chantier (ID 1198105)',
+    url:    'https://videos.pexels.com/video-files/1198105/1198105-hd_1920_1080_25fps.mp4',
+    source: 'pexels',
+  },
+  {
+    label:  'Pexels #2 — Construction (ID 855271)',
+    url:    'https://videos.pexels.com/video-files/855271/855271-hd_1920_1080_30fps.mp4',
+    source: 'pexels',
+  },
+  {
+    label:  'Pixabay — Timelapse chantier',
+    url:    'https://cdn.pixabay.com/video/2019/06/25/24694-343870598_large.mp4',
+    source: 'pixabay',
+  },
+  {
+    label:  'MP4 test public (Big Buck Bunny)',
+    url:    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    source: 'google',
+  },
+];
+
+// ── Logger ────────────────────────────────────────────────────────
+function makeLogger(setLogs) {
+  return (level, category, message, data = null) => {
+    const entry = {
+      id:        Date.now() + Math.random(),
+      time:      new Date().toLocaleTimeString(),
+      level,     // 'info' | 'warn' | 'error' | 'success' | 'debug'
+      category,
+      message,
+      data:      data ? JSON.stringify(data, null, 2) : null,
+    };
+    console.log(`[AudioDebug][${level.toUpperCase()}][${category}] ${message}`, data || '');
+    setLogs(prev => [entry, ...prev].slice(0, 80));
+  };
+}
+
+// ── Tester les CORS headers via fetch HEAD ────────────────────────
+async function testCORSHeaders(url, log) {
+  log('info', 'CORS', `Test CORS headers : ${url.substring(0, 60)}...`);
+  try {
+    const res = await fetch(url, { method: 'HEAD', mode: 'cors', cache: 'no-store' });
+    const cors = res.headers.get('access-control-allow-origin');
+    const vary = res.headers.get('vary');
+    const ct   = res.headers.get('content-type');
+    const cl   = res.headers.get('content-length');
+
+    log('debug', 'CORS', 'Headers reçus', {
+      'access-control-allow-origin': cors || '⛔ ABSENT',
+      'content-type':                ct   || 'inconnu',
+      'content-length':              cl   || 'inconnu',
+      'vary':                        vary || 'absent',
+      'status':                      res.status,
+    });
+
+    if (!cors) {
+      log('error', 'CORS',
+        '⛔ PAS DE HEADER CORS — Le navigateur va bloquer l\'audio !\n' +
+        'Solution : ajouter crossOrigin="anonymous" ET vérifier que le serveur renvoie Access-Control-Allow-Origin'
+      );
+      return false;
+    } else if (cors === '*' || cors.includes('localhost') || cors.includes(window.location.hostname)) {
+      log('success', 'CORS', `✅ CORS OK : Access-Control-Allow-Origin = ${cors}`);
+      return true;
+    } else {
+      log('warn', 'CORS', `⚠️ CORS restrictif : ${cors} — peut bloquer selon l'origine`);
+      return false;
+    }
+  } catch (err) {
+    log('error', 'CORS', `❌ Fetch HEAD échoué : ${err.message}\n→ La vidéo est peut-être inaccessible ou le CORS bloque même le HEAD`);
+    return false;
+  }
+}
+
+// ── Tester la piste audio via AudioContext ───────────────────────
+async function testAudioTrack(videoEl, url, log) {
+  log('info', 'AUDIO_TRACK', 'Test de la piste audio via Web Audio API...');
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) {
+      log('warn', 'AUDIO_TRACK', '⚠️ AudioContext non supporté sur ce navigateur');
+      return null;
+    }
+
+    const ctx    = new AudioCtx();
+    const source = ctx.createMediaElementSource(videoEl);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+
+    source.connect(analyser);
+    analyser.connect(ctx.destination);
+
+    // Attendre que la vidéo joue (max 3s)
+    await new Promise((resolve) => {
+      const t = setTimeout(resolve, 3000);
+      videoEl.addEventListener('playing', () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+
+    // Lire le niveau audio pendant 500ms
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(data);
+    const average = data.reduce((a, b) => a + b, 0) / data.length;
+
+    if (average > 1) {
+      log('success', 'AUDIO_TRACK', `✅ Piste audio ACTIVE — niveau moyen: ${average.toFixed(2)}`);
+    } else {
+      log('warn', 'AUDIO_TRACK', `⚠️ Niveau audio proche de 0 (${average.toFixed(2)}) — vidéo muette ou silence`);
+    }
+
+    // Nettoyage
+    source.disconnect();
+    analyser.disconnect();
+    ctx.close();
+
+    return average;
+  } catch (err) {
+    log('error', 'AUDIO_TRACK',
+      `❌ AudioContext échoué : ${err.message}\n` +
+      `→ Cause probable : crossOrigin manquant, ou vidéo non encore chargée`
+    );
+    return null;
+  }
+}
+
+// ── Panel de log ─────────────────────────────────────────────────
+const LogEntry = ({ entry }) => {
+  const colors = {
+    info:    'text-blue-400',
+    warn:    'text-yellow-400',
+    error:   'text-red-400',
+    success: 'text-green-400',
+    debug:   'text-gray-400',
+  };
+  const icons = {
+    info:    'ℹ️',
+    warn:    '⚠️',
+    error:   '❌',
+    success: '✅',
+    debug:   '🔍',
+  };
+  return (
+    <div className="border-b border-gray-800 py-1.5 px-2">
+      <div className="flex items-start gap-2">
+        <span className="text-[10px] text-gray-600 flex-shrink-0 mt-0.5">{entry.time}</span>
+        <span className={`text-[10px] font-bold flex-shrink-0 ${colors[entry.level]}`}>
+          {icons[entry.level]} [{entry.category}]
+        </span>
+        <span className={`text-[11px] ${colors[entry.level]} flex-1`}>
+          {entry.message}
+        </span>
+      </div>
+      {entry.data && (
+        <pre className="text-[10px] text-gray-500 ml-16 mt-0.5 whitespace-pre-wrap break-all">
+          {entry.data}
+        </pre>
+      )}
+    </div>
+  );
+};
+
+// ── Composant principal ──────────────────────────────────────────
+export default function VideoAudioDebugger() {
+  const [isOpen,      setIsOpen]      = useState(false);
+  const [logs,        setLogs]        = useState([]);
+  const [testing,     setTesting]     = useState(false);
+  const [selectedUrl, setSelectedUrl] = useState(TEST_VIDEOS[0].url);
+  const [customUrl,   setCustomUrl]   = useState('');
+  const [videoState,  setVideoState]  = useState({});
+  const [testPhase,   setTestPhase]   = useState('idle'); // idle | running | done
+
+  const videoRef  = useRef(null);
+  const log       = useCallback(makeLogger(setLogs), []);
+  const activeUrl = customUrl.trim() || selectedUrl;
+
+  // ── Observer l'état de la vidéo ─────────────────────────────────
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+
+    const update = () => setVideoState({
+      muted:         vid.muted,
+      volume:        vid.volume.toFixed(2),
+      paused:        vid.paused,
+      readyState:    vid.readyState,
+      networkState:  vid.networkState,
+      currentTime:   vid.currentTime.toFixed(2),
+      duration:      isNaN(vid.duration) ? 'N/A' : vid.duration.toFixed(2),
+      crossOrigin:   vid.crossOrigin || 'non défini',
+      src:           vid.src?.substring(0, 50) + '...',
+      error:         vid.error ? `${vid.error.code}: ${vid.error.message}` : null,
+    });
+
+    vid.addEventListener('loadedmetadata', update);
+    vid.addEventListener('play',           update);
+    vid.addEventListener('pause',          update);
+    vid.addEventListener('volumechange',   update);
+    vid.addEventListener('error',          update);
+    vid.addEventListener('timeupdate',     update);
+
+    return () => {
+      vid.removeEventListener('loadedmetadata', update);
+      vid.removeEventListener('play',           update);
+      vid.removeEventListener('pause',          update);
+      vid.removeEventListener('volumechange',   update);
+      vid.removeEventListener('error',          update);
+      vid.removeEventListener('timeupdate',     update);
+    };
+  }, [activeUrl]);
+
+  // ── TEST COMPLET ─────────────────────────────────────────────────
+  const runFullTest = async () => {
+    const vid = videoRef.current;
+    if (!vid) return;
+
+    setTesting(true);
+    setTestPhase('running');
+    setLogs([]);
+
+    log('info', 'SYSTEM', `🔬 Début du diagnostic complet`);
+    log('info', 'SYSTEM', `URL : ${activeUrl}`);
+    log('info', 'SYSTEM', `Navigateur : ${navigator.userAgent.substring(0, 80)}`);
+    log('info', 'SYSTEM', `Origine page : ${window.location.origin}`);
+
+    // ── Phase 1 : CORS ──────────────────────────────────────────────
+    log('info', 'PHASE', '── Phase 1/5 : Test CORS Headers ──');
+    const corsOk = await testCORSHeaders(activeUrl, log);
+
+    // ── Phase 2 : crossOrigin attr ──────────────────────────────────
+    log('info', 'PHASE', '── Phase 2/5 : Vérification attribut crossOrigin ──');
+    log('debug', 'ATTR',
+      `vid.crossOrigin = "${vid.crossOrigin || 'null/absent'}"`,
+      { expected: 'anonymous', actual: vid.crossOrigin || 'NULL — PROBLÈME !' }
+    );
+    if (!vid.crossOrigin) {
+      log('error', 'ATTR',
+        '⛔ crossOrigin EST NULL — C\'est la cause principale du son absent !\n' +
+        'Le navigateur ne peut pas accéder à la piste audio sans ce header.\n' +
+        'Fix : ajouter crossOrigin="anonymous" au tag <video>'
+      );
+    }
+
+    // ── Phase 3 : Chargement & lecture ──────────────────────────────
+    log('info', 'PHASE', '── Phase 3/5 : Chargement de la vidéo ──');
+    vid.src       = activeUrl;
+    vid.crossOrigin = 'anonymous';
+    vid.muted     = true;
+    vid.volume    = 0;
+    vid.preload   = 'metadata';
+
+    log('debug', 'LOAD', 'Chargement avec crossOrigin=anonymous + muted=true...');
+
+    await new Promise((resolve) => {
+      const onLoaded = () => {
+        log('success', 'LOAD', `✅ Métadonnées chargées — durée: ${vid.duration?.toFixed(1)}s, readyState: ${vid.readyState}`);
+        resolve();
+      };
+      const onError = (e) => {
+        log('error', 'LOAD', `❌ Erreur chargement : ${vid.error?.message || 'inconnue'} (code: ${vid.error?.code})`);
+        resolve();
+      };
+      vid.addEventListener('loadedmetadata', onLoaded, { once: true });
+      vid.addEventListener('error',          onError,  { once: true });
+      vid.load();
+      setTimeout(resolve, 8000); // timeout
+    });
+
+    // ── Phase 4 : Test play muted ────────────────────────────────────
+    log('info', 'PHASE', '── Phase 4/5 : Test play() muted ──');
+    log('debug', 'PLAY', `État avant play() : muted=${vid.muted}, volume=${vid.volume}, paused=${vid.paused}`);
+
+    try {
+      await vid.play();
+      log('success', 'PLAY', '✅ play() réussi en mode muted');
+    } catch (err) {
+      log('error', 'PLAY', `❌ play() échoué : ${err.name} — ${err.message}`);
+    }
+
+    // ── Phase 5 : Activation du son après interaction ────────────────
+    log('info', 'PHASE', '── Phase 5/5 : Activation son (simulation interaction user) ──');
+    log('debug', 'UNMUTE', `Avant unmute : muted=${vid.muted}, volume=${vid.volume}`);
+
+    vid.muted  = false;
+    vid.volume = 1;
+
+    log('debug', 'UNMUTE', `Après unmute : muted=${vid.muted}, volume=${vid.volume}`);
+
+    // Vérification immédiate — le navigateur peut re-mute automatiquement
+    await new Promise(r => setTimeout(r, 300));
+    log('debug', 'UNMUTE', `300ms après unmute : muted=${vid.muted}, volume=${vid.volume}`);
+
+    if (vid.muted) {
+      log('error', 'UNMUTE',
+        '⛔ La vidéo est ENCORE muted après vid.muted = false !\n' +
+        'Causes possibles :\n' +
+        '  1. crossOrigin manquant → CORS taint → navigateur force muted\n' +
+        '  2. La vidéo n\'a pas de piste audio (fichier réencodé sans son)\n' +
+        '  3. Politique du navigateur (autoplay) re-mute la vidéo\n' +
+        '  4. Le fichier MP4 choisi par Pexels n\'a pas de piste audio'
+      );
+    } else {
+      log('success', 'UNMUTE', '✅ vid.muted = false accepté par le navigateur');
+    }
+
+    // Test AudioContext pour vérifier la piste audio
+    if (!vid.muted && !vid.paused) {
+      await testAudioTrack(vid, activeUrl, log);
+    } else {
+      log('warn', 'AUDIO_TRACK', 'Skip AudioContext — vidéo muted ou en pause');
+    }
+
+    // ── Résumé diagnostic ─────────────────────────────────────────
+    log('info', 'PHASE', '── RÉSUMÉ DIAGNOSTIC ──');
+    const hasAudio = !vid.muted && vid.volume > 0;
+    if (hasAudio) {
+      log('success', 'RÉSUMÉ', '🎉 Son semble fonctionner — vérifier visuellement');
+    } else {
+      const reasons = [];
+      if (!corsOk) reasons.push('CORS headers absents ou restrictifs');
+      if (vid.muted) reasons.push('vid.muted reste à true (CORS taint ou fichier sans audio)');
+      if (vid.volume === 0) reasons.push('vid.volume = 0');
+      log('error', 'RÉSUMÉ',
+        `🔇 Son INACTIF après test complet\nRaisons identifiées :\n${reasons.map(r => '  → ' + r).join('\n') || '  → Cause inconnue, vérifier les logs détaillés'}`
+      );
+    }
+
+    log('info', 'RÉSUMÉ', `État final : muted=${vid.muted}, volume=${vid.volume}, paused=${vid.paused}, crossOrigin=${vid.crossOrigin}`);
+
+    setTesting(false);
+    setTestPhase('done');
+  };
+
+  // ── Test rapide unmute ───────────────────────────────────────────
+  const testUnmuteOnly = () => {
+    const vid = videoRef.current;
+    if (!vid) return;
+
+    log('info', 'QUICK', '── Test rapide : activation son ──');
+    log('debug', 'QUICK', `Avant : muted=${vid.muted}, volume=${vid.volume}, paused=${vid.paused}, crossOrigin="${vid.crossOrigin}"`);
+
+    vid.muted  = false;
+    vid.volume = 1;
+
+    setTimeout(() => {
+      log('debug', 'QUICK', `Après 100ms : muted=${vid.muted}, volume=${vid.volume}`);
+      if (vid.muted) {
+        log('error', 'QUICK', '⛔ TOUJOURS MUTED après 100ms — crossOrigin manquant probable');
+      } else {
+        log('success', 'QUICK', '✅ Son activé avec succès');
+      }
+      if (vid.paused) {
+        log('warn', 'QUICK', '⚠️ La vidéo est en pause — relancer play()');
+        vid.play().catch(e => log('error', 'QUICK', `play() échoué : ${e.message}`));
+      }
+    }, 100);
+  };
+
+  // ── Copier tous les logs ─────────────────────────────────────────
+  const copyLogs = () => {
+    const text = logs.map(l =>
+      `[${l.time}][${l.level.toUpperCase()}][${l.category}] ${l.message}${l.data ? '\n' + l.data : ''}`
+    ).join('\n');
+    navigator.clipboard?.writeText(text).then(() => alert('Logs copiés !'));
+  };
+
+  if (!isOpen) {
+    return (
+      <button
+        onClick={() => setIsOpen(true)}
+        className="fixed bottom-20 right-4 z-[999] bg-red-600 hover:bg-red-500 text-white text-xs font-bold px-3 py-2 rounded-full shadow-xl"
+        style={{ WebkitTapHighlightColor: 'transparent' }}
+      >
+        🔬 Audio Debug
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[999] bg-black/90 flex flex-col"
+      style={{ fontFamily: 'monospace' }}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 bg-gray-900 border-b border-gray-700 flex-shrink-0">
+        <span className="text-white font-bold text-sm">🔬 VideoAudio Debugger</span>
+        <button onClick={() => setIsOpen(false)} className="text-gray-400 hover:text-white text-lg px-2">✕</button>
+      </div>
+
+      <div className="flex flex-col flex-1 overflow-hidden">
+
+        {/* Sélection URL */}
+        <div className="bg-gray-950 p-3 border-b border-gray-800 flex-shrink-0 space-y-2">
+          <div className="text-gray-400 text-[11px] font-bold mb-1">URL À TESTER :</div>
+          {TEST_VIDEOS.map(v => (
+            <label key={v.url} className="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="videoUrl" value={v.url}
+                checked={selectedUrl === v.url && !customUrl.trim()}
+                onChange={() => { setSelectedUrl(v.url); setCustomUrl(''); }}
+                className="mt-0.5 flex-shrink-0"
+              />
+              <div>
+                <div className="text-white text-[11px]">{v.label}</div>
+                <div className="text-gray-500 text-[10px] break-all">{v.url.substring(0, 70)}...</div>
+              </div>
+            </label>
+          ))}
+          <input
+            type="text"
+            placeholder="Ou coller une URL vidéo custom..."
+            value={customUrl}
+            onChange={e => setCustomUrl(e.target.value)}
+            className="w-full bg-gray-800 text-white text-[11px] px-2 py-1.5 rounded border border-gray-700 placeholder-gray-600"
+          />
+        </div>
+
+        {/* Vidéo de test */}
+        <div className="bg-black p-2 border-b border-gray-800 flex-shrink-0">
+          <div className="flex gap-2 items-center">
+            <video
+              ref={videoRef}
+              className="w-24 h-16 bg-gray-900 rounded flex-shrink-0"
+              controls
+              playsInline
+              crossOrigin="anonymous"
+              style={{ objectFit: 'cover' }}
+            />
+            <div className="flex-1 text-[10px] space-y-0.5">
+              {Object.entries(videoState).map(([k, v]) => (
+                <div key={k} className="flex gap-1">
+                  <span className="text-gray-500 flex-shrink-0 w-24">{k}:</span>
+                  <span className={
+                    (k === 'muted' && v === true)     ? 'text-red-400 font-bold' :
+                    (k === 'muted' && v === false)    ? 'text-green-400 font-bold' :
+                    (k === 'volume' && v === '0.00')  ? 'text-red-400' :
+                    (k === 'error' && v)              ? 'text-red-400 font-bold' :
+                    'text-gray-300'
+                  }>
+                    {String(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Boutons */}
+        <div className="flex gap-2 p-2 bg-gray-950 border-b border-gray-800 flex-wrap flex-shrink-0">
+          <button
+            onClick={runFullTest}
+            disabled={testing}
+            className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-[11px] font-bold px-3 py-1.5 rounded"
+          >
+            {testing ? '⏳ Test...' : '▶ Test complet'}
+          </button>
+          <button
+            onClick={testUnmuteOnly}
+            className="bg-green-700 hover:bg-green-600 text-white text-[11px] font-bold px-3 py-1.5 rounded"
+          >
+            🔊 Test unmute
+          </button>
+          <button
+            onClick={() => {
+              const vid = videoRef.current;
+              if (!vid) return;
+              vid.src = activeUrl;
+              vid.crossOrigin = 'anonymous';
+              vid.load();
+              log('info', 'MANUAL', `Chargement avec crossOrigin=anonymous : ${activeUrl.substring(0, 50)}...`);
+            }}
+            className="bg-purple-700 hover:bg-purple-600 text-white text-[11px] font-bold px-3 py-1.5 rounded"
+          >
+            📥 Load (crossOrigin)
+          </button>
+          <button
+            onClick={() => {
+              const vid = videoRef.current;
+              if (!vid) return;
+              vid.src = activeUrl;
+              vid.load();
+              log('warn', 'MANUAL', `Chargement SANS crossOrigin (comparaison) : ${activeUrl.substring(0, 50)}...`);
+            }}
+            className="bg-orange-700 hover:bg-orange-600 text-white text-[11px] font-bold px-3 py-1.5 rounded"
+          >
+            📥 Load (sans crossOrigin)
+          </button>
+          <button
+            onClick={() => setLogs([])}
+            className="bg-gray-700 hover:bg-gray-600 text-white text-[11px] px-3 py-1.5 rounded"
+          >
+            🗑 Vider
+          </button>
+          <button
+            onClick={copyLogs}
+            className="bg-gray-700 hover:bg-gray-600 text-white text-[11px] px-3 py-1.5 rounded"
+          >
+            📋 Copier
+          </button>
+        </div>
+
+        {/* Panel logs */}
+        <div className="flex-1 overflow-y-auto bg-gray-950">
+          {logs.length === 0 ? (
+            <div className="text-gray-600 text-[11px] p-4 text-center">
+              Appuyer sur "▶ Test complet" pour démarrer le diagnostic
+            </div>
+          ) : (
+            logs.map(entry => <LogEntry key={entry.id} entry={entry} />)
+          )}
+        </div>
+
+        {/* Footer hint */}
+        <div className="bg-gray-900 px-3 py-1.5 text-[10px] text-gray-500 flex-shrink-0 border-t border-gray-800">
+          💡 Les logs sont aussi dans la console navigateur (F12 → Console → filtrer "[AudioDebug]")
+        </div>
+      </div>
+    </div>
+  );
+}

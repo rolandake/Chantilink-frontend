@@ -1,6 +1,4 @@
 // 📁 src/pages/Videos/AggregatedCard.jsx
-// ✅ Son activé par défaut
-// ✅ Badge source supprimé
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
@@ -15,10 +13,10 @@ import Hls from 'hls.js';
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 const SOURCE_CONFIG = {
-  reddit:   { color: '#FF4500', label: 'Reddit',   Icon: FaReddit },
-  mastodon: { color: '#6364FF', label: 'Mastodon', Icon: () => <span className="text-sm font-black">M</span> },
-  vimeo:    { color: '#1AB7EA', label: 'Vimeo',    Icon: FaVimeo },
-  rss:      { color: '#F26522', label: 'Actualité', Icon: FaRss },
+  reddit:   { color: '#FF4500', label: 'Reddit',    Icon: FaReddit },
+  mastodon: { color: '#6364FF', label: 'Mastodon',  Icon: () => <span className="text-sm font-black">M</span> },
+  vimeo:    { color: '#1AB7EA', label: 'Vimeo',     Icon: FaVimeo },
+  rss:      { color: '#F26522', label: 'Actualite', Icon: FaRss },
 };
 
 const generateAvatar = (name = 'U') => {
@@ -29,20 +27,53 @@ const generateAvatar = (name = 'U') => {
 };
 
 // ─────────────────────────────────────────────
-// DirectVideo — son activé par défaut + HLS Reddit
+// DirectVideo — HLS Reddit + son synchrone
 // ─────────────────────────────────────────────
-const DirectVideo = memo(({ content, isActive, muted, onTogglePlay, onTimeUpdate, onDoubleTap, videoRef }) => {
-  const hlsRef = useRef(null);
-  const isHLS  = content.isHLS || content.videoUrl?.includes('.m3u8');
+const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onTogglePlay, onTimeUpdate, onDoubleTap, videoRef }) => {
+  const hlsRef      = useRef(null);
+  const hlsReadyRef = useRef(false); // HLS manifest charge ?
+  const isHLS       = content.isHLS || content.videoUrl?.includes('.m3u8');
 
-  // Init source (HLS ou MP4)
+  // ✅ FIX SON REDDIT HLS :
+  // Probleme : hls.js charge le stream en async. Quand isActive change, on appelle play()
+  // mais le manifest n'est pas encore pret → son jamais active.
+  // Fix : stocker l'intention "jouer avec son" et l'appliquer dans MANIFEST_PARSED.
+  const pendingPlayRef = useRef(false);
+
+  const playWithSound = useCallback(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    if (isHLS && !hlsReadyRef.current) {
+      // HLS pas encore pret → noter l'intention, sera appliquee dans MANIFEST_PARSED
+      pendingPlayRef.current = true;
+      return;
+    }
+    vid.muted = true;
+    vid.play()
+      .then(() => {
+        // Autoplay accepte → activer le son si pas mute
+        if (!muted) {
+          vid.muted  = false;
+          vid.volume = 1;
+        }
+      })
+      .catch(() => {
+        // Autoplay bloque → rester mute, signaler au parent
+        vid.muted = true;
+        onMutedChange(true);
+      });
+  }, [muted, isHLS, onMutedChange, videoRef]);
+
+  // Init source HLS ou MP4
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
 
+    hlsReadyRef.current  = false;
+    pendingPlayRef.current = false;
+
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
-    // Toujours démarrer muted pour autoplay, puis on active le son après
     vid.muted  = true;
     vid.volume = 1;
 
@@ -50,32 +81,47 @@ const DirectVideo = memo(({ content, isActive, muted, onTogglePlay, onTimeUpdate
       const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
       hls.loadSource(content.videoUrl);
       hls.attachMedia(vid);
+
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (isActive) vid.play().then(() => { vid.muted = false; vid.volume = 1; }).catch(() => {});
+        hlsReadyRef.current = true;
+        // Appliquer l'intention de lecture si isActive
+        if (isActive || pendingPlayRef.current) {
+          pendingPlayRef.current = false;
+          vid.muted = true;
+          vid.play()
+            .then(() => {
+              if (!muted) { vid.muted = false; vid.volume = 1; }
+            })
+            .catch(() => { vid.muted = true; onMutedChange(true); });
+        }
       });
+
+      hls.on(Hls.Events.ERROR, (_, data) => {
+        if (data.fatal) console.error('[HLS] Erreur fatale:', data.type);
+      });
+
       hlsRef.current = hls;
+
     } else if (isHLS && vid.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari natif
+      // Safari natif HLS
       vid.src = content.videoUrl;
+      hlsReadyRef.current = true;
     } else {
       vid.src = content.videoUrl;
+      hlsReadyRef.current = true;
     }
 
-    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
+    return () => {
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+    };
   }, [content.videoUrl]); // eslint-disable-line
 
-  // Play/pause + activation son après autoplay réussi
+  // Play/pause selon visibilite
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
     if (isActive) {
-      vid.muted = true; // requis pour autoplay
-      vid.play()
-        .then(() => {
-          // ✅ Autoplay accepté → activer le son si pas muté
-          if (!muted) { vid.muted = false; vid.volume = 1; }
-        })
-        .catch(() => {});
+      playWithSound();
     } else {
       vid.pause();
       vid.muted  = true;
@@ -83,19 +129,25 @@ const DirectVideo = memo(({ content, isActive, muted, onTogglePlay, onTimeUpdate
     }
   }, [isActive]); // eslint-disable-line
 
-  // Sync prop muted → élément vidéo
+  // Sync prop muted → DOM (pour toggle bouton)
+  // ✅ SYNCHRONE : modifie directement le DOM sans passer par useEffect
+  // (appele depuis handleToggleMute qui est dans le callstack du click)
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
     vid.muted  = muted;
     vid.volume = muted ? 0 : 1;
-  }, [muted]);
+    // Si on unmute, relancer la lecture si en pause
+    if (!muted && vid.paused && isActive) {
+      vid.play().catch(() => { vid.muted = true; onMutedChange(true); });
+    }
+  }, [muted]); // eslint-disable-line
 
   return (
     <video
       ref={videoRef}
       className="w-full h-full object-cover"
-      loop playsInline muted autoPlay={false}
+      loop playsInline
       onClick={onTogglePlay}
       onDoubleClick={onDoubleTap}
       onTimeUpdate={onTimeUpdate}
@@ -153,7 +205,7 @@ const ImageContent = memo(({ content, onDoubleTap }) => {
       )}
       {content.isGallery && (
         <div className="absolute top-20 right-4 bg-black/70 text-white text-xs px-2 py-1 rounded-full">
-          📷 {content.galleryCount} photos
+          {content.galleryCount} photos
         </div>
       )}
     </div>
@@ -199,14 +251,13 @@ const ArticleContent = memo(({ content }) => {
 ArticleContent.displayName = 'ArticleContent';
 
 // ─────────────────────────────────────────────
-// AggregatedCard — composant principal
+// AggregatedCard
 // ─────────────────────────────────────────────
 const AggregatedCard = ({ content, isActive }) => {
   if (!content) return null;
 
   const { user: currentUser, getToken } = useAuth();
 
-  // ✅ Son activé par défaut (false = pas muté)
   const [muted, setMuted]                 = useState(false);
   const [isPaused, setIsPaused]           = useState(false);
   const [showHeart, setShowHeart]         = useState(false);
@@ -232,7 +283,6 @@ const AggregatedCard = ({ content, isActive }) => {
     return () => clearTimeout(timer);
   }, [isActive, content._id]);
 
-  // Reset son au défaut (activé) quand on change de slide
   useEffect(() => {
     if (!isActive) setMuted(false);
   }, [isActive]);
@@ -274,22 +324,26 @@ const AggregatedCard = ({ content, isActive }) => {
     }
   }, [currentUser, isLiked, content._id, getToken]);
 
+  // ✅ FIX SON SYNCHRONE : modification DOM directe dans le callstack du click
   const handleToggleMute = useCallback((e) => {
     e.stopPropagation();
     const vid      = videoRef.current;
     const newMuted = !muted;
-    setMuted(newMuted);
-    if (!vid) return;
-    if (newMuted) {
-      vid.muted  = true;
-      vid.volume = 0;
-    } else {
-      vid.pause();
-      vid.muted  = false;
-      vid.volume = 1;
-      vid.play().catch(() => { vid.muted = true; vid.volume = 0; setMuted(true); });
+
+    // 1. DOM synchrone (meme callstack que le geste → navigateur accepte)
+    if (vid) {
+      vid.muted  = newMuted;
+      vid.volume = newMuted ? 0 : 1;
+      // Si on unmute et video en pause → relancer
+      if (!newMuted && vid.paused && isActive) {
+        vid.play().catch(() => { vid.muted = true; setMuted(true); });
+        return; // setMuted sera appele si play() echoue
+      }
     }
-  }, [muted]);
+
+    // 2. State React (re-render icone)
+    setMuted(newMuted);
+  }, [muted, isActive]);
 
   const handleCommentSubmit = async () => {
     if (!newComment.trim() || !currentUser) return;
@@ -310,7 +364,7 @@ const AggregatedCard = ({ content, isActive }) => {
     e.stopPropagation();
     const url = content.externalUrl || window.location.href;
     if (navigator.share) { try { await navigator.share({ title: content.title, url }); } catch {} }
-    else { navigator.clipboard.writeText(url); alert('Lien copié !'); }
+    else { navigator.clipboard.writeText(url); alert('Lien copie !'); }
   };
 
   return (
@@ -318,8 +372,13 @@ const AggregatedCard = ({ content, isActive }) => {
 
       {isVideo && content.isEmbed && <EmbedVideo content={content} isActive={isActive} />}
       {isVideo && !content.isEmbed && (
-        <DirectVideo content={content} isActive={isActive} muted={muted} videoRef={videoRef}
-          onTogglePlay={handleTogglePlay} onTimeUpdate={handleTimeUpdate} onDoubleTap={handleDoubleTap} />
+        <DirectVideo content={content} isActive={isActive} muted={muted}
+          onMutedChange={setMuted}
+          videoRef={videoRef}
+          onTogglePlay={handleTogglePlay}
+          onTimeUpdate={handleTimeUpdate}
+          onDoubleTap={handleDoubleTap}
+        />
       )}
       {isImage && <ImageContent content={content} onDoubleTap={handleDoubleTap} />}
       {isText  && <ArticleContent content={content} />}
@@ -337,8 +396,6 @@ const AggregatedCard = ({ content, isActive }) => {
           <FaPlay className="text-white/50 text-6xl animate-pulse" />
         </div>
       )}
-
-      {/* ✅ Badge source supprimé */}
 
       <AnimatePresence>
         {showHeart && (
@@ -420,11 +477,11 @@ const AggregatedCard = ({ content, isActive }) => {
               onClick={(e) => e.stopPropagation()}>
               <div className="p-4 border-b border-gray-800 flex justify-between items-center">
                 <span className="font-bold text-white">Commentaires</span>
-                <button onClick={() => setShowComments(false)} className="text-gray-400 p-2">✕</button>
+                <button onClick={() => setShowComments(false)} className="text-gray-400 p-2">x</button>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {localComments.length === 0 && (
-                  <p className="text-gray-500 text-center text-sm mt-8">Sois le premier à commenter !</p>
+                  <p className="text-gray-500 text-center text-sm mt-8">Sois le premier a commenter !</p>
                 )}
                 {localComments.map((c, i) => (
                   <div key={c._id || i} className="flex gap-3 items-start">

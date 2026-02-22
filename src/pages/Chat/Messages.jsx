@@ -1,6 +1,8 @@
 // ============================================
 // 📁 src/Pages/chat/Messages.jsx
-// VERSION FINALE - AVEC OUVERTURE AUTO CONVERSATION
+// ✅ Contacts venant du profil → sauvegardés dans onAppContacts (onglet "Sur l'app")
+// ✅ Contacts téléphone natif → uniquement dans onglet "Téléphone"
+// ✅ Tout le reste inchangé
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -38,6 +40,24 @@ import {
   vibrateCall,
   stopVibration
 } from "../../utils/callSounds";
+
+// ─────────────────────────────────────────────
+// ✅ HELPER — Ajouter/mettre à jour un contact dans onAppContacts (localStorage)
+// Utilisé quand on arrive depuis ProfileHeader ou quand on reçoit un message
+// ─────────────────────────────────────────────
+const saveContactToOnApp = (contact) => {
+  if (!contact?.id) return;
+  try {
+    const stored = localStorage.getItem("onAppContacts");
+    const existing = stored ? JSON.parse(stored) : [];
+    const withoutDup = existing.filter(c => c.id !== contact.id);
+    // Mettre le contact en tête de liste
+    const updated = [contact, ...withoutDup];
+    localStorage.setItem("onAppContacts", JSON.stringify(updated));
+  } catch (e) {
+    console.warn("saveContactToOnApp error:", e);
+  }
+};
 
 export default function Messages() {
   // ========== 1. CONTEXTS ==========
@@ -90,14 +110,12 @@ export default function Messages() {
       showToast("Connexion socket requise", "error");
       return false;
     }
-    console.log(`📞 [Messages] Initiation appel ${callType} vers:`, recipientId);
     socket.emit("startCall", { recipientId, type: callType, callerId: user?.id });
     return true;
   }, [socket, user, showToast]);
 
   const socketEndCall = useCallback((callId) => {
     if (socket && socket.connected && callId) {
-      console.log(`📴 [Messages] Fin d'appel:`, callId);
       socket.emit("endCall", { callId });
     }
   }, [socket]);
@@ -133,24 +151,15 @@ export default function Messages() {
 
   const loadContacts = useCallback(async () => {
     if (!token) return;
-    
     try {
       const cachedContacts = await messageCache.getContacts();
-      if (cachedContacts.length > 0) {
-        console.log(`📦 [Messages] ${cachedContacts.length} contacts depuis cache`);
-        setContacts(cachedContacts);
-      }
-
+      if (cachedContacts.length > 0) setContacts(cachedContacts);
       const result = await API.getContacts(token);
       const contactsList = result.contacts || [];
-      
-      console.log(`👥 [Messages] ${contactsList.length} contacts chargés du serveur`);
-      
       if (contactsList.length > 0) {
         await messageCache.saveContacts(contactsList);
         setContacts(contactsList);
       }
-      
     } catch (error) {
       console.error('❌ [Messages] Erreur chargement contacts:', error);
     }
@@ -158,43 +167,45 @@ export default function Messages() {
 
   const loadConversations = useCallback(async () => {
     if (!token) return;
-    
     try {
       setLoading(true);
-
       const cachedConversations = await messageCache.getConversations();
       if (cachedConversations.length > 0) {
-        console.log(`📦 [Messages] ${cachedConversations.length} conversations depuis cache`);
         setConversations(cachedConversations);
-        
         const counts = {};
         cachedConversations.forEach(conv => {
-          if (conv.unreadCount > 0) {
-            counts[conv.id] = conv.unreadCount;
-          }
+          if (conv.unreadCount > 0) counts[conv.id] = conv.unreadCount;
         });
         setUnreadCounts(counts);
         setLoading(false);
       }
-
       const result = await API.getConversations(token);
       const freshConversations = result.conversations || [];
-      
-      console.log(`📊 [Messages] ${freshConversations.length} conversations du serveur`);
-      
       if (freshConversations.length > 0) {
         await messageCache.saveConversations(freshConversations);
         setConversations(freshConversations);
-        
+
+        // ✅ Synchroniser les conversations avec onAppContacts
+        // Chaque personne avec qui on a une conversation = contact "Sur l'app"
+        freshConversations.forEach(conv => {
+          if (conv.id) {
+            saveContactToOnApp({
+              id: conv.id,
+              fullName: conv.fullName,
+              username: conv.username,
+              profilePhoto: conv.profilePhoto,
+              isOnline: conv.isOnline,
+              lastSeen: conv.lastSeen,
+            });
+          }
+        });
+
         const counts = {};
         freshConversations.forEach(conv => {
-          if (conv.unreadCount > 0) {
-            counts[conv.id] = conv.unreadCount;
-          }
+          if (conv.unreadCount > 0) counts[conv.id] = conv.unreadCount;
         });
         setUnreadCounts(counts);
       }
-      
     } catch (error) {
       console.error('❌ [Messages] Erreur chargement conversations:', error);
       showToast('Erreur de chargement', 'error');
@@ -205,39 +216,24 @@ export default function Messages() {
 
   const loadMessages = useCallback(async (contactId) => {
     if (!contactId || !token || !user?.id) return;
-    
     setLoading(true);
-    
     try {
       const cachedMessages = await messageCache.getMessages(user.id, contactId);
       if (cachedMessages.length > 0) {
-        console.log(`📦 [Messages] ${cachedMessages.length} messages depuis cache`);
         setMessages(cachedMessages);
         setLoading(false);
-        
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-        }, 100);
+        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
       }
-
       const result = await API.getMessages(token, contactId);
       const msgList = Array.isArray(result) ? result : (result.messages || []);
-      
-      console.log(`📨 [Messages] ${msgList.length} messages du serveur`);
-      
       if (msgList.length > 0) {
         await messageCache.saveMessages(user.id, contactId, msgList);
         setMessages(msgList);
       }
-      
       if (socket && socket.connected) {
         socket.emit("markMessagesAsRead", { senderId: contactId });
       }
-      
-      setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-      }, 100);
-      
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
     } catch (error) {
       console.error('❌ [Messages] Erreur chargement messages:', error);
       showToast('Impossible de charger les messages', 'error');
@@ -247,33 +243,40 @@ export default function Messages() {
   }, [token, socket, showToast, user]);
 
   const handleSyncComplete = useCallback((newContacts) => {
-    console.log(`📲 [Messages] ${newContacts.length} nouveaux contacts synchronisés`);
-    
     loadContacts();
     loadConversations();
-    
     if (newContacts.length > 0) {
       showToast(`${newContacts.length} nouveaux amis trouvés !`, "success");
     }
   }, [loadContacts, loadConversations, showToast]);
 
   const handleContactSelect = useCallback((contact) => {
-    console.log('📱 [Messages] Contact sélectionné:', contact);
-    setSelectedContact(contact);
+    // ✅ Normaliser l'objet contact (id peut être _id ou id selon la source)
+    const normalized = {
+      id: contact.id || contact._id,
+      fullName: contact.fullName,
+      username: contact.username,
+      profilePhoto: contact.profilePhoto,
+      isOnline: contact.isOnline,
+      lastSeen: contact.lastSeen,
+    };
+
+    // ✅ Sauvegarder dans onAppContacts → apparaît dans l'onglet "Sur l'app"
+    saveContactToOnApp(normalized);
+
+    setSelectedContact(normalized);
     setMessages([]);
-    loadMessages(contact.id);
+    loadMessages(normalized.id);
     setView('chat');
-    
     setUnreadCounts(prev => {
       const newCounts = { ...prev };
-      delete newCounts[contact.id];
+      delete newCounts[normalized.id];
       return newCounts;
     });
   }, [loadMessages]);
 
   const handleInputChange = useCallback((e) => {
     setInput(e.target.value);
-    
     if (socket && socket.connected && selectedContact) {
       socket.emit("typing", { 
         recipientId: selectedContact.id, 
@@ -302,37 +305,21 @@ export default function Messages() {
     };
     
     setMessages(prev => [...prev, tempMessage]);
-    
-    try {
-      playSendSound();
-    } catch (e) {
-      console.warn('Son non disponible:', e);
-    }
-    
-    try {
-      await messageCache.addMessage(user.id, selectedContact.id, tempMessage);
-    } catch (error) {
-      console.error('❌ [Messages] Erreur ajout cache:', error);
-    }
+    try { playSendSound(); } catch {}
+    try { await messageCache.addMessage(user.id, selectedContact.id, tempMessage); } catch {}
     
     socket.emit("sendMessage", messageData);
     setInput("");
     
-    if (socket) {
-      socket.emit("typing", { recipientId: selectedContact.id, isTyping: false });
-    }
-    
+    if (socket) socket.emit("typing", { recipientId: selectedContact.id, isTyping: false });
   }, [selectedContact, input, socket, user]);
 
   const handleFileUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file || !selectedContact) return;
-    
     showToast('📤 Upload en cours...', 'info');
-    
     try {
       const uploadResponse = await API.uploadMessageFile(token, file);
-      
       if (uploadResponse.success && uploadResponse.url) {
         const messageData = {
           recipientId: selectedContact.id,
@@ -343,45 +330,33 @@ export default function Messages() {
           fileName: file.name,
           fileSize: file.size
         };
-        
         socket.emit("sendMessage", messageData);
         showToast('✅ Fichier envoyé !', 'success');
       }
     } catch (error) {
-      console.error('❌ [Messages] Erreur upload:', error);
       showToast('❌ Erreur d\'envoi', 'error');
     }
-    
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }, [selectedContact, token, socket, showToast]);
 
   const handleSendAudio = useCallback(async () => {
     if (!audioBlob || !selectedContact) return;
-    
     try {
       showToast('📤 Envoi du message vocal...', 'info');
-      
       const audioFile = new File([audioBlob], 'audio.webm', { type: 'audio/webm' });
       const uploadResponse = await API.uploadMessageFile(token, audioFile);
-      
       if (uploadResponse.success && uploadResponse.url) {
-        const messageData = {
+        socket.emit("sendMessage", {
           recipientId: selectedContact.id,
           content: 'Message vocal',
           type: 'audio',
           file: uploadResponse.url,
           fileUrl: uploadResponse.url
-        };
-        
-        socket.emit("sendMessage", messageData);
+        });
         showToast('✅ Message vocal envoyé !', 'success');
       }
-      
       cancelRecording();
     } catch (error) {
-      console.error('❌ [Messages] Erreur envoi audio:', error);
       showToast('❌ Erreur lors de l\'envoi', 'error');
     }
   }, [audioBlob, selectedContact, token, socket, cancelRecording, showToast]);
@@ -394,16 +369,12 @@ export default function Messages() {
   const handlePhoneSubmit = useCallback(async (phoneNumber) => {
     try {
       const response = await API.updatePhone(token, phoneNumber);
-      
       if (response.success) {
-        if (updateUserProfile) {
-          updateUserProfile(user.id, response.user);
-        }
+        if (updateUserProfile) updateUserProfile(user.id, response.user);
         showToast("Numéro enregistré ! 🎉", "success");
         setShowPhoneModal(false);
       }
     } catch (error) {
-      console.error('❌ [Messages] Erreur update phone:', error);
       throw error;
     }
   }, [token, updateUserProfile, user, showToast]);
@@ -411,7 +382,6 @@ export default function Messages() {
   const handleAddContact = useCallback(async (contactData) => {
     try {
       const result = await API.addContact(token, contactData);
-      
       if (result.success) {
         showToast('✅ Contact ajouté !', 'success');
         loadContacts();
@@ -421,7 +391,6 @@ export default function Messages() {
         showToast('Contact hors app - invitation disponible', 'info');
       }
     } catch (error) {
-      console.error('❌ [Messages] Erreur ajout contact:', error);
       throw error;
     }
   }, [token, loadContacts, loadConversations, showToast]);
@@ -434,91 +403,31 @@ export default function Messages() {
       loadConversations();
       setShowPendingModal(false);
     } catch (error) {
-      console.error('❌ [Messages] Erreur acceptation:', error);
       showToast('❌ Impossible d\'accepter', 'error');
     }
   }, [token, loadContacts, loadConversations, showToast]);
 
   const handleVideoCall = useCallback(() => {
-    if (!selectedContact) {
-      showToast("Aucun contact sélectionné", "error");
-      return;
-    }
-    console.log('📹 [Messages] Démarrage appel vidéo vers:', selectedContact.fullName);
-    
-    try {
-      playCallConnectedSound();
-    } catch (e) {
-      console.warn('Son non disponible:', e);
-    }
-    
-    setCall({
-      on: true,
-      type: 'video',
-      friend: selectedContact,
-      mute: false,
-      video: true,
-      isIncoming: false,
-      callId: null
-    });
-    
+    if (!selectedContact) { showToast("Aucun contact sélectionné", "error"); return; }
+    try { playCallConnectedSound(); } catch {}
+    setCall({ on: true, type: 'video', friend: selectedContact, mute: false, video: true, isIncoming: false, callId: null });
     startCall('video');
   }, [selectedContact, startCall, showToast, setCall]);
 
   const handleAudioCall = useCallback(() => {
-    if (!selectedContact) {
-      showToast("Aucun contact sélectionné", "error");
-      return;
-    }
-    console.log('📞 [Messages] Démarrage appel audio vers:', selectedContact.fullName);
-    
-    try {
-      playCallConnectedSound();
-    } catch (e) {
-      console.warn('Son non disponible:', e);
-    }
-    
-    setCall({
-      on: true,
-      type: 'audio',
-      friend: selectedContact,
-      mute: false,
-      video: false,
-      isIncoming: false,
-      callId: null
-    });
-    
+    if (!selectedContact) { showToast("Aucun contact sélectionné", "error"); return; }
+    try { playCallConnectedSound(); } catch {}
+    setCall({ on: true, type: 'audio', friend: selectedContact, mute: false, video: false, isIncoming: false, callId: null });
     startCall('audio');
   }, [selectedContact, startCall, showToast, setCall]);
 
   const handleAcceptCall = useCallback(() => {
     if (incomingCall && socket) {
-      console.log('✅ [Messages] Acceptation appel:', incomingCall.callId);
-      
-      if (ringtoneRef.current) {
-        ringtoneRef.current.stop();
-        ringtoneRef.current = null;
-      }
+      if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
       stopVibration();
-      
-      try {
-        playCallConnectedSound();
-      } catch (e) {
-        console.warn('Son non disponible:', e);
-      }
-      
+      try { playCallConnectedSound(); } catch {}
       socket.emit('acceptCall', { callId: incomingCall.callId });
-      
-      setCall({
-        on: true,
-        type: incomingCall.type,
-        friend: incomingCall.caller,
-        mute: false,
-        video: incomingCall.type === 'video',
-        isIncoming: true,
-        callId: incomingCall.callId
-      });
-      
+      setCall({ on: true, type: incomingCall.type, friend: incomingCall.caller, mute: false, video: incomingCall.type === 'video', isIncoming: true, callId: incomingCall.callId });
       setIncomingCall(null);
       cleanupCallRingtone();
     }
@@ -526,20 +435,9 @@ export default function Messages() {
 
   const handleRejectCall = useCallback(() => {
     if (incomingCall && socket) {
-      console.log('❌ [Messages] Rejet appel:', incomingCall.callId);
-      
-      if (ringtoneRef.current) {
-        ringtoneRef.current.stop();
-        ringtoneRef.current = null;
-      }
+      if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
       stopVibration();
-      
-      try {
-        playCallRejectedSound();
-      } catch (e) {
-        console.warn('Son non disponible:', e);
-      }
-      
+      try { playCallRejectedSound(); } catch {}
       socket.emit('rejectCall', { callId: incomingCall.callId });
       sendMissedCallMessage(incomingCall.caller, incomingCall.type);
       setIncomingCall(null);
@@ -557,32 +455,19 @@ export default function Messages() {
     }
   }, [view]);
 
-  const handleGoHome = useCallback(() => {
-    navigate('/');
-  }, [navigate]);
-
-  const handleGoToConversations = useCallback(() => {
-    setView('conversations');
-    setSelectedContact(null);
-  }, []);
+  const handleGoHome = useCallback(() => navigate('/'), [navigate]);
+  const handleGoToConversations = useCallback(() => { setView('conversations'); setSelectedContact(null); }, []);
 
   const handleDeleteMessage = useCallback(async (messageId) => {
     if (!selectedContact || !user?.id) return;
-    
     try {
       setMessages(prev => prev.filter(msg => msg._id !== messageId));
       await messageCache.deleteMessage(user.id, selectedContact.id, messageId);
-      
       if (socket && socket.connected) {
-        socket.emit("deleteMessage", {
-          messageId,
-          conversationId: selectedContact.id
-        });
+        socket.emit("deleteMessage", { messageId, conversationId: selectedContact.id });
       }
-      
       showToast('Message supprimé', 'success');
     } catch (error) {
-      console.error('❌ [Messages] Erreur suppression:', error);
       showToast('Erreur lors de la suppression', 'error');
     }
   }, [selectedContact, user, socket, showToast]);
@@ -594,18 +479,29 @@ export default function Messages() {
     loadConversations();
   }, [loadContacts, loadConversations]);
 
-  // ✅ GESTION OUVERTURE AUTO DEPUIS PROFILEHEADER
+  // ✅ OUVERTURE AUTO DEPUIS PROFILEHEADER
+  // Le contact reçu est sauvegardé dans onAppContacts → visible dans "Sur l'app"
   useEffect(() => {
     if (location.state?.selectedContact && location.state?.openChat) {
       const contact = location.state.selectedContact;
-      
-      console.log('💬 [Messages] Ouverture automatique conversation depuis profil:', contact);
-      
-      setSelectedContact(contact);
+
+      // ✅ Normaliser et sauvegarder dans l'onglet "Sur l'app"
+      const normalized = {
+        id: contact.id || contact._id,
+        fullName: contact.fullName,
+        username: contact.username,
+        profilePhoto: contact.profilePhoto,
+        isOnline: contact.isOnline,
+        lastSeen: contact.lastSeen,
+      };
+
+      saveContactToOnApp(normalized);
+
+      setSelectedContact(normalized);
       setMessages([]);
-      loadMessages(contact.id);
+      loadMessages(normalized.id);
       setView('chat');
-      
+
       // Nettoyer le state de navigation
       navigate('/messages', { replace: true, state: {} });
     }
@@ -613,17 +509,9 @@ export default function Messages() {
 
   useEffect(() => {
     if (!socket || !socket.connected) return;
-
-    const handleOnlineUsers = (users) => {
-      console.log('🟢 [Messages] Utilisateurs en ligne:', users);
-      setOnlineUsers(users || []);
-    };
-
+    const handleOnlineUsers = (users) => setOnlineUsers(users || []);
     socket.on("onlineUsers", handleOnlineUsers);
-    
-    return () => {
-      socket.off("onlineUsers", handleOnlineUsers);
-    };
+    return () => socket.off("onlineUsers", handleOnlineUsers);
   }, [socket]);
 
   useEffect(() => {
@@ -635,32 +523,13 @@ export default function Messages() {
       const isCurrentChat = selectedContact && (senderId === selectedContact.id || recipientId === selectedContact.id);
 
       if (isCurrentChat) {
-        try {
-          playReceiveSound();
-        } catch (e) {
-          console.warn('Son non disponible:', e);
-        }
-        
-        try {
-          await messageCache.addMessage(user.id, selectedContact.id, message);
-        } catch (error) {
-          console.error('❌ [Messages] Erreur cache message reçu:', error);
-        }
-
-        setMessages(prev => [...prev, message].sort((a, b) => 
-          new Date(a.timestamp) - new Date(b.timestamp)
-        ));
-        
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-        }, 100);
+        try { playReceiveSound(); } catch {}
+        try { await messageCache.addMessage(user.id, selectedContact.id, message); } catch {}
+        setMessages(prev => [...prev, message].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)));
+        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
       } else {
-        setUnreadCounts(prev => ({
-          ...prev,
-          [senderId]: (prev[senderId] || 0) + 1
-        }));
+        setUnreadCounts(prev => ({ ...prev, [senderId]: (prev[senderId] || 0) + 1 }));
       }
-      
       loadConversations();
     };
 
@@ -669,34 +538,22 @@ export default function Messages() {
         if (selectedContact?.id && user?.id) {
           await messageCache.addMessage(user.id, selectedContact.id, message);
         }
-      } catch (error) {
-        console.error('❌ [Messages] Erreur cache message envoyé:', error);
-      }
-
+      } catch {}
       setMessages(prev => {
-        const filtered = prev.filter(m => 
-          m.status !== 'sending' || m.content !== message.content
-        );
-        return [...filtered, message].sort((a, b) => 
-          new Date(a.timestamp) - new Date(b.timestamp)
-        );
+        const filtered = prev.filter(m => m.status !== 'sending' || m.content !== message.content);
+        return [...filtered, message].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
       });
-      
       loadConversations();
     };
 
     const handleTyping = ({ userId, isTyping }) => {
-      if (isTyping) {
-        setTypingUsers(prev => [...new Set([...prev, userId])]);
-      } else {
-        setTypingUsers(prev => prev.filter(id => id !== userId));
-      }
+      if (isTyping) setTypingUsers(prev => [...new Set([...prev, userId])]);
+      else setTypingUsers(prev => prev.filter(id => id !== userId));
     };
 
     socket.on("receiveMessage", handleReceiveMessage);
     socket.on("messageSent", handleMessageSent);
     socket.on("typing", handleTyping);
-
     return () => {
       socket.off("receiveMessage", handleReceiveMessage);
       socket.off("messageSent", handleMessageSent);
@@ -708,64 +565,23 @@ export default function Messages() {
     if (!socket || !socket.connected) return;
 
     const handleIncomingCall = ({ callId, from, caller, type }) => {
-      console.log('📞 [Messages] Appel entrant:', { callId, from, type });
-      
-      const friend = contacts.find(c => c.id === from) || { 
-        id: from, 
-        fullName: caller?.fullName || "Anonyme" 
-      };
-
-      if (!ringtoneRef.current) {
-        ringtoneRef.current = new CallRingtone();
-        ringtoneRef.current.start();
-      }
-      
-      try {
-        vibrateCall();
-      } catch (e) {
-        console.warn('Vibration non disponible:', e);
-      }
-
+      const friend = contacts.find(c => c.id === from) || { id: from, fullName: caller?.fullName || "Anonyme" };
+      if (!ringtoneRef.current) { ringtoneRef.current = new CallRingtone(); ringtoneRef.current.start(); }
+      try { vibrateCall(); } catch {}
       setIncomingCall({ callId, caller: friend, type });
     };
 
     const handleCallRejected = () => {
-      console.log('❌ [Messages] Appel rejeté');
-      
-      try {
-        playCallRejectedSound();
-      } catch (e) {
-        console.warn('Son non disponible:', e);
-      }
-      
+      try { playCallRejectedSound(); } catch {}
       cleanupCallRingtone();
       showToast("Appel occupé", "info");
-      setCall({
-        on: false,
-        type: null,
-        friend: null,
-        mute: false,
-        video: true,
-        isIncoming: false,
-        callId: null
-      });
+      setCall({ on: false, type: null, friend: null, mute: false, video: true, isIncoming: false, callId: null });
     };
 
     const handleCallEnded = () => {
-      console.log('📴 [Messages] Appel terminé');
-      
-      try {
-        playCallEndedSound();
-      } catch (e) {
-        console.warn('Son non disponible:', e);
-      }
-      
-      if (ringtoneRef.current) {
-        ringtoneRef.current.stop();
-        ringtoneRef.current = null;
-      }
+      try { playCallEndedSound(); } catch {}
+      if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
       stopVibration();
-      
       cleanupCallRingtone();
       endCall();
     };
@@ -773,7 +589,6 @@ export default function Messages() {
     socket.on("incoming-call", handleIncomingCall);
     socket.on("call-rejected", handleCallRejected);
     socket.on("call-ended", handleCallEnded);
-
     return () => {
       socket.off("incoming-call", handleIncomingCall);
       socket.off("call-rejected", handleCallRejected);
@@ -784,10 +599,7 @@ export default function Messages() {
   useEffect(() => {
     return () => {
       cleanupCallRingtone();
-      if (ringtoneRef.current) {
-        ringtoneRef.current.stop();
-        ringtoneRef.current = null;
-      }
+      if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
       stopVibration();
     };
   }, [cleanupCallRingtone]);
@@ -796,9 +608,7 @@ export default function Messages() {
     const cleanupInterval = setInterval(() => {
       messageCache.cleanOldMessages(30).catch(console.error);
     }, 24 * 60 * 60 * 1000);
-
     messageCache.cleanOldMessages(30).catch(console.error);
-
     return () => clearInterval(cleanupInterval);
   }, []);
 
@@ -809,17 +619,12 @@ export default function Messages() {
       {/* VUE CONTACTS */}
       {view === 'contacts' && (
         <motion.div
-          initial={{ x: -20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: -20, opacity: 0 }}
+          initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -20, opacity: 0 }}
           className="w-full h-full flex flex-col"
         >
           <div className="bg-[#12151a]/90 backdrop-blur-xl border-b border-white/5 p-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button 
-                onClick={handleGoHome} 
-                className="p-2 hover:bg-white/5 rounded-full transition-colors"
-              >
+              <button onClick={handleGoHome} className="p-2 hover:bg-white/5 rounded-full transition-colors">
                 <Home size={20} />
               </button>
               <div className="flex items-center gap-2">
@@ -861,17 +666,12 @@ export default function Messages() {
       {/* VUE CONVERSATIONS */}
       {view === 'conversations' && (
         <motion.div
-          initial={{ x: 20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: 20, opacity: 0 }}
+          initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 20, opacity: 0 }}
           className="w-full h-full flex flex-col"
         >
           <div className="bg-[#12151a]/90 backdrop-blur-xl border-b border-white/5 p-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <button 
-                onClick={handleBack} 
-                className="p-2 hover:bg-white/5 rounded-full transition-colors"
-              >
+              <button onClick={handleBack} className="p-2 hover:bg-white/5 rounded-full transition-colors">
                 <ArrowLeft size={20} />
               </button>
               <div className="flex items-center gap-2">
@@ -880,17 +680,11 @@ export default function Messages() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setView('contacts')}
-                className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl transition-all"
-              >
+              <button onClick={() => setView('contacts')} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl transition-all">
                 <Users size={18} />
                 <span className="text-sm font-semibold">Contacts</span>
               </button>
-              <button 
-                onClick={handleGoHome} 
-                className="p-2 hover:bg-white/5 rounded-full transition-colors"
-              >
+              <button onClick={handleGoHome} className="p-2 hover:bg-white/5 rounded-full transition-colors">
                 <Home size={20} />
               </button>
             </div>
@@ -919,11 +713,10 @@ export default function Messages() {
                   >
                     <div className="relative flex-shrink-0">
                       <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-xl font-black overflow-hidden">
-                        {conv.profilePhoto ? (
-                          <img src={conv.profilePhoto} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          conv.fullName?.[0]?.toUpperCase() || '?'
-                        )}
+                        {conv.profilePhoto
+                          ? <img src={conv.profilePhoto} alt="" className="w-full h-full object-cover" />
+                          : conv.fullName?.[0]?.toUpperCase() || '?'
+                        }
                       </div>
                       {conv.isOnline && (
                         <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-[#12151a]" />
@@ -960,9 +753,7 @@ export default function Messages() {
       {/* VUE CHAT */}
       {view === 'chat' && selectedContact && (
         <motion.div
-          initial={{ x: 20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: 20, opacity: 0 }}
+          initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 20, opacity: 0 }}
           className="w-full h-full flex flex-col"
         >
           <ChatHeader
@@ -974,7 +765,6 @@ export default function Messages() {
             onAudioCall={handleAudioCall}
             onBack={handleBack}
           />
-
           <MessagesList
             messages={messages}
             currentUserId={user?.id}
@@ -983,7 +773,6 @@ export default function Messages() {
             conversationId={selectedContact?.id}
             onDeleteMessage={handleDeleteMessage}
           />
-
           <ChatInput
             input={input}
             onChange={handleInputChange}
@@ -1011,22 +800,11 @@ export default function Messages() {
 
       {/* MODALES */}
       {showPhoneModal && (
-        <PhoneNumberModal
-          isOpen={showPhoneModal}
-          onClose={() => setShowPhoneModal(false)}
-          onSubmit={handlePhoneSubmit}
-          canSkip={true}
-        />
+        <PhoneNumberModal isOpen={showPhoneModal} onClose={() => setShowPhoneModal(false)} onSubmit={handlePhoneSubmit} canSkip={true} />
       )}
-
       {showAddContact && (
-        <AddContactModal
-          isOpen={showAddContact}
-          onClose={() => setShowAddContact(false)}
-          onAdd={handleAddContact}
-        />
+        <AddContactModal isOpen={showAddContact} onClose={() => setShowAddContact(false)} onAdd={handleAddContact} />
       )}
-
       {showPendingModal && (
         <PendingMessagesModal
           isOpen={showPendingModal}
@@ -1037,17 +815,11 @@ export default function Messages() {
               await API.rejectMessageRequest(token, requestId);
               showToast('Demande rejetée', 'info');
               loadConversations();
-            } catch (error) {
-              showToast('Erreur', 'error');
-            }
+            } catch { showToast('Erreur', 'error'); }
           }}
-          onOpenConversation={(request) => {
-            handleContactSelect(request.sender);
-            setShowPendingModal(false);
-          }}
+          onOpenConversation={(request) => { handleContactSelect(request.sender); setShowPendingModal(false); }}
         />
       )}
-
       {call.on && (
         <CallManager
           call={call}
@@ -1056,7 +828,6 @@ export default function Messages() {
           onToggleVideo={() => setCall(prev => ({ ...prev, video: !prev.video }))}
         />
       )}
-
       {incomingCall && (
         <IncomingCallModal
           caller={incomingCall.caller}
@@ -1065,7 +836,6 @@ export default function Messages() {
           onReject={handleRejectCall}
         />
       )}
-
       {missedCallNotification && (
         <div className="fixed bottom-4 right-4 bg-red-500/90 backdrop-blur-sm text-white px-6 py-3 rounded-lg shadow-lg z-50">
           <p className="font-semibold">Appel manqué</p>
