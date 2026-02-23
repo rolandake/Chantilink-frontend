@@ -1,22 +1,19 @@
-// src/pages/Auth/AuthPage.jsx - VERSION LITE AUTO-LOGIN ⚡
-import React, { useState, useEffect, useRef } from "react";
+// src/pages/Auth/AuthPage.jsx
+// ✅ Fix accessibilité : aria-label sur bouton show/hide password
+// ✅ Fix accessibilité : zones tactiles min 44x44px
+// ✅ Fix CLS : transition-shadow au lieu de transition-colors sur les inputs
+//             (border-color est non-composite → cause CLS, box-shadow est composite)
+// ✅ Fix INP : validate() enveloppé dans startTransition
+
+import React, { useState, useEffect, useRef, startTransition } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Eye,
-  EyeOff,
-  Mail,
-  Lock,
-  User,
-  XCircle,
-  CheckCircle,
-  ArrowRight,
-  Shield,
-  Loader2,
+  Eye, EyeOff, Mail, Lock, User,
+  XCircle, CheckCircle, ArrowRight, Shield, Loader2,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useNavigate } from "react-router-dom";
 
-// Toast Component
 const Toast = React.memo(
   React.forwardRef(({ notification }, ref) => (
     <motion.div
@@ -52,21 +49,18 @@ export default function AuthPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notifications, setNotifications] = useState([]);
-  const [rememberMe, setRememberMe] = useState(true); // ✅ Activé par défaut
+  const [rememberMe, setRememberMe] = useState(true);
   const firstInputRef = useRef(null);
 
-  // ✅ AUTO-LOGIN : Redirection immédiate si déjà connecté
   useEffect(() => {
     if (isAuthenticated && !authLoading) {
       navigate("/", { replace: true });
     }
   }, [isAuthenticated, authLoading, navigate]);
 
-  // ✅ RESTAURATION : Charger email/password sauvegardés
   useEffect(() => {
     const savedEmail = localStorage.getItem("chantilink_email");
     const savedRemember = localStorage.getItem("chantilink_remember") === "true";
-    
     if (savedEmail && savedRemember) {
       setForm(prev => ({ ...prev, email: savedEmail }));
       setRememberMe(true);
@@ -75,23 +69,20 @@ export default function AuthPage() {
 
   useEffect(() => {
     firstInputRef.current?.focus();
-    setForm({ fullName: "", email: form.email, password: "" }); // Garde l'email
+    setForm(prev => ({ fullName: "", email: prev.email, password: "" }));
     setErrors({});
   }, [isRegister]);
 
   const notify = (type, message) => {
     const id = Date.now();
-    setNotifications((prev) => [...prev, { id, type, message }]);
-    setTimeout(
-      () => setNotifications((prev) => prev.filter((n) => n.id !== id)),
-      3000
-    );
+    setNotifications(prev => [...prev, { id, type, message }]);
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 3000);
   };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
-    if (errors[name]) setErrors((prev) => ({ ...prev, [name]: "" }));
+    setForm(prev => ({ ...prev, [name]: value }));
+    if (errors[name]) setErrors(prev => ({ ...prev, [name]: "" }));
   };
 
   const validate = () => {
@@ -100,26 +91,17 @@ export default function AuthPage() {
 
     if (isRegister) {
       const name = form.fullName?.trim();
-      if (!name) {
-        newErrors.fullName = "Nom requis";
-      } else if (name.length < 3) {
-        newErrors.fullName = "Min 3 caractères";
-      }
+      if (!name) newErrors.fullName = "Nom requis";
+      else if (name.length < 3) newErrors.fullName = "Min 3 caractères";
     }
 
     const email = form.email?.trim();
-    if (!email) {
-      newErrors.email = "Email requis";
-    } else if (!emailRegex.test(email)) {
-      newErrors.email = "Email invalide";
-    }
+    if (!email) newErrors.email = "Email requis";
+    else if (!emailRegex.test(email)) newErrors.email = "Email invalide";
 
     const password = form.password?.trim();
-    if (!password) {
-      newErrors.password = "Mot de passe requis";
-    } else if (password.length < 6) {
-      newErrors.password = "Min 6 caractères";
-    }
+    if (!password) newErrors.password = "Mot de passe requis";
+    else if (password.length < 6) newErrors.password = "Min 6 caractères";
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -127,25 +109,32 @@ export default function AuthPage() {
 
   const submit = async (e) => {
     e.preventDefault();
-    
     if (loading) return;
-    if (!validate()) {
+
+    // ✅ Fix INP : la validation (setState) est non-urgente → startTransition
+    // React traite en priorité les interactions utilisateur pendant ce calcul
+    let isValid = false;
+    startTransition(() => {
+      isValid = validate();
+    });
+
+    // Petit délai pour laisser startTransition terminer avant l'async
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (!isValid) {
       notify("error", "Veuillez corriger les erreurs");
       return;
     }
 
     setLoading(true);
-    
+
     try {
       const email = form.email.trim().toLowerCase();
       const password = form.password.trim();
-      
+
       if (isRegister) {
         const fullName = form.fullName.trim();
         const result = await register(fullName, email, password);
-        
         if (result?.success) {
-          // ✅ Sauvegarder les identifiants après inscription
           if (rememberMe) {
             localStorage.setItem("chantilink_email", email);
             localStorage.setItem("chantilink_remember", "true");
@@ -157,9 +146,7 @@ export default function AuthPage() {
         }
       } else {
         const result = await login(email, password);
-        
         if (result?.success) {
-          // ✅ Sauvegarder les identifiants si "Se souvenir"
           if (rememberMe) {
             localStorage.setItem("chantilink_email", email);
             localStorage.setItem("chantilink_remember", "true");
@@ -181,14 +168,15 @@ export default function AuthPage() {
     }
   };
 
+  // ✅ Fix CLS : suppression de transition-colors (anime border-color = non-composite)
+  // Remplacement par focus:ring (box-shadow = composite → zéro CLS)
   const inputClass = (field) =>
-    `w-full px-4 py-3 pl-12 rounded-xl border-2 transition-colors duration-200 bg-white/10 backdrop-blur-lg text-white placeholder:text-white/60 ${
+    `w-full px-4 py-3 pl-12 rounded-xl border-2 bg-white/10 backdrop-blur-lg text-white placeholder:text-white/60 outline-none transition-shadow duration-200 ${
       errors[field]
-        ? "border-red-400 focus:border-red-500"
-        : "border-white/30 focus:border-orange-400"
+        ? "border-red-400 ring-2 ring-red-400/50"
+        : "border-white/30 focus:ring-2 focus:ring-orange-400/60"
     }`;
 
-  // ✅ Afficher loader pendant vérification auto-login
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#1a1a2e] via-[#162447] to-[#1f4068]">
@@ -202,24 +190,19 @@ export default function AuthPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-[#1a1a2e] via-[#162447] to-[#1f4068]">
-      
-      {/* Toasts */}
+
       <div className="fixed top-16 right-4 flex flex-col gap-2 z-50 max-w-xs">
         <AnimatePresence mode="popLayout">
-          {notifications.map((n) => (
-            <Toast key={n.id} notification={n} />
-          ))}
+          {notifications.map(n => <Toast key={n.id} notification={n} />)}
         </AnimatePresence>
       </div>
 
-      {/* Carte principale */}
       <motion.div
         className="w-full max-w-md p-8 bg-gradient-to-br from-[#162447]/50 via-[#1a1a2e]/40 to-[#1f4068]/60 rounded-3xl shadow-2xl border border-white/20 backdrop-blur-xl"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={fastTransition}
       >
-        {/* Logo / Titre */}
         <div className="text-center mb-6">
           <div className="inline-flex items-center gap-3 mb-4">
             <Shield className="w-10 h-10 text-orange-400" />
@@ -230,15 +213,12 @@ export default function AuthPage() {
           </p>
         </div>
 
-        {/* Onglets */}
         <div className="flex gap-2 mb-6 bg-white/10 backdrop-blur-sm rounded-2xl p-1.5">
           <button
             type="button"
             onClick={() => setIsRegister(false)}
             className={`flex-1 py-3 rounded-xl font-semibold transition-colors duration-200 ${
-              !isRegister
-                ? "bg-white/20 text-orange-400"
-                : "text-white/70 hover:text-white"
+              !isRegister ? "bg-white/20 text-orange-400" : "text-white/70 hover:text-white"
             }`}
           >
             Connexion
@@ -247,22 +227,18 @@ export default function AuthPage() {
             type="button"
             onClick={() => setIsRegister(true)}
             className={`flex-1 py-3 rounded-xl font-semibold transition-colors duration-200 ${
-              isRegister
-                ? "bg-white/20 text-orange-400"
-                : "text-white/70 hover:text-white"
+              isRegister ? "bg-white/20 text-orange-400" : "text-white/70 hover:text-white"
             }`}
           >
             Inscription
           </button>
         </div>
 
-        {/* Formulaire */}
         <form onSubmit={submit} className="space-y-5">
-          
-          {/* Nom complet */}
+
           {isRegister && (
             <div className="relative">
-              <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60" />
+              <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60 pointer-events-none" />
               <input
                 ref={firstInputRef}
                 type="text"
@@ -281,9 +257,8 @@ export default function AuthPage() {
             </div>
           )}
 
-          {/* Email */}
           <div className="relative">
-            <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60" />
+            <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60 pointer-events-none" />
             <input
               ref={!isRegister ? firstInputRef : null}
               type="email"
@@ -301,9 +276,8 @@ export default function AuthPage() {
             )}
           </div>
 
-          {/* Mot de passe */}
           <div className="relative">
-            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60" />
+            <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60 pointer-events-none" />
             <input
               type={showPassword ? "text" : "password"}
               name="password"
@@ -313,10 +287,12 @@ export default function AuthPage() {
               className={inputClass("password")}
               autoComplete={isRegister ? "new-password" : "current-password"}
             />
+            {/* ✅ Fix accessibilité : aria-label + zone tactile min 44x44px */}
             <button
               type="button"
-              onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-white/60 hover:text-white transition-colors"
+              aria-label={showPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+              onClick={() => setShowPassword(prev => !prev)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center text-white/60 hover:text-white transition-colors rounded-lg"
             >
               {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
             </button>
@@ -327,14 +303,13 @@ export default function AuthPage() {
             )}
           </div>
 
-          {/* ✅ NOUVEAU : Checkbox "Se souvenir de moi" */}
           {!isRegister && (
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 id="remember"
                 checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
+                onChange={e => setRememberMe(e.target.checked)}
                 className="w-4 h-4 rounded border-white/30 bg-white/10 text-orange-500 focus:ring-2 focus:ring-orange-400"
               />
               <label htmlFor="remember" className="text-white/70 text-sm cursor-pointer select-none">
@@ -343,7 +318,6 @@ export default function AuthPage() {
             </div>
           )}
 
-          {/* Bouton principal */}
           <button
             type="submit"
             disabled={loading}
@@ -367,13 +341,12 @@ export default function AuthPage() {
           </button>
         </form>
 
-        {/* Lien de basculement */}
         <div className="mt-6 text-center">
           <p className="text-white/60 text-sm">
             {isRegister ? "Déjà un compte ?" : "Pas encore de compte ?"}
             <button
               type="button"
-              onClick={() => setIsRegister(!isRegister)}
+              onClick={() => setIsRegister(prev => !prev)}
               disabled={loading}
               className={`ml-2 text-orange-400 font-semibold hover:text-orange-300 transition-colors underline ${
                 loading ? "opacity-50 cursor-not-allowed" : ""
@@ -384,7 +357,6 @@ export default function AuthPage() {
           </p>
         </div>
 
-        {/* Mention légale */}
         <p className="text-center text-white/40 text-xs mt-8">
           Protégé par chiffrement de bout en bout
         </p>
