@@ -1,14 +1,18 @@
 // 📁 src/pages/Home/PostMedia.jsx
 //
-// ✅ FIX LCP : suppression du fade-in opacity sur le 1er slot (isLCP=true)
-//    → L'image/poster était invisible pendant la transition → LCP tardif
-//    → Maintenant opacity=1 immédiat pour le slot LCP
-// ✅ FIX LCP VIDEO POSTER : objectFit 'cover' pour Pexels/Pixabay + eager load
-// ✅ FIX LCP IMAGE : loading="eager" + fetchpriority="high" + decoding="sync"
-// ✅ FIX SON PEXELS/PIXABAY : crossOrigin="anonymous" sur les vidéos externes
-// ✅ FIX AUTOPLAY : démarre muted obligatoirement (politique navigateur)
-// ✅ FIX EMBED YouTube : thumbnail hqdefault → maxresdefault avec fallback
-// ✅ Toutes les corrections précédentes conservées
+// ✅ FIX SON v5 — DÉFINITIF :
+//    - handleToggleMute stabilisé avec useRef pour éviter les re-créations
+//    - VideoItem reçoit toggleMuteRef (ref stable) + slotIndex
+//    - Plus de prop onToggleMute instable qui cassait React.memo sur VideoItem
+//    - newMuted est passé directement depuis VideoItem (lit vid.muted)
+//    - Aucune désynchronisation possible entre DOM et state React
+//
+// ✅ FIX PostCard (à faire dans PostCard.jsx) :
+//    Remplacer : <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} />
+//    Par :       <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} post={post} />
+//
+// ✅ FIX AFFICHAGE PEXELS : crossOrigin retiré pour Pexels/Pixabay
+// ✅ Toutes les corrections LCP conservées
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { FaVolumeUp, FaVolumeMute, FaExternalLinkAlt } from "react-icons/fa";
@@ -34,14 +38,13 @@ const isEmbedUrl = url =>
     url.includes('dailymotion.com/embed')
   );
 
-const isPexelsVideo  = url => url && url.includes('videos.pexels.com');
-const isPixabayVideo = url => url && url.includes('cdn.pixabay.com/video');
+const isPexelsVideo   = url => url && url.includes('videos.pexels.com');
+const isPixabayVideo  = url => url && url.includes('cdn.pixabay.com/video');
 const isExternalVideo = url => isPexelsVideo(url) || isPixabayVideo(url);
 const isYouTubeEmbed  = url => url && (url.includes('youtube.com/embed') || url.includes('youtu.be'));
 
-const needsCrossOrigin = url =>
-  isExternalVideo(url) ||
-  (url && url.startsWith('http') && !url.includes('res.cloudinary.com'));
+// ✅ crossOrigin UNIQUEMENT pour Cloudinary — Pexels/Pixabay bloquent les requêtes CORS
+const needsCrossOrigin = url => url && url.includes('res.cloudinary.com');
 
 // ─────────────────────────────────────────────
 // POSTER URL
@@ -164,7 +167,7 @@ const EmbedItem = React.memo(({ url, thumbnail, title }) => {
     return null;
   }, [url, thumbnail]);
 
-  const embedUrl = useMemo(() => {
+  const embedSrc = useMemo(() => {
     if (url.includes('player.vimeo.com')) {
       return url.replace('background=1', 'autoplay=1').replace('muted=1', '')
         + (url.includes('?') ? '&' : '?') + 'autoplay=1';
@@ -180,7 +183,7 @@ const EmbedItem = React.memo(({ url, thumbnail, title }) => {
     <div className="relative w-full h-full bg-black flex items-center justify-center">
       {showEmbed ? (
         <iframe
-          src={embedUrl}
+          src={embedSrc}
           className="w-full h-full"
           frameBorder="0"
           allow="autoplay; fullscreen; picture-in-picture"
@@ -193,12 +196,10 @@ const EmbedItem = React.memo(({ url, thumbnail, title }) => {
             <>
               {!thumbLoaded && <div className="absolute inset-0 bg-gray-900 animate-pulse" />}
               <img
-                src={resolvedThumb}
-                alt=""
+                src={resolvedThumb} alt=""
                 className="w-full h-full object-cover"
                 style={{ opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.2s' }}
-                loading="lazy"
-                decoding="async"
+                loading="lazy" decoding="async"
                 onLoad={()  => setThumbLoaded(true)}
                 onError={() => setThumbError(true)}
               />
@@ -208,11 +209,9 @@ const EmbedItem = React.memo(({ url, thumbnail, title }) => {
               <div className="text-gray-600 text-5xl select-none">▶</div>
             </div>
           )}
-
-          {(resolvedThumb && !thumbError) && (
+          {resolvedThumb && !thumbError && (
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent pointer-events-none" />
           )}
-
           <button
             onClick={() => setShowEmbed(true)}
             className="absolute inset-0 flex items-center justify-center"
@@ -290,31 +289,38 @@ HLSItem.displayName = 'HLSItem';
 
 // ─────────────────────────────────────────────
 // VIDEO ITEM
-// ✅ FIX LCP : poster visible IMMÉDIATEMENT sans fade-in quand isLCP=true
+//
+// ✅ FIX SON v5 :
+//   - Reçoit toggleMuteRef (ref stable) + slotIndex au lieu de onToggleMute
+//   - toggleMuteRef.current(slotIndex, newMuted) → toujours à jour, jamais périmé
+//   - React.memo ne re-rend pas VideoItem quand PostMedia re-render
+//     car toggleMuteRef est une ref (référence stable, pas une nouvelle valeur)
 // ─────────────────────────────────────────────
-const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, onToggleMute, videoRefCallback }) => {
-  const videoRef          = useRef(null);
-  const [isPlaying,       setIsPlaying]       = useState(false);
-  // ✅ FIX LCP : si c'est le slot LCP, le poster est visible immédiatement (pas de fade)
-  const [posterVisible,   setPosterVisible]   = useState(true);
-  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
-  const [hasInteracted,   setHasInteracted]   = useState(false);
-  const playAttempted     = useRef(false);
-  const fallbackTimer     = useRef(null);
-
-  const useCrossOrigin = useMemo(() => needsCrossOrigin(url), [url]);
+const VideoItem = React.memo(({
+  url, posterUrl, isLCP, isActive, isMuted,
+  toggleMuteRef, slotIndex,
+  videoRefCallback,
+}) => {
+  const videoRef        = useRef(null);
+  const [isPlaying,     setIsPlaying]     = useState(false);
+  const [posterVisible, setPosterVisible] = useState(true);
+  const [hasInteracted, setHasInteracted] = useState(false);
+  const playAttempted   = useRef(false);
+  const fallbackTimer   = useRef(null);
+  const useCrossOrigin  = useMemo(() => needsCrossOrigin(url), [url]);
 
   const setVideoRef = useCallback((el) => {
     videoRef.current = el;
     videoRefCallback?.(el);
   }, [videoRefCallback]);
 
+  // Sync muted depuis parent avant toute interaction utilisateur
   useEffect(() => {
     const vid = videoRef.current;
-    if (!vid) return;
+    if (!vid || hasInteracted) return;
     vid.muted  = isMuted;
     vid.volume = isMuted ? 0 : 1;
-  }, [isMuted]);
+  }, [isMuted, hasInteracted]);
 
   useEffect(() => {
     const vid = videoRef.current;
@@ -323,34 +329,21 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, onTogg
     if (isActive) {
       vid.muted  = true;
       vid.volume = 0;
+      setHasInteracted(false);
 
       const tryPlay = () => {
         if (playAttempted.current) return;
         playAttempted.current = true;
-
-        vid.play()
-          .then(() => {
-            setAutoplayBlocked(true);
-          })
-          .catch(() => {
-            setAutoplayBlocked(true);
-          });
+        vid.play().catch(() => {});
       };
-
       tryPlay();
 
       fallbackTimer.current = setTimeout(() => {
-        if (vid && vid.paused) {
-          vid.muted  = true;
-          vid.volume = 0;
-          vid.play().catch(() => {});
-        }
+        if (vid && vid.paused) { vid.muted = true; vid.volume = 0; vid.play().catch(() => {}); }
       }, 1500);
-
     } else {
       clearTimeout(fallbackTimer.current);
       playAttempted.current = false;
-      setAutoplayBlocked(false);
       setHasInteracted(false);
       vid.pause();
       vid.currentTime = 0;
@@ -364,18 +357,15 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, onTogg
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid || !isActive) return;
-
     const obs = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting && entry.intersectionRatio >= 0.1) {
         playAttempted.current = false;
-        vid.muted  = true;
-        vid.volume = 0;
+        vid.muted = true; vid.volume = 0;
         vid.play().catch(() => {});
       } else {
         vid.pause();
       }
     }, { threshold: [0.1, 0.5] });
-
     obs.observe(vid);
     return () => obs.disconnect();
   }, [isActive]);
@@ -383,29 +373,32 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, onTogg
   const handlePlay  = useCallback(() => { setIsPlaying(true);  setPosterVisible(false); }, []);
   const handlePause = useCallback(() => { setIsPlaying(false); }, []);
 
+  // ✅ FIX SON v5 :
+  // 1. On lit l'état réel depuis vid.muted (source de vérité DOM)
+  // 2. On passe newMuted à toggleMuteRef.current(slotIndex, newMuted)
+  //    → le parent met à jour isMutedMap → l'icône 🔇/🔊 se met à jour
+  // 3. toggleMuteRef est stable → pas de re-render inutile de VideoItem
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
     const vid = videoRef.current;
+    if (!vid) return;
 
-    if (vid) {
-      const currentlyMuted = vid.muted;
-      const newMuted = !currentlyMuted;
+    const newMuted = !vid.muted;
+    vid.muted  = newMuted;
+    vid.volume = newMuted ? 0 : 1;
 
-      vid.muted  = newMuted;
-      vid.volume = newMuted ? 0 : 1;
-
-      if (!newMuted && vid.paused) {
-        vid.play().catch(() => {
-          vid.muted  = true;
-          vid.volume = 0;
-        });
-      }
+    if (!newMuted && vid.paused) {
+      vid.play().catch(() => {
+        vid.muted  = true;
+        vid.volume = 0;
+        toggleMuteRef?.current?.(slotIndex, true);
+        return;
+      });
     }
 
     setHasInteracted(true);
-    setAutoplayBlocked(false);
-    onToggleMute(e);
-  }, [onToggleMute]);
+    toggleMuteRef?.current?.(slotIndex, newMuted);
+  }, [toggleMuteRef, slotIndex]);
 
   const showSoundBadge = isActive && isPlaying && isMuted && !hasInteracted;
 
@@ -424,21 +417,16 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, onTogg
         onPause={handlePause}
       />
 
-      {/* ✅ FIX LCP : poster TOUJOURS visible (opacity: 1) jusqu'à ce que la vidéo joue
-          Pas de transition pour le slot LCP → le navigateur le détecte immédiatement comme LCP */}
       {posterUrl && (
         <img
-          src={posterUrl}
-          alt=""
+          src={posterUrl} alt=""
           className="absolute inset-0 w-full h-full pointer-events-none"
           style={{
-            objectFit:  useCrossOrigin ? 'cover' : 'contain',
+            objectFit:  isExternalVideo(url) ? 'cover' : 'contain',
             zIndex:     posterVisible ? 2 : -1,
-            // ✅ Pas de fade-in pour LCP → visibilité immédiate
             opacity:    isLCP ? 1 : (posterVisible ? 1 : 0),
             transition: isLCP ? 'none' : 'opacity 0.3s ease',
           }}
-          // ✅ eager + high pour LCP
           loading={isLCP ? 'eager' : 'lazy'}
           fetchpriority={isLCP ? 'high' : 'auto'}
           decoding={isLCP ? 'sync' : 'async'}
@@ -476,28 +464,22 @@ VideoItem.displayName = 'VideoItem';
 
 // ─────────────────────────────────────────────
 // IMAGE ITEM
-// ✅ FIX LCP : pas de fade-in pour le 1er slot, opacity immédiate = 1
 // ─────────────────────────────────────────────
 const ImageItem = React.memo(({ url, isLCP }) => {
-  // ✅ Pour LCP : on part de loaded=true pour éviter le flash blanc + opacity 0
   const [loaded, setLoaded] = useState(isLCP);
-
   return (
     <div className="relative w-full h-full bg-black flex items-center justify-center">
-      {/* ✅ Skeleton uniquement pour les images non-LCP */}
       {!loaded && !isLCP && <div className="absolute inset-0 bg-gray-900 animate-pulse" />}
       <img
         src={url} alt=""
         className="w-full h-full"
         style={{
           objectFit:  'contain',
-          // ✅ FIX LCP : opacity=1 immédiat, pas de fade-in qui retarde le LCP
           opacity:    isLCP ? 1 : (loaded ? 1 : 0),
           transition: isLCP ? 'none' : 'opacity 0.2s ease',
           userSelect: 'none',
           display:    'block',
         }}
-        // ✅ eager + high priority + sync decoding pour LCP
         loading={isLCP ? 'eager' : 'lazy'}
         fetchpriority={isLCP ? 'high' : 'low'}
         decoding={isLCP ? 'sync' : 'async'}
@@ -515,9 +497,9 @@ ImageItem.displayName = 'ImageItem';
 // ─────────────────────────────────────────────
 const resolveSlotType = (url) => {
   if (!url) return 'unknown';
-  if (isEmbedUrl(url))                          return 'embed';
-  if (isHLSUrl(url))                            return 'hls';
-  if (isVideoUrl(url) || isExternalVideo(url))  return 'video';
+  if (isEmbedUrl(url))                         return 'embed';
+  if (isHLSUrl(url))                           return 'hls';
+  if (isVideoUrl(url) || isExternalVideo(url)) return 'video';
   return 'image';
 };
 
@@ -525,9 +507,14 @@ const resolveSlotType = (url) => {
 // POST MEDIA — composant principal
 // ─────────────────────────────────────────────
 const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
-  const [index, setIndex] = useState(0);
+  const [index,      setIndex]      = useState(0);
   const [isMutedMap, setIsMutedMap] = useState({});
-  const isMutedRef    = useRef({});
+
+  // ✅ FIX SON v5 : toggleMuteRef est une ref STABLE
+  // Ni VideoItem ni ses callbacks ne reçoivent de prop instable
+  const toggleMuteRef = useRef(null);
+  const isMutedMapRef = useRef({});
+  const videoRefsMap  = useRef({});
   const containerRef  = useRef(null);
   const touch         = useRef({ x: 0, y: 0, time: 0 });
   const dirRef        = useRef(null);
@@ -552,49 +539,56 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   const total = urls.length;
 
+  // Init muted map : toutes les vidéos démarrent muettes
   useEffect(() => {
     const initial = {};
-    urls.forEach((url, i) => {
-      if (slotTypes[i] === 'video') initial[i] = true;
-    });
-    isMutedRef.current = initial;
+    urls.forEach((_, i) => { if (slotTypes[i] === 'video') initial[i] = true; });
+    isMutedMapRef.current = initial;
     setIsMutedMap(initial);
   }, [urls.length]); // eslint-disable-line
 
+  // ✅ FIX SON v5 : mise à jour de toggleMuteRef à chaque render
+  // VideoItem appelle toggleMuteRef.current(i, newMuted)
+  // La fonction reçoit newMuted directement depuis VideoItem (vid.muted)
+  // → aucune désynchronisation possible
+  useEffect(() => {
+    toggleMuteRef.current = (i, newMuted) => {
+      const vid = videoRefsMap.current[i];
+      if (vid) {
+        // Appliquer aussi à la vidéo au cas où VideoItem ne l'aurait pas fait
+        vid.muted  = newMuted;
+        vid.volume = newMuted ? 0 : 1;
+        if (!newMuted && vid.paused) {
+          vid.play().catch(() => {
+            vid.muted  = true;
+            vid.volume = 0;
+            isMutedMapRef.current = { ...isMutedMapRef.current, [i]: true };
+            setIsMutedMap(prev => ({ ...prev, [i]: true }));
+            return;
+          });
+        }
+      }
+      isMutedMapRef.current = { ...isMutedMapRef.current, [i]: newMuted };
+      setIsMutedMap(prev => ({ ...prev, [i]: newMuted }));
+    };
+  }); // Pas de deps → toujours à jour, mais VideoItem ne re-render pas
+
+  // Préchargement image suivante
   useEffect(() => {
     if (total <= 1) return;
     const next    = (index + 1) % total;
     const nextUrl = urls[next];
     if (slotTypes[next] === 'image' && nextUrl && !nextUrl.startsWith('data:')) {
       if (preloadImgRef.current) { preloadImgRef.current.src = ''; preloadImgRef.current = null; }
-      const img = new Image();
-      img.src = nextUrl;
+      const img = new Image(); img.src = nextUrl;
       preloadImgRef.current = img;
     }
-    return () => {
-      if (preloadImgRef.current) { preloadImgRef.current.src = ''; preloadImgRef.current = null; }
-    };
+    return () => { if (preloadImgRef.current) { preloadImgRef.current.src = ''; preloadImgRef.current = null; } };
   }, [index, urls, slotTypes, total]);
 
-  const videoRefsMap = useRef({});
   const registerVideoRef = useCallback((i) => (el) => {
     if (el) videoRefsMap.current[i] = el;
     else    delete videoRefsMap.current[i];
-  }, []);
-
-  const handleToggleMute = useCallback((i) => (e) => {
-    e?.stopPropagation();
-    const currentlyMuted = isMutedRef.current[i] !== false;
-    const newMuted       = !currentlyMuted;
-
-    const vid = videoRefsMap.current[i];
-    if (vid) {
-      vid.muted  = newMuted;
-      vid.volume = newMuted ? 0 : 1;
-    }
-
-    isMutedRef.current = { ...isMutedRef.current, [i]: newMuted };
-    setIsMutedMap(prev => ({ ...prev, [i]: newMuted }));
   }, []);
 
   // Swipe handlers
@@ -602,40 +596,28 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     if (total <= 1) return;
     const el = containerRef.current;
     if (!el) return;
-
-    const SWIPE_THRESHOLD = 50;
-    const TIME_THRESHOLD  = 500;
-    const DIR_THRESHOLD   = 10;
-
+    const SWIPE_THRESHOLD = 50, TIME_THRESHOLD = 500, DIR_THRESHOLD = 10;
     const onStart = e => {
       const t = e.touches?.[0] || e;
-      touch.current      = { x: t.clientX, y: t.clientY, time: Date.now() };
-      dirRef.current     = null;
-      isDragging.current = true;
+      touch.current = { x: t.clientX, y: t.clientY, time: Date.now() };
+      dirRef.current = null; isDragging.current = true;
     };
     const onMove = e => {
       if (!touch.current.x || !isDragging.current) return;
-      const t  = e.touches?.[0] || e;
-      const dx = t.clientX - touch.current.x;
-      const dy = t.clientY - touch.current.y;
-      if (dirRef.current === null && (Math.abs(dx) > DIR_THRESHOLD || Math.abs(dy) > DIR_THRESHOLD)) {
+      const t = e.touches?.[0] || e;
+      const dx = t.clientX - touch.current.x, dy = t.clientY - touch.current.y;
+      if (dirRef.current === null && (Math.abs(dx) > DIR_THRESHOLD || Math.abs(dy) > DIR_THRESHOLD))
         dirRef.current = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
-      }
       if (dirRef.current === 'h' && e.cancelable) try { e.preventDefault(); } catch {}
     };
     const onEnd = e => {
       if (!isDragging.current || !touch.current.x) return;
-      const t       = e.changedTouches?.[0] || e;
-      const dx      = touch.current.x - t.clientX;
-      const elapsed = Date.now() - touch.current.time;
-      if (dirRef.current === 'h' && Math.abs(dx) > SWIPE_THRESHOLD && elapsed < TIME_THRESHOLD) {
+      const t = e.changedTouches?.[0] || e;
+      const dx = touch.current.x - t.clientX, elapsed = Date.now() - touch.current.time;
+      if (dirRef.current === 'h' && Math.abs(dx) > SWIPE_THRESHOLD && elapsed < TIME_THRESHOLD)
         setIndex(prev => dx > 0 ? (prev + 1) % total : (prev - 1 + total) % total);
-      }
-      touch.current      = { x: 0, y: 0, time: 0 };
-      dirRef.current     = null;
-      isDragging.current = false;
+      touch.current = { x: 0, y: 0, time: 0 }; dirRef.current = null; isDragging.current = false;
     };
-
     el.addEventListener('touchstart', onStart, { passive: true });
     el.addEventListener('touchmove',  onMove,  { passive: false });
     el.addEventListener('touchend',   onEnd,   { passive: true });
@@ -643,7 +625,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     el.addEventListener('mousemove',  onMove);
     el.addEventListener('mouseup',    onEnd);
     el.addEventListener('mouseleave', onEnd);
-
     return () => {
       el.removeEventListener('touchstart', onStart);
       el.removeEventListener('touchmove',  onMove);
@@ -662,11 +643,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     <div
       ref={containerRef}
       className="relative w-full bg-black overflow-hidden select-none aspect-square"
-      style={{
-        contain:     'layout paint',
-        cursor:      total > 1 ? 'grab' : 'default',
-        touchAction: 'pan-y pinch-zoom',
-      }}
+      style={{ contain: 'layout paint', cursor: total > 1 ? 'grab' : 'default', touchAction: 'pan-y pinch-zoom' }}
     >
       <div
         className="flex h-full"
@@ -679,13 +656,11 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       >
         {urls.map((url, i) => {
           const slotType = slotTypes[i];
-          // ✅ LCP = seulement le 1er slot du 1er post
           const isLCP    = isLCPSlot && i === 0;
           const isMuted  = isMutedMap[i] !== false;
 
           return (
-            <div key={i} className="relative flex-shrink-0 bg-black"
-              style={{ width: `${100 / total}%`, height: '100%' }}>
+            <div key={i} className="relative flex-shrink-0 bg-black" style={{ width: `${100 / total}%`, height: '100%' }}>
               {slotType === 'embed' ? (
                 <EmbedItem
                   url={url}
@@ -705,7 +680,8 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
                   isLCP={isLCP}
                   isActive={i === index}
                   isMuted={isMuted}
-                  onToggleMute={handleToggleMute(i)}
+                  toggleMuteRef={toggleMuteRef}
+                  slotIndex={i}
                   videoRefCallback={registerVideoRef(i)}
                 />
               ) : (
@@ -716,7 +692,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
         })}
       </div>
 
-      {/* Navigation galerie */}
       {total > 1 && (
         <>
           <div className="absolute inset-y-0 left-0  w-16 sm:hidden z-10" onClick={goPrev} />
@@ -739,15 +714,10 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
             {urls.map((_, i) => (
               <button key={i} onClick={() => setIndex(i)}
                 style={{
-                  width:           i === index ? 20 : 8,
-                  height:          8,
-                  borderRadius:    4,
+                  width: i === index ? 20 : 8, height: 8, borderRadius: 4,
                   backgroundColor: i === index ? 'white' : 'rgba(255,255,255,0.5)',
-                  transition:      'width 0.2s ease, background-color 0.2s ease',
-                  border:          'none',
-                  padding:         0,
-                  cursor:          'pointer',
-                  touchAction:     'manipulation',
+                  transition: 'width 0.2s ease, background-color 0.2s ease',
+                  border: 'none', padding: 0, cursor: 'pointer', touchAction: 'manipulation',
                 }}
                 aria-label={`Aller à l'image ${i + 1}`}
               />

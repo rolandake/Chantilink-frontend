@@ -1,7 +1,8 @@
-// src/pages/profile/ProfilePage.jsx - VERSION CORRIGÉE
-// ✅ Fix: isOwner utilise _id au lieu de id
-// ✅ Fix: suppression du fallback authUser dans ProfileHeader
-// ✅ Fix: spinner tant que profileUser est null
+// src/pages/profile/ProfilePage.jsx
+// ✅ Fix spinner infini
+// ✅ Fix "Profil introuvable" pour bots et profils tiers :
+//    fetchUserById retournait { success, user } au lieu de user directement
+//    → extraction correcte via extractUserFromResponse(data)
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -56,38 +57,59 @@ const extractImageUrls = (posts = [], max = 15) => {
   return urls.slice(0, max);
 };
 
+// ─────────────────────────────────────────────
+// Comparaison sûre ObjectId MongoDB vs string — inchangé
+// ─────────────────────────────────────────────
+const isSameUser = (a, b) => {
+  if (!a || !b) return false;
+  return String(a) === String(b);
+};
+
+// ─────────────────────────────────────────────
+// ✅ FIX CENTRAL : extraction de l'objet user
+//
+// Le backend GET /api/users/:id retourne :
+//   { success: true, user: { _id, fullName, ... } }
+//
+// L'ancienne version faisait `return data` ce qui
+// retournait l'enveloppe { success, user } au lieu
+// de l'objet user — d'où profileUser._id undefined
+// et le message "Profil introuvable".
+// ─────────────────────────────────────────────
+const extractUserFromResponse = (data) => {
+  if (!data) return null;
+  // Format : { success: true, user: { _id, ... } }
+  if (data.user && (data.user._id || data.user.id)) return data.user;
+  // Format direct : { _id, fullName, ... }
+  if (data._id || data.id) return data;
+  return null;
+};
+
 const LoadingSpinner = memo(({ size = "12", darkMode = false, text = "Chargement..." }) => (
   <div className="text-center py-12">
     <div className={`inline-block w-${size} h-${size} border-4 rounded-full animate-spin ${
-      darkMode 
-        ? 'border-orange-400 border-t-transparent' 
-        : 'border-orange-500 border-t-transparent'
+      darkMode
+        ? "border-orange-400 border-t-transparent"
+        : "border-orange-500 border-t-transparent"
     }`}></div>
     {text && (
-      <p className={`mt-4 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-        {text}
-      </p>
+      <p className={`mt-4 ${darkMode ? "text-gray-300" : "text-gray-600"}`}>{text}</p>
     )}
   </div>
 ));
 
-const FollowButton = memo(({ 
-  isFollowing, 
-  isLoading, 
-  onClick, 
-  isDarkMode 
-}) => (
-  <button 
-    onClick={onClick} 
+const FollowButton = memo(({ isFollowing, isLoading, onClick, isDarkMode }) => (
+  <button
+    onClick={onClick}
     disabled={isLoading}
     className={`px-8 py-3 rounded-full font-semibold transition-all duration-200 shadow-md ${
-      isFollowing 
-        ? (isDarkMode 
-            ? 'bg-gray-800 text-gray-200 hover:bg-gray-700 border border-white/10' 
-            : 'bg-gray-200 text-gray-700 hover:bg-gray-300')
-        : (isDarkMode
-            ? 'bg-orange-600 text-white hover:bg-orange-700'
-            : 'bg-orange-500 text-white hover:bg-orange-600')
+      isFollowing
+        ? isDarkMode
+          ? "bg-gray-800 text-gray-200 hover:bg-gray-700 border border-white/10"
+          : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+        : isDarkMode
+        ? "bg-orange-600 text-white hover:bg-orange-700"
+        : "bg-orange-500 text-white hover:bg-orange-600"
     } disabled:opacity-50 disabled:cursor-not-allowed active:scale-95`}
   >
     {isLoading ? (
@@ -101,20 +123,20 @@ const FollowButton = memo(({
 
 const Toast = memo(({ message, type }) => (
   <div className={`fixed bottom-6 right-6 px-6 py-3 rounded-lg shadow-2xl transition-all duration-200 z-50 ${
-    type === "error" 
-      ? 'bg-red-500 text-white' 
+    type === "error"
+      ? "bg-red-500 text-white"
       : type === "info"
-      ? 'bg-blue-500 text-white'
-      : 'bg-green-500 text-white'
+      ? "bg-blue-500 text-white"
+      : "bg-green-500 text-white"
   }`}>
     {message}
   </div>
 ));
 
-export default function ProfilePage({ 
+export default function ProfilePage({
   initialUser = null,
   initialPosts = null,
-  mockHandlers = null 
+  mockHandlers = null,
 }) {
   const { userId } = useParams();
   const navigate = useNavigate();
@@ -125,31 +147,28 @@ export default function ProfilePage({
   const isMockProfile = !!mockHandlers;
   const fetchUserPosts = mockHandlers?.fetchUserPosts || realFetchUserPosts;
 
-  const [profileUser, setProfileUser] = useState(initialUser);
-  const [profilePosts, setProfilePosts] = useState(initialPosts || []);
-  const [selectedTab, setSelectedTab] = useState("posts");
-  const [toast, setToast] = useState(null);
-  const [followLoading, setFollowLoading] = useState(false);
-  const [page, setPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
+  const authUserId   = authUser?._id || authUser?.id;
+  const targetUserId = userId || authUserId;
+  const isOwner      = isSameUser(targetUserId, authUserId);
+
+  const [profileUser,    setProfileUser]    = useState(initialUser || (isOwner ? authUser : null));
+  const [profilePosts,   setProfilePosts]   = useState(initialPosts || []);
+  const [selectedTab,    setSelectedTab]    = useState("posts");
+  const [toast,          setToast]          = useState(null);
+  const [followLoading,  setFollowLoading]  = useState(false);
+  const [page,           setPage]           = useState(1);
+  const [hasMore,        setHasMore]        = useState(true);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
-  const [isLoadingUser, setIsLoadingUser] = useState(!initialUser);
-  const [authToken, setAuthToken] = useState(null);
+  const [isLoadingUser,  setIsLoadingUser]  = useState(!initialUser && !(isOwner && authUser));
+  const [authToken,      setAuthToken]      = useState(null);
 
-  const loadingRef = useRef(false);
+  const loadingRef        = useRef(false);
   const saveDebounceTimer = useRef(null);
-  const writeInProgress = useRef(false);
-  const prefetchTimer = useRef(null);
-  const observer = useRef();
-  const requestCache = useRef(new Map());
-
-  const targetUserId = userId || authUser?._id || authUser?.id;
-
-  // ✅ FIX: utiliser _id ET id pour la comparaison (MongoDB retourne _id)
-  const authUserId = authUser?._id || authUser?.id;
-  const isOwner = !!(targetUserId && authUserId && targetUserId === authUserId);
-
-  const CACHE_DURATION = 30000;
+  const writeInProgress   = useRef(false);
+  const prefetchTimer     = useRef(null);
+  const observer          = useRef();
+  const requestCache      = useRef(new Map());
+  const CACHE_DURATION    = 30_000;
 
   const showLocalToast = useCallback((msg, type = "success") => {
     setToast({ message: msg, type });
@@ -158,159 +177,123 @@ export default function ProfilePage({
 
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
-
     const cached = requestCache.current.get(uid);
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-      return cached.data;
-    }
-
+    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
     if (!navigator.onLine) return null;
-
     try {
       const { data } = await axios.get(`${API_URL}/users/${uid}`, {
         withCredentials: true,
-        headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" },
-        timeout: 8000
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+        timeout: 8000,
       });
-      
-      requestCache.current.set(uid, { data, timestamp: Date.now() });
-      return data;
-    } catch (err) {
-      if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED") {
-        return null;
+      // ✅ Extraction correcte : data peut être { success, user } ou l'objet direct
+      const user = extractUserFromResponse(data);
+      if (user) {
+        requestCache.current.set(uid, { data: user, timestamp: Date.now() });
       }
+      return user;
+    } catch (err) {
+      if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED") return null;
       console.error("❌ Erreur fetchUserById:", err.message);
       return null;
     }
   }, []);
 
   const followUser = useCallback(async (uid) => {
-    if (mockHandlers?.followUser) {
-      return await mockHandlers.followUser(uid);
-    }
-    const { data } = await axios.post(`${API_URL}/users/${uid}/follow`, {}, {
-      withCredentials: true
-    });
+    if (mockHandlers?.followUser) return await mockHandlers.followUser(uid);
+    const { data } = await axios.post(`${API_URL}/users/${uid}/follow`, {}, { withCredentials: true });
     return data;
   }, [mockHandlers]);
 
   const unfollowUser = useCallback(async (uid) => {
-    if (mockHandlers?.unfollowUser) {
-      return await mockHandlers.unfollowUser(uid);
-    }
-    const { data } = await axios.post(`${API_URL}/users/${uid}/unfollow`, {}, {
-      withCredentials: true
-    });
+    if (mockHandlers?.unfollowUser) return await mockHandlers.unfollowUser(uid);
+    const { data } = await axios.post(`${API_URL}/users/${uid}/unfollow`, {}, { withCredentials: true });
     return data;
   }, [mockHandlers]);
 
   const savePosts = useCallback((userKey, posts) => {
-    if (isMockProfile) return;
-    if (!userKey || !Array.isArray(posts)) return;
+    if (isMockProfile || !userKey || !Array.isArray(posts)) return;
     if (saveDebounceTimer.current) clearTimeout(saveDebounceTimer.current);
-    
     saveDebounceTimer.current = setTimeout(async () => {
       if (writeInProgress.current) return;
       writeInProgress.current = true;
       try {
         const safePosts = posts.map(normalizePost);
         await idbSet(`profilePosts_${userKey}`, safePosts);
-      } finally { 
-        writeInProgress.current = false; 
+      } finally {
+        writeInProgress.current = false;
       }
     }, 200);
   }, [isMockProfile]);
 
   const saveUser = useCallback(async (user) => {
-    if (isMockProfile) return;
-    if (!user?._id) return;
-    try { 
-      await idbSetUser(user._id, user); 
-    } catch(err) { 
-      console.warn("IDB User Save Error", err); 
-    }
+    if (isMockProfile || !user?._id) return;
+    try { await idbSetUser(user._id, user); } catch (err) { console.warn("IDB User Save Error", err); }
   }, [isMockProfile]);
 
   const handlePostCreated = useCallback(async (newPost) => {
     const normalized = normalizePost(newPost);
-    if (!isMockProfile) {
-      await syncNewPost(normalized, profileUser._id);
-    }
-    startTransition(() => {
-      setProfilePosts(prev => [normalized, ...prev]);
-    });
+    if (!isMockProfile) await syncNewPost(normalized, profileUser._id);
+    startTransition(() => setProfilePosts(prev => [normalized, ...prev]));
     showLocalToast("Post publié ! 🚀");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
 
   const handlePostDeleted = useCallback(async (postId) => {
-    if (!isMockProfile) {
-      await syncDeletePost(postId, profileUser._id);
-    }
-    startTransition(() => {
-      setProfilePosts(prev => prev.filter(p => p._id !== postId));
-    });
+    if (!isMockProfile) await syncDeletePost(postId, profileUser._id);
+    startTransition(() => setProfilePosts(prev => prev.filter(p => p._id !== postId)));
     showLocalToast("Post supprimé");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
 
-  const handleFollowSuccess = useCallback(() => {
-    showLocalToast("Abonné ! 🎉", "success");
-  }, [showLocalToast]);
+  const handleFollowSuccess = useCallback(() => showLocalToast("Abonné ! 🎉"), [showLocalToast]);
 
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false) => {
     if (!targetId || loadingRef.current) return;
     loadingRef.current = true;
     setIsLoadingPosts(true);
-    
     try {
       let postsArray = [];
-      let fromCache = false;
+      let fromCache  = false;
 
       if (isMockProfile && initialPosts && !append) {
         postsArray = initialPosts;
-        fromCache = true;
+        fromCache  = true;
         setProfilePosts(initialPosts);
       } else if (!isMockProfile) {
         const cached = await getCachedPosts(targetId);
-        if (cached && cached.length > 0 && !append) {
+        if (cached?.length && !append) {
           postsArray = cached;
-          fromCache = true;
+          fromCache  = true;
           setProfilePosts(cached);
         }
       }
 
-      if (navigator.onLine && pageNumber === 1) {
+      if (navigator.onLine) {
         try {
           const result = await fetchUserPosts(targetId, pageNumber);
           if (Array.isArray(result) && result.length > 0) {
             postsArray = result;
-            fromCache = false;
+            fromCache  = false;
           }
-        } catch (err) {
+        } catch {
           if (!postsArray.length && !isMockProfile) {
             const cached = await getCachedPosts(targetId);
-            if (cached && cached.length > 0) {
-              postsArray = cached;
-              fromCache = true;
-            }
+            if (cached?.length) { postsArray = cached; fromCache = true; }
           }
         }
       }
 
       setHasMore(postsArray.length > 0 && postsArray.length >= 20);
-      
       startTransition(() => {
-        setProfilePosts((prev) => {
-          const newPosts = append ? [...prev, ...postsArray] : postsArray;
-          const uniquePosts = newPosts.reduce((acc, post) => {
-            if (!acc.find((p) => p._id === post._id)) acc.push(post);
-            return acc;
-          }, []).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          
+        setProfilePosts(prev => {
+          const newPosts    = append ? [...prev, ...postsArray] : postsArray;
+          const uniquePosts = newPosts
+            .reduce((acc, post) => { if (!acc.find(p => p._id === post._id)) acc.push(post); return acc; }, [])
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           if (!fromCache || append) savePosts(targetId, uniquePosts);
           return uniquePosts;
         });
       });
-    } catch (err) {
+    } catch {
       showLocalToast("Mode hors ligne : Données limitées", "info");
     } finally {
       loadingRef.current = false;
@@ -321,66 +304,51 @@ export default function ProfilePage({
   const lastPostRef = useCallback((node) => {
     if (loadingRef.current) return;
     if (observer.current) observer.current.disconnect();
-    
     observer.current = new IntersectionObserver((entries) => {
       if (entries[0].isIntersecting && hasMore && !isLoadingPosts) {
         const nextPage = page + 1;
         setPage(nextPage);
         if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
       }
-    }, {
-      rootMargin: '200px',
-      threshold: 0.1
-    });
-    
+    }, { rootMargin: "200px", threshold: 0.1 });
     if (node) observer.current.observe(node);
   }, [page, hasMore, isLoadingPosts, loadProfilePosts, profileUser]);
 
   const followStatus = profileUser && authUser && !isOwner
-    ? (profileUser.followers || []).some(u => (typeof u === "object" ? u._id : u) === authUserId)
+    ? (profileUser.followers || []).some(u => isSameUser(typeof u === "object" ? u._id : u, authUserId))
     : null;
 
   const handleFollowToggle = useCallback(async () => {
     if (!authUser || !profileUser || followLoading) return;
     setFollowLoading(true);
     const wasFollowing = followStatus;
-    
+    const newFollowers = wasFollowing
+      ? (profileUser.followers || []).filter(u => !isSameUser(typeof u === "object" ? u._id : u, authUserId))
+      : [...(profileUser.followers || []), authUserId];
+    startTransition(() => setProfileUser(prev => ({ ...prev, followers: newFollowers })));
     try {
-      const newFollowers = wasFollowing
-        ? (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUserId)
-        : [...(profileUser.followers || []), authUserId];
-
-      startTransition(() => {
-        setProfileUser(prev => ({ ...prev, followers: newFollowers }));
-      });
-
       if (wasFollowing) await unfollowUser(profileUser._id);
       else await followUser(profileUser._id);
-      
       showLocalToast(wasFollowing ? "Désabonné !" : "Abonné ! 🎉");
     } catch (err) {
       console.error("❌ Erreur follow:", err);
       showLocalToast("Erreur lors de l'action", "error");
-      
-      const originalFollowers = wasFollowing
+      const rollback = wasFollowing
         ? [...(profileUser.followers || []), authUserId]
-        : (profileUser.followers || []).filter(u => (typeof u === "object" ? u._id : u) !== authUserId);
-      
-      startTransition(() => {
-        setProfileUser(prev => ({ ...prev, followers: originalFollowers }));
-      });
-    } finally { 
-      setFollowLoading(false); 
+        : (profileUser.followers || []).filter(u => !isSameUser(typeof u === "object" ? u._id : u, authUserId));
+      startTransition(() => setProfileUser(prev => ({ ...prev, followers: rollback })));
+    } finally {
+      setFollowLoading(false);
     }
   }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast, authUserId]);
 
   useEffect(() => {
-    window.scrollTo({ top: 0, behavior: 'instant' });
+    window.scrollTo({ top: 0, behavior: "instant" });
   }, [targetUserId]);
 
   useEffect(() => {
     if (authUser && getToken) {
-      getToken().then(token => setAuthToken(token)).catch(() => {});
+      getToken().then(t => setAuthToken(t)).catch(() => {});
     }
   }, [authUser, getToken]);
 
@@ -395,12 +363,10 @@ export default function ProfilePage({
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
     if (prefetchTimer.current) clearTimeout(prefetchTimer.current);
-    
     prefetchTimer.current = setTimeout(() => {
       const urls = extractImageUrls(profilePosts, 15);
       if (urls.length) prefetchImagesViaSW(urls);
     }, 300);
-    
     return () => clearTimeout(prefetchTimer.current);
   }, [profilePosts]);
 
@@ -414,15 +380,12 @@ export default function ProfilePage({
 
   useEffect(() => {
     if (authLoading) return;
-    if (!authUser) return navigate("/auth", { replace: true });
-    
-    // Si initialUser fourni (mock), skip le chargement
+    if (!authUser) { navigate("/auth", { replace: true }); return; }
     if (initialUser) {
       setProfileUser(initialUser);
       setIsLoadingUser(false);
       return;
     }
-    
     if (!targetUserId || targetUserId === "undefined") {
       setIsLoadingUser(false);
       return;
@@ -434,109 +397,129 @@ export default function ProfilePage({
         await idbClearOtherKeys(`profilePosts_${targetUserId}`);
 
         if (isOwner) {
-          // ✅ FIX: on set le authUser mais via fetchUserById pour avoir les données fraîches
-          // et ne pas afficher les données du authUser local sur un profil tiers
           setProfileUser(authUser);
           saveUser(authUser);
+          if (navigator.onLine) {
+            fetchUserById(authUserId).then(fresh => {
+              if (fresh) { setProfileUser(fresh); saveUser(fresh); }
+            }).catch(() => {});
+          }
         } else {
-          // ✅ FIX: profil tiers — toujours fetch depuis l'API
+          // Profil tiers : cache IDB immédiat → API en suite
           const cachedUser = await idbGetUser(targetUserId);
           if (cachedUser) setProfileUser(cachedUser);
-          
+
           if (navigator.onLine) {
+            // ✅ fetchUserById retourne maintenant l'objet user pur
             const fetchedUser = await fetchUserById(targetUserId);
-            if (fetchedUser) { 
+            if (fetchedUser) {
+              console.log(`✅ Profil chargé: ${fetchedUser.fullName || fetchedUser.username || targetUserId}`);
               setProfileUser(fetchedUser);
               saveUser(fetchedUser);
             } else if (!cachedUser) {
-              showLocalToast("Profil inaccessible hors ligne", "error");
+              showLocalToast("Profil inaccessible", "error");
             }
+          } else if (!cachedUser) {
+            showLocalToast("Profil non disponible hors ligne", "info");
           }
         }
 
         const cached = await getCachedPosts(targetUserId);
-        if (cached && cached.length > 0) setProfilePosts(cached);
-
+        if (cached?.length) setProfilePosts(cached);
         if (navigator.onLine) await loadProfilePosts(targetUserId, 1, false);
 
         setPage(1);
         setHasMore(true);
       } catch (err) {
         console.error("Profil Load Error:", err);
-      } finally { 
-        setIsLoadingUser(false); 
+      } finally {
+        setIsLoadingUser(false);
       }
     })();
-  }, [authUser, authLoading, targetUserId, isOwner, fetchUserById, navigate, loadProfilePosts, saveUser, showLocalToast, initialUser]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, authUser?._id, targetUserId, isOwner]);
 
   useEffect(() => {
     if (!socket || !profileUser || isMockProfile) return;
-    
     const handleNewPost = (post) => {
       const postUserId = typeof post.user === "object" ? post.user._id : post.user;
-      if (postUserId === profileUser._id) {
-        startTransition(() => {
-          setProfilePosts((prev) => {
-            if (prev.find((p) => p._id === post._id)) return prev;
-            const newPosts = [normalizePost(post), ...prev];
-            savePosts(profileUser._id, newPosts);
-            return newPosts;
-          });
+      if (!isSameUser(postUserId, profileUser._id)) return;
+      startTransition(() => {
+        setProfilePosts(prev => {
+          if (prev.find(p => p._id === post._id)) return prev;
+          const updated = [normalizePost(post), ...prev];
+          savePosts(profileUser._id, updated);
+          return updated;
         });
-      }
+      });
     };
-    
     const handleDeletedPost = (postId) => {
       startTransition(() => {
-        setProfilePosts((prev) => {
-          const newPosts = prev.filter((p) => p._id !== postId);
-          savePosts(profileUser._id, newPosts);
-          return newPosts;
+        setProfilePosts(prev => {
+          const updated = prev.filter(p => p._id !== postId);
+          savePosts(profileUser._id, updated);
+          return updated;
         });
       });
     };
-    
     const handleUpdatedPost = (post) => {
       startTransition(() => {
-        setProfilePosts((prev) => {
-          const newPosts = prev.map((p) => (p._id === post._id ? normalizePost(post) : p));
-          savePosts(profileUser._id, newPosts);
-          return newPosts;
+        setProfilePosts(prev => {
+          const updated = prev.map(p => p._id === post._id ? normalizePost(post) : p);
+          savePosts(profileUser._id, updated);
+          return updated;
         });
       });
     };
-
-    socket.on("newPost", handleNewPost);
-    socket.on("postDeleted", handleDeletedPost);
-    socket.on("postUpdated", handleUpdatedPost);
-
+    socket.on("newPost",      handleNewPost);
+    socket.on("postDeleted",  handleDeletedPost);
+    socket.on("postUpdated",  handleUpdatedPost);
     return () => {
-      socket.off("newPost", handleNewPost);
+      socket.off("newPost",     handleNewPost);
       socket.off("postDeleted", handleDeletedPost);
       socket.off("postUpdated", handleUpdatedPost);
     };
-  }, [socket, profileUser, savePosts, isMockProfile]);
+  }, [socket, profileUser?._id, savePosts, isMockProfile]);
 
   const stats = {
-    posts: profilePosts.length,
+    posts:     profilePosts.length,
     followers: profileUser?.followers?.length || 0,
     following: profileUser?.following?.length || 0,
   };
 
-  // ✅ FIX: spinner tant que authLoading, isLoadingUser OU profileUser pas encore chargé
-  if (authLoading || isLoadingUser || !profileUser) {
+  if (authLoading || (isLoadingUser && !profileUser)) {
     return (
       <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
-        isDarkMode ? 'bg-black' : 'bg-orange-50'
+        isDarkMode ? "bg-black" : "bg-orange-50"
       }`}>
         <LoadingSpinner darkMode={isDarkMode} />
       </div>
     );
   }
 
+  if (!profileUser) {
+    return (
+      <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
+        isDarkMode ? "bg-black" : "bg-orange-50"
+      }`}>
+        <div className="text-center">
+          <p className={`text-lg font-medium ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
+            Profil introuvable
+          </p>
+          <button
+            onClick={() => navigate(-1)}
+            className="mt-4 px-6 py-2 bg-orange-500 text-white rounded-full font-semibold hover:bg-orange-600 transition"
+          >
+            Retour
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`profile-page min-h-screen p-4 transition-colors duration-200 ${
-      isDarkMode ? 'bg-black' : 'bg-orange-50'
+      isDarkMode ? "bg-black" : "bg-orange-50"
     }`}>
       {isMockProfile && (
         <div className="max-w-7xl mx-auto mb-4">
@@ -550,10 +533,8 @@ export default function ProfilePage({
       )}
 
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
         <div className="lg:col-span-2 space-y-6">
-          {/* ✅ FIX: plus de fallback || authUser — profileUser est garanti non-null ici */}
-          <ProfileHeader 
+          <ProfileHeader
             user={profileUser}
             isOwnProfile={isOwner}
             posts={profilePosts}
@@ -562,7 +543,7 @@ export default function ProfilePage({
             showToast={showLocalToast}
           />
 
-          {!isOwner && profileUser && (
+          {!isOwner && (
             <div className="text-center">
               <FollowButton
                 isFollowing={followStatus}
@@ -585,21 +566,21 @@ export default function ProfilePage({
             </div>
           )}
 
-          <ProfileMenu 
-            selectedTab={selectedTab} 
-            onSelectTab={setSelectedTab} 
-            isOwner={isOwner} 
-            stats={stats} 
+          <ProfileMenu
+            selectedTab={selectedTab}
+            onSelectTab={setSelectedTab}
+            isOwner={isOwner}
+            stats={stats}
           />
 
           {selectedTab === "posts" && (
             <div>
               {isOwner && !isMockProfile && (
                 <div className="mb-4">
-                  <CreatePost 
-                    user={authUser} 
+                  <CreatePost
+                    user={authUser}
                     onPostCreated={handlePostCreated}
-                    showToast={showLocalToast} 
+                    showToast={showLocalToast}
                   />
                 </div>
               )}
@@ -609,28 +590,31 @@ export default function ProfilePage({
               ) : (
                 <div>
                   {profilePosts.map((post, index) => (
-                    <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
-                      <PostCard 
-                        post={post} 
+                    <div
+                      key={post._id}
+                      ref={index === profilePosts.length - 1 ? lastPostRef : null}
+                    >
+                      <PostCard
+                        post={post}
                         onDeleted={handlePostDeleted}
                         showToast={showLocalToast}
                         mockPost={isMockProfile}
                       />
                     </div>
                   ))}
-                  
+
                   {isLoadingPosts && (
                     <div className="text-center py-4">
                       <div className={`inline-block w-8 h-8 border-4 rounded-full animate-spin ${
-                        isDarkMode 
-                          ? 'border-orange-400 border-t-transparent' 
-                          : 'border-orange-500 border-t-transparent'
+                        isDarkMode
+                          ? "border-orange-400 border-t-transparent"
+                          : "border-orange-500 border-t-transparent"
                       }`}></div>
                     </div>
                   )}
-                  
+
                   {!hasMore && profilePosts.length > 0 && (
-                    <p className={`text-center py-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    <p className={`text-center py-4 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
                       Plus de posts
                     </p>
                   )}
@@ -657,7 +641,6 @@ export default function ProfilePage({
             </div>
           </div>
         )}
-        
       </div>
 
       {toast && <Toast message={toast.message} type={toast.type} />}

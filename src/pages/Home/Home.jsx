@@ -4,7 +4,7 @@
 // ✅ FIX LCP : injectPreloadLink dès le 1er render synchrone (avant useEffect)
 // ✅ ImmersivePyramidUniverse → modal portal avec prop isOpen
 // ✅ Le feed reste visible en arrière-plan pendant que l'univers est ouvert
-// ✅ Tout le reste inchangé
+// ✅ FIX PEXELS HARDCODÉ : posts avec URLs Pexels directes expirées exclus du feed
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -328,8 +328,6 @@ const computeNextBatch = (prev, posts, loopCountRef) => {
 
 // ─────────────────────────────────────────────
 // PROGRESSIVE FEED
-// ✅ FIX INP : IntersectionObserver callback enveloppé dans startTransition
-//    → Le calcul du batch est non-urgent → React peut interrompre si l'user interagit
 // ─────────────────────────────────────────────
 const ProgressiveFeed = ({
   posts, onDeleted, showToast, adConfig,
@@ -350,7 +348,6 @@ const ProgressiveFeed = ({
     const initial = posts.slice(0, Math.min(PAGE_SIZE, posts.length)).map(p => ({
       ...p, _displayKey: `loop0_${p._id}`,
     }));
-    // ✅ startTransition : init non-urgente
     startTransition(() => {
       setDisplayedPosts(initial);
       setLoopBoundaries([]);
@@ -362,10 +359,6 @@ const ProgressiveFeed = ({
     if (!sentinel) return;
     const obs = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
-      // ✅ FIX INP : envelopper dans startTransition
-      // → Le chargement du batch suivant est non-urgent (infinite scroll)
-      // → Si l'utilisateur clique pendant ce calcul, React interrompt le batch
-      //   et traite le clic en priorité → INP amélioré
       startTransition(() => {
         setDisplayedPosts(prev => {
           const currentPosts = postsRef.current;
@@ -435,6 +428,34 @@ const ProgressiveFeed = ({
 ProgressiveFeed.displayName = "ProgressiveFeed";
 
 // ─────────────────────────────────────────────
+// ✅ HELPER — DÉTECTION URL PEXELS HARDCODÉE EXPIRÉE
+//
+// Les anciennes URLs Pexels directes ont ce format :
+//   https://videos.pexels.com/video-files/1198105/1198105-hd_1920_1080_25fps.mp4
+//
+// Ces URLs sont signées côté CDN Pexels et expirent après quelques jours.
+// Elles ne proviennent pas de l'API Pexels en temps réel (qui génère des
+// URLs fraîches à chaque appel) mais de genieCivilBot.js ou d'autres bots
+// qui avaient hardcodé des URLs spécifiques.
+//
+// Détection : url Pexels + pattern ID-nom_résolution_fps.mp4
+// ─────────────────────────────────────────────
+const STALE_PEXELS_PATTERN = /videos\.pexels\.com\/video-files\/\d+\/\d+-\w+_\d+_\d+/;
+
+const hasStaleHardcodedPexelsUrl = (post) => {
+  const sources = [
+    ...(Array.isArray(post.media)  ? post.media  : post.media  ? [post.media]  : []),
+    ...(Array.isArray(post.images) ? post.images : post.images ? [post.images] : []),
+    post.videoUrl,
+    post.embedUrl,
+  ];
+  return sources.some(m => {
+    const url = typeof m === 'string' ? m : m?.url;
+    return url && STALE_PEXELS_PATTERN.test(url);
+  });
+};
+
+// ─────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
@@ -472,11 +493,29 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     maxArticles: 10, category: "all", autoFetch: !!user, enabled: !!user,
   });
 
+  // ─────────────────────────────────────────────
+  // ✅ FIX PEXELS HARDCODÉ
+  //
+  // isValidPost exclut désormais les posts dont le média est une URL
+  // Pexels directe hardcodée (videos.pexels.com/video-files/ID/ID-nom.mp4).
+  //
+  // Pourquoi ces posts sont problématiques :
+  //   → URLs signées côté CDN Pexels, expiration rapide (24-72h)
+  //   → Résultat : écran noir, vidéo cassée, très mauvaise expérience
+  //   → Proviennent de genieCivilBot.js (ancienne version) ou autres bots
+  //     qui avaient des URLs hardcodées au lieu d'appeler l'API en temps réel
+  //
+  // Note : les posts Pexels générés par pexelsService.js (API temps réel)
+  //   NE sont PAS filtrés — leurs URLs sont fraîches à chaque appel.
+  //   Seules les URLs hardcodées avec le pattern ID-nom_résolution_fps sont exclues.
+  // ─────────────────────────────────────────────
   const isValidPost = useCallback((post) => {
     if (!post?._id) return false;
     if (post._isMock || post.isMockPost || post._id?.startsWith("post_")) return true;
     const u = post.user || post.author || {};
     if (u.isBanned || u.isDeleted || ["deleted","banned"].includes(u.status)) return false;
+    // ✅ Exclure les posts avec URLs Pexels hardcodées expirées
+    if (hasStaleHardcodedPexelsUrl(post)) return false;
     return !!(u._id || u.id || post.userId || post.author?._id);
   }, []);
 
@@ -502,8 +541,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       latestPostIdRef.current = combinedPosts[0]._id;
   }, [combinedPosts]);
 
-  // ✅ FIX LCP : injection du preload au 1er render synchrone (pas dans useEffect)
-  // useEffect est trop tardif — le navigateur a déjà commencé à charger à ce stade
   if (!lcpDone.current && combinedPosts.length > 0) {
     const result = getLCPImageUrl(combinedPosts);
     if (result?.url) { injectPreloadLink(result.url, result.type); lcpDone.current = true; }
@@ -654,7 +691,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     };
   }, [handleRefresh]);
 
-  // ✅ FIX INP : handleApiObserver dans startTransition
   const handleApiObserverFn = useCallback((entries) => {
     if (!entries[0].isIntersecting || loadingRef.current || isRefreshing) return;
     startPageTransition(() => {

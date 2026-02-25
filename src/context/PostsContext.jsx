@@ -8,6 +8,10 @@
 // - Dès que le cache IDB répond, on précharge le poster du 1er post via <link preload>
 //   AVANT que React ne rende quoi que ce soit
 // - Le navigateur commence à télécharger l'image LCP ~2-3s plus tôt
+// ✅ FIX PEXELS HARDCODÉ :
+// - Les posts avec URLs Pexels hardcodées expirées sont filtrés AVANT idbSetPosts
+// - Le cache IDB reste propre — pas de pollution entre sessions
+// - Pattern détecté : videos.pexels.com/video-files/ID/ID-nom_résolution_fps.mp4
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "./AuthContext";
@@ -20,6 +24,39 @@ const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 
 const PostsContext = createContext();
 export const usePosts = () => useContext(PostsContext);
+
+// ─────────────────────────────────────────────
+// ✅ FILTRE PEXELS HARDCODÉ
+//
+// Les URLs Pexels directes hardcodées ont ce format :
+//   https://videos.pexels.com/video-files/1198105/1198105-hd_1920_1080_25fps.mp4
+//
+// Ces URLs sont signées côté CDN Pexels et expirent après quelques jours.
+// Elles proviennent d'anciennes versions de genieCivilBot.js ou d'autres bots
+// qui avaient hardcodé des URLs spécifiques au lieu d'appeler l'API en temps réel.
+//
+// Ce filtre est appliqué AVANT idbSetPosts pour garder le cache propre.
+// Note : les posts Pexels générés par pexelsService.js (API temps réel) ne sont
+// PAS filtrés — leurs URLs ne contiennent pas le pattern ID-nom_résolution_fps.
+// ─────────────────────────────────────────────
+const STALE_PEXELS_PATTERN = /videos\.pexels\.com\/video-files\/\d+\/\d+-\w+_\d+_\d+/;
+
+function hasStaleHardcodedPexelsUrl(post) {
+  const sources = [
+    ...(Array.isArray(post.media)  ? post.media  : post.media  ? [post.media]  : []),
+    ...(Array.isArray(post.images) ? post.images : post.images ? [post.images] : []),
+    post.videoUrl,
+    post.embedUrl,
+  ];
+  return sources.some(m => {
+    const url = typeof m === "string" ? m : m?.url;
+    return url && STALE_PEXELS_PATTERN.test(url);
+  });
+}
+
+function filterStalePexelsPosts(posts) {
+  return posts.filter(p => !hasStaleHardcodedPexelsUrl(p));
+}
 
 // ─────────────────────────────────────────────
 // HELPERS LCP PRELOAD
@@ -226,9 +263,17 @@ export const PostsProvider = ({ children }) => {
 
       setPosts(prev => {
         const merged = append ? [...prev, ...normalized] : normalized;
-        const unique  = Array.from(new Map(merged.map(p => [p._id, p])).values());
-        idbSetPosts("allPosts", unique);
-        return unique;
+
+        // ✅ FIX PEXELS : on purge les posts avec URLs Pexels hardcodées
+        // expirées AVANT d'écrire dans le cache IDB.
+        // Cela garantit que le cache reste propre entre les sessions.
+        const unique = Array.from(
+          new Map(merged.map(p => [p._id, p])).values()
+        );
+        const clean = filterStalePexelsPosts(unique);
+
+        idbSetPosts("allPosts", clean);
+        return clean;
       });
 
       setHasMore(data.hasMore ?? normalized.length === 20);
@@ -413,6 +458,8 @@ export const PostsProvider = ({ children }) => {
   // ✅ FIX LCP : preloadFirstPostLCP() appelé DÈS le cache hit
   //    → le navigateur commence à télécharger le poster AVANT le render React
   //    → resource load delay réduit de ~3s
+  // ✅ FIX PEXELS : filterStalePexelsPosts() appliqué sur le cache IDB
+  //    → les posts expirés déjà en cache ne s'affichent jamais
   // ============================================
   useEffect(() => {
     if (!token) return;
@@ -427,14 +474,17 @@ export const PostsProvider = ({ children }) => {
         // Étape 1 : cache IDB IMMÉDIAT
         const cached = await idbGetPosts("allPosts");
         if (cached?.length) {
+          // ✅ FIX PEXELS : purge les posts expirés du cache avant affichage
+          const cleanCached = filterStalePexelsPosts(cached);
+
           // ✅ CRITIQUE : preload du poster LCP AVANT setPosts()
           // Le navigateur reçoit l'instruction de télécharger l'image
           // pendant que React prépare le render — gain de ~1-2s
-          preloadFirstPostLCP(cached);
+          preloadFirstPostLCP(cleanCached);
 
-          setPosts(cached);
+          setPosts(cleanCached);
           setLoading(false);
-          console.log(`⚡ [PostsContext] Cache hit : ${cached.length} posts affichés`);
+          console.log(`⚡ [PostsContext] Cache hit : ${cleanCached.length} posts affichés (${cached.length - cleanCached.length} posts Pexels filtrés)`);
         }
 
         // Étape 2 : API en arrière-plan
