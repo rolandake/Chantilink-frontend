@@ -4,7 +4,19 @@
 // ✅ FIX LCP : injectPreloadLink dès le 1er render synchrone (avant useEffect)
 // ✅ ImmersivePyramidUniverse → modal portal avec prop isOpen
 // ✅ Le feed reste visible en arrière-plan pendant que l'univers est ouvert
-// ✅ FIX PEXELS HARDCODÉ : posts avec URLs Pexels directes expirées exclus du feed
+//
+// 🔥 FIX VIDÉOS INDISPONIBLES : hasStaleMediaUrl() filtre les URLs expirées
+// 🔥 FIX REFRESH FEED : tap Home = fresh feed (Instagram/TikTok behavior)
+//
+// 🚀 FIX SCROLL PERFORMANCE
+// ✨ PREMIUM REFRESH ANIMATIONS (Instagram/TikTok style)
+//
+// 🔄 FIX VARIÉTÉ DU FEED :
+//    - shuffleSeed change à chaque refresh → ordre différent à chaque fois
+//    - seededShuffle() déterministe par seed → stable pendant le scroll
+//    - On consomme les posts depuis un offset aléatoire dans le pool
+//    - Les posts API récents sont toujours mis en avant (slice HEAD)
+//    - PAGE_SIZE 16, MAX_DOM_POSTS 600, API_PREFETCH_PAGES 3
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -17,8 +29,11 @@ import { useStories } from "../../context/StoryContext";
 import { usePosts } from "../../context/PostsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useNews } from "../../hooks/useNews";
+import axiosClient from "../../api/axiosClientGlobal";
 import PostCard from "./PostCard";
 import StoryContainer from "./StoryContainer";
+import SuggestedAccounts from "./SuggestedAccounts";
+import SuggestedPostPreview from "./SuggestedPostPreview";
 import SmartAd from "./Publicite/SmartAd";
 import ArticleReaderModal from "./ArticleReaderModal";
 import MOCK_POSTS, { generateFullDataset } from "../../data/mockPosts";
@@ -34,11 +49,26 @@ const AD_CONFIG   = DEFAULT_AD_CONFIG;
 const MOCK_CONFIG = DEFAULT_MOCK_CONFIG;
 
 const NEWS_INSERT_AFTER = 2;
-const NEWS_REPEAT_EVERY = 6;
-const PAGE_SIZE         = 8;
-const MAX_DOM_POSTS     = 200;
+const NEWS_REPEAT_EVERY = 8;
+const SUGGEST_EVERY       = 8;  // carousel profils simples toutes les 8 publications
+const SUGGEST_POST_EVERY  = 5;  // profil + publication toutes les 5 publications
+const PAGE_SIZE         = 16;
+const MAX_DOM_POSTS     = 600;
 const POLL_INTERVAL     = 30_000;
 const STORY_BAR_HEIGHT  = 120;
+
+const API_PREFETCH_PAGES = 3;
+
+const MIX_BLOCK_SIZE  = 5;
+const MIX_MAX_BOTS    = 2;
+
+// ─── Durées des animations de refresh ────────────────
+const RIPPLE_DURATION_MS = 600;
+const WAVE_DURATION_MS   = 780;
+const WAVE_STAGGER_S     = 0.05;
+const WAVE_POST_DURATION = 0.38;
+const WAVE_POST_COUNT    = 7;
+// ─────────────────────────────────────────────────────
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
@@ -87,6 +117,62 @@ const getLCPImageUrl = (posts) => {
   if (isVideoUrl(url)) return { url: getVideoPosterUrlForPreload(url), type: "image" };
   return { url, type: "image" };
 };
+
+// ─────────────────────────────────────────────
+// 🔄 SEEDED SHUFFLE — stable pendant le scroll,
+// mais change d'ordre à chaque refresh (seed différente)
+// ─────────────────────────────────────────────
+const seededShuffle = (arr, seed) => {
+  const result = [...arr];
+  let s = seed >>> 0;
+  for (let i = result.length - 1; i > 0; i--) {
+    s = (Math.imul(s ^ (s >>> 15), s | 1) ^ (s + (Math.imul(s ^ (s >>> 7), s | 61)))) >>> 0;
+    const j = s % (i + 1);
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+};
+
+// ─────────────────────────────────────────────
+// 🔄 MIX BOTS + RÉELS — algorithme par blocs
+// ─────────────────────────────────────────────
+function mixPostsByBlocks(realPosts, botPosts) {
+  if (!botPosts.length) return realPosts;
+  if (!realPosts.length) return botPosts;
+
+  const result = [];
+  let ri = 0, bi = 0;
+
+  while (ri < realPosts.length || bi < botPosts.length) {
+    const block = [];
+    let botsInBlock = 0;
+    while (block.length < MIX_BLOCK_SIZE) {
+      const canAddBot  = bi < botPosts.length && botsInBlock < MIX_MAX_BOTS;
+      const canAddReal = ri < realPosts.length;
+      if (!canAddReal && !canAddBot) break;
+
+      if (canAddBot && canAddReal) {
+        const botSlot = Math.floor(block.length * MIX_MAX_BOTS / MIX_BLOCK_SIZE);
+        if (botsInBlock < botSlot) {
+          block.push({ ...botPosts[bi++], _isBot: true });
+          botsInBlock++;
+        } else {
+          block.push(realPosts[ri++]);
+        }
+      } else if (canAddReal) {
+        block.push(realPosts[ri++]);
+      } else {
+        block.push({ ...botPosts[bi++], _isBot: true });
+        botsInBlock++;
+      }
+    }
+    const head = block[0];
+    const tail = block.slice(1).sort(() => Math.random() - 0.5);
+    result.push(head, ...tail);
+  }
+
+  return result;
+}
 
 // ─────────────────────────────────────────────
 // SKELETON
@@ -139,33 +225,104 @@ const NewPostsBanner = memo(({ count, onClick, isDarkMode }) => (
 NewPostsBanner.displayName = "NewPostsBanner";
 
 // ─────────────────────────────────────────────
-// PULL TO REFRESH INDICATOR
+// PULL-TO-REFRESH INDICATOR
 // ─────────────────────────────────────────────
-const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, threshold = 100 }) => {
-  const progress = Math.min((pullDistance / threshold) * 100, 100);
-  const opacity  = Math.min(pullDistance / 60, 1);
+const PTR_THRESHOLD = 100;
+const CIRCLE_R      = 16;
+const CIRCLE_C      = 2 * Math.PI * CIRCLE_R;
+
+const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isRefreshing, isDarkMode }) => {
+  const progress   = Math.min(pullDistance / PTR_THRESHOLD, 1);
+  const opacity    = Math.min(pullDistance / 50, 1);
+  const dashOffset = CIRCLE_C * (1 - progress);
+  const iconDeg    = progress * 270;
+
   return (
     <AnimatePresence>
-      {pullDistance > 20 && (
+      {(pullDistance > 15 || isRefreshing) && (
         <motion.div
-          initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.8 }} transition={{ duration: 0.15 }}
-          className="fixed left-1/2 -translate-x-1/2 z-[45] pointer-events-none"
-          style={{ top: STORY_BAR_HEIGHT + 16 }}>
-          <div className={`relative w-10 h-10 rounded-full flex items-center justify-center backdrop-blur-md shadow-lg border
-            ${isDarkMode ? "bg-gray-800/95 border-gray-700" : "bg-white/95 border-gray-200"}`}>
-            <svg className="absolute inset-0 -rotate-90" viewBox="0 0 40 40">
-              <circle cx="20" cy="20" r="16" fill="none" stroke={isDarkMode ? "#374151" : "#e5e7eb"} strokeWidth="2" />
-              <circle cx="20" cy="20" r="16" fill="none" stroke="#f97316" strokeWidth="2"
-                strokeDasharray={`${2 * Math.PI * 16}`}
-                strokeDashoffset={`${2 * Math.PI * 16 * (1 - progress / 100)}`}
-                strokeLinecap="round" style={{ transition: "stroke-dashoffset 0.08s linear" }} />
+          initial={{ opacity: 0, y: -10, scale: 0.75 }}
+          animate={{
+            opacity: isRefreshing ? 1 : opacity,
+            y:       0,
+            scale:   (isPulling || isRefreshing) ? 1.08 : 1,
+          }}
+          exit={{ opacity: 0, y: -10, scale: 0.75 }}
+          transition={{ duration: 0.15, ease: "easeOut" }}
+          className="fixed left-1/2 -translate-x-1/2 z-[45] pointer-events-none flex flex-col items-center gap-1.5"
+          style={{ top: STORY_BAR_HEIGHT + 14 }}
+        >
+          <AnimatePresence>
+            {(isPulling || isRefreshing) && (
+              <motion.div
+                key="ptr-burst"
+                className="absolute rounded-full"
+                style={{
+                  width: 70, height: 70,
+                  top: -15, left: -15,
+                  background: "radial-gradient(circle, rgba(249,115,22,0.38) 0%, transparent 70%)",
+                  zIndex: -1,
+                }}
+                initial={{ opacity: 0.85, scale: 0.6 }}
+                animate={{ opacity: 0, scale: 2.4 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.55, ease: "easeOut" }}
+              />
+            )}
+          </AnimatePresence>
+          <div
+            className="relative w-11 h-11 rounded-full flex items-center justify-center"
+            style={{
+              background: isDarkMode ? "rgba(15,15,15,0.93)" : "rgba(255,255,255,0.96)",
+              backdropFilter: "blur(14px)",
+              WebkitBackdropFilter: "blur(14px)",
+              boxShadow: (isPulling || isRefreshing)
+                ? "0 0 0 2.5px rgba(249,115,22,0.45), 0 6px 24px rgba(249,115,22,0.22)"
+                : "0 3px 16px rgba(0,0,0,0.13)",
+              border: isDarkMode ? "1px solid rgba(255,255,255,0.07)" : "1px solid rgba(0,0,0,0.05)",
+              transition: "box-shadow 0.25s ease",
+            }}
+          >
+            <svg
+              className={isRefreshing ? "animate-spin" : ""}
+              width="44" height="44" viewBox="0 0 44 44"
+              style={{ position: "absolute", inset: 0 }}
+            >
+              <circle cx="22" cy="22" r={CIRCLE_R} fill="none"
+                stroke={isDarkMode ? "#292929" : "#eeeeee"} strokeWidth="2.2" />
+              <circle cx="22" cy="22" r={CIRCLE_R} fill="none"
+                stroke="url(#ptrGradient)" strokeWidth="2.2" strokeLinecap="round"
+                strokeDasharray={CIRCLE_C}
+                strokeDashoffset={isRefreshing ? 0 : dashOffset}
+                style={{
+                  transformOrigin: "center", transform: "rotate(-90deg)",
+                  transition: isRefreshing ? "none" : "stroke-dashoffset 0.07s linear",
+                }}
+              />
+              <defs>
+                <linearGradient id="ptrGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"   stopColor="#f97316" />
+                  <stop offset="100%" stopColor="#ec4899" />
+                </linearGradient>
+              </defs>
             </svg>
             <ArrowPathIcon
-              className={`w-5 h-5 ${isPulling ? "text-orange-500" : "text-gray-400"}`}
-              style={{ transform: `rotate(${(pullDistance / threshold) * 360}deg)`, transition: "transform 0.08s linear" }}
+              className="w-5 h-5 relative z-10"
+              style={{
+                color: (isPulling || isRefreshing) ? "#f97316" : isDarkMode ? "#6b7280" : "#9ca3af",
+                transform: isRefreshing ? undefined : `rotate(${iconDeg}deg)`,
+                transition: "color 0.2s ease, transform 0.07s linear",
+              }}
             />
           </div>
+          <motion.span
+            initial={{ opacity: 0 }}
+            animate={{ opacity: progress > 0.6 ? 1 : 0 }}
+            transition={{ duration: 0.15 }}
+            style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", color: "#f97316", userSelect: "none" }}
+          >
+            {isRefreshing ? "Actualisation…" : isPulling ? "✓ Relâchez !" : "Tirez encore"}
+          </motion.span>
         </motion.div>
       )}
     </AnimatePresence>
@@ -174,22 +331,57 @@ const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isDarkMode, thre
 PullToRefreshIndicator.displayName = "PullToRefreshIndicator";
 
 // ─────────────────────────────────────────────
+// REFRESH RIPPLE OVERLAY
+// ─────────────────────────────────────────────
+const RefreshRippleOverlay = memo(({ isDarkMode }) => (
+  <motion.div
+    key="refresh-ripple"
+    className="fixed inset-0 pointer-events-none z-40"
+    initial={{ opacity: 0 }}
+    animate={{ opacity: [0, 1, 0] }}
+    transition={{ duration: 0.62, times: [0, 0.22, 1], ease: "easeOut" }}
+    style={{
+      background: isDarkMode
+        ? "linear-gradient(180deg, rgba(249,115,22,0.15) 0%, rgba(236,72,153,0.07) 35%, transparent 62%)"
+        : "linear-gradient(180deg, rgba(249,115,22,0.12) 0%, rgba(236,72,153,0.05) 35%, transparent 62%)",
+    }}
+  />
+));
+RefreshRippleOverlay.displayName = "RefreshRippleOverlay";
+
+// ─────────────────────────────────────────────
 // POST ITEM
 // ─────────────────────────────────────────────
-const PostItem = memo(({ post, onDeleted, showToast, isPriority }) => (
-  <PostCard
-    post={post}
-    onDeleted={onDeleted}
-    showToast={showToast}
-    mockPost={!!(post._isMock || post.isMockPost || post._id?.startsWith("post_"))}
-    priority={isPriority}
-  />
-), (prev, next) =>
+const PostItem = memo(({ post, onDeleted, showToast, isPriority, waveIndex, isWaving }) => {
+  const shouldAnimate = isWaving && typeof waveIndex === "number" && waveIndex < WAVE_POST_COUNT;
+  return (
+    <motion.div
+      initial={shouldAnimate ? { opacity: 0, y: 22 } : false}
+      animate={shouldAnimate ? { opacity: 1, y: 0 }  : undefined}
+      transition={shouldAnimate ? {
+        duration: WAVE_POST_DURATION,
+        delay:    waveIndex * WAVE_STAGGER_S,
+        ease:     [0.22, 1, 0.36, 1],
+      } : undefined}
+    >
+      <PostCard
+        post={post}
+        onDeleted={onDeleted}
+        showToast={showToast}
+        mockPost={!!(post._isMock || post.isMockPost || post._id?.startsWith("post_"))}
+        priority={isPriority}
+      />
+    </motion.div>
+  );
+}, (prev, next) =>
   prev.post._id              === next.post._id &&
   prev.post.likes?.length    === next.post.likes?.length &&
   prev.post.comments?.length === next.post.comments?.length &&
   prev.post.content          === next.post.content &&
-  prev.isPriority            === next.isPriority
+  prev.post._displayKey      === next.post._displayKey &&
+  prev.isPriority            === next.isPriority &&
+  prev.isWaving              === next.isWaving &&
+  prev.waveIndex             === next.waveIndex
 );
 PostItem.displayName = "PostItem";
 
@@ -217,7 +409,6 @@ const InlineNewsCard = memo(({ article, isDarkMode }) => {
         </span>
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
       </div>
-
       <div
         onClick={() => setOpenArticle(article)}
         className={`mx-3 mb-5 rounded-2xl overflow-hidden cursor-pointer active:scale-[0.98] transition-transform shadow-md
@@ -239,7 +430,6 @@ const InlineNewsCard = memo(({ article, isDarkMode }) => {
           <div className="w-full flex items-center justify-center bg-gradient-to-br from-orange-500 to-pink-500 text-5xl"
             style={{ height: 120 }}>📰</div>
         )}
-
         <div className="p-4">
           {(imgErr || !article.image) && (
             <div className="flex items-center gap-2 mb-2">
@@ -263,7 +453,6 @@ const InlineNewsCard = memo(({ article, isDarkMode }) => {
           </div>
         </div>
       </div>
-
       <ArticleReaderModal
         article={openArticle}
         isOpen={!!openArticle}
@@ -300,7 +489,7 @@ const LoopDivider = memo(({ isDarkMode }) => (
 LoopDivider.displayName = "LoopDivider";
 
 // ─────────────────────────────────────────────
-// Helper batch
+// HELPER BATCH
 // ─────────────────────────────────────────────
 const computeNextBatch = (prev, posts, loopCountRef) => {
   if (!prev.length) return { newPosts: prev, newBoundary: null };
@@ -334,23 +523,26 @@ const ProgressiveFeed = ({
   apiLoadMoreRef, hasMoreFromAPI,
   searchQuery, isDarkMode, newsArticles, isLoading,
   newPostsCount, onShowNewPosts,
+  isWaving,
+  apiFullyLoaded,
+  suggestedUserPool,
 }) => {
-  const [displayedPosts, setDisplayedPosts] = useState([]);
-  const [loopBoundaries, setLoopBoundaries] = useState([]);
+  const [feedState, setFeedState] = useState({ displayedPosts: [], loopBoundaries: [] });
+  const { displayedPosts, loopBoundaries } = feedState;
+
   const sentinelRef  = useRef(null);
   const loopCountRef = useRef(0);
   const postsRef     = useRef(posts);
   useEffect(() => { postsRef.current = posts; }, [posts]);
 
   useEffect(() => {
-    if (!posts.length) { setDisplayedPosts([]); setLoopBoundaries([]); return; }
+    if (!posts.length) { setFeedState({ displayedPosts: [], loopBoundaries: [] }); return; }
     loopCountRef.current = 0;
     const initial = posts.slice(0, Math.min(PAGE_SIZE, posts.length)).map(p => ({
       ...p, _displayKey: `loop0_${p._id}`,
     }));
     startTransition(() => {
-      setDisplayedPosts(initial);
-      setLoopBoundaries([]);
+      setFeedState({ displayedPosts: initial, loopBoundaries: [] });
     });
   }, [posts.length === 0 ? 0 : posts[0]?._id]); // eslint-disable-line
 
@@ -360,20 +552,38 @@ const ProgressiveFeed = ({
     const obs = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
       startTransition(() => {
-        setDisplayedPosts(prev => {
+        setFeedState(prev => {
           const currentPosts = postsRef.current;
-          if (!prev.length || !currentPosts.length) return prev;
-          const { newPosts, newBoundary } = computeNextBatch(prev, currentPosts, loopCountRef);
-          if (newBoundary !== null) {
-            startTransition(() => setLoopBoundaries(b => [...b, newBoundary]));
-          }
-          return newPosts;
+          if (!prev.displayedPosts.length || !currentPosts.length) return prev;
+          const { newPosts, newBoundary } = computeNextBatch(prev.displayedPosts, currentPosts, loopCountRef);
+          return {
+            displayedPosts: newPosts,
+            loopBoundaries: newBoundary !== null
+              ? [...prev.loopBoundaries, newBoundary]
+              : prev.loopBoundaries,
+          };
         });
       });
-    }, { rootMargin: "400px" });
+    }, { rootMargin: "300px" });
     obs.observe(sentinel);
     return () => obs.disconnect();
   }, []); // eslint-disable-line
+
+  const loopBoundarySet = useMemo(() => new Set(loopBoundaries), [loopBoundaries]);
+
+  const newsInsertMap = useMemo(() => {
+    if (!newsArticles?.length || searchQuery) return new Map();
+    const map = new Map();
+    let articleIdx = 0;
+    for (let i = 0; i < displayedPosts.length; i++) {
+      const isFirstSlot  = i === NEWS_INSERT_AFTER - 1;
+      const isRepeatSlot = i >= NEWS_INSERT_AFTER && ((i - NEWS_INSERT_AFTER + 1) % NEWS_REPEAT_EVERY === 0);
+      if (isFirstSlot || isRepeatSlot) {
+        map.set(i, newsArticles[articleIdx++ % newsArticles.length]);
+      }
+    }
+    return map;
+  }, [displayedPosts.length, newsArticles, searchQuery]);
 
   if (isLoading && posts.length === 0) return <SkeletonPosts count={3} isDarkMode={isDarkMode} />;
   if (!isLoading && posts.length === 0) return (
@@ -382,25 +592,41 @@ const ProgressiveFeed = ({
     </div>
   );
 
-  let newsIdx = 0;
-  const hasNews         = newsArticles && newsArticles.length > 0;
-  const loopBoundarySet = new Set(loopBoundaries);
-  let loopDividerCount  = 0;
-
   return (
     <>
       <NewPostsBanner count={newPostsCount} onClick={onShowNewPosts} isDarkMode={isDarkMode} />
       {displayedPosts.map((post, index) => {
-        const isLoopStart    = loopBoundarySet.has(index);
-        const isFirstSlot    = index === NEWS_INSERT_AFTER - 1;
-        const isRepeatSlot   = index >= NEWS_INSERT_AFTER && ((index - NEWS_INSERT_AFTER + 1) % NEWS_REPEAT_EVERY === 0);
-        const showNews       = !searchQuery && hasNews && (isFirstSlot || isRepeatSlot);
-        const showAd         = adConfig.enabled && index > 0 && index % adConfig.frequency === 0;
-        const article        = showNews ? newsArticles[newsIdx++ % newsArticles.length] : null;
+        const isLoopStart = loopBoundarySet.has(index);
+        const showAd      = adConfig.enabled && index > 0 && index % adConfig.frequency === 0;
+        const article     = newsInsertMap.get(index);
         return (
-          <React.Fragment key={post._displayKey || post._id}>
-            {isLoopStart && <LoopDivider isDarkMode={isDarkMode} loopCount={++loopDividerCount} />}
-            <PostItem post={post} onDeleted={onDeleted} showToast={showToast} isPriority={index === 0} />
+          <div key={post._displayKey || post._id} style={{ contain: "content" }}>
+            {isLoopStart && apiFullyLoaded && <LoopDivider isDarkMode={isDarkMode} />}
+            <PostItem
+              post={post}
+              onDeleted={onDeleted}
+              showToast={showToast}
+              isPriority={index === 0}
+              waveIndex={index}
+              isWaving={isWaving}
+            />
+            {/* Type 1 — Profil + publication (toutes les 5 publications) */}
+            {index > 0 && index % SUGGEST_POST_EVERY === 0 && index % SUGGEST_EVERY !== 0 && (
+              <SuggestedPostPreview
+                key={`suggest-post-${index}`}
+                isDarkMode={isDarkMode}
+                userPool={suggestedUserPool}
+                slotIndex={Math.floor(index / SUGGEST_POST_EVERY)}
+              />
+            )}
+            {/* Type 2 — Carousel profils simples (toutes les 8 publications) */}
+            {index > 0 && index % SUGGEST_EVERY === 0 && (
+              <SuggestedAccounts
+                key={`suggest-accounts-${Math.floor(index / SUGGEST_EVERY)}`}
+                isDarkMode={isDarkMode}
+                instanceId={Math.floor(index / SUGGEST_EVERY)}
+              />
+            )}
             {showAd && (
               <div style={{ minHeight: 250, contain: "layout size" }}>
                 <SmartAd slot="feedInline" canClose={true} />
@@ -408,12 +634,12 @@ const ProgressiveFeed = ({
             )}
             {article && (
               <InlineNewsCard
-                key={`news-${article.id || article.url || newsIdx}`}
+                key={`news-${article.id || article.url || index}`}
                 article={article}
                 isDarkMode={isDarkMode}
               />
             )}
-          </React.Fragment>
+          </div>
         );
       })}
       <div ref={sentinelRef} className="h-20 flex items-center justify-center" aria-hidden="true">
@@ -428,31 +654,33 @@ const ProgressiveFeed = ({
 ProgressiveFeed.displayName = "ProgressiveFeed";
 
 // ─────────────────────────────────────────────
-// ✅ HELPER — DÉTECTION URL PEXELS HARDCODÉE EXPIRÉE
-//
-// Les anciennes URLs Pexels directes ont ce format :
-//   https://videos.pexels.com/video-files/1198105/1198105-hd_1920_1080_25fps.mp4
-//
-// Ces URLs sont signées côté CDN Pexels et expirent après quelques jours.
-// Elles ne proviennent pas de l'API Pexels en temps réel (qui génère des
-// URLs fraîches à chaque appel) mais de genieCivilBot.js ou d'autres bots
-// qui avaient hardcodé des URLs spécifiques.
-//
-// Détection : url Pexels + pattern ID-nom_résolution_fps.mp4
+// STALE URL DETECTION
 // ─────────────────────────────────────────────
-const STALE_PEXELS_PATTERN = /videos\.pexels\.com\/video-files\/\d+\/\d+-\w+_\d+_\d+/;
+const STALE_PIXABAY_PATTERN = /cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\/\d+-\d+_large\.mp4/i;
+const STALE_PEXELS_PATTERN  = /videos\.pexels\.com\/video-files\/\d+\/\d+-\w+_\d+_\d+/i;
 
-const hasStaleHardcodedPexelsUrl = (post) => {
+const hasStaleMediaUrl = (post) => {
   const sources = [
     ...(Array.isArray(post.media)  ? post.media  : post.media  ? [post.media]  : []),
     ...(Array.isArray(post.images) ? post.images : post.images ? [post.images] : []),
-    post.videoUrl,
-    post.embedUrl,
+    post.videoUrl, post.embedUrl, post.thumbnail,
   ];
   return sources.some(m => {
     const url = typeof m === 'string' ? m : m?.url;
-    return url && STALE_PEXELS_PATTERN.test(url);
+    if (!url) return false;
+    return STALE_PIXABAY_PATTERN.test(url) || STALE_PEXELS_PATTERN.test(url);
   });
+};
+
+// ─────────────────────────────────────────────
+// STABLE REFERENCES
+// ─────────────────────────────────────────────
+const _realPostCache = new WeakMap();
+const stableRealPost = (post) => {
+  if (_realPostCache.has(post)) return _realPostCache.get(post);
+  const stable = post._isMock === false ? post : { ...post, _isMock: false };
+  _realPostCache.set(post, stable);
+  return stable;
 };
 
 // ─────────────────────────────────────────────
@@ -475,6 +703,17 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const [pullUIState,     setPullUIState]     = useState({ distance: 0, isPulling: false });
   const [pendingPosts,    setPendingPosts]    = useState([]);
   const [newPostsCount,   setNewPostsCount]   = useState(0);
+  const [feedKey,         setFeedKey]         = useState(0);
+  const [showRipple,      setShowRipple]      = useState(false);
+  const [isWaving,        setIsWaving]        = useState(false);
+  const [apiPagesLoaded,  setApiPagesLoaded]  = useState(1);
+
+  // Pool d'utilisateurs suggérés partagé entre les deux types de suggestions
+  const [suggestedUserPool, setSuggestedUserPool] = useState([]);
+  const suggestFetchedRef = useRef(false);
+
+  // 🔄 Seed de shuffle — change à chaque refresh pour varier l'ordre du feed
+  const [shuffleSeed, setShuffleSeed] = useState(() => Math.floor(Math.random() * 0xFFFFFFFF));
 
   const latestPostIdRef    = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -488,53 +727,80 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const canPullRef         = useRef(true);
   const pullDistRef        = useRef(0);
   const lcpDone            = useRef(false);
+  const rippleTimerRef     = useRef(null);
+  const waveTimerRef       = useRef(null);
 
   const { articles: newsArticles = [] } = useNews({
     maxArticles: 10, category: "all", autoFetch: !!user, enabled: !!user,
   });
 
-  // ─────────────────────────────────────────────
-  // ✅ FIX PEXELS HARDCODÉ
-  //
-  // isValidPost exclut désormais les posts dont le média est une URL
-  // Pexels directe hardcodée (videos.pexels.com/video-files/ID/ID-nom.mp4).
-  //
-  // Pourquoi ces posts sont problématiques :
-  //   → URLs signées côté CDN Pexels, expiration rapide (24-72h)
-  //   → Résultat : écran noir, vidéo cassée, très mauvaise expérience
-  //   → Proviennent de genieCivilBot.js (ancienne version) ou autres bots
-  //     qui avaient des URLs hardcodées au lieu d'appeler l'API en temps réel
-  //
-  // Note : les posts Pexels générés par pexelsService.js (API temps réel)
-  //   NE sont PAS filtrés — leurs URLs sont fraîches à chaque appel.
-  //   Seules les URLs hardcodées avec le pattern ID-nom_résolution_fps sont exclues.
-  // ─────────────────────────────────────────────
+  // Charger le pool de suggestions une seule fois
+  useEffect(() => {
+    if (suggestFetchedRef.current || !user) return;
+    suggestFetchedRef.current = true;
+    (async () => {
+      try {
+        const { data } = await axiosClient.get("/users/suggestions?limit=20");
+        const list = Array.isArray(data) ? data : (data?.users || data?.suggestions || []);
+        setSuggestedUserPool(list.filter(u => u?._id && u._id !== user._id));
+      } catch {
+        try {
+          const { data } = await axiosClient.get("/users?limit=20&sort=followers");
+          const list = Array.isArray(data) ? data : (data?.users || []);
+          setSuggestedUserPool(list.filter(u => u?._id && u._id !== user._id).slice(0, 15));
+        } catch {}
+      }
+    })();
+  }, [user]);
+
   const isValidPost = useCallback((post) => {
     if (!post?._id) return false;
     if (post._isMock || post.isMockPost || post._id?.startsWith("post_")) return true;
     const u = post.user || post.author || {};
     if (u.isBanned || u.isDeleted || ["deleted","banned"].includes(u.status)) return false;
-    // ✅ Exclure les posts avec URLs Pexels hardcodées expirées
-    if (hasStaleHardcodedPexelsUrl(post)) return false;
+    if (hasStaleMediaUrl(post)) return false;
     return !!(u._id || u.id || post.userId || post.author?._id);
   }, []);
 
-  const realPostsLength = realPosts.length;
+  // ─────────────────────────────────────────────
+  // 🔄 combinedPosts — shufflé par seed au refresh
+  //
+  // Stratégie :
+  //   1. Les N derniers posts API (récents) restent en tête (non shufflés)
+  //      pour que les vraies nouveautés apparaissent toujours en premier.
+  //   2. Le reste du pool (anciens posts + mocks) est shufflé avec la seed.
+  //   3. On applique ensuite le mix bots/réels par blocs.
+  //
+  //   → À chaque refresh, shuffleSeed change → ordre différent.
+  //   → Pendant le scroll, la seed est stable → pas de sauts.
+  // ─────────────────────────────────────────────
+  const RECENT_HEAD_COUNT = 5; // nb de posts récents gardés en tête
+
   const combinedPosts = useMemo(() => {
-    const valid = realPosts.filter(isValidPost);
-    if (!showMockPosts) return valid;
-    const slice = MOCK_POSTS.slice(0, mockPostsCount);
-    if (MOCK_CONFIG.mixWithRealPosts && valid.length > 0) {
-      const out = []; let mi = 0, ri = 0;
-      const ratio = MOCK_CONFIG.realPostsRatio || 2;
-      while (mi < slice.length || ri < valid.length) {
-        for (let i = 0; i < ratio && ri < valid.length; i++) out.push({ ...valid[ri++], _isMock: false });
-        if (mi < slice.length) out.push({ ...slice[mi++], _isMock: true });
-      }
-      return out;
+    const validReal = realPosts.filter(p => isValidPost(p) && !p.isBot && !p.user?.isBot);
+    const validBots = realPosts.filter(p => isValidPost(p) && (p.isBot || p.user?.isBot));
+
+    if (!showMockPosts) {
+      // Tête : posts récents stables, queue : shufflée
+      const head = validReal.slice(0, RECENT_HEAD_COUNT);
+      const tail = seededShuffle(validReal.slice(RECENT_HEAD_COUNT), shuffleSeed);
+      return mixPostsByBlocks([...head, ...tail], seededShuffle(validBots, shuffleSeed ^ 0xABCD));
     }
-    return slice.map(p => ({ ...p, _isMock: true }));
-  }, [realPostsLength, mockPostsCount, showMockPosts, isValidPost]);
+
+    const mockSlice = MOCK_POSTS.slice(0, mockPostsCount);
+
+    if (MOCK_CONFIG.mixWithRealPosts && validReal.length > 0) {
+      const realHead  = validReal.slice(0, RECENT_HEAD_COUNT).map(stableRealPost);
+      const realTail  = seededShuffle(validReal.slice(RECENT_HEAD_COUNT).map(stableRealPost), shuffleSeed);
+      const allBots   = seededShuffle([...validBots, ...mockSlice], shuffleSeed ^ 0xDEAD);
+      return mixPostsByBlocks([...realHead, ...realTail], allBots);
+    }
+
+    // Que des mocks : shuffler avec la seed
+    return seededShuffle(mockSlice, shuffleSeed);
+  }, [realPosts.length, mockPostsCount, showMockPosts, isValidPost, shuffleSeed]); // eslint-disable-line
+
+  const apiFullyLoaded = !hasMore && apiPagesLoaded >= API_PREFETCH_PAGES;
 
   useEffect(() => {
     if (combinedPosts.length > 0 && !latestPostIdRef.current)
@@ -573,6 +839,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => clearTimeout(t);
   }, [isLoading]);
 
+  useEffect(() => {
+    return () => {
+      clearTimeout(rippleTimerRef.current);
+      clearTimeout(waveTimerRef.current);
+    };
+  }, []);
+
   const showToast = useCallback((msg, type = "info") => {
     startTransition(() => setToast({ message: msg, type }));
   }, []);
@@ -586,29 +859,44 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     else { setViewerData({ stories: s, owner: o }); setShowStoryViewer(true); }
   }, [openStoryViewerProp]);
 
+  const triggerRefreshAnimation = useCallback(() => {
+    clearTimeout(rippleTimerRef.current);
+    setShowRipple(true);
+    rippleTimerRef.current = setTimeout(() => setShowRipple(false), RIPPLE_DURATION_MS);
+    clearTimeout(waveTimerRef.current);
+    setIsWaving(true);
+    startTransition(() => setFeedKey(k => k + 1));
+    waveTimerRef.current = setTimeout(() => setIsWaving(false), WAVE_DURATION_MS);
+  }, []);
+
   const handleRefresh = useCallback(async () => {
     if (isRefreshing) return;
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    triggerRefreshAnimation();
     setIsRefreshing(true);
+    setNewPostsCount(0);
+    setPendingPosts([]);
+    setApiPagesLoaded(1);
+
+    // 🔄 Nouvelle seed à chaque refresh → ordre du feed différent
+    setShuffleSeed(Math.floor(Math.random() * 0xFFFFFFFF));
+
     try {
-      await fetchStories(true);
-      const result     = await refetch?.();
-      const freshPosts = result?.posts || [];
-      if (freshPosts.length > 0 && latestPostIdRef.current) {
-        const latestIdx = freshPosts.findIndex(p => p._id === latestPostIdRef.current);
-        const newer     = latestIdx > 0 ? freshPosts.slice(0, latestIdx) : [];
-        if (newer.length > 0) { setPendingPosts(newer); setNewPostsCount(newer.length); }
-        else { setNewPostsCount(0); setPendingPosts([]); }
-      }
-    } catch { showToast("Erreur lors de l'actualisation", "error"); }
-    finally { setIsRefreshing(false); }
-  }, [isRefreshing, refetch, fetchStories, showToast]);
+      const [, result] = await Promise.allSettled([
+        fetchStories(true),
+        refetch?.(),
+      ]);
+      const freshPosts = result?.value?.posts || [];
+      if (freshPosts.length > 0) latestPostIdRef.current = freshPosts[0]._id;
+    } catch {
+      showToast("Erreur lors de l'actualisation", "error");
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [isRefreshing, refetch, fetchStories, showToast, triggerRefreshAnimation]);
 
   useEffect(() => {
-    const onHomeRefresh = () => {
-      scrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-      setNewPostsCount(0); setPendingPosts([]);
-      handleRefresh();
-    };
+    const onHomeRefresh = () => handleRefresh();
     window.addEventListener(HOME_REFRESH_EVENT, onHomeRefresh);
     return () => window.removeEventListener(HOME_REFRESH_EVENT, onHomeRefresh);
   }, [handleRefresh]);
@@ -623,7 +911,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         if (freshPosts.length > 0 && latestPostIdRef.current) {
           const latestIdx = freshPosts.findIndex(p => p._id === latestPostIdRef.current);
           const newer     = latestIdx > 0 ? freshPosts.slice(0, latestIdx) : [];
-          if (newer.length > 0) { setPendingPosts(newer); setNewPostsCount(newer.length); }
+          if (newer.length > 0) {
+            setPendingPosts(newer);
+            setNewPostsCount(newer.length);
+          }
         }
       } catch {}
     };
@@ -634,12 +925,15 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const handleShowNewPosts = useCallback(() => {
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     if (pendingPosts.length > 0) latestPostIdRef.current = pendingPosts[0]._id;
-    setNewPostsCount(0); setPendingPosts([]);
-  }, [pendingPosts]);
+    setNewPostsCount(0);
+    setPendingPosts([]);
+    // 🔄 Nouvelle seed aussi quand on affiche les nouveaux posts
+    setShuffleSeed(Math.floor(Math.random() * 0xFFFFFFFF));
+    triggerRefreshAnimation();
+  }, [pendingPosts, triggerRefreshAnimation]);
 
-  // Pull to refresh
   useEffect(() => {
-    const THRESHOLD = 100;
+    const THRESHOLD = PTR_THRESHOLD;
     let raf = null, lastUpdate = 0;
     const reset = () => {
       pullDistRef.current = 0; canPullRef.current = true;
@@ -696,7 +990,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     startPageTransition(() => {
       if (showMockPosts && mockPostsCount < MOCK_POSTS.length)
         setMockPostsCount(prev => Math.min(prev + MOCK_CONFIG.loadMoreCount, MOCK_POSTS.length));
-      if (hasMore) fetchNextPage();
+      if (hasMore) {
+        fetchNextPage();
+        setApiPagesLoaded(prev => prev + 1);
+      }
     });
   }, [hasMore, fetchNextPage, isRefreshing, showMockPosts, mockPostsCount]);
 
@@ -708,7 +1005,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     if (!node) return;
     const obs = new IntersectionObserver(
       (entries) => handleApiObserverRef.current(entries),
-      { rootMargin: "400px" }
+      { rootMargin: "500px" }
     );
     obs.observe(node);
     return () => obs.disconnect();
@@ -716,11 +1013,17 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
   return (
     <div className="flex flex-col h-full scrollbar-hide" style={{ minHeight: "100vh" }}>
+
       <PullToRefreshIndicator
         isPulling={pullUIState.isPulling}
         pullDistance={pullUIState.distance}
+        isRefreshing={isRefreshing}
         isDarkMode={isDarkMode}
       />
+
+      <AnimatePresence>
+        {showRipple && <RefreshRippleOverlay key="ripple" isDarkMode={isDarkMode} />}
+      </AnimatePresence>
 
       <div className={`sticky top-0 z-30 ${isDarkMode ? "bg-black" : "bg-white"}`}
         style={{ height: STORY_BAR_HEIGHT, minHeight: STORY_BAR_HEIGHT, contain: "strict" }}>
@@ -732,7 +1035,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         />
       </div>
 
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto scrollbar-hide">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto scrollbar-hide"
+        style={{ willChange: "transform", WebkitOverflowScrolling: "touch" }}
+      >
         <div ref={feedTopRef} />
         <div className="w-full lg:max-w-[630px] lg:mx-auto">
           {searchQuery && (
@@ -741,7 +1048,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
             </div>
           )}
           <ProgressiveFeed
-            key={`feed-${newsArticles.length > 0 ? "with-news" : "no-news"}`}
+            key={`feed-${feedKey}-${newsArticles.length > 0 ? "with-news" : "no-news"}`}
             posts={filteredPosts}
             onDeleted={handlePostDeleted}
             showToast={showToast}
@@ -754,6 +1061,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
             isLoading={isLoading}
             newPostsCount={newPostsCount}
             onShowNewPosts={handleShowNewPosts}
+            isWaving={isWaving}
+            apiFullyLoaded={apiFullyLoaded}
+            suggestedUserPool={suggestedUserPool}
           />
         </div>
       </div>

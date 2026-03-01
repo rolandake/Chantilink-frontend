@@ -1,17 +1,15 @@
 // src/context/PostsContext.jsx
-// ✅ OPTIMISÉ LCP :
-// - Cache IDB affiché IMMÉDIATEMENT avec setLoading(false)
-// - fetchPosts retourne { success, posts } pour le polling Home
-// - fetchUserPosts isolé du feed global
-// - Batch user loading côté backend (inchangé)
-// ✅ FIX LCP FINAL :
-// - Dès que le cache IDB répond, on précharge le poster du 1er post via <link preload>
-//   AVANT que React ne rende quoi que ce soit
-// - Le navigateur commence à télécharger l'image LCP ~2-3s plus tôt
-// ✅ FIX PEXELS HARDCODÉ :
-// - Les posts avec URLs Pexels hardcodées expirées sont filtrés AVANT idbSetPosts
-// - Le cache IDB reste propre — pas de pollution entre sessions
-// - Pattern détecté : videos.pexels.com/video-files/ID/ID-nom_résolution_fps.mp4
+// ✅ OPTIMISÉ LCP
+// ✅ FIX LCP FINAL : preload avant render
+// ✅ FIX PEXELS HARDCODÉ
+// ✅ FIX POSTS PROFIL NON AFFICHÉS
+// 🚀 FIX PUBLICATION LENTE :
+//   - addPostOptimistic  → affiche le post INSTANTANÉMENT avec blob URLs locales
+//   - replaceOptimisticPost → remplace le fantôme par le vrai post serveur
+//   - removeOptimisticPost  → rollback propre si l'upload échoue
+//   - createPost supprimé du context (géré directement dans CreatePost via axiosClient)
+// ✅ FIX TDZ : fetchPosts déclaré AVANT replaceOptimisticPost
+// ✅ FIX HTTP 400 : garde ObjectId sur fetchUserPosts — rejette les IDs temporaires clients
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "./AuthContext";
@@ -26,18 +24,13 @@ const PostsContext = createContext();
 export const usePosts = () => useContext(PostsContext);
 
 // ─────────────────────────────────────────────
-// ✅ FILTRE PEXELS HARDCODÉ
-//
-// Les URLs Pexels directes hardcodées ont ce format :
-//   https://videos.pexels.com/video-files/1198105/1198105-hd_1920_1080_25fps.mp4
-//
-// Ces URLs sont signées côté CDN Pexels et expirent après quelques jours.
-// Elles proviennent d'anciennes versions de genieCivilBot.js ou d'autres bots
-// qui avaient hardcodé des URLs spécifiques au lieu d'appeler l'API en temps réel.
-//
-// Ce filtre est appliqué AVANT idbSetPosts pour garder le cache propre.
-// Note : les posts Pexels générés par pexelsService.js (API temps réel) ne sont
-// PAS filtrés — leurs URLs ne contiennent pas le pattern ID-nom_résolution_fps.
+// GUARD — vérifie qu'un ID est un ObjectId MongoDB valide (24 hex)
+// Rejette les IDs temporaires générés côté client (ex: user_6_1772309482858_41942)
+// ─────────────────────────────────────────────
+const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
+
+// ─────────────────────────────────────────────
+// FILTRE PEXELS HARDCODÉ
 // ─────────────────────────────────────────────
 const STALE_PEXELS_PATTERN = /videos\.pexels\.com\/video-files\/\d+\/\d+-\w+_\d+_\d+/;
 
@@ -60,8 +53,6 @@ function filterStalePexelsPosts(posts) {
 
 // ─────────────────────────────────────────────
 // HELPERS LCP PRELOAD
-// Injecte un <link rel="preload"> dans le <head> dès que
-// l'URL du poster est connue — SANS attendre le render React.
 // ─────────────────────────────────────────────
 const _preloadInjected = new Set();
 
@@ -70,17 +61,14 @@ function injectPreload(url) {
   if (document.querySelector(`link[rel="preload"][href="${url}"]`)) return;
   _preloadInjected.add(url);
   const link = document.createElement("link");
-  link.rel          = "preload";
-  link.as           = "image";
-  link.href         = url;
+  link.rel           = "preload";
+  link.as            = "image";
+  link.href          = url;
   link.fetchPriority = "high";
   document.head.appendChild(link);
 }
 
-function isVideoUrl(url) {
-  return url && /\.(mp4|webm|mov|avi)$/i.test(url.split("?")[0]);
-}
-
+function isVideoUrl(url)     { return url && /\.(mp4|webm|mov|avi)$/i.test(url.split("?")[0]); }
 function isPexelsVideo(url)  { return url && url.includes("videos.pexels.com"); }
 function isPixabayVideo(url) { return url && url.includes("cdn.pixabay.com/video"); }
 
@@ -136,26 +124,19 @@ function getOptimizedImageUrl(url) {
   return `${IMG_BASE}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${id}`;
 }
 
-/**
- * Extrait l'URL LCP du 1er post et l'injecte en preload.
- * Appelé dès que les posts sont disponibles (cache IDB ou API).
- */
 function preloadFirstPostLCP(posts) {
   if (!posts?.length) return;
   const first = posts[0];
   if (!first) return;
-
-  const mediaSrc  = first.images?.[0] || first.media?.[0];
-  const rawUrl    = typeof mediaSrc === "string" ? mediaSrc : mediaSrc?.url;
+  const mediaSrc = first.images?.[0] || first.media?.[0];
+  const rawUrl   = typeof mediaSrc === "string" ? mediaSrc : mediaSrc?.url;
   if (!rawUrl) return;
-
   let lcpUrl;
   if (isVideoUrl(rawUrl) || isPexelsVideo(rawUrl) || isPixabayVideo(rawUrl)) {
     lcpUrl = first.thumbnail || getVideoPosterUrlFast(rawUrl);
   } else {
     lcpUrl = getOptimizedImageUrl(rawUrl);
   }
-
   if (lcpUrl) injectPreload(lcpUrl);
 }
 
@@ -175,16 +156,36 @@ export const PostsProvider = ({ children }) => {
   const initialLoadDone = useRef(false);
   const abortController = useRef(null);
 
+  const tokenRef = useRef(token);
+  useEffect(() => { tokenRef.current = token; }, [token]);
+
   const userId = user?._id || user?.id;
+
+  const waitForToken = useCallback(async (maxWaitMs = 3000) => {
+    if (tokenRef.current) return tokenRef.current;
+    const interval = 100;
+    let elapsed    = 0;
+    return new Promise((resolve) => {
+      const check = setInterval(() => {
+        elapsed += interval;
+        if (tokenRef.current) { clearInterval(check); resolve(tokenRef.current); }
+        else if (elapsed >= maxWaitMs) { clearInterval(check); resolve(null); }
+      }, interval);
+    });
+  }, []);
 
   // ============================================
   // NORMALISATION
   // ============================================
   const normalizePost = useCallback((p) => {
+    // Les posts optimistes ont déjà leur user structuré — ne pas écraser
+    if (p.isOptimistic) return p;
+
     const rawUser = p.user || p.author || {};
     const normalizedUser = {
       ...rawUser,
-      _id:          rawUser._id || rawUser.id || p.userId || p.author?._id || "unknown",
+      _id:
+        rawUser._id || rawUser.id || p.userId || p.author?._id || "unknown",
       fullName:
         rawUser.fullName    ||
         rawUser.name        ||
@@ -219,6 +220,7 @@ export const PostsProvider = ({ children }) => {
 
   // ============================================
   // FETCH FEED GLOBAL (Home)
+  // ✅ Déclaré EN PREMIER pour éviter la TDZ dans replaceOptimisticPost
   // ============================================
   const fetchPosts = useCallback(async (pageNumber = 1, append = false) => {
     if (!token) {
@@ -248,7 +250,7 @@ export const PostsProvider = ({ children }) => {
     try {
       const res = await fetch(`${API_URL}/posts?page=${pageNumber}&limit=20`, {
         headers: { Authorization: `Bearer ${token}` },
-        signal: abortController.current.signal,
+        signal:  abortController.current.signal,
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -258,22 +260,19 @@ export const PostsProvider = ({ children }) => {
       const normalized = postsArray.map(normalizePost);
       console.log(`✅ [PostsContext] ${normalized.length} posts reçus`);
 
-      // ✅ Preload LCP dès réception des posts frais (cas sans cache)
       preloadFirstPostLCP(normalized);
 
       setPosts(prev => {
-        const merged = append ? [...prev, ...normalized] : normalized;
-
-        // ✅ FIX PEXELS : on purge les posts avec URLs Pexels hardcodées
-        // expirées AVANT d'écrire dans le cache IDB.
-        // Cela garantit que le cache reste propre entre les sessions.
-        const unique = Array.from(
-          new Map(merged.map(p => [p._id, p])).values()
-        );
-        const clean = filterStalePexelsPosts(unique);
-
-        idbSetPosts("allPosts", clean);
-        return clean;
+        // Garde les posts optimistes en tête, dédoublonne le reste
+        const optimistic = prev.filter(p => p.isOptimistic);
+        const merged     = append
+          ? [...prev.filter(p => !p.isOptimistic), ...normalized]
+          : normalized;
+        const unique = Array.from(new Map(merged.map(p => [p._id, p])).values());
+        const clean  = filterStalePexelsPosts(unique);
+        const final  = [...optimistic, ...clean.filter(p => !optimistic.some(o => o._id === p._id))];
+        idbSetPosts("allPosts", clean); // cache sans les fantômes
+        return final;
       });
 
       setHasMore(data.hasMore ?? normalized.length === 20);
@@ -302,35 +301,104 @@ export const PostsProvider = ({ children }) => {
   }, [hasMore, loading, page, fetchPosts]);
 
   // ============================================
-  // FETCH USER POSTS (Profil) — isolé du feed global
+  // FETCH USER POSTS (Profil)
+  // ✅ FIX : garde ObjectId — les IDs temporaires clients (user_6_xxx) sont
+  //          rejetés silencieusement AVANT le fetch pour éviter les HTTP 400.
+  //          Les bots ont de vrais ObjectIds MongoDB → passent normalement.
   // ============================================
   const fetchUserPosts = useCallback(async (targetUserId, pageNumber = 1) => {
-    if (!token || !targetUserId) return [];
+    if (!targetUserId) {
+      console.warn("⚠️ [PostsContext] fetchUserPosts : targetUserId manquant");
+      return [];
+    }
+
+    // ✅ Garde ObjectId : rejette les IDs temporaires générés côté client
+    // Les vrais comptes (humains ET bots) ont toujours un ObjectId MongoDB valide
+    if (!isValidObjectId(targetUserId)) {
+      console.warn(`⚠️ [PostsContext] fetchUserPosts : ID non-MongoDB ignoré (${targetUserId}) — attente d'un vrai ObjectId`);
+      return [];
+    }
+
+    let activeToken = tokenRef.current;
+    if (!activeToken) {
+      console.log("⏳ [PostsContext] fetchUserPosts : token pas encore disponible, attente...");
+      activeToken = await waitForToken(3000);
+    }
+
+    if (!activeToken) {
+      console.error("❌ [PostsContext] fetchUserPosts : token toujours null après attente — abandon");
+      return [];
+    }
+
+    console.log(`📡 [PostsContext] fetchUserPosts userId=${targetUserId} page=${pageNumber}`);
 
     try {
       const res = await fetch(
         `${API_URL}/posts/user/${targetUserId}?page=${pageNumber}&limit=20`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: { Authorization: `Bearer ${activeToken}` } }
       );
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        console.error(`❌ [PostsContext] fetchUserPosts HTTP ${res.status} pour userId=${targetUserId}`);
+        throw new Error(`HTTP ${res.status}`);
+      }
 
       const data       = await res.json();
-      const postsArray = data.data || data.posts || data || [];
-      return postsArray.map(normalizePost);
+      const postsArray = data.posts || data.data || (Array.isArray(data) ? data : []);
+      const normalized = postsArray.map(normalizePost);
+
+      console.log(`✅ [PostsContext] fetchUserPosts : ${normalized.length} posts pour userId=${targetUserId}`);
+      return normalized;
+
     } catch (err) {
-      console.error("❌ Erreur chargement posts utilisateur:", err.message);
+      console.error(`❌ [PostsContext] fetchUserPosts erreur pour userId=${targetUserId}:`, err.message);
+
       try {
         const { getCachedPosts } = await import("../utils/cacheSync");
-        return (await getCachedPosts(targetUserId)) || [];
-      } catch {
-        return [];
+        const cached = await getCachedPosts(targetUserId);
+        if (Array.isArray(cached) && cached.length > 0) {
+          console.log(`📦 [PostsContext] fetchUserPosts : fallback cache ${cached.length} posts`);
+          return cached;
+        }
+      } catch (cacheErr) {
+        console.warn("⚠️ [PostsContext] fetchUserPosts : cache IDB inaccessible:", cacheErr.message);
       }
+
+      return [];
     }
-  }, [token, normalizePost]);
+  }, [normalizePost, waitForToken]);
 
   // ============================================
-  // CREATE POST
+  // 🚀 OPTIMISTIC POST METHODS
+  // Placées APRÈS fetchPosts pour éviter le ReferenceError (temporal dead zone)
+  // ============================================
+
+  const addPostOptimistic = useCallback((optimisticPost) => {
+    setPosts(prev => {
+      if (prev.some(p => p._id === optimisticPost._id)) return prev;
+      return [optimisticPost, ...prev];
+    });
+  }, []);
+
+  const replaceOptimisticPost = useCallback((tempId, realPost) => {
+    const normalized = normalizePost(realPost);
+    syncNewPost(normalized, normalized.user?._id || userId).catch(() => {});
+    // Retire le fantôme puis refetch → le vrai post arrive depuis le serveur
+    // avec ses vraies URLs Cloudinary (identique à ce que le profil verrait)
+    setPosts(prev => prev.filter(p => p._id !== tempId));
+    setTimeout(() => {
+      fetchPosts(1, false).catch(() => {});
+    }, 800);
+  }, [normalizePost, userId, fetchPosts]);
+
+  const removeOptimisticPost = useCallback((tempId) => {
+    setPosts(prev => prev.filter(p => p._id !== tempId));
+  }, []);
+
+  // ============================================
+  // CREATE POST (conservé pour rétrocompat)
+  // CreatePost.jsx utilise axiosClient directement
+  // mais d'autres composants peuvent encore appeler createPost()
   // ============================================
   const createPost = useCallback(async (formData) => {
     if (!token) throw new Error("Connexion requise");
@@ -352,7 +420,11 @@ export const PostsProvider = ({ children }) => {
 
     const normalized = normalizePost(newPost);
     await syncNewPost(normalized, userId);
-    setPosts(prev => [normalized, ...prev]);
+    // Ne prepend que si pas déjà dans le feed (évite doublon avec optimiste)
+    setPosts(prev => {
+      if (prev.some(p => p._id === normalized._id)) return prev;
+      return [normalized, ...prev];
+    });
     return normalized;
   }, [token, userId, normalizePost]);
 
@@ -423,7 +495,7 @@ export const PostsProvider = ({ children }) => {
       return true;
     } catch (err) {
       console.error("❌ Échec like:", err.message);
-      optimisticUpdate();
+      optimisticUpdate(); // rollback
       return false;
     }
   }, [token, userId, normalizePost]);
@@ -454,12 +526,7 @@ export const PostsProvider = ({ children }) => {
   }, [token]);
 
   // ============================================
-  // INITIAL LOAD — cache IMMÉDIAT puis API en arrière-plan
-  // ✅ FIX LCP : preloadFirstPostLCP() appelé DÈS le cache hit
-  //    → le navigateur commence à télécharger le poster AVANT le render React
-  //    → resource load delay réduit de ~3s
-  // ✅ FIX PEXELS : filterStalePexelsPosts() appliqué sur le cache IDB
-  //    → les posts expirés déjà en cache ne s'affichent jamais
+  // INITIAL LOAD
   // ============================================
   useEffect(() => {
     if (!token) return;
@@ -471,23 +538,15 @@ export const PostsProvider = ({ children }) => {
       initialLoadDone.current = true;
 
       try {
-        // Étape 1 : cache IDB IMMÉDIAT
         const cached = await idbGetPosts("allPosts");
         if (cached?.length) {
-          // ✅ FIX PEXELS : purge les posts expirés du cache avant affichage
           const cleanCached = filterStalePexelsPosts(cached);
-
-          // ✅ CRITIQUE : preload du poster LCP AVANT setPosts()
-          // Le navigateur reçoit l'instruction de télécharger l'image
-          // pendant que React prépare le render — gain de ~1-2s
           preloadFirstPostLCP(cleanCached);
-
           setPosts(cleanCached);
           setLoading(false);
-          console.log(`⚡ [PostsContext] Cache hit : ${cleanCached.length} posts affichés (${cached.length - cleanCached.length} posts Pexels filtrés)`);
+          console.log(`⚡ [PostsContext] Cache hit : ${cleanCached.length} posts`);
         }
 
-        // Étape 2 : API en arrière-plan
         if (navigator.onLine) {
           await fetchPosts(1, false);
         }
@@ -508,8 +567,7 @@ export const PostsProvider = ({ children }) => {
   }, []);
 
   const refetch = useCallback(async () => {
-    const result = await fetchPosts(1, false);
-    return result;
+    return await fetchPosts(1, false);
   }, [fetchPosts]);
 
   // ============================================
@@ -531,11 +589,16 @@ export const PostsProvider = ({ children }) => {
     toggleLike,
     addComment,
     refetch,
+    // 🚀 Méthodes optimistes pour CreatePost.jsx
+    addPostOptimistic,
+    replaceOptimisticPost,
+    removeOptimisticPost,
   }), [
     posts, loading, error, hasMore, page,
     fetchPosts, fetchNextPage, fetchUserPosts,
     createPost, deletePost, removePost, updatePost,
     toggleLike, addComment, refetch,
+    addPostOptimistic, replaceOptimisticPost, removeOptimisticPost,
   ]);
 
   return <PostsContext.Provider value={value}>{children}</PostsContext.Provider>;

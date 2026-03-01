@@ -1,13 +1,15 @@
 // 📁 src/pages/Home/PostCard.jsx
 // ✅ FIX INP : PostCommentsModal et PostShareModal chargés en lazy
-//    → Le bundle initial est allégé → moins de JS à parser au 1er chargement
-//    → Les modals sont lourds, les différer améliore le TTI et l'INP
-// ✅ MODAL COMMENTAIRES : PostCommentsModal (plein écran)
-// ✅ MODAL PARTAGE      : PostShareModal    (plein écran)
-// ✅ FIX SON / FIX PROFIL / hooks avant return — inchangés
+// ✅ FIX YOUTUBE : getCloudinaryUrl ignoré pour URLs YouTube/Pixabay/Pexels/Vimeo
+// 🔥 FIX VIDÉOS BOT (Pixabay/YouTube hardcodés)
+// ✅ FIX OPTIMISTE : posts temp_ masqués dans le rendu normal
+//    → plus de CastError backend sur DELETE/LIKE avec un ID temp_xxx
+//    → le vrai post apparaît directement après upload (pas de swap visible)
+//    → indicateur "Publication en cours..." discret pendant l'upload
 
 import React, {
-  forwardRef, useState, useEffect, useCallback, useMemo, useRef, memo, lazy, Suspense
+  forwardRef, useState, useEffect, useLayoutEffect,
+  useCallback, useMemo, useRef, memo, lazy, Suspense
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -23,8 +25,6 @@ import PostMedia from "./PostMedia";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import axiosClient from "../../api/axiosClientGlobal";
 
-// ✅ FIX INP : lazy loading des modals lourds
-// Ils ne sont chargés que lorsqu'ils sont ouverts → bundle initial plus léger
 const PostCommentsModal = lazy(() => import("./PostComments"));
 const PostShareModal    = lazy(() => import("./PostShareSection"));
 
@@ -33,21 +33,33 @@ const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
+const EXTERNAL_URL_PATTERNS = [
+  'youtube.com', 'youtu.be', 'player.vimeo.com', 'dailymotion.com',
+  'cdn.pixabay.com', 'videos.pexels.com', 'images.pexels.com',
+  'img.youtube.com', 'i.vimeocdn.com', 'pixabay.com', 'pexels.com',
+];
+
+const isExternalMediaUrl = (url) =>
+  url && EXTERNAL_URL_PATTERNS.some(p => url.includes(p));
+
 // ─────────────────────────────────────────────
 // OBSERVER VIDÉO
 // ─────────────────────────────────────────────
-let globalVideoObserver = null;
+let _videoObserver = null;
+const _observedVideos = new WeakMap();
+
 const getVideoObserver = () => {
-  if (!globalVideoObserver) {
-    globalVideoObserver = new IntersectionObserver((entries) => {
+  if (!_videoObserver) {
+    _videoObserver = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         const v = entry.target;
+        if (!document.contains(v)) { _videoObserver?.unobserve(v); return; }
         if (entry.isIntersecting) v.play().catch(() => {});
         else v.pause();
       });
     }, { threshold: 0.7 });
   }
-  return globalVideoObserver;
+  return _videoObserver;
 };
 
 // ─────────────────────────────────────────────
@@ -73,6 +85,40 @@ const getCloudinaryUrl = (id, opts = {}) => {
   return `${base}${t ? t + "/" : ""}${id.replace(/^\/+/, "")}`;
 };
 
+const resolveMediaUrl = (raw, opts = {}) => {
+  if (!raw || typeof raw !== 'string') return null;
+  if (raw.startsWith('data:image')) return raw;
+  if (isExternalMediaUrl(raw)) return raw;
+  return getCloudinaryUrl(raw, opts);
+};
+
+// ─────────────────────────────────────────────
+// ✅ INDICATEUR POST EN COURS D'UPLOAD
+// Affiché à la place du post fantôme pendant l'upload
+// ─────────────────────────────────────────────
+export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount }) => (
+  <div className={`w-full max-w-[630px] mx-auto px-4 py-3 flex items-center gap-3 ${
+    isDarkMode ? "bg-black border-b border-white/5" : "bg-white border-b border-gray-100"
+  }`}>
+    {/* Spinner */}
+    <div className="w-8 h-8 flex-shrink-0">
+      <svg className="animate-spin w-8 h-8 text-orange-500" viewBox="0 0 24 24" fill="none">
+        <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+        <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+      </svg>
+    </div>
+    <div className="flex-1 min-w-0">
+      <p className={`text-sm font-medium truncate ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
+        {content ? content.substring(0, 60) + (content.length > 60 ? "…" : "") : "Publication en cours…"}
+      </p>
+      <p className="text-xs text-orange-500 mt-0.5">
+        {mediaCount > 0 ? `Upload de ${mediaCount} fichier${mediaCount > 1 ? "s" : ""}…` : "Envoi en cours…"}
+      </p>
+    </div>
+  </div>
+));
+PostUploadingIndicator.displayName = "PostUploadingIndicator";
+
 // ─────────────────────────────────────────────
 // AVATAR
 // ─────────────────────────────────────────────
@@ -90,9 +136,9 @@ const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
     return colors[Math.abs(h) % colors.length];
   }, [username]);
   const url = useMemo(() => {
-    if (!photo) return null;
+    if (!photo || typeof photo !== 'string') return null;
     if (photo.startsWith("data:image")) return photo;
-    return getCloudinaryUrl(photo, { width: size * 2, height: size * 2, crop: "thumb", gravity: "face" });
+    return resolveMediaUrl(photo, { width: size * 2, height: size * 2, crop: "thumb", gravity: "face" });
   }, [photo, size]);
   if (error || !url)
     return (
@@ -216,8 +262,14 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const { user: currentUser, getToken, updateUserProfile } = useAuth();
   const navigate = useNavigate();
   const cardRef  = useRef(null);
+  const vidsRef  = useRef([]);
 
   const isMockPost = mockPost || post._id?.startsWith("post_") || post.isMockPost;
+
+  // ✅ FIX : les posts optimistes (temp_) sont rendus comme indicateur, pas comme vrai post
+  // Cette vérification est aussi faite dans le wrapper PostCard mais on la double ici
+  // pour éviter tout rendu accidentel si PostCardInner est appelé directement
+  const isOptimistic = !!post.isOptimistic || post._id?.startsWith("temp_");
 
   const postUser = useMemo(() => {
     const u = post.user || post.author || {};
@@ -229,15 +281,20 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     const isInvalidId = !resolvedId || ["unknown","null","undefined"].includes(String(resolvedId));
     const isBannedDeleted = u.isBanned || u.isDeleted || u.status === "deleted" || u.status === "banned";
     return {
-      _id:              resolvedId || "unknown",
-      fullName:         fullName || "Utilisateur Inconnu",
-      profilePhoto:     u.profilePhoto || u.profilePicture || post.userProfilePhoto || null,
-      isVerified:       !!(u.isVerified || u.verified || post.isVerified),
-      isPremium:        !!(u.isPremium || post.isPremium),
-      isInvalid:        !isMockPost && (isInvalidName || isInvalidId),
+      _id:               resolvedId || "unknown",
+      fullName:          fullName || "Utilisateur Inconnu",
+      profilePhoto:      u.profilePhoto || u.profilePicture || post.userProfilePhoto || null,
+      isVerified:        !!(u.isVerified || u.verified || post.isVerified),
+      isPremium:         !!(u.isPremium || post.isPremium),
+      isInvalid:         !isMockPost && !isOptimistic && (isInvalidName || isInvalidId),
       isBannedOrDeleted: isBannedDeleted,
     };
-  }, [post._id, post.user?._id, post.user?.id, post.userId, post.author?._id, post.fullName, isMockPost]);
+  }, [
+    post._id,
+    post.user?._id, post.user?.id, post.user?.fullName, post.user?.profilePhoto,
+    post.user?.isVerified, post.user?.isPremium, post.user?.isBanned, post.user?.isDeleted,
+    post.userId, post.author?._id, post.fullName, isMockPost, isOptimistic,
+  ]);
 
   const [liked,             setLiked]             = useState(() =>
     currentUser && Array.isArray(post.likes)
@@ -261,38 +318,69 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     });
   });
   const [loadingFollow, setLoadingFollow] = useState(false);
-  const [loadingLike,   setLoadingLike]   = useState(false);
   const [expanded,      setExpanded]      = useState(false);
 
-  const stateRef = useRef({ liked, likesCount, loadingLike, isFollowing, loadingFollow });
-  const postRef  = useRef({ post, postUser, currentUser, isMockPost, onDeleted, showToast, updateUserProfile });
-  useEffect(() => { stateRef.current = { liked, likesCount, loadingLike, isFollowing, loadingFollow }; });
-  useEffect(() => { postRef.current  = { post, postUser, currentUser, isMockPost, onDeleted, showToast, updateUserProfile }; });
+  const stateRef = useRef({});
+  const postRef  = useRef({});
+
+  useLayoutEffect(() => {
+    stateRef.current = { liked, likesCount, isFollowing, loadingFollow };
+  });
+  useLayoutEffect(() => {
+    postRef.current = { post, postUser, currentUser, isMockPost, isOptimistic, onDeleted, showToast, updateUserProfile };
+  });
+
+  const loadingLikeRef = useRef(false);
 
   useEffect(() => {
     if (!cardRef.current) return;
-    const obs = getVideoObserver();
-    const vids = cardRef.current.querySelectorAll("video");
-    vids.forEach(v => obs.observe(v));
-    return () => vids.forEach(v => obs.unobserve(v));
+    const obs  = getVideoObserver();
+    const vids = Array.from(cardRef.current.querySelectorAll("video"));
+    vids.forEach(v => { obs.observe(v); _observedVideos.set(v, true); });
+    vidsRef.current = vids;
+    return () => {
+      vidsRef.current.forEach(v => { obs.unobserve(v); });
+      vidsRef.current = [];
+    };
   }, []);
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
+  const isOwner = useMemo(() =>
+    !!(currentUser && (
+      String(post.userId) === String(currentUser._id) ||
+      String(postUser._id) === String(currentUser._id)
+    )),
+    [currentUser?._id, post.userId, postUser._id]
+  );
+
+  const canFollow = useMemo(() =>
+    !!(currentUser && !isOwner && postUser._id !== "unknown"),
+    [currentUser, isOwner, postUser._id]
+  );
+
   const handleLike = useCallback((e) => {
     e?.stopPropagation();
-    const { liked, likesCount, loadingLike } = stateRef.current;
-    const { post, currentUser, isMockPost, showToast } = postRef.current;
+    if (loadingLikeRef.current) return;
+    const { liked, likesCount } = stateRef.current;
+    const { post, currentUser, isMockPost, isOptimistic, showToast } = postRef.current;
+
+    // ✅ FIX : bloquer le like sur un post optimiste
+    if (isOptimistic) { showToast?.("Publication en cours, patientez…", "info"); return; }
+
     if (!currentUser) { showToast?.("Connectez-vous pour aimer", "info"); return; }
-    if (loadingLike) return;
+    loadingLikeRef.current = true;
     const nl = !liked;
     setLiked(nl);
     setLikesCount(c => nl ? c + 1 : c - 1);
-    if (isMockPost) return;
-    setLoadingLike(true);
+    if (isMockPost) { loadingLikeRef.current = false; return; }
     axiosClient.post(`/posts/${post._id}/like`)
-      .catch(err => { setLiked(liked); setLikesCount(likesCount); showToast?.(err.response?.data?.message || "Erreur", "error"); })
-      .finally(() => setLoadingLike(false));
+      .catch(err => {
+        setLiked(liked);
+        setLikesCount(likesCount);
+        showToast?.(err.response?.data?.message || "Erreur", "error");
+      })
+      .finally(() => { loadingLikeRef.current = false; });
   }, []);
 
   const handleFollow = useCallback((e) => {
@@ -322,7 +410,15 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   }, []);
 
   const handleDeletePost = useCallback(async () => {
-    const { post, isMockPost, onDeleted, showToast } = postRef.current;
+    const { post, isMockPost, isOptimistic, onDeleted, showToast } = postRef.current;
+
+    // ✅ FIX CRITIQUE : bloquer DELETE sur post optimiste → évite le CastError backend
+    if (isOptimistic || post._id?.startsWith("temp_")) {
+      showToast?.("Publication en cours, patientez…", "info");
+      setShowDeleteModal(false);
+      return;
+    }
+
     if (isMockPost) { showToast?.("Post supprimé", "success"); setShowDeleteModal(false); onDeleted?.(post._id); return; }
     setIsDeleting(true);
     try {
@@ -351,36 +447,61 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
   const handleOpenDelete   = useCallback((e) => { e?.stopPropagation(); setShowDeleteModal(true); }, []);
 
-  const content        = post.content || "";
+  const setRootRef = useCallback((node) => {
+    cardRef.current = node;
+    if (ref) {
+      if (typeof ref === "function") ref(node);
+      else ref.current = node;
+    }
+  }, [ref]);
+
+  const content        = post.content || post.contenu || "";
   const shouldTruncate = content.length > 280;
   const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
-  const isOwner   = currentUser && (String(post.userId) === String(currentUser._id) || String(postUser._id) === String(currentUser._id));
-  const canFollow = currentUser && !isOwner && postUser._id !== "unknown";
   const isBoosted = !!post.isBoosted;
 
+  const firstImage = Array.isArray(post.images) ? post.images[0] : null;
+  const firstMedia = Array.isArray(post.media)  ? post.media[0]  : null;
+  const imagesLen  = Array.isArray(post.images) ? post.images.length : 0;
+  const mediaLen   = Array.isArray(post.media)  ? post.media.length  : 0;
+
   const mediaUrls = useMemo(() => {
-    const src = post.images || post.media;
-    const arr = Array.isArray(src) ? src : (src ? [src] : []);
-    return arr.filter(Boolean).map(m => {
-      const raw = typeof m === "string" ? m : m.url;
-      if (!raw) return null;
-      if (raw.startsWith("data:image")) return raw;
-      return getCloudinaryUrl(raw, { width: 1080, format: "auto" });
-    }).filter(Boolean);
-  }, [post.images, post.media]);
+    const seen = new Set();
+    const result = [];
+    const addUrl = (raw) => {
+      if (!raw || typeof raw !== 'string') return;
+      // ✅ Blob URLs (posts optimistes déjà remplacés) passent directement
+      if (raw.startsWith('blob:')) { if (!seen.has(raw)) { seen.add(raw); result.push(raw); } return; }
+      const url = raw.startsWith('data:image') ? raw
+        : isExternalMediaUrl(raw) ? raw
+        : getCloudinaryUrl(raw, { width: 1080, format: 'auto' });
+      if (url && !seen.has(url)) { seen.add(url); result.push(url); }
+    };
+    if (post.embedUrl) addUrl(post.embedUrl);
+    if (post.videoUrl) addUrl(post.videoUrl);
+    const imgSrc = post.images || post.media;
+    const arr = Array.isArray(imgSrc) ? imgSrc : (imgSrc ? [imgSrc] : []);
+    arr.forEach(m => addUrl(typeof m === 'string' ? m : m?.url));
+    return result;
+  }, [post.embedUrl, post.videoUrl, firstImage, firstMedia, imagesLen, mediaLen]);
+
+  const hasMedia = mediaUrls.length > 0
+    || post.mediaType === 'youtube'
+    || post.mediaType === 'video'
+    || !!(post.thumbnail && (post.videoUrl || post.embedUrl));
 
   const formattedDate = useMemo(() => {
     if (!post.createdAt) return "";
     try { return new Date(post.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "short" }); }
     catch { return ""; }
-  }, [post.createdAt]);
+  }, [post.createdAt ? new Date(post.createdAt).getTime() : 0]);
 
-  if (!isMockPost && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
+  if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
 
   return (
     <>
       <div
-        ref={node => { cardRef.current = node; if (ref) { if (typeof ref === "function") ref(node); else ref.current = node; } }}
+        ref={setRootRef}
         className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? "bg-black" : "bg-white"}`}
         style={{ margin: 0, padding: 0, contain: "content" }}
       >
@@ -415,13 +536,13 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {isOwner && !isBoosted && !isMockPost && (
+            {isOwner && !isBoosted && !isMockPost && !isOptimistic && (
               <button onClick={e => e.stopPropagation()}
                 className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 active:scale-95 transition-transform">
                 <RocketLaunchIcon className="w-3 h-3" /> Booster
               </button>
             )}
-            {canFollow && (
+            {canFollow && !isOptimistic && (
               <button onClick={handleFollow} disabled={loadingFollow}
                 className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
                   isFollowing
@@ -431,7 +552,8 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
                 {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
               </button>
             )}
-            {isOwner && (
+            {/* ✅ FIX : corbeille cachée sur posts optimistes → évite CastError backend */}
+            {isOwner && !isOptimistic && (
               <button onClick={handleOpenDelete} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
                 <TrashIcon className="w-5 h-5 text-gray-400" />
               </button>
@@ -452,9 +574,9 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
         )}
 
         {/* MEDIA */}
-        {mediaUrls.length > 0 && (
+        {hasMedia && (
           <div className="w-full">
-            <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} />
+            <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} post={post} />
           </div>
         )}
 
@@ -477,7 +599,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
         </AnimatePresence>
       </div>
 
-      {/* ✅ Modal commentaires — lazy chargé, Suspense avec fallback null */}
       {showCommentsModal && (
         <ErrorBoundary>
           <Suspense fallback={null}>
@@ -501,7 +622,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
         </ErrorBoundary>
       )}
 
-      {/* ✅ Modal partage — lazy chargé, Suspense avec fallback null */}
       {showShareModal && (
         <ErrorBoundary>
           <Suspense fallback={null}>
@@ -530,9 +650,33 @@ PostCardInner.displayName = "PostCardInner";
 // ─────────────────────────────────────────────
 const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
-  if (loading)            return <SkeletonPostCard isDarkMode={isDarkMode} />;
+
+  if (loading) return <SkeletonPostCard isDarkMode={isDarkMode} />;
   if (!post || !post._id) return null;
-  return <PostCardInner ref={ref} post={post} onDeleted={onDeleted} showToast={showToast} mockPost={mockPost} priority={priority} />;
+
+  // ✅ FIX PRINCIPAL : les posts optimistes (temp_) affichent l'indicateur d'upload
+  // et NON pas un vrai PostCard → pas de CastError, pas de blob URL dans le feed,
+  // le vrai post apparaît directement une fois l'upload terminé
+  if (post.isOptimistic || post._id?.startsWith("temp_")) {
+    return (
+      <PostUploadingIndicator
+        isDarkMode={isDarkMode}
+        content={post.content || post.contenu}
+        mediaCount={Array.isArray(post.media) ? post.media.length : 0}
+      />
+    );
+  }
+
+  return (
+    <PostCardInner
+      ref={ref}
+      post={post}
+      onDeleted={onDeleted}
+      showToast={showToast}
+      mockPost={mockPost}
+      priority={priority}
+    />
+  );
 });
 PostCard.displayName = "PostCard";
 
@@ -542,6 +686,7 @@ export default memo(PostCard, (prev, next) =>
   prev.post?.comments?.length === next.post?.comments?.length &&
   prev.post?.content          === next.post?.content          &&
   prev.post?.isBoosted        === next.post?.isBoosted        &&
+  prev.post?.isOptimistic     === next.post?.isOptimistic     &&
   prev.priority               === next.priority               &&
   prev.loading                === next.loading
 );

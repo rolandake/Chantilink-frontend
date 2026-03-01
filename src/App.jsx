@@ -5,6 +5,13 @@
 // ✅ Fix: navbar toggle via CSS visibility (pas AnimatePresence)
 // ✅ Fix: clic sur "Accueil" quand déjà sur "/" → refresh du feed (comme Instagram)
 // ✅ Fix LCP: window.__hideSplash() appelé dès que AppContent est monté
+//
+// 🔥 FIX BADGE UNREAD STABLE :
+//    - liveUnreadCount initialisé UNE SEULE FOIS depuis l'API (plus de reset)
+//    - socket handleMarkAsRead accepte data.unreadCount du serveur
+//    - safeUnread = Math.max(0, liveUnreadCount ?? 0) → jamais NaN/négatif
+//    - BroadcastChannel → sync automatique entre plusieurs onglets
+//    - badge conditionnel !!badge && badge > 0 → stop flicker React
 
 import React, { useState, Suspense, useEffect, useMemo, useCallback, memo, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
@@ -116,12 +123,7 @@ export default function App() {
     return () => window.removeEventListener('resize', fixVh);
   }, [authReady]);
 
-  if (!ready) {
-    // ✅ Pendant que authReady est false, le splash HTML reste visible.
-    // On ne rend rien ici (pas de LoadingSpinner qui crée un div gris
-    // par-dessus le splash). Le splash index.html gère l'affichage.
-    return null;
-  }
+  if (!ready) return null;
 
   return (
     <Suspense fallback={null}>
@@ -143,39 +145,102 @@ function AppContent() {
 
   const isNavVisible = useSmartScroll(10);
 
-  // ✅ FIX LCP : masquer le splash HTML dès que AppContent est monté
-  // AppContent se monte quand authReady=true ET React a bootstrappé.
-  // À ce stade, l'app est prête à afficher quelque chose de réel.
-  // Le splash disparaît avec une transition douce (opacity 0.3s).
+  // ✅ FIX LCP
   useEffect(() => {
     if (typeof window.__hideSplash === 'function') {
       window.__hideSplash();
     }
-  }, []); // [] = une seule fois au montage
+  }, []);
 
-  // ✅ useMessagesData CENTRALISÉ — 1 seul fetch pour toute l'app
+  // ✅ useMessagesData CENTRALISÉ
   const { data: messagesData } = useMessagesData(token, null);
   const unreadCount = useMemo(() => {
-    if (!messagesData?.conversations) return 0;
+    if (!messagesData?.conversations) return undefined;
     return messagesData.conversations.reduce((acc, conv) => acc + (conv.unreadCount || 0), 0);
   }, [messagesData?.conversations]);
 
-  const [liveUnreadCount, setLiveUnreadCount] = useState(0);
-  useEffect(() => { setLiveUnreadCount(unreadCount); }, [unreadCount]);
+  // ─────────────────────────────────────────────────────────────
+  // 🔥 BADGE STABLE — source de vérité unique
+  //
+  // liveUnreadCount est initialisé à null jusqu'à ce que l'API
+  // renvoie une valeur. Après ça, seul le socket le modifie.
+  // → Plus de reset intempestif à chaque re-render.
+  // ─────────────────────────────────────────────────────────────
+  const [liveUnreadCount, setLiveUnreadCount] = useState(null);
 
+  // Initialise UNE SEULE FOIS depuis l'API (jamais réécrasé ensuite)
+  useEffect(() => {
+    if (liveUnreadCount === null && unreadCount !== undefined) {
+      setLiveUnreadCount(unreadCount);
+    }
+  }, [unreadCount, liveUnreadCount]);
+
+  // 🔥 Socket robuste — (prev ?? 0) évite NaN si state encore null
   useEffect(() => {
     if (!socket) return;
-    const handleNewMessage = () => setLiveUnreadCount(prev => prev + 1);
-    const handleMarkAsRead = () => setLiveUnreadCount(0);
+
+    const handleNewMessage = () => {
+      setLiveUnreadCount(prev => (prev ?? 0) + 1);
+    };
+
+    const handleMarkAsRead = (data) => {
+      // Si le serveur envoie un count précis → l'utiliser directement
+      if (typeof data?.unreadCount === 'number') {
+        setLiveUnreadCount(data.unreadCount);
+      } else {
+        setLiveUnreadCount(0);
+      }
+    };
+
     socket.on('receiveMessage', handleNewMessage);
-    socket.on('messagesRead', handleMarkAsRead);
+    socket.on('messagesRead',   handleMarkAsRead);
+
     return () => {
       socket.off('receiveMessage', handleNewMessage);
-      socket.off('messagesRead', handleMarkAsRead);
+      socket.off('messagesRead',   handleMarkAsRead);
     };
   }, [socket]);
 
-  // ✅ NOTIFICATIONS DEBOUNCÉES
+  // ─────────────────────────────────────────────────────────────
+  // 🔥 BROADCAST CHANNEL — sync multi-onglets
+  //
+  // Si l'utilisateur a Chantilink ouvert dans 2 onglets et lit un
+  // message dans l'un, le badge se met à jour dans l'autre aussi.
+  // Utilise l'API native BroadcastChannel (Chrome, Firefox, Safari 15+).
+  // ─────────────────────────────────────────────────────────────
+  const unreadChannel = useRef(null);
+
+  // Ouvrir le canal au montage
+  useEffect(() => {
+    if (!('BroadcastChannel' in window)) return;
+
+    unreadChannel.current = new BroadcastChannel('chantilink_unread');
+
+    unreadChannel.current.onmessage = (event) => {
+      if (typeof event.data === 'number') {
+        setLiveUnreadCount(event.data);
+      }
+    };
+
+    return () => {
+      unreadChannel.current?.close();
+      unreadChannel.current = null;
+    };
+  }, []);
+
+  // Diffuser les changements vers les autres onglets
+  useEffect(() => {
+    if (!unreadChannel.current) return;
+    if (liveUnreadCount === null) return;
+    unreadChannel.current.postMessage(liveUnreadCount);
+  }, [liveUnreadCount]);
+
+  // 🔥 Valeur sûre — jamais NaN, jamais négative, jamais null
+  const safeUnread = Math.max(0, liveUnreadCount ?? 0);
+
+  // ─────────────────────────────────────────────────────────────
+  // NOTIFICATIONS DEBOUNCÉES
+  // ─────────────────────────────────────────────────────────────
   const notificationQueue = useRef([]);
   const notificationTimer = useRef(null);
 
@@ -219,7 +284,7 @@ function AppContent() {
     const handleNewMessage = (data) => {
       if (location.pathname === '/messages') return;
       addNotification({
-        type: 'message',
+        type:    'message',
         message: `${data.senderName || 'Quelqu\'un'} vous a envoyé un message`,
       });
     };
@@ -227,45 +292,42 @@ function AppContent() {
     const handleNewStory = (data) => {
       if (location.pathname === '/') return;
       addNotification({
-        type: 'story',
+        type:    'story',
         message: `${data.userName || 'Quelqu\'un'} a publié une story`,
       });
     };
 
     socket.on('new_message', handleNewMessage);
-    socket.on('new_story', handleNewStory);
+    socket.on('new_story',   handleNewStory);
 
     return () => {
       socket.off('new_message', handleNewMessage);
-      socket.off('new_story', handleNewStory);
+      socket.off('new_story',   handleNewStory);
       if (notificationTimer.current) clearTimeout(notificationTimer.current);
     };
   }, [socket, location.pathname, addNotification]);
 
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
 
-  const isHome     = location.pathname === "/";
-  const isAuth     = location.pathname === "/auth";
-  const isMessages = location.pathname === "/messages";
+  const isHome     = location.pathname === '/';
+  const isAuth     = location.pathname === '/auth';
+  const isMessages = location.pathname === '/messages';
   const showNav    = isHome && !isAuth && !storyViewerOpen;
   const isAdmin    = user?.role === 'admin' || user?.role === 'superadmin';
 
   const mainStyle = useMemo(() => ({
-    top: showNav ? "72px" : "0",
-    height: showNav ? "calc(100% - 72px)" : "100%",
-    paddingBottom: "env(safe-area-inset-bottom)",
+    top:           showNav ? '72px' : '0',
+    height:        showNav ? 'calc(100% - 72px)' : '100%',
+    paddingBottom: 'env(safe-area-inset-bottom)',
   }), [showNav]);
 
   const handleHomeClick = useCallback(() => {
-    if (location.pathname === "/") {
-      emitHomeRefresh();
-    } else {
-      navigate("/");
-    }
+    if (location.pathname === '/') emitHomeRefresh();
+    else navigate('/');
   }, [location.pathname, navigate]);
 
   return (
-    <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
+    <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
 
       {/* NOTIFICATIONS */}
       <AnimatePresence>
@@ -290,14 +352,14 @@ function AppContent() {
       )}
 
       {!isHome && !isAuth && !storyViewerOpen && !isMessages && (
-        <FloatingBackButton isDarkMode={isDarkMode} onClick={() => navigate("/")} />
+        <FloatingBackButton isDarkMode={isDarkMode} onClick={() => navigate('/')} />
       )}
 
       {showNav && (
         <SidebarDesktopMemo
           isDarkMode={isDarkMode}
           isAdminUser={isAdmin}
-          unreadCount={liveUnreadCount}
+          unreadCount={safeUnread}
           onHomeClick={handleHomeClick}
         />
       )}
@@ -322,7 +384,7 @@ function AppContent() {
               <Route path="/profile/:userId" element={<AuthRoute><Profile /></AuthRoute>} />
               <Route path="/admin/*"         element={<AuthRoute><ProtectedAdminRoute><AdminDashboard /></ProtectedAdminRoute></AuthRoute>} />
               <Route path="/about"           element={<About />} />
-              <Route path="*"               element={<Navigate to={user ? "/" : "/auth"} replace />} />
+              <Route path="*"               element={<Navigate to={user ? '/' : '/auth'} replace />} />
             </Routes>
           </Suspense>
         </div>
@@ -339,7 +401,7 @@ function AppContent() {
             isAdminUser={isAdmin}
             user={user}
             location={location}
-            unreadCount={liveUnreadCount}
+            unreadCount={safeUnread}
             onHomeClick={handleHomeClick}
           />
         </div>
@@ -384,7 +446,7 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
       initial={{ opacity: 0, y: -20, x: 100 }}
       animate={{ opacity: 1, y: 0, x: 0 }}
       exit={{ opacity: 0, x: 100 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
+      transition={{ duration: 0.3, ease: 'easeOut' }}
       className="fixed top-20 right-4 z-[100] max-w-sm"
       onClick={onClose}
     >
@@ -410,13 +472,14 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
           <motion.div
             className="h-full bg-gradient-to-r from-orange-500 to-orange-600"
             style={{ width: `${progress}%` }}
-            transition={{ duration: 0.05, ease: "linear" }}
+            transition={{ duration: 0.05, ease: 'linear' }}
           />
         </div>
       </div>
     </motion.div>
   );
 });
+LiveNotification.displayName = 'LiveNotification';
 
 const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unreadCount, onHomeClick }) => {
   const navigate     = useNavigate();
@@ -426,11 +489,11 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unread
   return (
     <>
       <nav className={`lg:hidden h-16 flex justify-around items-center backdrop-blur-xl border-t ${
-        isDarkMode ? "bg-gray-900/90 border-gray-800" : "bg-white/90 border-gray-200"
+        isDarkMode ? 'bg-gray-900/90 border-gray-800' : 'bg-white/90 border-gray-200'
       }`}>
-        <NavBtn icon={Home} label="Accueil" active={isActive("/")} onClick={onHomeClick} />
-        <NavBtn icon={Video}         label="Vidéos"  active={isActive("/videos")} onClick={() => navigate("/videos")} />
-        <NavBtn icon={MessageSquare} label="Chat"    active={isActive("/chat")}   onClick={() => navigate("/chat")} />
+        <NavBtn icon={Home}          label="Accueil" active={isActive('/')}       onClick={onHomeClick} />
+        <NavBtn icon={Video}         label="Vidéos"  active={isActive('/videos')} onClick={() => navigate('/videos')} />
+        <NavBtn icon={MessageSquare} label="Chat"    active={isActive('/chat')}   onClick={() => navigate('/chat')} />
         <NavBtn icon={Menu}          label="Plus"    onClick={() => setMenuOpen(true)} badge={unreadCount} />
       </nav>
       {isMenuOpen && (
@@ -445,19 +508,21 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unread
     </>
   );
 });
+NavbarMobileMemo.displayName = 'NavbarMobileMemo';
 
 const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
   <button
     onClick={onClick}
-    className={`relative flex flex-col items-center flex-1 transition-colors ${active ? "text-orange-500" : "text-gray-400"}`}
+    className={`relative flex flex-col items-center flex-1 transition-colors ${active ? 'text-orange-500' : 'text-gray-400'}`}
   >
     <Icon size={20} />
     <span className="text-[10px] font-bold mt-1">{label}</span>
+    {/* 🔥 !!badge évite le remount quand badge passe de undefined à 0 */}
     <AnimatePresence>
-      {badge > 0 && (
+      {!!badge && badge > 0 && (
         <motion.span
           initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }}
-          transition={{ type: "spring", stiffness: 500, damping: 25 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 25 }}
           className="absolute top-0 right-4 bg-red-500 text-white text-[10px] font-black min-w-[18px] h-[18px] flex items-center justify-center rounded-full border-2 border-gray-900 shadow-lg"
         >
           <motion.span animate={{ scale: [1, 1.1, 1] }} transition={{ repeat: Infinity, duration: 2 }}>
@@ -468,6 +533,7 @@ const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
     </AnimatePresence>
   </button>
 ));
+NavBtn.displayName = 'NavBtn';
 
 const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
   <motion.button
@@ -475,12 +541,13 @@ const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
     transition={fastTransition}
     onClick={onClick}
     className={`fixed top-4 left-4 z-[60] p-3 rounded-full shadow-xl backdrop-blur-md border ${
-      isDarkMode ? "bg-gray-800/80 border-gray-700 text-white" : "bg-white/80 border-gray-200 text-gray-800"
+      isDarkMode ? 'bg-gray-800/80 border-gray-700 text-white' : 'bg-white/80 border-gray-200 text-gray-800'
     }`}
   >
     <ArrowLeft size={24} />
   </motion.button>
 ));
+FloatingBackButton.displayName = 'FloatingBackButton';
 
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick }) => {
   const navigate = useNavigate();
@@ -491,21 +558,22 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
     <aside className={`hidden lg:flex fixed left-0 top-[72px] bottom-0 w-64 flex-col py-8 px-6 gap-2 z-30 border-r ${
       isDarkMode ? 'bg-gray-900/50 border-gray-800' : 'bg-white border-gray-100'
     }`}>
-      <NavItemDesktop icon={Home}          label="Accueil"    onClick={onHomeClick}                                      isDarkMode={isDarkMode} active={isActive("/")} />
-      <NavItemDesktop icon={MessageSquare} label="Chat"       onClick={() => navigate("/chat")}                          isDarkMode={isDarkMode} active={isActive("/chat")} />
-      <NavItemDesktop icon={Video}         label="Vidéos"     onClick={() => navigate("/videos")}                        isDarkMode={isDarkMode} active={isActive("/videos")} />
-      <NavItemDesktop icon={Calculator}    label="Calculs"    onClick={() => navigate("/calculs")}                       isDarkMode={isDarkMode} active={isActive("/calculs")} />
-      <NavItemDesktop icon={Mail}          label="Messagerie" onClick={() => navigate("/messages")}                      isDarkMode={isDarkMode} active={isActive("/messages")} badge={unreadCount} />
-      <NavItemDesktop icon={User}          label="Profil"     onClick={() => navigate(`/profile/${location.state?.userId || 'me'}`)} isDarkMode={isDarkMode} active={location.pathname.includes("/profile")} />
+      <NavItemDesktop icon={Home}          label="Accueil"    onClick={onHomeClick}                                      isDarkMode={isDarkMode} active={isActive('/')} />
+      <NavItemDesktop icon={MessageSquare} label="Chat"       onClick={() => navigate('/chat')}                          isDarkMode={isDarkMode} active={isActive('/chat')} />
+      <NavItemDesktop icon={Video}         label="Vidéos"     onClick={() => navigate('/videos')}                        isDarkMode={isDarkMode} active={isActive('/videos')} />
+      <NavItemDesktop icon={Calculator}    label="Calculs"    onClick={() => navigate('/calculs')}                       isDarkMode={isDarkMode} active={isActive('/calculs')} />
+      <NavItemDesktop icon={Mail}          label="Messagerie" onClick={() => navigate('/messages')}                      isDarkMode={isDarkMode} active={isActive('/messages')} badge={unreadCount} />
+      <NavItemDesktop icon={User}          label="Profil"     onClick={() => navigate(`/profile/${location.state?.userId || 'me'}`)} isDarkMode={isDarkMode} active={location.pathname.includes('/profile')} />
       {isAdminUser && (
         <>
           <div className={`w-full h-px my-4 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'}`} />
-          <NavItemDesktop icon={Shield} label="Admin" onClick={() => navigate("/admin")} isDarkMode={isDarkMode} active={location.pathname.includes("/admin")} isAdmin />
+          <NavItemDesktop icon={Shield} label="Admin" onClick={() => navigate('/admin')} isDarkMode={isDarkMode} active={location.pathname.includes('/admin')} isAdmin />
         </>
       )}
     </aside>
   );
 });
+SidebarDesktopMemo.displayName = 'SidebarDesktopMemo';
 
 const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, isAdmin, badge }) => (
   <button
@@ -518,11 +586,12 @@ const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, i
   >
     <Icon size={26} strokeWidth={active ? 2.5 : 2} />
     <span className={`text-base ${active ? 'font-semibold' : 'font-normal'}`}>{label}</span>
+    {/* 🔥 !!badge évite le remount → stop flicker */}
     <AnimatePresence>
-      {badge > 0 && (
+      {!!badge && badge > 0 && (
         <motion.span
           initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }}
-          transition={{ type: "spring", stiffness: 500, damping: 25 }}
+          transition={{ type: 'spring', stiffness: 500, damping: 25 }}
           className="absolute right-3 top-1/2 -translate-y-1/2 bg-red-500 text-white text-xs font-bold min-w-[20px] h-[20px] flex items-center justify-center rounded-full"
         >
           {badge > 99 ? '99+' : badge}
@@ -531,17 +600,18 @@ const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, i
     </AnimatePresence>
   </button>
 ));
+NavItemDesktop.displayName = 'NavItemDesktop';
 
 const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount }) => {
   const navigate = useNavigate();
 
   const items = useMemo(() => {
     const baseItems = [
-      { label: "Profil",    icon: User,       path: `/profile/${user?._id}` },
-      { label: "Calculs",   icon: Calculator, path: "/calculs" },
-      { label: "Messages",  icon: Mail,       path: "/messages", badge: unreadCount },
+      { label: 'Profil',   icon: User,       path: `/profile/${user?._id}` },
+      { label: 'Calculs',  icon: Calculator, path: '/calculs' },
+      { label: 'Messages', icon: Mail,       path: '/messages', badge: unreadCount },
     ];
-    if (isAdminUser) baseItems.push({ label: "Admin", icon: Shield, path: "/admin" });
+    if (isAdminUser) baseItems.push({ label: 'Admin', icon: Shield, path: '/admin' });
     return baseItems;
   }, [user?._id, isAdminUser, unreadCount]);
 
@@ -554,9 +624,9 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
         onClick={onClose}
       />
       <motion.div
-        initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+        initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
         transition={fastTransition}
-        className={`w-full p-6 rounded-t-[40px] relative ${isDarkMode ? "bg-gray-900" : "bg-white shadow-2xl"}`}
+        className={`w-full p-6 rounded-t-[40px] relative ${isDarkMode ? 'bg-gray-900' : 'bg-white shadow-2xl'}`}
       >
         <div className="w-12 h-1.5 bg-gray-600/30 mx-auto mb-6 rounded-full" />
         <div className="grid grid-cols-3 gap-4">
@@ -566,9 +636,10 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
               onClick={() => { navigate(item.path); onClose(); }}
               className="relative flex flex-col items-center gap-2 p-4 rounded-3xl bg-gray-500/5 active:scale-95 transition-transform"
             >
-              <item.icon size={24} className={isDarkMode ? "text-orange-400" : "text-orange-500"} />
+              <item.icon size={24} className={isDarkMode ? 'text-orange-400' : 'text-orange-500'} />
               <span className="text-xs font-medium">{item.label}</span>
-              {item.badge > 0 && (
+              {/* 🔥 !!item.badge pour éviter flicker */}
+              {!!item.badge && item.badge > 0 && (
                 <motion.span
                   initial={{ scale: 0 }} animate={{ scale: 1 }}
                   className="absolute top-2 right-2 bg-red-500 text-white text-xs font-bold min-w-[20px] h-[20px] flex items-center justify-center rounded-full"
@@ -583,10 +654,11 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
     </div>
   );
 });
+MenuOverlay.displayName = 'MenuOverlay';
 
 function AuthRoute({ children, redirectIfAuthenticated = false }) {
   const { user, ready } = useAuth();
-  if (!ready) return null; // ✅ null au lieu de LoadingSpinner → le splash HTML reste visible
+  if (!ready) return null;
   if (redirectIfAuthenticated && user) return <Navigate to="/" replace />;
   if (!redirectIfAuthenticated && !user) return <Navigate to="/auth" replace />;
   return children;

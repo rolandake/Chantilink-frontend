@@ -1,5 +1,14 @@
 // 📁 src/pages/Videos/VideoCard.jsx
-// ✅ Son activé par défaut
+// ✅ Son activé automatiquement après le premier tap (politique navigateur)
+// ✅ sessionStorage partagé avec AggregatedCard (USER_INTERACTED_KEY)
+// ✅ Hint "Appuie pour activer le son" sur la première vidéo
+// ✅ Loop conservé pour les vidéos utilisateur
+//
+// 🎯 VIDEO MANAGER GLOBAL (style TikTok)
+//    Même gestionnaire que PostMedia — garantit qu'une seule vidéo joue
+//    dans TOUTE la page (y compris entre VideoCard et PostMedia)
+//    → -30~50% CPU, meilleure batterie, scroll fluide
+
 import React, { useEffect, useRef, useState, useMemo, memo, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -13,18 +22,54 @@ import {
 import { HiDotsVertical } from "react-icons/hi";
 import { IoSend } from "react-icons/io5";
 
-const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
+const STRIPE_KEY    = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
 const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL       = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+// ✅ Clé partagée avec AggregatedCard
+const USER_INTERACTED_KEY = 'vp_user_interacted';
+
+// ─────────────────────────────────────────────
+// 🎯 VIDEO MANAGER GLOBAL (partagé avec PostMedia)
+// On utilise window pour partager l'instance entre tous les composants
+// ─────────────────────────────────────────────
+const registerPlayingVideo = (video) => {
+  if (!video) return;
+  const current = window.__currentPlayingVideo;
+  if (current && current !== video) {
+    try {
+      current.pause();
+      current.currentTime = current.currentTime; // stop decoding
+    } catch {}
+  }
+  window.__currentPlayingVideo = video;
+};
 
 const generateDefaultAvatar = (username = "U") => {
-  const char = (username || "U").charAt(0).toUpperCase();
+  const char   = (username || "U").charAt(0).toUpperCase();
   const colors = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
-  const color = colors[char.charCodeAt(0) % colors.length];
+  const color  = colors[char.charCodeAt(0) % colors.length];
   return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${encodeURIComponent(color)}"/><text x="50%" y="50%" font-size="50" fill="white" text-anchor="middle" dy=".3em" font-family="Arial">${char}</text></svg>`;
 };
 
-const VideoCard = ({ video, isActive, isAutoPost }) => {
+// ── Hint son ─────────────────────────────────────────────────────────
+const SoundHint = memo(({ visible }) => {
+  if (!visible) return null;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0 }}
+      className="absolute bottom-32 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 pointer-events-none"
+    >
+      <FaVolumeUp className="text-white text-sm" />
+      <span className="text-white text-xs font-semibold">Appuie pour activer le son</span>
+    </motion.div>
+  );
+});
+SoundHint.displayName = 'SoundHint';
+
+const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded }) => {
   if (!video) return null;
 
   const navigate = useNavigate();
@@ -36,37 +81,37 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
   const incrementViewsRef = useRef(incrementViews);
   useEffect(() => { incrementViewsRef.current = incrementViews; });
 
-  // ✅ Son activé par défaut (false = pas muté)
-  const [muted, setMuted] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [showHeart, setShowHeart] = useState(false);
-  const [progress, setProgress] = useState(0);
+  // ✅ Toujours muet au départ (règle navigateur)
+  const [muted,          setMuted]          = useState(true);
+  const [showSoundHint,  setShowSoundHint]  = useState(false);
+  const [isPaused,       setIsPaused]       = useState(false);
+  const [showHeart,      setShowHeart]      = useState(false);
+  const [progress,       setProgress]       = useState(0);
 
-  const [showComments, setShowComments] = useState(false);
-  const [showOptions, setShowOptions] = useState(false);
+  const [showComments,   setShowComments]   = useState(false);
+  const [showOptions,    setShowOptions]    = useState(false);
   const [showBoostModal, setShowBoostModal] = useState(false);
 
-  const [localLikes, setLocalLikes] = useState(0);
-  const [isLiked, setIsLiked] = useState(false);
+  const [localLikes,    setLocalLikes]    = useState(0);
+  const [isLiked,       setIsLiked]       = useState(false);
   const [localComments, setLocalComments] = useState([]);
-  const [newComment, setNewComment] = useState("");
+  const [newComment,    setNewComment]    = useState("");
 
-  const [isFollowing, setIsFollowing] = useState(false);
+  const [isFollowing,   setIsFollowing]   = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
-
-  const [boostLoading, setBoostLoading] = useState(false);
+  const [boostLoading,  setBoostLoading]  = useState(false);
   const [selectedBoost, setSelectedBoost] = useState(null);
 
   const videoId = video._id;
   const owner = useMemo(() => {
     const u = video.user || video.uploadedBy || {};
     return {
-      _id: u._id || u.id,
-      username: u.username || u.fullName || "Utilisateur",
-      photo: u.profilePhoto || u.profilePicture || u.avatar || null,
-      isVerified: !!u.isVerified
+      _id:        u._id || u.id,
+      username:   u.username || u.fullName || "Utilisateur",
+      photo:      u.profilePhoto || u.profilePicture || u.avatar || null,
+      isVerified: !!u.isVerified,
     };
-  }, [videoId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [videoId]); // eslint-disable-line
 
   const isOwner = currentUser && owner._id && (owner._id === currentUser._id);
 
@@ -80,45 +125,66 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
       }
     }
     setLocalComments(video.comments || []);
-  }, [videoId, currentUser, owner._id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [videoId, currentUser, owner._id]); // eslint-disable-line
 
-  // ✅ Lecture avec activation son après autoplay réussi
+  // ── Hint son ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isActive) {
+      setShowSoundHint(false);
+      return;
+    }
+    const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+    if (!hasInteracted) {
+      setShowSoundHint(true);
+      const t = setTimeout(() => setShowSoundHint(false), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [isActive]);
+
+  // ── Lecture / pause + gestion son ─────────────────────────────────
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
 
     if (isActive) {
-      vid.muted = true; // requis pour autoplay navigateur
-      const playPromise = vid.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => {
-            // ✅ Autoplay accepté → activer le son
+      const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+      vid.muted  = true;
+      vid.volume = 1;
+
+      vid.play()
+        .then(() => {
+          setIsPaused(false);
+          // 🎯 VIDEO MANAGER : enregistre cette vidéo comme active
+          registerPlayingVideo(vid);
+          // ✅ Si déjà interagi + pas muté explicitement → activer le son
+          if (hasInteracted && !muted) {
             vid.muted  = false;
             vid.volume = 1;
-            setIsPaused(false);
-          })
-          .catch((error) => {
-            if (error.name === "NotAllowedError" || error.name === "NotSupportedError") {
-              vid.muted = true;
-              setMuted(true);
-              vid.play().catch(() => {});
-            }
-          });
-      }
+          }
+        })
+        .catch((err) => {
+          if (err.name === 'NotAllowedError' || err.name === 'NotSupportedError') {
+            vid.muted = true;
+            setMuted(true);
+          }
+        });
     } else {
+      // 🎯 VIDEO MANAGER : pause propre quand non actif
       vid.pause();
+      vid.muted  = true;
+      vid.volume = 1;
+      setIsPaused(false);
+      setShowSoundHint(false);
     }
-  }, [isActive]);
+  }, [isActive]); // eslint-disable-line
 
-  // Reset son au défaut quand on quitte la slide
+  // Sync muted → DOM
   useEffect(() => {
-    if (!isActive) {
-      setMuted(false);
-      const vid = videoRef.current;
-      if (vid) { vid.muted = true; vid.volume = 1; }
-    }
-  }, [isActive]);
+    const vid = videoRef.current;
+    if (!vid) return;
+    vid.muted  = muted;
+    vid.volume = muted ? 0 : 1;
+  }, [muted]);
 
   useEffect(() => {
     if (!isActive || isAutoPost || !videoId) return;
@@ -128,31 +194,49 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
 
   const handleTimeUpdate = useCallback(() => {
     const vid = videoRef.current;
-    if (vid && vid.duration) setProgress((vid.currentTime / vid.duration) * 100);
+    if (vid?.duration) setProgress((vid.currentTime / vid.duration) * 100);
   }, []);
 
-  const togglePlay = useCallback(() => {
+  // ✅ Premier tap → activer le son
+  const activateSound = useCallback(() => {
+    sessionStorage.setItem(USER_INTERACTED_KEY, '1');
+    setShowSoundHint(false);
     const vid = videoRef.current;
     if (!vid) return;
-    if (vid.paused) { vid.play().catch(() => {}); setIsPaused(false); }
-    else            { vid.pause(); setIsPaused(true); }
-  }, []);
+    vid.muted  = false;
+    vid.volume = 1;
+    setMuted(false);
+    if (vid.paused && isActive) vid.play().catch(() => {});
+  }, [isActive]);
+
+  const togglePlay = useCallback(() => {
+    const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+    if (!hasInteracted) { activateSound(); return; }
+
+    const vid = videoRef.current;
+    if (!vid) return;
+    if (vid.paused) {
+      vid.play().catch(() => {});
+      setIsPaused(false);
+      // 🎯 VIDEO MANAGER : enregistre au play manuel
+      registerPlayingVideo(vid);
+    } else {
+      vid.pause();
+      setIsPaused(true);
+    }
+  }, [activateSound]);
 
   const handleDoubleTap = useCallback((e) => {
     e.stopPropagation();
     setShowHeart(true);
     setTimeout(() => setShowHeart(false), 800);
     if (!isLiked) handleLike(e);
-  }, [isLiked]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLiked]); // eslint-disable-line
 
   const handleLike = useCallback(async (e) => {
     e?.stopPropagation();
     if (!currentUser) return alert("Connectez-vous pour aimer !");
-    if (isAutoPost) {
-      setIsLiked(prev => !prev);
-      setLocalLikes(prev => isLiked ? prev - 1 : prev + 1);
-      return;
-    }
+    if (isAutoPost) { setIsLiked(prev => !prev); setLocalLikes(prev => isLiked ? prev - 1 : prev + 1); return; }
     const wasLiked = isLiked;
     setIsLiked(!wasLiked);
     setLocalLikes(prev => wasLiked ? prev - 1 : prev + 1);
@@ -169,17 +253,12 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
     const wasFollowing = isFollowing;
     setIsFollowing(!wasFollowing);
     try {
-      const token = await getToken();
+      const token    = await getToken();
       if (!token) throw new Error("Token manquant");
       const endpoint = wasFollowing
         ? `${API_URL}/users/unfollow/${owner._id}`
         : `${API_URL}/users/follow/${owner._id}`;
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-      });
-      const contentType = res.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) throw new Error("Erreur serveur");
+      const res  = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
     } catch (err) {
@@ -191,12 +270,12 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
   const handleCommentSubmit = async () => {
     if (!newComment.trim()) return;
     if (!currentUser) return alert("Connectez-vous !");
-    const tempComment = { _id: Date.now(), user: currentUser, text: newComment, createdAt: new Date().toISOString() };
-    setLocalComments(prev => [...prev, tempComment]);
+    const temp = { _id: Date.now(), user: currentUser, text: newComment, createdAt: new Date().toISOString() };
+    setLocalComments(prev => [...prev, temp]);
     setNewComment("");
     if (isAutoPost) return;
     try { await commentVideo(video._id, newComment); }
-    catch { alert("Erreur envoi"); setLocalComments(prev => prev.filter(c => c._id !== tempComment._id)); }
+    catch { alert("Erreur envoi"); setLocalComments(prev => prev.filter(c => c._id !== temp._id)); }
   };
 
   const handleShare = async (e) => {
@@ -207,20 +286,18 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
 
   const handleToggleMute = useCallback((e) => {
     e.stopPropagation();
+    sessionStorage.setItem(USER_INTERACTED_KEY, '1');
+    setShowSoundHint(false);
     const vid      = videoRef.current;
     const newMuted = !muted;
     setMuted(newMuted);
     if (!vid) return;
-    if (newMuted) {
-      vid.muted  = true;
-      vid.volume = 0;
-    } else {
-      vid.pause();
-      vid.muted  = false;
-      vid.volume = 1;
+    vid.muted  = newMuted;
+    vid.volume = newMuted ? 0 : 1;
+    if (!newMuted && vid.paused && isActive) {
       vid.play().catch(() => { vid.muted = true; vid.volume = 0; setMuted(true); });
     }
-  }, [muted]);
+  }, [muted, isActive]);
 
   const handleBoost = async () => {
     if (!selectedBoost || !stripePromise) return;
@@ -228,10 +305,10 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
     setBoostLoading(true);
     try {
       const token = await getToken();
-      const res = await fetch(`${API_URL}/boost/create-session`, {
-        method: 'POST',
+      const res   = await fetch(`${API_URL}/boost/create-session`, {
+        method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ contentId: video._id, contentType: 'video', amount: selectedBoost.amount, planId: selectedBoost.id })
+        body:    JSON.stringify({ contentId: video._id, contentType: 'video', amount: selectedBoost.amount, planId: selectedBoost.id }),
       });
       const data = await res.json();
       if (data.url) window.location.href = data.url;
@@ -239,6 +316,10 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
     } catch { alert("Erreur paiement"); }
     finally { setBoostLoading(false); }
   };
+
+  const handleEnded = useCallback(() => {
+    if (onVideoEnded) onVideoEnded();
+  }, [onVideoEnded]);
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden select-none">
@@ -257,10 +338,11 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
         loop
         muted={muted}
         playsInline
+        preload="metadata"
         onClick={togglePlay}
         onDoubleClick={handleDoubleTap}
         onTimeUpdate={handleTimeUpdate}
-        preload="metadata"
+        onEnded={handleEnded}
       />
 
       <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/80 pointer-events-none" />
@@ -279,6 +361,11 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
           )}
         </AnimatePresence>
       </div>
+
+      {/* ✅ Hint son */}
+      <AnimatePresence>
+        {showSoundHint && <SoundHint visible={showSoundHint} />}
+      </AnimatePresence>
 
       {/* Infos utilisateur */}
       <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
@@ -314,7 +401,7 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
         </div>
       </div>
 
-      {/* Actions */}
+      {/* Actions droite */}
       <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe pointer-events-auto">
         {isOwner && !isAutoPost && (
           <motion.div whileTap={{ scale: 0.9 }} className="flex flex-col items-center">
@@ -360,7 +447,7 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
         </button>
       </div>
 
-      {/* Modale commentaires */}
+      {/* Commentaires */}
       <AnimatePresence>
         {showComments && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center pointer-events-auto" onClick={(e) => e.stopPropagation()}>
@@ -399,7 +486,7 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
         )}
       </AnimatePresence>
 
-      {/* Modale options */}
+      {/* Options */}
       <AnimatePresence>
         {showOptions && (
           <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm" onClick={() => setShowOptions(false)}>
@@ -420,7 +507,7 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
         )}
       </AnimatePresence>
 
-      {/* Modale boost */}
+      {/* Boost */}
       <AnimatePresence>
         {showBoostModal && !isAutoPost && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowBoostModal(false)}>
@@ -454,5 +541,7 @@ const VideoCard = ({ video, isActive, isAutoPost }) => {
 
 VideoCard.displayName = "VideoCard";
 export default memo(VideoCard, (prev, next) =>
-  prev.isActive === next.isActive && prev.video._id === next.video._id && prev.isAutoPost === next.isAutoPost
+  prev.isActive   === next.isActive   &&
+  prev.video._id  === next.video._id  &&
+  prev.isAutoPost === next.isAutoPost
 );

@@ -1,9 +1,10 @@
-// src/pages/Auth/AuthPage.jsx
-// ✅ Fix accessibilité : aria-label sur bouton show/hide password
-// ✅ Fix accessibilité : zones tactiles min 44x44px
-// ✅ Fix CLS : transition-shadow au lieu de transition-colors sur les inputs
-//             (border-color est non-composite → cause CLS, box-shadow est composite)
-// ✅ Fix INP : validate() enveloppé dans startTransition
+// src/pages/Auth/AuthPage.jsx - VERSION PERSISTANTE ⚡
+// ✅ rememberMe passé au contexte → backend → cookie httpOnly longue durée
+// ✅ Accessibilité : aria-label sur show/hide password
+// ✅ Zones tactiles min 44x44px
+// ✅ transition-shadow pour éviter CLS (border-color = non-composite)
+// ✅ Validation dans startTransition pour éviter lag INP
+// ✅ Plus de sauvegarde du token en localStorage
 
 import React, { useState, useEffect, useRef, startTransition } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -14,6 +15,9 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { useNavigate } from "react-router-dom";
 
+// ============================================
+// TOAST
+// ============================================
 const Toast = React.memo(
   React.forwardRef(({ notification }, ref) => (
     <motion.div
@@ -39,6 +43,9 @@ Toast.displayName = "Toast";
 
 const fastTransition = { duration: 0.2, ease: "easeOut" };
 
+// ============================================
+// COMPOSANT PRINCIPAL
+// ============================================
 export default function AuthPage() {
   const { login, register, isAuthenticated, loading: authLoading } = useAuth();
   const navigate = useNavigate();
@@ -49,40 +56,47 @@ export default function AuthPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notifications, setNotifications] = useState([]);
-  const [rememberMe, setRememberMe] = useState(true);
+  const [rememberMe, setRememberMe] = useState(true); // ✅ Activé par défaut
   const firstInputRef = useRef(null);
 
+  // ── Redirect si déjà connecté ──────────────────────────────────────
   useEffect(() => {
     if (isAuthenticated && !authLoading) {
       navigate("/", { replace: true });
     }
   }, [isAuthenticated, authLoading, navigate]);
 
+  // ── Restaurer l'email si "Se souvenir" était actif ─────────────────
   useEffect(() => {
-    const savedEmail = localStorage.getItem("chantilink_email");
-    const savedRemember = localStorage.getItem("chantilink_remember") === "true";
-    if (savedEmail && savedRemember) {
-      setForm(prev => ({ ...prev, email: savedEmail }));
+    const savedEmail = localStorage.getItem("chantilink_saved_email");
+    if (savedEmail) {
+      setForm((prev) => ({ ...prev, email: savedEmail }));
       setRememberMe(true);
     }
   }, []);
 
+  // ── Reset form au changement de mode ──────────────────────────────
   useEffect(() => {
     firstInputRef.current?.focus();
-    setForm(prev => ({ fullName: "", email: prev.email, password: "" }));
+    setForm((prev) => ({ fullName: "", email: prev.email, password: "" }));
     setErrors({});
   }, [isRegister]);
 
+  // ── Notifications locales ──────────────────────────────────────────
   const notify = (type, message) => {
     const id = Date.now();
-    setNotifications(prev => [...prev, { id, type, message }]);
-    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 3000);
+    setNotifications((prev) => [...prev, { id, type, message }]);
+    setTimeout(
+      () => setNotifications((prev) => prev.filter((n) => n.id !== id)),
+      3000
+    );
   };
 
+  // ── Handlers ──────────────────────────────────────────────────────
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setForm(prev => ({ ...prev, [name]: value }));
-    if (errors[name]) setErrors(prev => ({ ...prev, [name]: "" }));
+    setForm((prev) => ({ ...prev, [name]: value }));
+    if (errors[name]) setErrors((prev) => ({ ...prev, [name]: "" }));
   };
 
   const validate = () => {
@@ -107,19 +121,18 @@ export default function AuthPage() {
     return Object.keys(newErrors).length === 0;
   };
 
+  // ── Soumission ─────────────────────────────────────────────────────
   const submit = async (e) => {
     e.preventDefault();
     if (loading) return;
 
-    // ✅ Fix INP : la validation (setState) est non-urgente → startTransition
-    // React traite en priorité les interactions utilisateur pendant ce calcul
+    // ✅ Fix INP : validation dans startTransition (non-urgente)
     let isValid = false;
     startTransition(() => {
       isValid = validate();
     });
 
-    // Petit délai pour laisser startTransition terminer avant l'async
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     if (!isValid) {
       notify("error", "Veuillez corriger les erreurs");
       return;
@@ -133,26 +146,27 @@ export default function AuthPage() {
 
       if (isRegister) {
         const fullName = form.fullName.trim();
-        const result = await register(fullName, email, password);
+        const result = await register(fullName, email, password, rememberMe);
+
         if (result?.success) {
+          // ✅ Sauvegarder uniquement l'email (jamais le token)
           if (rememberMe) {
-            localStorage.setItem("chantilink_email", email);
-            localStorage.setItem("chantilink_remember", "true");
+            localStorage.setItem("chantilink_saved_email", email);
           }
           notify("success", "Bienvenue !");
           navigate("/");
         } else {
-          notify("error", result?.message || "Échec inscription");
+          notify("error", result?.message || "Échec de l'inscription");
         }
       } else {
-        const result = await login(email, password);
+        const result = await login(email, password, rememberMe);
+
         if (result?.success) {
           if (rememberMe) {
-            localStorage.setItem("chantilink_email", email);
-            localStorage.setItem("chantilink_remember", "true");
+            localStorage.setItem("chantilink_saved_email", email);
           } else {
-            localStorage.removeItem("chantilink_email");
-            localStorage.removeItem("chantilink_remember");
+            // ✅ Nettoyer si l'utilisateur décoche "Se souvenir"
+            localStorage.removeItem("chantilink_saved_email");
           }
           notify("success", "Connexion réussie !");
           navigate("/");
@@ -168,8 +182,8 @@ export default function AuthPage() {
     }
   };
 
-  // ✅ Fix CLS : suppression de transition-colors (anime border-color = non-composite)
-  // Remplacement par focus:ring (box-shadow = composite → zéro CLS)
+  // ── Classes input ──────────────────────────────────────────────────
+  // ✅ transition-shadow au lieu de transition-colors (border = non-composite → CLS)
   const inputClass = (field) =>
     `w-full px-4 py-3 pl-12 rounded-xl border-2 bg-white/10 backdrop-blur-lg text-white placeholder:text-white/60 outline-none transition-shadow duration-200 ${
       errors[field]
@@ -177,32 +191,39 @@ export default function AuthPage() {
         : "border-white/30 focus:ring-2 focus:ring-orange-400/60"
     }`;
 
+  // ── Loading initial (vérification session) ─────────────────────────
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#1a1a2e] via-[#162447] to-[#1f4068]">
         <div className="text-center">
           <Loader2 className="w-12 h-12 text-orange-400 animate-spin mx-auto mb-4" />
-          <p className="text-white/70">Vérification...</p>
+          <p className="text-white/70">Vérification de votre session...</p>
         </div>
       </div>
     );
   }
 
+  // ── Rendu ──────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-[#1a1a2e] via-[#162447] to-[#1f4068]">
 
+      {/* Toasts */}
       <div className="fixed top-16 right-4 flex flex-col gap-2 z-50 max-w-xs">
         <AnimatePresence mode="popLayout">
-          {notifications.map(n => <Toast key={n.id} notification={n} />)}
+          {notifications.map((n) => (
+            <Toast key={n.id} notification={n} />
+          ))}
         </AnimatePresence>
       </div>
 
+      {/* Carte principale */}
       <motion.div
         className="w-full max-w-md p-8 bg-gradient-to-br from-[#162447]/50 via-[#1a1a2e]/40 to-[#1f4068]/60 rounded-3xl shadow-2xl border border-white/20 backdrop-blur-xl"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={fastTransition}
       >
+        {/* En-tête */}
         <div className="text-center mb-6">
           <div className="inline-flex items-center gap-3 mb-4">
             <Shield className="w-10 h-10 text-orange-400" />
@@ -213,12 +234,15 @@ export default function AuthPage() {
           </p>
         </div>
 
+        {/* Toggle Connexion / Inscription */}
         <div className="flex gap-2 mb-6 bg-white/10 backdrop-blur-sm rounded-2xl p-1.5">
           <button
             type="button"
             onClick={() => setIsRegister(false)}
             className={`flex-1 py-3 rounded-xl font-semibold transition-colors duration-200 ${
-              !isRegister ? "bg-white/20 text-orange-400" : "text-white/70 hover:text-white"
+              !isRegister
+                ? "bg-white/20 text-orange-400"
+                : "text-white/70 hover:text-white"
             }`}
           >
             Connexion
@@ -227,15 +251,19 @@ export default function AuthPage() {
             type="button"
             onClick={() => setIsRegister(true)}
             className={`flex-1 py-3 rounded-xl font-semibold transition-colors duration-200 ${
-              isRegister ? "bg-white/20 text-orange-400" : "text-white/70 hover:text-white"
+              isRegister
+                ? "bg-white/20 text-orange-400"
+                : "text-white/70 hover:text-white"
             }`}
           >
             Inscription
           </button>
         </div>
 
+        {/* Formulaire */}
         <form onSubmit={submit} className="space-y-5">
 
+          {/* Nom complet (inscription uniquement) */}
           {isRegister && (
             <div className="relative">
               <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60 pointer-events-none" />
@@ -257,6 +285,7 @@ export default function AuthPage() {
             </div>
           )}
 
+          {/* Email */}
           <div className="relative">
             <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60 pointer-events-none" />
             <input
@@ -276,6 +305,7 @@ export default function AuthPage() {
             )}
           </div>
 
+          {/* Mot de passe */}
           <div className="relative">
             <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-white/60 pointer-events-none" />
             <input
@@ -287,14 +317,18 @@ export default function AuthPage() {
               className={inputClass("password")}
               autoComplete={isRegister ? "new-password" : "current-password"}
             />
-            {/* ✅ Fix accessibilité : aria-label + zone tactile min 44x44px */}
+            {/* ✅ Accessibilité : aria-label + zone tactile 44x44px */}
             <button
               type="button"
               aria-label={showPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
-              onClick={() => setShowPassword(prev => !prev)}
+              onClick={() => setShowPassword((prev) => !prev)}
               className="absolute right-2 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center text-white/60 hover:text-white transition-colors rounded-lg"
             >
-              {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              {showPassword ? (
+                <EyeOff className="w-5 h-5" />
+              ) : (
+                <Eye className="w-5 h-5" />
+              )}
             </button>
             {errors.password && (
               <p className="text-red-400 text-xs mt-1 flex items-center gap-1">
@@ -303,21 +337,27 @@ export default function AuthPage() {
             )}
           </div>
 
+          {/* "Se souvenir de moi" (connexion uniquement) */}
           {!isRegister && (
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 id="remember"
                 checked={rememberMe}
-                onChange={e => setRememberMe(e.target.checked)}
-                className="w-4 h-4 rounded border-white/30 bg-white/10 text-orange-500 focus:ring-2 focus:ring-orange-400"
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded border-white/30 bg-white/10 text-orange-500 focus:ring-2 focus:ring-orange-400 cursor-pointer"
               />
-              <label htmlFor="remember" className="text-white/70 text-sm cursor-pointer select-none">
+              <label
+                htmlFor="remember"
+                className="text-white/70 text-sm cursor-pointer select-none"
+              >
                 Se souvenir de moi
+                <span className="text-white/40 ml-1 text-xs">(90 jours)</span>
               </label>
             </div>
           )}
 
+          {/* Bouton de soumission */}
           <button
             type="submit"
             disabled={loading}
@@ -334,19 +374,22 @@ export default function AuthPage() {
               </>
             ) : (
               <>
-                <span>{isRegister ? "Créer mon compte" : "Se connecter"}</span>
+                <span>
+                  {isRegister ? "Créer mon compte" : "Se connecter"}
+                </span>
                 <ArrowRight className="w-5 h-5" />
               </>
             )}
           </button>
         </form>
 
+        {/* Lien toggle bas */}
         <div className="mt-6 text-center">
           <p className="text-white/60 text-sm">
             {isRegister ? "Déjà un compte ?" : "Pas encore de compte ?"}
             <button
               type="button"
-              onClick={() => setIsRegister(prev => !prev)}
+              onClick={() => setIsRegister((prev) => !prev)}
               disabled={loading}
               className={`ml-2 text-orange-400 font-semibold hover:text-orange-300 transition-colors underline ${
                 loading ? "opacity-50 cursor-not-allowed" : ""
