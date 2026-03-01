@@ -2,20 +2,20 @@
 // 📁 src/api/axiosClientGlobal.js
 // ✅ VERSION FINALE CORRIGÉE AVEC EXPORTS
 // ✅ Adapté aux noms de variables Vercel exacts
+// 🔥 RETRY cold start Render (2s, 4s, 6s)
 // ============================================
 import axios from "axios";
 
 // ✅ Base URL — lit toutes les variantes possibles dans l'ordre de priorité
 const API_BASE_URL = 
-  import.meta.env.VITE_API_URL ||           // nom standard
-  import.meta.env['URL de l\'API VITE'] ||  // nom Vercel tel quel (peu probable)
-  import.meta.env.VITE_API_URL_PROD ||      // fallback prod
-  'http://localhost:5000/api';              // fallback local
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_API_URL_PROD ||
+  'http://localhost:5000/api';
 
 // ✅ Backend URL — lit toutes les variantes possibles
 const BACKEND_URL_RAW =
-  import.meta.env.VITE_BACKEND_URL ||       // nom standard
-  import.meta.env.URL_BACKEND_VITE ||       // nom Vercel exact
+  import.meta.env.VITE_BACKEND_URL ||
+  import.meta.env.URL_BACKEND_VITE ||
   import.meta.env.VITE_BACKEND_URL_LOCAL ||
   API_BASE_URL.replace('/api', '');
 
@@ -24,7 +24,6 @@ export const BACKEND_URL = BACKEND_URL_RAW;
 console.log('🔧 [AxiosClient] Base URL:', API_BASE_URL);
 console.log('🔧 [AxiosClient] Backend URL:', BACKEND_URL);
 
-// ✅ API Endpoints
 export const API_ENDPOINTS = {
   VIDEOS: {
     LIST: '/videos',
@@ -44,9 +43,7 @@ const axiosClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 60000,
   withCredentials: true,
-  headers: { 
-    "Content-Type": "application/json" 
-  },
+  headers: { "Content-Type": "application/json" },
 });
 
 let authHandlers = null;
@@ -56,14 +53,10 @@ export const injectAuthHandlers = (handlers) => {
   console.log("✅ [AxiosClient] Handlers Auth injectés");
 };
 
-// ============================================
-// 🔑 INTERCEPTEUR REQUEST
-// ============================================
 axiosClient.interceptors.request.use(
   async (config) => {
     const publicRoutes = ['/auth/login', '/auth/register', '/auth/refresh', '/health'];
     const isPublic = publicRoutes.some(r => config.url?.includes(r));
-
     if (!isPublic) {
       if (authHandlers?.getToken) {
         const token = await authHandlers.getToken();
@@ -73,30 +66,24 @@ axiosClient.interceptors.request.use(
         if (token) config.headers.Authorization = `Bearer ${token}`;
       }
     }
-    
     return config;
   },
   (error) => Promise.reject(error)
 );
 
-// ============================================
-// 🔄 INTERCEPTEUR RESPONSE
-// ============================================
 axiosClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
-    
+
     if (error.response?.status === 401 && !originalRequest._retry) {
       if (originalRequest.url?.includes('/auth/refresh')) {
         console.error("❌ [AxiosClient] Refresh token invalide - Déconnexion");
         if (authHandlers?.logout) await authHandlers.logout();
         return Promise.reject(error);
       }
-
       console.warn("⚠️ [AxiosClient] 401 - Tentative de refresh...");
       originalRequest._retry = true;
-
       try {
         if (authHandlers?.refreshTokenForUser) {
           const success = await authHandlers.refreshTokenForUser();
@@ -117,6 +104,16 @@ axiosClient.interceptors.response.use(
       console.error("❌ [AxiosClient] Erreur réseau ou timeout");
       console.error("🔍 [AxiosClient] URL tentée:", originalRequest?.url);
       console.error("🔍 [AxiosClient] Base URL:", API_BASE_URL);
+
+      // 🔥 RETRY cold start Render — max 3 tentatives avec délai croissant
+      originalRequest._retryCount = (originalRequest._retryCount || 0) + 1;
+      if (originalRequest._retryCount <= 3) {
+        const delay = originalRequest._retryCount * 2000; // 2s, 4s, 6s
+        console.warn(`🔁 [AxiosClient] Retry ${originalRequest._retryCount}/3 dans ${delay / 1000}s...`);
+        await new Promise(res => setTimeout(res, delay));
+        return axiosClient(originalRequest);
+      }
+
       if (authHandlers?.notify) {
         authHandlers.notify("error", "Connexion instable ou serveur injoignable.");
       }

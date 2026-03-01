@@ -5,6 +5,7 @@
 // ✅ Fix: navbar toggle via CSS visibility (pas AnimatePresence)
 // ✅ Fix: clic sur "Accueil" quand déjà sur "/" → refresh du feed (comme Instagram)
 // ✅ Fix LCP: window.__hideSplash() appelé dès que AppContent est monté
+// 🔥 FIX COLD START: wake-up Render au démarrage de l'app
 //
 // 🔥 FIX BADGE UNREAD STABLE :
 //    - liveUnreadCount initialisé UNE SEULE FOIS depuis l'API (plus de reset)
@@ -30,6 +31,7 @@ import { usePosts } from "./context/PostsContext";
 import ProtectedAdminRoute from "./components/ProtectedAdminRoute";
 import { setupIndexedDB } from "./utils/idbMigration";
 import { initializeStorage } from "./utils/idbCleanup";
+import { BACKEND_URL } from "./api/axiosClientGlobal";
 
 import {
   Home as HomePage, Profile, ChatPage, VideosPage, CalculsPage, Messages, AuthPage
@@ -100,6 +102,16 @@ export default function App() {
   const { ready: authReady } = useAuth();
 
   useEffect(() => {
+    // 🔥 WAKE-UP Render — envoie un ping avant même que l'auth soit prête
+    // → le backend se réveille pendant que l'app s'initialise
+    // → les vraies requêtes (auth, feed, videos) arrivent quand le serveur est prêt
+    fetch(`${BACKEND_URL}/api/health`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(20000),
+    }).catch(() => {
+      // Silencieux — le retry Axios prend le relais si nécessaire
+    });
+
     const initApp = async () => {
       try {
         await setupIndexedDB().catch(() => console.warn('IDB init failed'));
@@ -159,23 +171,14 @@ function AppContent() {
     return messagesData.conversations.reduce((acc, conv) => acc + (conv.unreadCount || 0), 0);
   }, [messagesData?.conversations]);
 
-  // ─────────────────────────────────────────────────────────────
-  // 🔥 BADGE STABLE — source de vérité unique
-  //
-  // liveUnreadCount est initialisé à null jusqu'à ce que l'API
-  // renvoie une valeur. Après ça, seul le socket le modifie.
-  // → Plus de reset intempestif à chaque re-render.
-  // ─────────────────────────────────────────────────────────────
   const [liveUnreadCount, setLiveUnreadCount] = useState(null);
 
-  // Initialise UNE SEULE FOIS depuis l'API (jamais réécrasé ensuite)
   useEffect(() => {
     if (liveUnreadCount === null && unreadCount !== undefined) {
       setLiveUnreadCount(unreadCount);
     }
   }, [unreadCount, liveUnreadCount]);
 
-  // 🔥 Socket robuste — (prev ?? 0) évite NaN si state encore null
   useEffect(() => {
     if (!socket) return;
 
@@ -184,7 +187,6 @@ function AppContent() {
     };
 
     const handleMarkAsRead = (data) => {
-      // Si le serveur envoie un count précis → l'utiliser directement
       if (typeof data?.unreadCount === 'number') {
         setLiveUnreadCount(data.unreadCount);
       } else {
@@ -201,46 +203,28 @@ function AppContent() {
     };
   }, [socket]);
 
-  // ─────────────────────────────────────────────────────────────
-  // 🔥 BROADCAST CHANNEL — sync multi-onglets
-  //
-  // Si l'utilisateur a Chantilink ouvert dans 2 onglets et lit un
-  // message dans l'un, le badge se met à jour dans l'autre aussi.
-  // Utilise l'API native BroadcastChannel (Chrome, Firefox, Safari 15+).
-  // ─────────────────────────────────────────────────────────────
   const unreadChannel = useRef(null);
 
-  // Ouvrir le canal au montage
   useEffect(() => {
     if (!('BroadcastChannel' in window)) return;
-
     unreadChannel.current = new BroadcastChannel('chantilink_unread');
-
     unreadChannel.current.onmessage = (event) => {
-      if (typeof event.data === 'number') {
-        setLiveUnreadCount(event.data);
-      }
+      if (typeof event.data === 'number') setLiveUnreadCount(event.data);
     };
-
     return () => {
       unreadChannel.current?.close();
       unreadChannel.current = null;
     };
   }, []);
 
-  // Diffuser les changements vers les autres onglets
   useEffect(() => {
     if (!unreadChannel.current) return;
     if (liveUnreadCount === null) return;
     unreadChannel.current.postMessage(liveUnreadCount);
   }, [liveUnreadCount]);
 
-  // 🔥 Valeur sûre — jamais NaN, jamais négative, jamais null
   const safeUnread = Math.max(0, liveUnreadCount ?? 0);
 
-  // ─────────────────────────────────────────────────────────────
-  // NOTIFICATIONS DEBOUNCÉES
-  // ─────────────────────────────────────────────────────────────
   const notificationQueue = useRef([]);
   const notificationTimer = useRef(null);
 
@@ -329,7 +313,6 @@ function AppContent() {
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
 
-      {/* NOTIFICATIONS */}
       <AnimatePresence>
         {liveNotifications.map(notif => (
           <LiveNotification
@@ -341,7 +324,6 @@ function AppContent() {
         ))}
       </AnimatePresence>
 
-      {/* HEADER */}
       {showNav && (
         <div
           className="fixed top-0 left-0 right-0 z-40 transition-transform duration-200"
@@ -390,7 +372,6 @@ function AppContent() {
         </div>
       </main>
 
-      {/* NAVBAR MOBILE */}
       {showNav && (
         <div
           className="fixed bottom-0 left-0 right-0 z-50 transition-transform duration-200"
@@ -517,7 +498,6 @@ const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
   >
     <Icon size={20} />
     <span className="text-[10px] font-bold mt-1">{label}</span>
-    {/* 🔥 !!badge évite le remount quand badge passe de undefined à 0 */}
     <AnimatePresence>
       {!!badge && badge > 0 && (
         <motion.span
@@ -586,7 +566,6 @@ const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, i
   >
     <Icon size={26} strokeWidth={active ? 2.5 : 2} />
     <span className={`text-base ${active ? 'font-semibold' : 'font-normal'}`}>{label}</span>
-    {/* 🔥 !!badge évite le remount → stop flicker */}
     <AnimatePresence>
       {!!badge && badge > 0 && (
         <motion.span
@@ -638,7 +617,6 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
             >
               <item.icon size={24} className={isDarkMode ? 'text-orange-400' : 'text-orange-500'} />
               <span className="text-xs font-medium">{item.label}</span>
-              {/* 🔥 !!item.badge pour éviter flicker */}
               {!!item.badge && item.badge > 0 && (
                 <motion.span
                   initial={{ scale: 0 }} animate={{ scale: 1 }}
