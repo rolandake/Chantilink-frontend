@@ -1,16 +1,23 @@
 // ============================================
 // 📁 src/api/axiosClientGlobal.js
 // ✅ VERSION FINALE CORRIGÉE AVEC EXPORTS
+// ✅ Adapté aux noms de variables Vercel exacts
 // ============================================
 import axios from "axios";
 
-// ✅ Base URL et Backend URL (avec fallback intelligent)
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+// ✅ Base URL — lit toutes les variantes possibles dans l'ordre de priorité
+const API_BASE_URL = 
+  import.meta.env.VITE_API_URL ||           // nom standard
+  import.meta.env['URL de l\'API VITE'] ||  // nom Vercel tel quel (peu probable)
+  import.meta.env.VITE_API_URL_PROD ||      // fallback prod
+  'http://localhost:5000/api';              // fallback local
 
-// Backend URL : utilise VITE_BACKEND_URL ou reconstruit depuis API_URL
-const BACKEND_URL_RAW = import.meta.env.VITE_BACKEND_URL 
-  || import.meta.env.VITE_BACKEND_URL_LOCAL 
-  || API_BASE_URL.replace('/api', '');
+// ✅ Backend URL — lit toutes les variantes possibles
+const BACKEND_URL_RAW =
+  import.meta.env.VITE_BACKEND_URL ||       // nom standard
+  import.meta.env.URL_BACKEND_VITE ||       // nom Vercel exact
+  import.meta.env.VITE_BACKEND_URL_LOCAL ||
+  API_BASE_URL.replace('/api', '');
 
 export const BACKEND_URL = BACKEND_URL_RAW;
 
@@ -35,14 +42,13 @@ export const API_ENDPOINTS = {
 
 const axiosClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000, // 60s pour les connexions lentes
+  timeout: 60000,
   withCredentials: true,
   headers: { 
     "Content-Type": "application/json" 
   },
 });
 
-// Stockage des handlers d'authentification (injectés depuis AuthContext)
 let authHandlers = null;
 
 export const injectAuthHandlers = (handlers) => {
@@ -55,18 +61,14 @@ export const injectAuthHandlers = (handlers) => {
 // ============================================
 axiosClient.interceptors.request.use(
   async (config) => {
-    // Liste des routes qui n'ont PAS besoin de token
     const publicRoutes = ['/auth/login', '/auth/register', '/auth/refresh', '/health'];
     const isPublic = publicRoutes.some(r => config.url?.includes(r));
 
     if (!isPublic) {
-      // 1. Essayer via le handler injecté (le plus fiable)
       if (authHandlers?.getToken) {
         const token = await authHandlers.getToken();
         if (token) config.headers.Authorization = `Bearer ${token}`;
-      } 
-      // 2. Fallback localStorage (si AuthContext pas encore prêt)
-      else {
+      } else {
         const token = localStorage.getItem("token");
         if (token) config.headers.Authorization = `Bearer ${token}`;
       }
@@ -78,19 +80,14 @@ axiosClient.interceptors.request.use(
 );
 
 // ============================================
-// 🔄 INTERCEPTEUR RESPONSE (Retry & Erreurs)
+// 🔄 INTERCEPTEUR RESPONSE
 // ============================================
 axiosClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
     
-    // ------------------------------------
-    // Cas 1 : Token Expiré (401)
-    // ------------------------------------
     if (error.response?.status === 401 && !originalRequest._retry) {
-      
-      // Éviter boucle infinie sur la route de refresh elle-même
       if (originalRequest.url?.includes('/auth/refresh')) {
         console.error("❌ [AxiosClient] Refresh token invalide - Déconnexion");
         if (authHandlers?.logout) await authHandlers.logout();
@@ -101,11 +98,9 @@ axiosClient.interceptors.response.use(
       originalRequest._retry = true;
 
       try {
-        // Tenter le refresh via AuthContext
         if (authHandlers?.refreshTokenForUser) {
           const success = await authHandlers.refreshTokenForUser();
           if (success) {
-            // Récupérer le nouveau token
             const newToken = await authHandlers.getToken();
             originalRequest.headers.Authorization = `Bearer ${newToken}`;
             console.log("✅ [AxiosClient] Refresh réussi, on rejoue la requête.");
@@ -118,23 +113,15 @@ axiosClient.interceptors.response.use(
       }
     }
 
-    // ------------------------------------
-    // Cas 2 : Timeout / Réseau (Mode Hors Ligne)
-    // ------------------------------------
     if (error.code === "ECONNABORTED" || error.code === "ERR_NETWORK") {
       console.error("❌ [AxiosClient] Erreur réseau ou timeout");
       console.error("🔍 [AxiosClient] URL tentée:", originalRequest?.url);
       console.error("🔍 [AxiosClient] Base URL:", API_BASE_URL);
-      
-      const msg = "Connexion instable ou serveur injoignable.";
       if (authHandlers?.notify) {
-        authHandlers.notify("error", msg);
+        authHandlers.notify("error", "Connexion instable ou serveur injoignable.");
       }
     }
 
-    // ------------------------------------
-    // Cas 3 : Erreurs Serveur (5xx)
-    // ------------------------------------
     if (error.response?.status >= 500) {
       console.error("❌ [AxiosClient] Erreur Serveur", error.response.status);
       if (authHandlers?.notify) {
@@ -142,9 +129,6 @@ axiosClient.interceptors.response.use(
       }
     }
 
-    // ------------------------------------
-    // Cas 4 : 404
-    // ------------------------------------
     if (error.response?.status === 404) {
       console.error("❌ [AxiosClient] 404 - Route introuvable:", originalRequest?.url);
     }
@@ -153,21 +137,9 @@ axiosClient.interceptors.response.use(
   }
 );
 
-// ============================================
-// 🛠️ HELPERS
-// ============================================
-
-/**
- * Wrapper pour appels API simplifiés
- */
 export const apiRequest = async (method, url, data = null, config = {}) => {
   try {
-    const response = await axiosClient({
-      method,
-      url,
-      data,
-      ...config
-    });
+    const response = await axiosClient({ method, url, data, ...config });
     return { success: true, data: response.data };
   } catch (error) {
     console.error(`❌ [apiRequest] ${method.toUpperCase()} ${url}:`, error);
@@ -179,7 +151,5 @@ export const apiRequest = async (method, url, data = null, config = {}) => {
   }
 };
 
-// Export de l'URL pour compatibilité
 export { API_BASE_URL as API_URL };
-
 export default axiosClient;
