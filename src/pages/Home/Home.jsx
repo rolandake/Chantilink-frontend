@@ -496,17 +496,20 @@ const computeNextBatch = (prev, posts, loopCountRef) => {
   const lastLoopStart     = prev.findLastIndex?.(p => p._loopStart) ?? -1;
   const currentCycleStart = lastLoopStart === -1 ? 0 : lastLoopStart;
   const nextSourceIdx     = prev.length - currentCycleStart;
+  // ✅ FIX DUPLICATE KEYS : la clé inclut la position absolue dans le feed
+  // → même post affiché 2 fois dans des batchs différents = clés différentes
+  const absStart = prev.length;
   let newPosts, newBoundary = null;
   if (nextSourceIdx < posts.length) {
-    const batch = posts.slice(nextSourceIdx, nextSourceIdx + PAGE_SIZE).map(p => ({
-      ...p, _displayKey: `loop${loopCountRef.current}_${p._id}`,
+    const batch = posts.slice(nextSourceIdx, nextSourceIdx + PAGE_SIZE).map((p, i) => ({
+      ...p, _displayKey: `pos${absStart + i}_loop${loopCountRef.current}_${p._id}`,
     }));
     newPosts = [...prev, ...batch];
   } else {
     loopCountRef.current += 1;
     const loopN = loopCountRef.current;
     const batch = posts.slice(0, PAGE_SIZE).map((p, i) => ({
-      ...p, _displayKey: `loop${loopN}_${p._id}`, _loopStart: i === 0,
+      ...p, _displayKey: `pos${absStart + i}_loop${loopN}_${p._id}`, _loopStart: i === 0,
     }));
     newBoundary = prev.length;
     newPosts    = [...prev, ...batch];
@@ -538,8 +541,8 @@ const ProgressiveFeed = ({
   useEffect(() => {
     if (!posts.length) { setFeedState({ displayedPosts: [], loopBoundaries: [] }); return; }
     loopCountRef.current = 0;
-    const initial = posts.slice(0, Math.min(PAGE_SIZE, posts.length)).map(p => ({
-      ...p, _displayKey: `loop0_${p._id}`,
+    const initial = posts.slice(0, Math.min(PAGE_SIZE, posts.length)).map((p, i) => ({
+      ...p, _displayKey: `pos${i}_loop0_${p._id}`,
     }));
     startTransition(() => {
       setFeedState({ displayedPosts: initial, loopBoundaries: [] });
@@ -777,17 +780,22 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const RECENT_HEAD_COUNT = 5; // nb de posts récents gardés en tête
 
   const combinedPosts = useMemo(() => {
-    const validReal = realPosts.filter(p => isValidPost(p) && !p.isBot && !p.user?.isBot);
-    const validBots = realPosts.filter(p => isValidPost(p) && (p.isBot || p.user?.isBot));
+    // ✅ FIX DUPLICATE KEYS : dédupliquer par _id avant tout traitement
+    const dedup = (arr) => {
+      const seen = new Set();
+      return arr.filter(p => { if (seen.has(p._id)) return false; seen.add(p._id); return true; });
+    };
+
+    const validReal = dedup(realPosts.filter(p => isValidPost(p) && !p.isBot && !p.user?.isBot));
+    const validBots = dedup(realPosts.filter(p => isValidPost(p) && (p.isBot || p.user?.isBot)));
 
     if (!showMockPosts) {
-      // Tête : posts récents stables, queue : shufflée
       const head = validReal.slice(0, RECENT_HEAD_COUNT);
       const tail = seededShuffle(validReal.slice(RECENT_HEAD_COUNT), shuffleSeed);
       return mixPostsByBlocks([...head, ...tail], seededShuffle(validBots, shuffleSeed ^ 0xABCD));
     }
 
-    const mockSlice = MOCK_POSTS.slice(0, mockPostsCount);
+    const mockSlice = dedup(MOCK_POSTS.slice(0, mockPostsCount));
 
     if (MOCK_CONFIG.mixWithRealPosts && validReal.length > 0) {
       const realHead  = validReal.slice(0, RECENT_HEAD_COUNT).map(stableRealPost);
@@ -796,7 +804,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       return mixPostsByBlocks([...realHead, ...realTail], allBots);
     }
 
-    // Que des mocks : shuffler avec la seed
     return seededShuffle(mockSlice, shuffleSeed);
   }, [realPosts.length, mockPostsCount, showMockPosts, isValidPost, shuffleSeed]); // eslint-disable-line
 
