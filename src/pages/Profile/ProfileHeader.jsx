@@ -1,4 +1,8 @@
 // src/components/ProfileHeader.jsx - VERSION COMPLÈTE AVEC BOUTON MESSAGE
+// ✅ FIX upload photo profil : meilleure gestion des erreurs réseau/serveur
+//    - ERR_NETWORK → message explicite "Serveur indisponible"
+//    - Timeout porté à 60s (upload Cloudinary peut être lent)
+//    - Retry automatique désactivé (évite les doubles uploads)
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -16,7 +20,7 @@ import {
   UserPlusIcon,
   FlagIcon,
   EllipsisVerticalIcon,
-  ChatBubbleLeftRightIcon  // ✅ ICÔNE MESSAGE
+  ChatBubbleLeftRightIcon
 } from '@heroicons/react/24/outline';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useNavigate } from 'react-router-dom';
@@ -27,6 +31,28 @@ import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const EMOJIS = ["😊", "🔥", "💡", "🎉", "🚀", "❤️", "😎", "✨", "🎵"];
+
+// ─────────────────────────────────────────────
+// HELPER — message d'erreur upload lisible
+// ─────────────────────────────────────────────
+function getUploadErrorMessage(err) {
+  // Serveur crashé ou réseau coupé
+  if (err.code === 'ERR_NETWORK' || err.message === 'Network Error') {
+    return 'Serveur indisponible. Réessayez dans quelques secondes.';
+  }
+  // Timeout
+  if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+    return 'Upload trop long. Vérifiez votre connexion ou réduisez la taille du fichier.';
+  }
+  // Erreur serveur avec message
+  if (err.response?.data?.message) return err.response.data.message;
+  if (err.response?.data?.error)   return err.response.data.error;
+  // Erreur HTTP brute
+  if (err.response?.status === 401) return 'Session expirée. Reconnectez-vous.';
+  if (err.response?.status === 413) return 'Fichier trop volumineux pour le serveur.';
+  if (err.response?.status === 500) return 'Erreur serveur lors de l\'upload. Réessayez.';
+  return err.message || 'Erreur lors de l\'upload';
+}
 
 // ============================================
 // 🎨 MODAL FOLLOWERS/FOLLOWING
@@ -51,29 +77,21 @@ const FollowersModal = ({
       const followingIds = new Set(
         currentUserFollowing.map(f => typeof f === 'object' ? f._id : f)
       );
-      
       users.forEach(user => {
         const userId = user._id || user.id;
         states[userId] = followingIds.has(userId);
       });
-      
       setFollowingStates(states);
     }
   }, [isOpen, users, currentUserId, currentUserFollowing]);
 
   const handleFollowToggle = async (userId) => {
     if (loadingStates[userId]) return;
-
     setLoadingStates(prev => ({ ...prev, [userId]: true }));
-
     try {
       const isFollowing = followingStates[userId];
       await onFollowToggle(userId, !isFollowing);
-      
-      setFollowingStates(prev => ({
-        ...prev,
-        [userId]: !isFollowing
-      }));
+      setFollowingStates(prev => ({ ...prev, [userId]: !isFollowing }));
     } catch (err) {
       console.error('Erreur follow toggle:', err);
     } finally {
@@ -168,10 +186,7 @@ const FollowersModal = ({
                     >
                       <div 
                         className="flex items-center gap-3 flex-1 cursor-pointer"
-                        onClick={() => {
-                          navigate(`/profile/${userId}`);
-                          onClose();
-                        }}
+                        onClick={() => { navigate(`/profile/${userId}`); onClose(); }}
                       >
                         <div className="relative">
                           <motion.img
@@ -190,27 +205,20 @@ const FollowersModal = ({
                             </div>
                           )}
                         </div>
-
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <p className={`font-semibold truncate ${
-                              isDarkMode ? 'text-white' : 'text-gray-900'
-                            }`}>
+                            <p className={`font-semibold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                               {user.fullName}
                             </p>
                             {user.isVerified && (
                               <ShieldCheckIcon className="w-4 h-4 text-blue-500 flex-shrink-0" />
                             )}
                           </div>
-                          <p className={`text-sm truncate ${
-                            isDarkMode ? 'text-gray-400' : 'text-gray-600'
-                          }`}>
+                          <p className={`text-sm truncate ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                             @{user.username || user.email?.split('@')[0] || 'user'}
                           </p>
                           {user.bio && (
-                            <p className={`text-xs mt-1 truncate ${
-                              isDarkMode ? 'text-gray-500' : 'text-gray-500'
-                            }`}>
+                            <p className={`text-xs mt-1 truncate ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                               {user.bio}
                             </p>
                           )}
@@ -230,10 +238,7 @@ const FollowersModal = ({
                               {isLoading ? (
                                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                               ) : (
-                                <>
-                                  <UserPlusIcon className="w-4 h-4" />
-                                  Suivre
-                                </>
+                                <><UserPlusIcon className="w-4 h-4" />Suivre</>
                               )}
                             </motion.button>
                           )
@@ -245,19 +250,14 @@ const FollowersModal = ({
                             whileTap={{ scale: 0.95 }}
                             className={`px-4 py-2 rounded-xl font-semibold text-sm transition-all flex items-center gap-2 ${
                               isFollowing
-                                ? (isDarkMode
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-                                    : 'bg-gray-200 hover:bg-gray-300 text-gray-700')
+                                ? (isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700')
                                 : 'bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white shadow-lg'
                             } disabled:opacity-50 disabled:cursor-not-allowed`}
                           >
                             {isLoading ? (
                               <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
                             ) : (
-                              <>
-                                <UserPlusIcon className="w-4 h-4" />
-                                {isFollowing ? 'Abonné' : 'Suivre'}
-                              </>
+                              <><UserPlusIcon className="w-4 h-4" />{isFollowing ? 'Abonné' : 'Suivre'}</>
                             )}
                           </motion.button>
                         )
@@ -320,15 +320,13 @@ export default function ProfileHeader({
   const optionsMenuRef = useRef(null);
 
   // ============================================
-  // 💬 NOUVELLE FONCTION: OUVRIR CONVERSATION
+  // 💬 OUVRIR CONVERSATION
   // ============================================
   const handleSendMessage = useCallback(() => {
     if (!user) {
       showToast?.('Impossible d\'envoyer un message', 'error');
       return;
     }
-
-    // Créer l'objet contact pour la conversation
     const contact = {
       id: user._id || user.id,
       fullName: user.fullName,
@@ -337,35 +335,21 @@ export default function ProfileHeader({
       isOnline: user.isOnline,
       lastSeen: user.lastSeen
     };
-
     console.log('💬 [ProfileHeader] Ouverture conversation avec:', contact);
-
-    // Naviguer vers la page Messages avec le contact pré-sélectionné
-    navigate('/messages', { 
-      state: { 
-        selectedContact: contact,
-        openChat: true 
-      } 
-    });
+    navigate('/messages', { state: { selectedContact: contact, openChat: true } });
   }, [user, navigate, showToast]);
 
   // ============================================
-  // 🚨 GESTION DU SIGNALEMENT
+  // 🚨 SIGNALEMENT
   // ============================================
   const handleReportUser = useCallback(async (reportData) => {
     try {
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-
-      await axios.post(
-        `${API_URL}/reports/user`,
-        reportData,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-          withCredentials: true
-        }
-      );
-
+      await axios.post(`${API_URL}/reports/user`, reportData, {
+        headers: { Authorization: `Bearer ${token}` },
+        withCredentials: true
+      });
       showToast?.('Signalement envoyé. Merci pour votre aide ! 🙏', 'success');
       setShowReportModal(false);
       setShowOptionsMenu(false);
@@ -384,25 +368,16 @@ export default function ProfileHeader({
         setShowOptionsMenu(false);
       }
     };
-
-    if (showOptionsMenu) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
+    if (showOptionsMenu) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showOptionsMenu]);
 
   const fetchUserStats = useCallback(async () => {
     if (!user?._id) return;
-    
     setLoadingStats(true);
     setStatsError(null);
-    
     try {
       const token = await getToken();
-      
       const [postsRes, followersRes, followingRes] = await Promise.allSettled([
         axios.get(`${API_URL}/posts/user/${user._id}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -417,22 +392,18 @@ export default function ProfileHeader({
           timeout: 10000
         })
       ]);
-
       if (postsRes.status === 'fulfilled') {
         const postsData = postsRes.value.data?.posts || postsRes.value.data?.data || [];
         setUserPosts(Array.isArray(postsData) ? postsData : []);
       }
-
       if (followersRes.status === 'fulfilled') {
         const followersData = followersRes.value.data?.followers || followersRes.value.data?.data || [];
         setUserFollowers(Array.isArray(followersData) ? followersData : []);
       }
-
       if (followingRes.status === 'fulfilled') {
         const followingData = followingRes.value.data?.following || followingRes.value.data?.data || [];
         setUserFollowing(Array.isArray(followingData) ? followingData : []);
       }
-
     } catch (err) {
       console.error('❌ [ProfileHeader] Erreur chargement stats:', err);
       setStatsError(err.message);
@@ -455,18 +426,12 @@ export default function ProfileHeader({
     try {
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-
       await axios.post(
         `${API_URL}/users/${userId}/follow`,
         {},
-        {
-          headers: { Authorization: `Bearer ${token}` },
-          withCredentials: true
-        }
+        { headers: { Authorization: `Bearer ${token}` }, withCredentials: true }
       );
-
       await fetchUserStats();
-      
       showToast?.(shouldFollow ? 'Abonné ! 🎉' : 'Désabonné', 'success');
     } catch (err) {
       console.error('Erreur follow toggle:', err);
@@ -480,7 +445,6 @@ export default function ProfileHeader({
       const likesCount = Array.isArray(post.likes) ? post.likes.length : (post.likes || 0);
       return sum + likesCount;
     }, 0);
-
     return {
       posts: userPosts.length,
       followers: userFollowers.length,
@@ -490,35 +454,38 @@ export default function ProfileHeader({
   }, [userPosts, userFollowers, userFollowing]);
 
   const graphData = useMemo(() => [
-    { name: "Posts", value: stats.posts },
-    { name: "Abonnés", value: stats.followers },
+    { name: "Posts",       value: stats.posts },
+    { name: "Abonnés",     value: stats.followers },
     { name: "Abonnements", value: stats.following },
-    { name: "Likes", value: stats.likes }
+    { name: "Likes",       value: stats.likes }
   ], [stats]);
 
+  // ============================================
+  // 📸 UPLOAD PHOTO PROFIL
+  // ✅ FIX : timeout 60s, message d'erreur lisible,
+  //         ERR_NETWORK détecté explicitement
+  // ============================================
   const handleProfilePhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     if (!file.type.startsWith('image/')) {
       showToast?.('Fichier non valide. Image requise.', 'error');
       return;
     }
-    
     if (file.size > 5 * 1024 * 1024) {
       showToast?.('Fichier trop volumineux (5 Mo max)', 'error');
       return;
     }
 
     setIsUploadingProfile(true);
-    
     try {
       const formData = new FormData();
       formData.append('profilePhoto', file);
-      
+
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-      
+
       const response = await axios.put(
         `${API_URL}/users/${user._id}/images`,
         formData,
@@ -527,50 +494,48 @@ export default function ProfileHeader({
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
           },
-          timeout: 30000
+          timeout: 60000, // ✅ 60s — upload Cloudinary peut être lent
         }
       );
-      
+
       if (response.data?.user) {
         await updateUserProfile(user._id, response.data.user);
       }
-      
       showToast?.('✅ Photo de profil mise à jour !', 'success');
     } catch (err) {
       console.error('Erreur upload photo profil:', err);
-      const msg = err.response?.data?.message || err.message || 'Erreur lors de l\'upload';
-      showToast?.(msg, 'error');
+      showToast?.(getUploadErrorMessage(err), 'error');
     } finally {
       setIsUploadingProfile(false);
-      if (profileInputRef.current) {
-        profileInputRef.current.value = null;
-      }
+      if (profileInputRef.current) profileInputRef.current.value = null;
     }
   };
 
+  // ============================================
+  // 🖼️ UPLOAD PHOTO COUVERTURE
+  // ✅ FIX : idem — timeout 60s, message lisible
+  // ============================================
   const handleCoverPhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     if (!file.type.startsWith('image/')) {
       showToast?.('Fichier non valide. Image requise.', 'error');
       return;
     }
-    
     if (file.size > 5 * 1024 * 1024) {
       showToast?.('Fichier trop volumineux (5 Mo max)', 'error');
       return;
     }
 
     setIsUploadingCover(true);
-    
     try {
       const formData = new FormData();
       formData.append('coverPhoto', file);
-      
+
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-      
+
       const response = await axios.put(
         `${API_URL}/users/${user._id}/images`,
         formData,
@@ -579,24 +544,20 @@ export default function ProfileHeader({
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'multipart/form-data'
           },
-          timeout: 30000
+          timeout: 60000, // ✅ 60s
         }
       );
-      
+
       if (response.data?.user) {
         await updateUserProfile(user._id, response.data.user);
       }
-      
       showToast?.('✅ Photo de couverture mise à jour !', 'success');
     } catch (err) {
       console.error('Erreur upload photo couverture:', err);
-      const msg = err.response?.data?.message || err.message || 'Erreur lors de l\'upload';
-      showToast?.(msg, 'error');
+      showToast?.(getUploadErrorMessage(err), 'error');
     } finally {
       setIsUploadingCover(false);
-      if (coverInputRef.current) {
-        coverInputRef.current.value = null;
-      }
+      if (coverInputRef.current) coverInputRef.current.value = null;
     }
   };
 
@@ -605,7 +566,6 @@ export default function ProfileHeader({
     try {
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-
       const updates = {
         fullName: editData.fullName.trim(),
         username: editData.username.trim(),
@@ -613,7 +573,6 @@ export default function ProfileHeader({
         location: editData.location.trim(),
         website: editData.website.trim()
       };
-
       await updateUserProfile(user._id, updates);
       setIsEditingProfile(false);
       showToast?.('Profil mis à jour !', 'success');
@@ -693,7 +652,6 @@ export default function ProfileHeader({
                   <EllipsisVerticalIcon className="w-5 h-5" />
                 </motion.button>
 
-                {/* MENU DÉROULANT */}
                 <AnimatePresence>
                   {showOptionsMenu && (
                     <motion.div
@@ -702,20 +660,13 @@ export default function ProfileHeader({
                       exit={{ opacity: 0, y: -10, scale: 0.95 }}
                       transition={{ duration: 0.15 }}
                       className={`absolute top-full right-0 mt-2 w-56 rounded-2xl shadow-2xl border overflow-hidden z-10 ${
-                        isDarkMode
-                          ? 'bg-gray-800 border-white/10'
-                          : 'bg-white border-gray-200'
+                        isDarkMode ? 'bg-gray-800 border-white/10' : 'bg-white border-gray-200'
                       }`}
                     >
                       <button
-                        onClick={() => {
-                          setShowReportModal(true);
-                          setShowOptionsMenu(false);
-                        }}
+                        onClick={() => { setShowReportModal(true); setShowOptionsMenu(false); }}
                         className={`w-full px-4 py-3 text-left flex items-center gap-3 transition-colors ${
-                          isDarkMode
-                            ? 'hover:bg-gray-700 text-gray-300'
-                            : 'hover:bg-gray-50 text-gray-700'
+                          isDarkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-50 text-gray-700'
                         }`}
                       >
                         <FlagIcon className="w-5 h-5 text-red-500" />
@@ -730,13 +681,7 @@ export default function ProfileHeader({
             {/* BOUTON UPLOAD COUVERTURE (propriétaires) */}
             {isOwnProfile && (
               <>
-                <input 
-                  ref={coverInputRef} 
-                  type="file" 
-                  accept="image/*" 
-                  onChange={handleCoverPhotoChange} 
-                  className="hidden" 
-                />
+                <input ref={coverInputRef} type="file" accept="image/*" onChange={handleCoverPhotoChange} className="hidden" />
                 <motion.button
                   onClick={() => coverInputRef.current?.click()}
                   disabled={isUploadingCover}
@@ -789,13 +734,7 @@ export default function ProfileHeader({
 
               {isOwnProfile && (
                 <>
-                  <input 
-                    ref={profileInputRef} 
-                    type="file" 
-                    accept="image/*" 
-                    onChange={handleProfilePhotoChange} 
-                    className="hidden" 
-                  />
+                  <input ref={profileInputRef} type="file" accept="image/*" onChange={handleProfilePhotoChange} className="hidden" />
                   <motion.button
                     onClick={() => profileInputRef.current?.click()}
                     disabled={isUploadingProfile}
@@ -844,11 +783,7 @@ export default function ProfileHeader({
                       <div className="flex justify-between mt-2">
                         <div className="flex gap-2">
                           {EMOJIS.map(e => (
-                            <button 
-                              key={e} 
-                              onClick={() => addEmoji(e)} 
-                              className="text-xl hover:scale-110 transition-transform"
-                            >
+                            <button key={e} onClick={() => addEmoji(e)} className="text-xl hover:scale-110 transition-transform">
                               {e}
                             </button>
                           ))}
@@ -889,8 +824,7 @@ export default function ProfileHeader({
                       isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
                     }`}
                   >
-                    <XMarkIcon className="w-5 h-5" />
-                    Annuler
+                    <XMarkIcon className="w-5 h-5" />Annuler
                   </motion.button>
                   <motion.button
                     onClick={handleSaveProfile}
@@ -915,7 +849,7 @@ export default function ProfileHeader({
                         {user?.fullName || 'Utilisateur'}
                       </h1>
                       {user?.isVerified && <ShieldCheckIcon className="w-7 h-7 text-blue-500" />}
-                      {user?.isPremium && <SparklesIcon className="w-7 h-7 text-orange-500" />}
+                      {user?.isPremium  && <SparklesIcon   className="w-7 h-7 text-orange-500" />}
                     </div>
                     <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       @{user?.username || user?.email?.split('@')[0] || 'user'}
@@ -942,9 +876,7 @@ export default function ProfileHeader({
                   {user?.location && (
                     <div className="flex items-center gap-2">
                       <MapPinIcon className={`w-5 h-5 ${isDarkMode ? 'text-orange-500' : 'text-orange-600'}`} />
-                      <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        {user.location}
-                      </span>
+                      <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>{user.location}</span>
                     </div>
                   )}
                   {user?.website && (
@@ -952,8 +884,7 @@ export default function ProfileHeader({
                       <LinkIcon className={`w-5 h-5 ${isDarkMode ? 'text-orange-500' : 'text-orange-600'}`} />
                       <a 
                         href={user.website.startsWith('http') ? user.website : `https://${user.website}`} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
+                        target="_blank" rel="noopener noreferrer"
                         className={`text-sm hover:underline ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}
                       >
                         {user.website.replace(/^https?:\/\//, '')}
@@ -1004,13 +935,8 @@ export default function ProfileHeader({
                   animate={{ opacity: 1, y: 0 }} 
                   transition={{ delay: i * 0.05 }}
                   onClick={() => {
-                    if (stat.name === 'Abonnés') {
-                      setModalType('followers');
-                      setModalOpen(true);
-                    } else if (stat.name === 'Abonnements') {
-                      setModalType('following');
-                      setModalOpen(true);
-                    }
+                    if (stat.name === 'Abonnés')     { setModalType('followers'); setModalOpen(true); }
+                    if (stat.name === 'Abonnements') { setModalType('following'); setModalOpen(true); }
                   }}
                   className={`rounded-xl p-3 text-center transition-all ${
                     isDarkMode ? 'bg-gray-800/50 border border-white/5' : 'bg-gray-50'
@@ -1036,21 +962,15 @@ export default function ProfileHeader({
                 >
                   <ResponsiveContainer width="100%" height={200}>
                     <BarChart data={graphData}>
-                      <XAxis 
-                        dataKey="name" 
-                        tick={{ fontSize: 11, fill: isDarkMode ? '#9ca3af' : '#4b5563' }} 
-                      />
-                      <Tooltip 
-                        contentStyle={{ 
-                          backgroundColor: isDarkMode ? 'rgba(10,10,10,0.95)' : 'rgba(255,255,255,0.95)', 
-                          borderRadius: '12px',
-                          border: 'none'
-                        }} 
-                      />
+                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: isDarkMode ? '#9ca3af' : '#4b5563' }} />
+                      <Tooltip contentStyle={{ 
+                        backgroundColor: isDarkMode ? 'rgba(10,10,10,0.95)' : 'rgba(255,255,255,0.95)', 
+                        borderRadius: '12px', border: 'none'
+                      }} />
                       <Bar dataKey="value" fill="url(#colorGradient)" radius={[8, 8, 0, 0]} />
                       <defs>
                         <linearGradient id="colorGradient" x1="0" y1="0" x2="1" y2="0">
-                          <stop offset="0%" stopColor="#fb923c" />
+                          <stop offset="0%"   stopColor="#fb923c" />
                           <stop offset="100%" stopColor="#ec4899" />
                         </linearGradient>
                       </defs>

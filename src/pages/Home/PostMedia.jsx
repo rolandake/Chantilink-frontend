@@ -1,24 +1,17 @@
 // 📁 src/pages/Home/PostMedia.jsx
 //
+// ✅ FIX CORS PEXELS v11
+//    - Retry Pexels SUPPRIMÉ : les URLs videos.pexels.com sont filtrées en amont
+//      par PostsContext.filterPexelsPosts() et PostCard.mediaUrls
+//      → VideoItem n'en reçoit plus, le retry était inutile et polluait les logs
+//    - Si une URL Pexels arrive quand même (bug en amont) : erreur immédiate,
+//      pas de retry infini qui inonde la console
+//    - Cleanup des timers simplifié (plus de retryTimer)
+//
 // ✅ FIX YOUTUBE v7 — safeMediaUrls (bot-safe)
-//    Avant : if (!mediaUrls?.length) return null → écran noir si embedUrl seul
-//    Après : safeMediaUrls reconstruit depuis mediaUrls + embedUrl + videoUrl + sourceUrl
-//    → PostMedia affiche toujours le bon contenu quel que soit le format DB
-//
 // 🔥 PREBUFFER VIDÉO (style TikTok)
-//    La prochaine vidéo commence à charger en arrière-plan pendant la lecture
-//    → démarrage instantané au scroll, sans écran noir
-//
 // 🎯 VIDEO MANAGER GLOBAL (style TikTok)
-//    1 seule vidéo joue à la fois dans toute la page
-//    → -30~50% CPU, meilleure batterie, scroll fluide
-//
 // 🔥 FIX SWIPE v8 — navigation multi-médias réparée
-//    Avant : touchAction: 'pan-y pinch-zoom' + preventDefault conditionnel
-//    → le navigateur capturait le scroll vertical et ignorait le swipe horizontal
-//    Après : touchAction: 'none' sur le conteneur quand total > 1
-//    + preventDefault systématique en horizontal
-//    → swipe gauche/droite fonctionne, scroll vertical de la page préservé via stopPropagation
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { FaVolumeUp, FaVolumeMute, FaExternalLinkAlt } from "react-icons/fa";
@@ -28,8 +21,7 @@ const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 // ─────────────────────────────────────────────
-// 🔥 VIDEO MANAGER GLOBAL (style TikTok)
-// Garantit qu'une seule vidéo joue dans toute la page
+// 🎯 VIDEO MANAGER GLOBAL (style TikTok)
 // ─────────────────────────────────────────────
 let currentPlayingVideo = null;
 
@@ -46,7 +38,6 @@ const registerPlayingVideo = (video) => {
 
 // ─────────────────────────────────────────────
 // 🔥 PREBUFFER VIDÉO GLOBAL (style TikTok)
-// Cache des vidéos préchargées pour démarrage instantané
 // ─────────────────────────────────────────────
 const preloadedVideos = new Set();
 
@@ -101,24 +92,34 @@ const getYouTubeId = (url) => {
 
 const isPexelsVideo   = url => url && url.includes('videos.pexels.com');
 const isPixabayVideo  = url => url && url.includes('cdn.pixabay.com/video');
+
+// ✅ Ces domaines NE DOIVENT JAMAIS être accédés directement (CORS)
+const PROXY_ONLY_DOMAINS = (url) => isPexelsVideo(url) || isPixabayVideo(url);
+
 const isExternalVideo = url => isPexelsVideo(url) || isPixabayVideo(url);
 const isYouTubeUrl    = url => url && (url.includes('youtube.com') || url.includes('youtu.be'));
 
 const needsCrossOrigin = url => url && url.includes('res.cloudinary.com');
 
 // ─────────────────────────────────────────────
-// PROXY + FALLBACK DIRECT
+// PROXY URL — Pexels/Pixabay via backend
+//
+// ✅ FIX v11 : En conditions normales, les URLs Pexels sont filtrées en amont
+// par PostsContext.filterPexelsPosts() et PostCard.mediaUrls.
+// Cette fonction reste comme garde-fou défensif uniquement.
 // ─────────────────────────────────────────────
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const getVideoUrls = (url) => {
-  if (!url) return { proxy: null, direct: url };
+  if (!url) return { proxy: null, direct: null };
+
   if (isPexelsVideo(url) || isPixabayVideo(url)) {
     return {
       proxy:  `${API_BASE}/api/proxy/video?url=${encodeURIComponent(url)}`,
-      direct: url,
+      direct: null, // Pas de fallback direct (CORS bloqué)
     };
   }
+
   return { proxy: null, direct: url };
 };
 
@@ -380,23 +381,35 @@ HLSItem.displayName = 'HLSItem';
 
 // ─────────────────────────────────────────────
 // VIDEO ITEM
+//
+// ✅ FIX v11 : Retry Pexels SUPPRIMÉ
+//
+// AVANT (v10) : retry proxy 1 fois si échec → loggait "tentative 1" × N vidéos
+//   → inondait la console même si les URLs étaient structurellement expirées
+//   → ne servait à rien car le backend ne peut pas résoudre des tokens expirés
+//
+// APRÈS (v11) : si une URL Pexels/Pixabay arrive ici (bug en amont),
+//   on affiche immédiatement l'erreur sans retry.
+//   En conditions normales, ces URLs sont filtrées AVANT d'arriver ici par :
+//     1. PostsContext.filterPexelsPosts() — filtre au niveau des posts
+//     2. PostCard.mediaUrls — filtre au niveau des URLs individuelles
 // ─────────────────────────────────────────────
 const VideoItem = React.memo(({
   url, posterUrl, isLCP, isActive, isMuted,
   toggleMuteRef, slotIndex,
   videoRefCallback, showBadge = true,
 }) => {
-  const videoRef       = useRef(null);
-  const videoUrls      = useMemo(() => getVideoUrls(url), [url]);
-  const [currentSrc,   setCurrentSrc]   = useState(() => videoUrls.proxy || videoUrls.direct);
-  const [usedFallback, setUsedFallback] = useState(false);
+  const videoRef    = useRef(null);
+  const videoUrls   = useMemo(() => getVideoUrls(url), [url]);
 
+  const [currentSrc,    setCurrentSrc]    = useState(() => videoUrls.proxy || videoUrls.direct);
+  const [videoError,    setVideoError]    = useState(false);
   const [isPlaying,     setIsPlaying]     = useState(false);
   const [posterVisible, setPosterVisible] = useState(true);
   const [hasInteracted, setHasInteracted] = useState(false);
-  const [videoError,    setVideoError]    = useState(false);
-  const playAttempted   = useRef(false);
-  const fallbackTimer   = useRef(null);
+
+  const playAttempted  = useRef(false);
+  const fallbackTimer  = useRef(null);
 
   const useCrossOrigin  = useMemo(() => needsCrossOrigin(url), [url]);
   const preloadStrategy = useMemo(() => {
@@ -404,6 +417,12 @@ const VideoItem = React.memo(({
     if (isExternalVideo(url)) return 'auto';
     return 'metadata';
   }, [isLCP, url]);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(fallbackTimer.current);
+    };
+  }, []);
 
   const setVideoRef = useCallback((el) => {
     videoRef.current = el;
@@ -448,7 +467,9 @@ const VideoItem = React.memo(({
       setPosterVisible(true);
     }
 
-    return () => clearTimeout(fallbackTimer.current);
+    return () => {
+      clearTimeout(fallbackTimer.current);
+    };
   }, [isActive]); // eslint-disable-line
 
   useEffect(() => {
@@ -476,11 +497,20 @@ const VideoItem = React.memo(({
 
   const handlePause = useCallback(() => { setIsPlaying(false); }, []);
 
+  // ─────────────────────────────────────────────
+  // handleError — v11 (simplifié, sans retry Pexels)
+  //
+  // Cas 1 : proxy échoué mais direct disponible (Cloudinary, etc.) → fallback direct
+  // Cas 2 : proxy Pexels/Pixabay (direct=null) → erreur immédiate, pas de retry
+  //         Ces URLs ne devraient jamais arriver ici grâce aux filtres en amont.
+  //         Si elles arrivent, c'est un bug en amont à corriger là-bas, pas ici.
+  // ─────────────────────────────────────────────
   const handleError = useCallback(() => {
     const { proxy, direct } = videoUrls;
-    if (!usedFallback && proxy && direct && currentSrc === proxy) {
+
+    // Cas 1 : fallback vers direct si proxy échoue (non-CORS)
+    if (currentSrc === proxy && direct) {
       console.warn(`[PostMedia] Proxy échoué, fallback direct: ${direct.substring(0, 60)}...`);
-      setUsedFallback(true);
       setCurrentSrc(direct);
       const vid = videoRef.current;
       if (vid) {
@@ -489,9 +519,21 @@ const VideoItem = React.memo(({
       }
       return;
     }
+
+    // Cas 2 : Pexels/Pixabay → erreur immédiate (pas de retry)
+    // Ces URLs sont censées être filtrées en amont par PostsContext + PostCard
+    if (proxy && !direct) {
+      console.warn(`[PostMedia] URL externe bloquée (devrait être filtrée en amont): ${url?.substring(0, 60)}...`);
+      setVideoError(true);
+      setPosterVisible(false);
+      return;
+    }
+
+    // Cas 3 : URL directe qui échoue
+    console.error(`[PostMedia] Vidéo indisponible: ${url?.substring(0, 60)}...`);
     setVideoError(true);
     setPosterVisible(false);
-  }, [videoUrls, usedFallback, currentSrc, isActive]);
+  }, [videoUrls, currentSrc, isActive, url]);
 
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
@@ -638,12 +680,13 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const autoGenerated = !!post?.autoGenerated;
   const showBadge     = !autoGenerated;
 
-  // ✅ FIX v7 — safeMediaUrls : reconstruit depuis tous les champs possibles
   const safeMediaUrls = useMemo(() => {
     const seen = new Set();
     const result = [];
     const add = (url) => {
       if (!url || typeof url !== 'string') return;
+      // ✅ FIX v11 : guard final contre Pexels (défense en profondeur)
+      if (url.includes('videos.pexels.com')) return;
       if (!seen.has(url)) { seen.add(url); result.push(url); }
     };
     if (Array.isArray(mediaUrls)) mediaUrls.filter(Boolean).forEach(add);
@@ -714,7 +757,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     };
   });
 
-  // 🔥 PREBUFFER
   useEffect(() => {
     const next = urls[index + 1];
     if (next && slotTypes[index + 1] === 'video') {
@@ -736,19 +778,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     else    delete videoRefsMap.current[i];
   }, []);
 
-  // ─────────────────────────────────────────────
-  // 🔥 FIX SWIPE v8
-  // Problème : touchAction 'pan-y pinch-zoom' laissait le navigateur
-  // gérer nativement le scroll vertical ET bloquait le swipe horizontal.
-  // Solution :
-  //   - touchAction: 'none' sur le conteneur quand total > 1
-  //     → on prend le contrôle total des touches
-  //   - Dans onMove, preventDefault() en horizontal ET
-  //     propagation du scroll vertical vers le parent via window.scrollBy
-  //   - En vertical (dirRef === 'v'), on laisse passer le scroll
-  //     en appelant manuellement window.scrollBy(0, dy) car
-  //     preventDefault() bloque le scroll natif
-  // ─────────────────────────────────────────────
   useEffect(() => {
     if (total <= 1) return;
     const el = containerRef.current;
@@ -774,20 +803,15 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       const dx = t.clientX - touch.current.x;
       const dy = t.clientY - touch.current.y;
 
-      // Détermine la direction dominante une seule fois
       if (dirRef.current === null && (Math.abs(dx) > DIR_THRESHOLD || Math.abs(dy) > DIR_THRESHOLD)) {
         dirRef.current = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
       }
 
       if (dirRef.current === 'h') {
-        // 🔥 Swipe horizontal → on bloque le scroll natif
         if (e.cancelable) {
           try { e.preventDefault(); } catch {}
         }
       } else if (dirRef.current === 'v') {
-        // 🔥 Scroll vertical → on laisse passer vers la page
-        // (le scroll natif est bloqué par touchAction:'none',
-        //  donc on scroll manuellement)
         const deltaY = lastMoveY - t.clientY;
         window.scrollBy({ top: deltaY, behavior: 'instant' });
         lastMoveY = t.clientY;
@@ -810,7 +834,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       lastMoveY          = 0;
     };
 
-    // passive: false OBLIGATOIRE pour pouvoir appeler preventDefault()
     el.addEventListener('touchstart', onStart, { passive: true });
     el.addEventListener('touchmove',  onMove,  { passive: false });
     el.addEventListener('touchend',   onEnd,   { passive: true });
@@ -833,11 +856,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const goPrev = useCallback(() => setIndex(i => (i - 1 + total) % total), [total]);
   const goNext = useCallback(() => setIndex(i => (i + 1) % total),         [total]);
 
-  // 🔥 FIX HAUTEUR v9 — ResizeObserver lit la largeur réelle du conteneur
-  // et l'utilise comme hauteur (ratio carré 1:1).
-  // Toutes les approches CSS pures (aspect-ratio, padding-bottom trick, h-full)
-  // échouent quand les parents ont contain/overflow ou pas de hauteur explicite.
-  // Ici on force une hauteur en px = largeur en px → carré garanti.
   const [slotSize, setSlotSize] = useState(0);
   useEffect(() => {
     const el = containerRef.current;

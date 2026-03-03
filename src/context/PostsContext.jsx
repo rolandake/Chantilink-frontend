@@ -1,7 +1,8 @@
 // src/context/PostsContext.jsx
 // ✅ OPTIMISÉ LCP
 // ✅ FIX LCP FINAL : preload avant render
-// ✅ FIX PEXELS HARDCODÉ
+// ✅ FIX PEXELS v2 : filtre toutes les URLs videos.pexels.com (tokens expirent ~2h)
+// ✅ FIX PIXABAY v3 : filtre toutes les URLs cdn.pixabay.com/video
 // ✅ FIX POSTS PROFIL NON AFFICHÉS
 // 🚀 FIX PUBLICATION LENTE :
 //   - addPostOptimistic  → affiche le post INSTANTANÉMENT avec blob URLs locales
@@ -25,30 +26,43 @@ export const usePosts = () => useContext(PostsContext);
 
 // ─────────────────────────────────────────────
 // GUARD — vérifie qu'un ID est un ObjectId MongoDB valide (24 hex)
-// Rejette les IDs temporaires générés côté client (ex: user_6_1772309482858_41942)
 // ─────────────────────────────────────────────
 const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
 
 // ─────────────────────────────────────────────
-// FILTRE PEXELS HARDCODÉ
+// FILTRE EXTERNES — v3
+//
+// Bloque TOUTE URL contenant :
+//   - "videos.pexels.com"      → tokens expirent ~2h
+//   - "cdn.pixabay.com/video"  → URLs directes bloquées par CORS
+//
+// Un post avec une telle URL en DB sera toujours en erreur → on le masque.
 // ─────────────────────────────────────────────
-const STALE_PEXELS_PATTERN = /videos\.pexels\.com\/video-files\/\d+\/\d+-\w+_\d+_\d+/;
-
-function hasStaleHardcodedPexelsUrl(post) {
+function hasBlockedExternalVideoUrl(post) {
   const sources = [
     ...(Array.isArray(post.media)  ? post.media  : post.media  ? [post.media]  : []),
     ...(Array.isArray(post.images) ? post.images : post.images ? [post.images] : []),
     post.videoUrl,
     post.embedUrl,
+    post.sourceUrl,
   ];
   return sources.some(m => {
     const url = typeof m === "string" ? m : m?.url;
-    return url && STALE_PEXELS_PATTERN.test(url);
+    return url && (
+      url.includes("videos.pexels.com") ||
+      url.includes("cdn.pixabay.com/video")
+    );
   });
 }
 
-function filterStalePexelsPosts(posts) {
-  return posts.filter(p => !hasStaleHardcodedPexelsUrl(p));
+function filterBlockedPosts(posts) {
+  const before   = posts.length;
+  const filtered = posts.filter(p => !hasBlockedExternalVideoUrl(p));
+  const removed  = before - filtered.length;
+  if (removed > 0) {
+    console.log(`🧹 [PostsContext] ${removed} post(s) masqués (URLs externes expirées/bloquées)`);
+  }
+  return filtered;
 }
 
 // ─────────────────────────────────────────────
@@ -178,7 +192,6 @@ export const PostsProvider = ({ children }) => {
   // NORMALISATION
   // ============================================
   const normalizePost = useCallback((p) => {
-    // Les posts optimistes ont déjà leur user structuré — ne pas écraser
     if (p.isOptimistic) return p;
 
     const rawUser = p.user || p.author || {};
@@ -260,25 +273,25 @@ export const PostsProvider = ({ children }) => {
       const normalized = postsArray.map(normalizePost);
       console.log(`✅ [PostsContext] ${normalized.length} posts reçus`);
 
-      preloadFirstPostLCP(normalized);
+      // ✅ Filtrer les posts Pexels + Pixabay AVANT le render
+      const clean = filterBlockedPosts(normalized);
+      preloadFirstPostLCP(clean);
 
       setPosts(prev => {
-        // Garde les posts optimistes en tête, dédoublonne le reste
         const optimistic = prev.filter(p => p.isOptimistic);
         const merged     = append
-          ? [...prev.filter(p => !p.isOptimistic), ...normalized]
-          : normalized;
+          ? [...prev.filter(p => !p.isOptimistic), ...clean]
+          : clean;
         const unique = Array.from(new Map(merged.map(p => [p._id, p])).values());
-        const clean  = filterStalePexelsPosts(unique);
-        const final  = [...optimistic, ...clean.filter(p => !optimistic.some(o => o._id === p._id))];
-        idbSetPosts("allPosts", clean); // cache sans les fantômes
+        const final  = [...optimistic, ...unique.filter(p => !optimistic.some(o => o._id === p._id))];
+        idbSetPosts("allPosts", unique);
         return final;
       });
 
       setHasMore(data.hasMore ?? normalized.length === 20);
       setPage(pageNumber);
 
-      return { success: true, posts: normalized };
+      return { success: true, posts: clean };
     } catch (err) {
       if (err.name !== "AbortError") {
         console.error("❌ [PostsContext] fetchPosts erreur:", err.message);
@@ -302,9 +315,6 @@ export const PostsProvider = ({ children }) => {
 
   // ============================================
   // FETCH USER POSTS (Profil)
-  // ✅ FIX : garde ObjectId — les IDs temporaires clients (user_6_xxx) sont
-  //          rejetés silencieusement AVANT le fetch pour éviter les HTTP 400.
-  //          Les bots ont de vrais ObjectIds MongoDB → passent normalement.
   // ============================================
   const fetchUserPosts = useCallback(async (targetUserId, pageNumber = 1) => {
     if (!targetUserId) {
@@ -312,10 +322,8 @@ export const PostsProvider = ({ children }) => {
       return [];
     }
 
-    // ✅ Garde ObjectId : rejette les IDs temporaires générés côté client
-    // Les vrais comptes (humains ET bots) ont toujours un ObjectId MongoDB valide
     if (!isValidObjectId(targetUserId)) {
-      console.warn(`⚠️ [PostsContext] fetchUserPosts : ID non-MongoDB ignoré (${targetUserId}) — attente d'un vrai ObjectId`);
+      console.warn(`⚠️ [PostsContext] fetchUserPosts : ID non-MongoDB ignoré (${targetUserId})`);
       return [];
     }
 
@@ -326,7 +334,7 @@ export const PostsProvider = ({ children }) => {
     }
 
     if (!activeToken) {
-      console.error("❌ [PostsContext] fetchUserPosts : token toujours null après attente — abandon");
+      console.error("❌ [PostsContext] fetchUserPosts : token toujours null — abandon");
       return [];
     }
 
@@ -347,8 +355,10 @@ export const PostsProvider = ({ children }) => {
       const postsArray = data.posts || data.data || (Array.isArray(data) ? data : []);
       const normalized = postsArray.map(normalizePost);
 
-      console.log(`✅ [PostsContext] fetchUserPosts : ${normalized.length} posts pour userId=${targetUserId}`);
-      return normalized;
+      // ✅ Filtrer les posts Pexels + Pixabay aussi sur le profil
+      const clean = filterBlockedPosts(normalized);
+      console.log(`✅ [PostsContext] fetchUserPosts : ${clean.length} posts pour userId=${targetUserId}`);
+      return clean;
 
     } catch (err) {
       console.error(`❌ [PostsContext] fetchUserPosts erreur pour userId=${targetUserId}:`, err.message);
@@ -358,7 +368,7 @@ export const PostsProvider = ({ children }) => {
         const cached = await getCachedPosts(targetUserId);
         if (Array.isArray(cached) && cached.length > 0) {
           console.log(`📦 [PostsContext] fetchUserPosts : fallback cache ${cached.length} posts`);
-          return cached;
+          return filterBlockedPosts(cached);
         }
       } catch (cacheErr) {
         console.warn("⚠️ [PostsContext] fetchUserPosts : cache IDB inaccessible:", cacheErr.message);
@@ -370,9 +380,7 @@ export const PostsProvider = ({ children }) => {
 
   // ============================================
   // 🚀 OPTIMISTIC POST METHODS
-  // Placées APRÈS fetchPosts pour éviter le ReferenceError (temporal dead zone)
   // ============================================
-
   const addPostOptimistic = useCallback((optimisticPost) => {
     setPosts(prev => {
       if (prev.some(p => p._id === optimisticPost._id)) return prev;
@@ -383,8 +391,6 @@ export const PostsProvider = ({ children }) => {
   const replaceOptimisticPost = useCallback((tempId, realPost) => {
     const normalized = normalizePost(realPost);
     syncNewPost(normalized, normalized.user?._id || userId).catch(() => {});
-    // Retire le fantôme puis refetch → le vrai post arrive depuis le serveur
-    // avec ses vraies URLs Cloudinary (identique à ce que le profil verrait)
     setPosts(prev => prev.filter(p => p._id !== tempId));
     setTimeout(() => {
       fetchPosts(1, false).catch(() => {});
@@ -396,9 +402,7 @@ export const PostsProvider = ({ children }) => {
   }, []);
 
   // ============================================
-  // CREATE POST (conservé pour rétrocompat)
-  // CreatePost.jsx utilise axiosClient directement
-  // mais d'autres composants peuvent encore appeler createPost()
+  // CREATE POST
   // ============================================
   const createPost = useCallback(async (formData) => {
     if (!token) throw new Error("Connexion requise");
@@ -420,7 +424,6 @@ export const PostsProvider = ({ children }) => {
 
     const normalized = normalizePost(newPost);
     await syncNewPost(normalized, userId);
-    // Ne prepend que si pas déjà dans le feed (évite doublon avec optimiste)
     setPosts(prev => {
       if (prev.some(p => p._id === normalized._id)) return prev;
       return [normalized, ...prev];
@@ -540,7 +543,8 @@ export const PostsProvider = ({ children }) => {
       try {
         const cached = await idbGetPosts("allPosts");
         if (cached?.length) {
-          const cleanCached = filterStalePexelsPosts(cached);
+          // ✅ Filtrer aussi le cache IDB (peut contenir des URLs expirées/bloquées)
+          const cleanCached = filterBlockedPosts(cached);
           preloadFirstPostLCP(cleanCached);
           setPosts(cleanCached);
           setLoading(false);
@@ -589,7 +593,6 @@ export const PostsProvider = ({ children }) => {
     toggleLike,
     addComment,
     refetch,
-    // 🚀 Méthodes optimistes pour CreatePost.jsx
     addPostOptimistic,
     replaceOptimisticPost,
     removeOptimisticPost,

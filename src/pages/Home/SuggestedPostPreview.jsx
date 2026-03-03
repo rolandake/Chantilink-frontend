@@ -1,6 +1,6 @@
 // 📁 src/pages/Home/SuggestedPostPreview.jsx
 // Suggestion pleine largeur d'UN profil avec l'une de ses publications
-// ✅ v3 : vidéos mp4 jouées directement dans la carte (autoplay muted, tap pour son)
+// ✅ v4 : sélection ALÉATOIRE du contenu — vidéos/images/textes ont la même probabilité
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { useNavigate } from "react-router-dom";
@@ -17,10 +17,9 @@ const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
-const isVideoUrl  = (url) => url && /\.(mp4|webm|mov|avi)$/i.test(url.split("?")[0]);
-const isEmbedUrl  = (url) => url && (url.includes("youtube") || url.includes("youtu.be") || url.includes("vimeo"));
+const isVideoUrl   = (url) => url && /\.(mp4|webm|mov|avi)$/i.test(url.split("?")[0]);
+const isEmbedUrl   = (url) => url && (url.includes("youtube") || url.includes("youtu.be") || url.includes("vimeo"));
 const isCloudinary = (url) => url && url.includes("res.cloudinary.com");
-const isExternal   = (url) => url && url.startsWith("http");
 
 const resolveMediaUrl = (url) => {
   if (!url || typeof url !== "string") return null;
@@ -38,8 +37,10 @@ const getVideoPoster = (videoUrl) => {
       if (idx === -1) return null;
       const after = videoUrl.substring(idx + 8);
       const segs  = after.split("/");
-      const pub   = segs.filter(s => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes("."))).join("/")
-                        .replace(/\.(mp4|webm|mov|avi)$/i, "");
+      const pub   = segs
+        .filter(s => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes(".")))
+        .join("/")
+        .replace(/\.(mp4|webm|mov|avi)$/i, "");
       return pub ? `${IMG_BASE}q_auto:good,f_jpg,w_800,c_limit,so_0/${pub}.jpg` : null;
     }
     if (videoUrl.includes("videos.pexels.com")) {
@@ -47,30 +48,23 @@ const getVideoPoster = (videoUrl) => {
       if (m) return `https://images.pexels.com/videos/${m[1]}/pictures/preview-0.jpg`;
     }
     if (videoUrl.includes("cdn.pixabay.com")) {
-      return videoUrl.replace(/_large\.mp4$/i, "_tiny.jpg").replace(/_medium\.mp4$/i, "_tiny.jpg");
+      return videoUrl
+        .replace(/_large\.mp4$/i, "_tiny.jpg")
+        .replace(/_medium\.mp4$/i, "_tiny.jpg");
     }
   } catch {}
   return null;
 };
 
-const pickBestPost = (posts) => {
-  if (!posts?.length) return null;
-
-  const withImg = posts.filter(p => {
-    const arr = Array.isArray(p.images || p.media) ? (p.images || p.media) : [];
-    const raw = arr[0]; const url = typeof raw === "string" ? raw : raw?.url;
-    return url && !isVideoUrl(url) && !isEmbedUrl(url);
-  });
-
-  const withVid = posts.filter(p => {
-    if (isVideoUrl(p.videoUrl) || isEmbedUrl(p.embedUrl)) return true;
-    const arr = Array.isArray(p.media) ? p.media : [];
-    return arr.some(m => isVideoUrl(typeof m === "string" ? m : m?.url));
-  });
-
-  // Priorité : image > vidéo > texte
-  const pool = withImg.length > 0 ? withImg : withVid.length > 0 ? withVid : posts;
-  const post = pool[Math.floor(Math.random() * Math.min(pool.length, 6))];
+// ─────────────────────────────────────────────
+// 🎲 SÉLECTION ALÉATOIRE — aucune priorité de type
+//
+// Stratégie :
+//   1. On classe chaque post selon son type réel (video / embed / image / text)
+//   2. On mélange aléatoirement TOUS les posts sans distinction de type
+//   3. On prend le premier — chaque type a une chance égale d'apparaître
+// ─────────────────────────────────────────────
+const classifyPost = (post) => {
   if (!post) return null;
 
   const imgs   = post.images || post.media;
@@ -78,10 +72,19 @@ const pickBestPost = (posts) => {
   const raw    = arr[0];
   const rawUrl = typeof raw === "string" ? raw : raw?.url;
 
-  // Déterminer le type réel
-  const vidUrl = isVideoUrl(rawUrl) ? rawUrl : isVideoUrl(post.videoUrl) ? post.videoUrl : null;
+  const vidUrl = isVideoUrl(rawUrl)
+    ? rawUrl
+    : isVideoUrl(post.videoUrl)
+      ? post.videoUrl
+      : null;
+
   const imgUrl = !vidUrl && rawUrl && !isEmbedUrl(rawUrl) ? rawUrl : null;
-  const embed  = isEmbedUrl(post.embedUrl) ? post.embedUrl : isEmbedUrl(rawUrl) ? rawUrl : null;
+
+  const embed = isEmbedUrl(post.embedUrl)
+    ? post.embedUrl
+    : isEmbedUrl(rawUrl)
+      ? rawUrl
+      : null;
 
   return {
     type:     vidUrl ? "video" : embed ? "embed" : imgUrl ? "image" : "text",
@@ -96,10 +99,29 @@ const pickBestPost = (posts) => {
   };
 };
 
+const pickRandomPost = (posts) => {
+  if (!posts?.length) return null;
+
+  // Mélange de Fisher-Yates pour un ordre vraiment aléatoire
+  const shuffled = [...posts];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  // On prend le premier post valide du tableau mélangé
+  for (const post of shuffled) {
+    const classified = classifyPost(post);
+    if (classified) return classified;
+  }
+
+  return null;
+};
+
 const fmtNum = (n) => {
   if (!n) return "0";
-  if (n >= 1_000_000) return `${(n/1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n/1_000).toFixed(1)}K`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 };
 
@@ -111,30 +133,47 @@ const Avatar = memo(({ username, photo, size = 44 }) => {
   const initials = useMemo(() => {
     if (!username) return "?";
     const p = username.trim().split(" ");
-    return p.length > 1 ? (p[0][0]+p[1][0]).toUpperCase() : username.substring(0,2).toUpperCase();
+    return p.length > 1
+      ? (p[0][0] + p[1][0]).toUpperCase()
+      : username.substring(0, 2).toUpperCase();
   }, [username]);
   const bg = useMemo(() => {
     const c = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
     let h = 0;
-    for (let i = 0; i < (username||"").length; i++) h = username.charCodeAt(i)+((h<<5)-h);
-    return c[Math.abs(h)%c.length];
+    for (let i = 0; i < (username || "").length; i++)
+      h = username.charCodeAt(i) + ((h << 5) - h);
+    return c[Math.abs(h) % c.length];
   }, [username]);
+
   if (err || !photo)
-    return <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
-      style={{width:size,height:size,backgroundColor:bg,fontSize:size*0.38}}>{initials}</div>;
-  return <img src={photo} alt={username} className="rounded-full object-cover flex-shrink-0"
-    style={{width:size,height:size}} onError={()=>setErr(true)} loading="lazy"/>;
+    return (
+      <div
+        className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
+        style={{ width: size, height: size, backgroundColor: bg, fontSize: size * 0.38 }}
+      >
+        {initials}
+      </div>
+    );
+  return (
+    <img
+      src={photo} alt={username}
+      className="rounded-full object-cover flex-shrink-0"
+      style={{ width: size, height: size }}
+      onError={() => setErr(true)}
+      loading="lazy"
+    />
+  );
 });
 Avatar.displayName = "Avatar";
 
 // ─────────────────────────────────────────────
-// MEDIA BLOCK — image / vidéo native / embed / texte
+// MEDIA BLOCK
 // ─────────────────────────────────────────────
 const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
-  const videoRef  = useRef(null);
-  const [muted,   setMuted]   = useState(true);
-  const [playing, setPlaying] = useState(false);
-  const [imgErr,  setImgErr]  = useState(false);
+  const videoRef = useRef(null);
+  const [muted,    setMuted]    = useState(true);
+  const [playing,  setPlaying]  = useState(false);
+  const [imgErr,   setImgErr]   = useState(false);
   const [showPlay, setShowPlay] = useState(false);
 
   // Autoplay quand visible
@@ -160,7 +199,7 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
     const next = !vid.muted;
     vid.muted  = next;
     vid.volume = next ? 0 : 1;
-    if (!next && vid.paused) vid.play().catch(()=>{});
+    if (!next && vid.paused) vid.play().catch(() => {});
     setMuted(next);
   }, []);
 
@@ -168,37 +207,39 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
     e.stopPropagation();
     const vid = videoRef.current;
     if (!vid) return;
-    if (vid.paused) { vid.play().catch(()=>{}); setPlaying(true); }
+    if (vid.paused) { vid.play().catch(() => {}); setPlaying(true); }
     else            { vid.pause(); setPlaying(false); }
   }, []);
 
   if (!post) return (
-    <div className="w-full flex items-center justify-center"
-      style={{height:180, background:"linear-gradient(135deg,#f97316,#ec4899)"}}>
+    <div
+      className="w-full flex items-center justify-center"
+      style={{ height: 180, background: "linear-gradient(135deg,#f97316,#ec4899)" }}
+    >
       <span className="text-white text-4xl">✨</span>
     </div>
   );
 
   // ── VIDÉO NATIVE ──
   if (post.type === "video" && post.videoUrl) return (
-    <div className="relative w-full bg-black" style={{ aspectRatio: "4/3" }}
-      onMouseEnter={()=>setShowPlay(true)} onMouseLeave={()=>setShowPlay(false)}>
+    <div
+      className="relative w-full bg-black"
+      style={{ aspectRatio: "4/3" }}
+      onMouseEnter={() => setShowPlay(true)}
+      onMouseLeave={() => setShowPlay(false)}
+    >
       <video
         ref={videoRef}
         src={post.videoUrl}
         poster={post.poster || undefined}
         className="w-full h-full object-contain"
         muted loop playsInline preload="metadata"
-        onPlay={()=>setPlaying(true)}
-        onPause={()=>setPlaying(false)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
         onClick={togglePlay}
         style={{ cursor: "pointer" }}
       />
-
-      {/* Overlay stats */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
-
-      {/* Bouton play/pause centré (hover desktop) */}
       <AnimatePresence>
         {(showPlay || !playing) && (
           <motion.button
@@ -212,24 +253,23 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
           >
             <div className="w-14 h-14 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center border border-white/30">
               {playing
-                ? <div className="flex gap-1.5"><div className="w-1.5 h-6 bg-white rounded-full"/><div className="w-1.5 h-6 bg-white rounded-full"/></div>
-                : <PlayIcon className="w-7 h-7 text-white ml-1"/>}
+                ? <div className="flex gap-1.5"><div className="w-1.5 h-6 bg-white rounded-full" /><div className="w-1.5 h-6 bg-white rounded-full" /></div>
+                : <PlayIcon className="w-7 h-7 text-white ml-1" />
+              }
             </div>
           </motion.button>
         )}
       </AnimatePresence>
-
-      {/* Bouton mute bas droite */}
-      <button onClick={toggleMute}
+      <button
+        onClick={toggleMute}
         className="absolute bottom-3 right-3 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white border border-white/20"
-        style={{ WebkitTapHighlightColor: "transparent" }}>
-        {muted ? <SpeakerXMarkIcon className="w-4 h-4"/> : <SpeakerWaveIcon className="w-4 h-4"/>}
+        style={{ WebkitTapHighlightColor: "transparent" }}
+      >
+        {muted ? <SpeakerXMarkIcon className="w-4 h-4" /> : <SpeakerWaveIcon className="w-4 h-4" />}
       </button>
-
-      {/* Stats */}
       {(post.likes > 0 || post.comments > 0) && (
         <div className="absolute bottom-3 left-3 flex items-center gap-3 pointer-events-none">
-          {post.likes > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
+          {post.likes    > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
           {post.comments > 0 && <span className="text-white text-xs font-bold drop-shadow">💬 {fmtNum(post.comments)}</span>}
         </div>
       )}
@@ -239,34 +279,38 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
   // ── IMAGE ──
   if (post.type === "image" && post.mediaUrl && !imgErr) return (
     <div className="relative w-full bg-black" style={{ aspectRatio: "4/3" }}>
-      <img src={post.mediaUrl} alt="" className="w-full h-full object-cover"
-        loading="lazy" onError={()=>setImgErr(true)}/>
-      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none"/>
+      <img
+        src={post.mediaUrl} alt=""
+        className="w-full h-full object-cover"
+        loading="lazy"
+        onError={() => setImgErr(true)}
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
       {(post.likes > 0 || post.comments > 0) && (
         <div className="absolute bottom-3 left-3 flex items-center gap-3 pointer-events-none">
-          {post.likes > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
+          {post.likes    > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
           {post.comments > 0 && <span className="text-white text-xs font-bold drop-shadow">💬 {fmtNum(post.comments)}</span>}
         </div>
       )}
     </div>
   );
 
-  // ── EMBED (YouTube/Vimeo) → thumbnail cliquable ──
+  // ── EMBED (YouTube / Vimeo) ──
   if (post.type === "embed") return (
     <div className="relative w-full flex items-center justify-center bg-black" style={{ aspectRatio: "4/3" }}>
       {post.mediaUrl && !imgErr
-        ? <img src={post.mediaUrl} alt="" className="w-full h-full object-cover" loading="lazy" onError={()=>setImgErr(true)}/>
-        : <div className="w-full h-full" style={{background:"linear-gradient(135deg,#1a1a2e,#16213e)"}}/>
+        ? <img src={post.mediaUrl} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setImgErr(true)} />
+        : <div className="w-full h-full" style={{ background: "linear-gradient(135deg,#1a1a2e,#16213e)" }} />
       }
-      <div className="absolute inset-0 bg-black/40"/>
+      <div className="absolute inset-0 bg-black/40" />
       <div className="absolute inset-0 flex items-center justify-center">
         <div className="w-14 h-14 rounded-full bg-red-600/90 flex items-center justify-center shadow-xl">
-          <PlayIcon className="w-7 h-7 text-white ml-1"/>
+          <PlayIcon className="w-7 h-7 text-white ml-1" />
         </div>
       </div>
       {(post.likes > 0 || post.comments > 0) && (
         <div className="absolute bottom-3 left-3 flex items-center gap-3 pointer-events-none">
-          {post.likes > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
+          {post.likes    > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
           {post.comments > 0 && <span className="text-white text-xs font-bold drop-shadow">💬 {fmtNum(post.comments)}</span>}
         </div>
       )}
@@ -275,12 +319,18 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
 
   // ── TEXTE SEUL ──
   return (
-    <div className="relative w-full flex items-center justify-center p-6"
-      style={{minHeight:160, background: isDarkMode
-        ? "linear-gradient(135deg,#1a1a2e,#16213e)"
-        : "linear-gradient(135deg,#fff7ed,#fce7f3)"}}>
-      <p className={`text-sm leading-relaxed text-center line-clamp-6 font-medium
-        ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>{post.text}</p>
+    <div
+      className="relative w-full flex items-center justify-center p-6"
+      style={{
+        minHeight: 160,
+        background: isDarkMode
+          ? "linear-gradient(135deg,#1a1a2e,#16213e)"
+          : "linear-gradient(135deg,#fff7ed,#fce7f3)",
+      }}
+    >
+      <p className={`text-sm leading-relaxed text-center line-clamp-6 font-medium ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
+        {post.text}
+      </p>
     </div>
   );
 });
@@ -309,11 +359,15 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
     setUser(picked);
     (async () => {
       try {
-        const { data } = await axiosClient.get(`/posts/user/${picked._id}?limit=8&page=1`);
+        const { data } = await axiosClient.get(`/posts/user/${picked._id}?limit=12&page=1`);
         const posts = Array.isArray(data) ? data : (data?.posts || []);
-        setPost(pickBestPost(posts));
-      } catch { setPost(null); }
-      finally { setReady(true); }
+        // 🎲 Sélection aléatoire — tous types confondus
+        setPost(pickRandomPost(posts));
+      } catch {
+        setPost(null);
+      } finally {
+        setReady(true);
+      }
     })();
   }, [userPool, slotIndex]);
 
@@ -323,24 +377,34 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
     setFollowing(true); setLoadFollow(true);
     try {
       await axiosClient.post(`/follow/follow/${user._id}`);
-      updateUserProfile?.(currentUser._id, { following: [...(currentUser?.following||[]), user._id] });
-    } catch { setFollowing(false); }
-    finally { setLoadFollow(false); }
+      updateUserProfile?.(currentUser._id, {
+        following: [...(currentUser?.following || []), user._id],
+      });
+    } catch {
+      setFollowing(false);
+    } finally {
+      setLoadFollow(false);
+    }
   }, [loadFollow, following, user, currentUser, updateUserProfile]);
 
-  const goProfile = useCallback(() => { if (user?._id) navigate(`/profile/${user._id}`); }, [navigate, user]);
+  const goProfile  = useCallback(() => { if (user?._id) navigate(`/profile/${user._id}`); }, [navigate, user]);
   const handleHide = useCallback((e) => { e.stopPropagation(); setHidden(true); }, []);
 
   // Skeleton
   if (!ready) return (
     <div className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
       <div className="flex items-center gap-3 px-4 pt-5 pb-3">
-        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}/>
-        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>👤 Profil suggéré</span>
-        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}/>
+        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
+          👤 Profil suggéré
+        </span>
+        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
       </div>
       <div className="px-4 pb-5">
-        <div className={`w-full rounded-2xl animate-pulse ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`} style={{height:340}}/>
+        <div
+          className={`w-full rounded-2xl animate-pulse ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`}
+          style={{ height: 340 }}
+        />
       </div>
     </div>
   );
@@ -358,24 +422,28 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
       >
         {/* Titre */}
         <div className="flex items-center gap-3 px-4 pt-5 pb-3">
-          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}/>
+          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
           <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
             👤 Profil suggéré
           </span>
-          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}/>
+          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
         </div>
 
         {/* Carte */}
         <div className="px-4 pb-5">
           <div
             className={`relative w-full rounded-2xl overflow-hidden
-              ${isDarkMode ? "bg-gray-900 border border-gray-800" : "bg-white border border-gray-100"} shadow-md`}
+              ${isDarkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-100"} shadow-md`}
           >
             {/* Bouton masquer */}
-            <button onClick={handleHide}
+            <button
+              onClick={handleHide}
               className="absolute top-3 right-3 z-20 w-7 h-7 rounded-full flex items-center justify-center bg-black/50 backdrop-blur-sm text-white"
-              style={{ WebkitTapHighlightColor: "transparent" }}>
-              <XMarkIcon className="w-4 h-4"/>
+              style={{ WebkitTapHighlightColor: "transparent" }}
+            >
+              <XMarkIcon className="w-4 h-4" />
             </button>
 
             {/* Media cliquable → profil */}
@@ -387,35 +455,48 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
             <div className="p-4 flex items-center gap-3" onClick={goProfile} style={{ cursor: "pointer" }}>
               <div className={`rounded-full p-[2px] flex-shrink-0 ${user.isPremium ? "bg-gradient-to-tr from-orange-400 via-pink-500 to-purple-500" : ""}`}>
                 <div className={`rounded-full p-[2px] ${isDarkMode ? "bg-gray-900" : "bg-white"}`}>
-                  <Avatar username={user.fullName} photo={user.profilePhoto} size={44}/>
+                  <Avatar username={user.fullName} photo={user.profilePhoto} size={44} />
                 </div>
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className={`text-sm font-bold truncate ${isDarkMode ? "text-white" : "text-gray-900"}`}>{user.fullName}</span>
-                  {user.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500 flex-shrink-0"/>}
+                  <span className={`text-sm font-bold truncate ${isDarkMode ? "text-white" : "text-gray-900"}`}>
+                    {user.fullName}
+                  </span>
+                  {user.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500 flex-shrink-0" />}
                 </div>
                 <p className={`text-xs mt-0.5 truncate ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
-                  {user.bio ? user.bio.substring(0,50)+(user.bio.length>50?"…":"") : "Suggéré pour toi"}
+                  {user.bio
+                    ? user.bio.substring(0, 50) + (user.bio.length > 50 ? "…" : "")
+                    : "Suggéré pour toi"}
                 </p>
               </div>
               {/* Bouton Suivre */}
-              <button onClick={handleFollow} disabled={loadFollow}
+              <button
+                onClick={handleFollow}
+                disabled={loadFollow}
                 className={`flex-shrink-0 px-4 py-1.5 rounded-full text-xs font-bold transition-all active:scale-95
                   ${following
-                    ? isDarkMode ? "bg-gray-800 text-gray-400 border border-gray-700" : "bg-gray-100 text-gray-500 border border-gray-200"
+                    ? isDarkMode
+                      ? "bg-gray-800 text-gray-400 border border-gray-700"
+                      : "bg-gray-100 text-gray-500 border border-gray-200"
                     : "bg-gradient-to-r from-orange-500 to-pink-500 text-white shadow-sm"}`}
-                style={{ WebkitTapHighlightColor: "transparent" }}>
+                style={{ WebkitTapHighlightColor: "transparent" }}
+              >
                 {loadFollow ? "…" : following ? "✓ Suivi(e)" : "Suivre"}
               </button>
             </div>
 
             {/* Voir le profil */}
             <div className="px-4 pb-4">
-              <button onClick={goProfile}
+              <button
+                onClick={goProfile}
                 className={`w-full py-2 rounded-xl text-xs font-semibold transition-colors
-                  ${isDarkMode ? "bg-gray-800 text-gray-300 hover:bg-gray-700" : "bg-gray-50 text-gray-600 hover:bg-gray-100"}`}
-                style={{ WebkitTapHighlightColor: "transparent" }}>
+                  ${isDarkMode
+                    ? "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                    : "bg-gray-50 text-gray-600 hover:bg-gray-100"}`}
+                style={{ WebkitTapHighlightColor: "transparent" }}
+              >
                 Voir le profil →
               </button>
             </div>

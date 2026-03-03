@@ -6,6 +6,10 @@
 //    → plus de CastError backend sur DELETE/LIKE avec un ID temp_xxx
 //    → le vrai post apparaît directement après upload (pas de swap visible)
 //    → indicateur "Publication en cours..." discret pendant l'upload
+// ✅ FIX PEXELS v2 : resolveMediaUrl bloque toutes URLs videos.pexels.com
+//    (tokens expirent ~2h — cohérent avec PostsContext.jsx filterBlockedPosts)
+// ✅ FIX PIXABAY v3 : bloque toutes URLs cdn.pixabay.com/video dans mediaUrls
+//    (CORS bloqué côté navigateur — cohérent avec PostsContext.jsx filterBlockedPosts)
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -33,10 +37,21 @@ const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
+// ─────────────────────────────────────────────
+// ✅ FIX PEXELS v2 + PIXABAY v3 — EXTERNAL_URL_PATTERNS & resolveMediaUrl
+//
+// resolveMediaUrl retourne null pour :
+//   - videos.pexels.com  → tokens expirés ~2h
+//   - cdn.pixabay.com/video → CORS bloqué navigateur
+//
+// Note : ce guard est une défense en profondeur. En conditions normales,
+// ces posts sont déjà filtrés par PostsContext.filterBlockedPosts().
+// ─────────────────────────────────────────────
 const EXTERNAL_URL_PATTERNS = [
   'youtube.com', 'youtu.be', 'player.vimeo.com', 'dailymotion.com',
-  'cdn.pixabay.com', 'videos.pexels.com', 'images.pexels.com',
-  'img.youtube.com', 'i.vimeocdn.com', 'pixabay.com', 'pexels.com',
+  'cdn.pixabay.com', 'images.pexels.com',
+  'img.youtube.com', 'i.vimeocdn.com', 'pixabay.com',
+  // ⚠️ 'videos.pexels.com' et 'cdn.pixabay.com/video' gérés séparément ci-dessous
 ];
 
 const isExternalMediaUrl = (url) =>
@@ -88,19 +103,24 @@ const getCloudinaryUrl = (id, opts = {}) => {
 const resolveMediaUrl = (raw, opts = {}) => {
   if (!raw || typeof raw !== 'string') return null;
   if (raw.startsWith('data:image')) return raw;
+
+  // ✅ FIX : bloquer TOUTE URL videos.pexels.com — tokens expirés ~2h
+  if (raw.includes('videos.pexels.com')) return null;
+
+  // ✅ FIX : bloquer TOUTE URL cdn.pixabay.com/video — CORS bloqué
+  if (raw.includes('cdn.pixabay.com/video')) return null;
+
   if (isExternalMediaUrl(raw)) return raw;
   return getCloudinaryUrl(raw, opts);
 };
 
 // ─────────────────────────────────────────────
 // ✅ INDICATEUR POST EN COURS D'UPLOAD
-// Affiché à la place du post fantôme pendant l'upload
 // ─────────────────────────────────────────────
 export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount }) => (
   <div className={`w-full max-w-[630px] mx-auto px-4 py-3 flex items-center gap-3 ${
     isDarkMode ? "bg-black border-b border-white/5" : "bg-white border-b border-gray-100"
   }`}>
-    {/* Spinner */}
     <div className="w-8 h-8 flex-shrink-0">
       <svg className="animate-spin w-8 h-8 text-orange-500" viewBox="0 0 24 24" fill="none">
         <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
@@ -265,10 +285,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const vidsRef  = useRef([]);
 
   const isMockPost = mockPost || post._id?.startsWith("post_") || post.isMockPost;
-
-  // ✅ FIX : les posts optimistes (temp_) sont rendus comme indicateur, pas comme vrai post
-  // Cette vérification est aussi faite dans le wrapper PostCard mais on la double ici
-  // pour éviter tout rendu accidentel si PostCardInner est appelé directement
   const isOptimistic = !!post.isOptimistic || post._id?.startsWith("temp_");
 
   const postUser = useMemo(() => {
@@ -364,10 +380,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     if (loadingLikeRef.current) return;
     const { liked, likesCount } = stateRef.current;
     const { post, currentUser, isMockPost, isOptimistic, showToast } = postRef.current;
-
-    // ✅ FIX : bloquer le like sur un post optimiste
     if (isOptimistic) { showToast?.("Publication en cours, patientez…", "info"); return; }
-
     if (!currentUser) { showToast?.("Connectez-vous pour aimer", "info"); return; }
     loadingLikeRef.current = true;
     const nl = !liked;
@@ -411,14 +424,11 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   const handleDeletePost = useCallback(async () => {
     const { post, isMockPost, isOptimistic, onDeleted, showToast } = postRef.current;
-
-    // ✅ FIX CRITIQUE : bloquer DELETE sur post optimiste → évite le CastError backend
     if (isOptimistic || post._id?.startsWith("temp_")) {
       showToast?.("Publication en cours, patientez…", "info");
       setShowDeleteModal(false);
       return;
     }
-
     if (isMockPost) { showToast?.("Post supprimé", "success"); setShowDeleteModal(false); onDeleted?.(post._id); return; }
     setIsDeleting(true);
     try {
@@ -470,8 +480,14 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     const result = [];
     const addUrl = (raw) => {
       if (!raw || typeof raw !== 'string') return;
-      // ✅ Blob URLs (posts optimistes déjà remplacés) passent directement
       if (raw.startsWith('blob:')) { if (!seen.has(raw)) { seen.add(raw); result.push(raw); } return; }
+
+      // ✅ FIX PEXELS v2 : bloquer videos.pexels.com — tokens expirés ~2h
+      if (raw.includes('videos.pexels.com')) return;
+
+      // ✅ FIX PIXABAY v3 : bloquer cdn.pixabay.com/video — CORS bloqué navigateur
+      if (raw.includes('cdn.pixabay.com/video')) return;
+
       const url = raw.startsWith('data:image') ? raw
         : isExternalMediaUrl(raw) ? raw
         : getCloudinaryUrl(raw, { width: 1080, format: 'auto' });
@@ -552,7 +568,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
                 {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
               </button>
             )}
-            {/* ✅ FIX : corbeille cachée sur posts optimistes → évite CastError backend */}
             {isOwner && !isOptimistic && (
               <button onClick={handleOpenDelete} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
                 <TrashIcon className="w-5 h-5 text-gray-400" />
@@ -654,9 +669,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mock
   if (loading) return <SkeletonPostCard isDarkMode={isDarkMode} />;
   if (!post || !post._id) return null;
 
-  // ✅ FIX PRINCIPAL : les posts optimistes (temp_) affichent l'indicateur d'upload
-  // et NON pas un vrai PostCard → pas de CastError, pas de blob URL dans le feed,
-  // le vrai post apparaît directement une fois l'upload terminé
   if (post.isOptimistic || post._id?.startsWith("temp_")) {
     return (
       <PostUploadingIndicator
