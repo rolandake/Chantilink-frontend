@@ -1,50 +1,42 @@
 // ============================================
 // 📁 src/api/axiosClientGlobal.js
-// ✅ VERSION FINALE CORRIGÉE AVEC EXPORTS
-// ✅ Détection automatique prod/dev sans variables _PROD
+// ✅ VERSION DÉFINITIVE — sans logique isProd
+// ✅ L'URL est 100% pilotée par VITE_API_URL dans Vercel
 // 🔥 RETRY cold start Render (2s, 4s, 6s)
 // ============================================
 import axios from "axios";
 
-// ✅ Détection de l'environnement
-const isProd = import.meta.env.PROD; // true sur Vercel, false en local
+// ✅ UNE SEULE VARIABLE — définie dans Vercel pour la prod, dans .env pour le local
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
-// ✅ Base URL — en prod on force l'URL Render, sinon on lit les variables
-const API_BASE_URL = isProd
-  ? (import.meta.env.VITE_API_URL_PROD || "https://chantilink-backend.onrender.com/api")
-  : (import.meta.env.VITE_API_URL_LOCAL || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+// ✅ Backend URL (sans /api) — dérivé automatiquement
+const BACKEND_URL = API_BASE_URL.replace("/api", "");
 
-// ✅ Backend URL (sans /api)
-const BACKEND_URL_RAW = isProd
-  ? (import.meta.env.VITE_BACKEND_URL_PROD || "https://chantilink-backend.onrender.com")
-  : (import.meta.env.VITE_BACKEND_URL_LOCAL || import.meta.env.VITE_BACKEND_URL || "http://localhost:5000");
+export { BACKEND_URL };
 
-export const BACKEND_URL = BACKEND_URL_RAW;
-
-console.log("🔧 [AxiosClient] Environnement:", isProd ? "PRODUCTION" : "DÉVELOPPEMENT");
 console.log("🔧 [AxiosClient] Base URL:", API_BASE_URL);
 console.log("🔧 [AxiosClient] Backend URL:", BACKEND_URL);
 
 export const API_ENDPOINTS = {
   VIDEOS: {
-    LIST: "/videos",
-    DELETE: (id) => `/videos/${id}`,
-    LIKE: (id) => `/videos/${id}/like`,
+    LIST:    "/videos",
+    DELETE:  (id) => `/videos/${id}`,
+    LIKE:    (id) => `/videos/${id}/like`,
     COMMENT: (id) => `/videos/${id}/comment`,
-    VIEW: (id) => `/videos/${id}/view`,
+    VIEW:    (id) => `/videos/${id}/view`,
   },
   AUTH: {
-    LOGIN: "/auth/login",
+    LOGIN:    "/auth/login",
     REGISTER: "/auth/register",
-    REFRESH: "/auth/refresh",
+    REFRESH:  "/auth/refresh",
   },
 };
 
 const axiosClient = axios.create({
-  baseURL: API_BASE_URL,
-  timeout: 60000,
+  baseURL:         API_BASE_URL,
+  timeout:         60000,
   withCredentials: true,
-  headers: { "Content-Type": "application/json" },
+  headers:         { "Content-Type": "application/json" },
 });
 
 let authHandlers = null;
@@ -59,12 +51,7 @@ export const injectAuthHandlers = (handlers) => {
 // ============================================
 axiosClient.interceptors.request.use(
   async (config) => {
-    const publicRoutes = [
-      "/auth/login",
-      "/auth/register",
-      "/auth/refresh",
-      "/health",
-    ];
+    const publicRoutes = ["/auth/login", "/auth/register", "/auth/refresh", "/health"];
     const isPublic = publicRoutes.some((r) => config.url?.includes(r));
 
     if (!isPublic) {
@@ -127,9 +114,7 @@ axiosClient.interceptors.response.use(
 
       if (originalRequest._retryCount <= 3) {
         const delay = originalRequest._retryCount * 2000; // 2s, 4s, 6s
-        console.warn(
-          `🔁 [AxiosClient] Retry ${originalRequest._retryCount}/3 dans ${delay / 1000}s...`
-        );
+        console.warn(`🔁 [AxiosClient] Retry ${originalRequest._retryCount}/3 dans ${delay / 1000}s...`);
         await new Promise((res) => setTimeout(res, delay));
         return axiosClient(originalRequest);
       }
@@ -149,10 +134,7 @@ axiosClient.interceptors.response.use(
 
     // ── 404 ─────────────────────────────────────────────────────────
     if (error.response?.status === 404) {
-      console.error(
-        "❌ [AxiosClient] 404 - Route introuvable:",
-        originalRequest?.url
-      );
+      console.error("❌ [AxiosClient] 404 - Route introuvable:", originalRequest?.url);
     }
 
     return Promise.reject(error);
@@ -170,7 +152,7 @@ export const apiRequest = async (method, url, data = null, config = {}) => {
     console.error(`❌ [apiRequest] ${method.toUpperCase()} ${url}:`, error);
     return {
       success: false,
-      error: error.response?.data?.message || error.message,
+      error:  error.response?.data?.message || error.message,
       status: error.response?.status,
     };
   }

@@ -4,7 +4,7 @@
 // ✅ Refresh token longue durée (90j) dans cookie httpOnly — géré par le navigateur
 // ✅ "Se souvenir de moi" → 90 jours | sinon → session navigateur
 // ✅ Même appareil = connecté automatiquement | Nouvel appareil = connexion requise
-// 🔥 DEBUG PRODUCTION : logs détaillés pour diagnostiquer les erreurs de connexion
+// 🔥 FIX PROD : API_URL utilise isProd pour ne jamais pointer localhost en production
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -35,23 +35,37 @@ export const useAuth = () => {
   return context;
 };
 
-const API_URL    = import.meta.env.VITE_API_URL    || "http://localhost:5000/api";
-const SOCKET_URL = API_URL.replace("/api", "");
+// ============================================
+// 🔥 FIX CRITIQUE : détection prod/dev identique à axiosClientGlobal.js
+// Ne jamais lire VITE_API_URL directement — il vaut localhost dans le .env local
+// ============================================
+const isProd = import.meta.env.PROD;
+
+const API_URL = isProd
+  ? (import.meta.env.VITE_API_URL_PROD     || "https://chantilink-backend.onrender.com/api")
+  : (import.meta.env.VITE_API_URL_LOCAL    || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+
+const BACKEND_URL = API_URL.replace("/api", "");
+const SOCKET_URL  = BACKEND_URL;
 
 // ============================================
 // 🔥 DEBUG HELPER — log structuré visible en prod
 // ============================================
-const isProd = import.meta.env.PROD;
 const debugLog = (level, context, message, data = null) => {
-  const prefix = `[AuthContext:${context}]`;
-  const timestamp = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
-  const parts = [`${timestamp} ${prefix} ${message}`];
+  const prefix    = `[AuthContext:${context}]`;
+  const timestamp = new Date().toISOString().slice(11, 23);
+  const parts     = [`${timestamp} ${prefix} ${message}`];
   if (data !== null) parts.push(data);
 
-  if (level === 'error')  console.error(...parts);
+  if (level === 'error')     console.error(...parts);
   else if (level === 'warn') console.warn(...parts);
-  else console.log(...parts);
+  else                       console.log(...parts);
 };
+
+// Log de démarrage pour confirmer la bonne URL en prod
+console.log(`🔧 [AuthContext] Environnement: ${isProd ? 'PRODUCTION' : 'DÉVELOPPEMENT'}`);
+console.log(`🔧 [AuthContext] API_URL: ${API_URL}`);
+console.log(`🔧 [AuthContext] BACKEND_URL: ${BACKEND_URL}`);
 
 // Résume une erreur Axios en objet lisible
 const summarizeAxiosError = (err) => ({
@@ -71,11 +85,11 @@ const summarizeAxiosError = (err) => ({
 const CONFIG = {
   TOKEN_REFRESH_MARGIN_MS:  3 * 60 * 1000,
   AUTO_REFRESH_INTERVAL_MS: 60 * 1000,
-  MAX_NOTIFICATIONS: 50,
-  MAX_LOGIN_ATTEMPTS: 5,
-  LOCKOUT_DURATION_MS: 15 * 60 * 1000,
-  MAX_REFRESH_RETRIES: 3,
-  REFRESH_COOLDOWN_MS: 5000,
+  MAX_NOTIFICATIONS:        50,
+  MAX_LOGIN_ATTEMPTS:       5,
+  LOCKOUT_DURATION_MS:      15 * 60 * 1000,
+  MAX_REFRESH_RETRIES:      3,
+  REFRESH_COOLDOWN_MS:      5000,
 };
 
 const STORAGE_KEYS = {
@@ -93,8 +107,11 @@ const secureGetItem = (key) => {
 };
 const secureRemoveItem = (key) => { try { localStorage.removeItem(key); } catch {} };
 
+// ============================================
+// 🔥 authAxios utilise maintenant BACKEND_URL corrigé
+// ============================================
 const authAxios = axios.create({
-  baseURL:         API_URL.replace("/api", ""),
+  baseURL:         BACKEND_URL,
   timeout:         30000,
   withCredentials: true,
   headers:         { "Content-Type": "application/json" },
@@ -133,7 +150,7 @@ export function AuthProvider({ children }) {
   const trackLoginAttempt = useCallback((email) => {
     const key = email.toLowerCase();
     setLoginAttempts((prev) => {
-      const attempts = (prev[key]?.count || 0) + 1;
+      const attempts     = (prev[key]?.count || 0) + 1;
       const lockoutUntil = attempts >= CONFIG.MAX_LOGIN_ATTEMPTS
         ? Date.now() + CONFIG.LOCKOUT_DURATION_MS : null;
       const updated = { ...prev, [key]: { count: attempts, lockoutUntil } };
@@ -223,13 +240,14 @@ export function AuthProvider({ children }) {
 
     isRefreshing.current = true;
     debugLog('log', 'Refresh', `Tentative #${retryCount + 1}`, {
-      url: `${authAxios.defaults.baseURL}/api/auth/refresh-token`,
+      url:             `${authAxios.defaults.baseURL}/api/auth/refresh-token`,
       withCredentials: true,
     });
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
-      if (!res.data.success || !res.data.token) throw new Error(res.data?.message || "Réponse invalide");
+      if (!res.data.success || !res.data.token)
+        throw new Error(res.data?.message || "Réponse invalide");
 
       const { token: newToken, expiresIn, user: updatedUser } = res.data;
       const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
@@ -279,29 +297,29 @@ export function AuthProvider({ children }) {
   }, [token, tokenExpiresAt, refreshAccessToken]);
 
   // ============================================
-  // 🔥 AUTO-LOGIN — DEBUG COMPLET
+  // AUTO-LOGIN
   // ============================================
   const loadSession = useCallback(async () => {
     const storedAttempts = secureGetItem(STORAGE_KEYS.LOGIN_ATTEMPTS) || {};
     setLoginAttempts(storedAttempts);
 
     debugLog('log', 'AutoLogin', '🔍 Démarrage tentative auto-login', {
-      apiUrl:      API_URL,
-      backendBase: authAxios.defaults.baseURL,
-      refreshUrl:  `${authAxios.defaults.baseURL}/api/auth/refresh-token`,
-      online:      navigator.onLine,
+      apiUrl:         API_URL,
+      backendBase:    authAxios.defaults.baseURL,
+      refreshUrl:     `${authAxios.defaults.baseURL}/api/auth/refresh-token`,
+      online:         navigator.onLine,
       cookiesEnabled: navigator.cookieEnabled,
-      hasCookies:  document.cookie.length > 0,
-      env:         import.meta.env.MODE,
+      hasCookies:     document.cookie.length > 0,
+      env:            import.meta.env.MODE,
     });
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
 
       debugLog('log', 'AutoLogin', '✅ Réponse reçue', {
-        status:  res.status,
-        success: res.data?.success,
-        hasToken: !!res.data?.token,
+        status:    res.status,
+        success:   res.data?.success,
+        hasToken:  !!res.data?.token,
         userEmail: res.data?.user?.email,
       });
 
@@ -317,26 +335,21 @@ export function AuthProvider({ children }) {
       }
     } catch (err) {
       const summary = summarizeAxiosError(err);
-      
-      // 401 = normal (pas de cookie) — pas une erreur critique
+
       if (err.response?.status === 401) {
         debugLog('log', 'AutoLogin', 'ℹ️ Pas de session (401 — cookie absent ou expiré)', {
           status: 401,
-          data: err.response?.data,
+          data:   err.response?.data,
         });
       } else {
-        // Tout autre erreur = problème réel à diagnostiquer
         debugLog('error', 'AutoLogin', '❌ Erreur inattendue — diagnostic complet', {
           ...summary,
-          // Infos réseau supplémentaires
-          online:         navigator.onLine,
-          cookieEnabled:  navigator.cookieEnabled,
-          // Headers de réponse si disponibles
+          online:          navigator.onLine,
+          cookieEnabled:   navigator.cookieEnabled,
           responseHeaders: err.response?.headers ? {
             'access-control-allow-origin': err.response.headers['access-control-allow-origin'],
             'content-type':                err.response.headers['content-type'],
           } : null,
-          // Aide au diagnostic
           diagnostic: summary.isNetwork
             ? '🔴 ERREUR RÉSEAU — vérifier CORS, backend endormi (Render cold start), ou URL incorrecte'
             : summary.status === 403
@@ -347,7 +360,6 @@ export function AuthProvider({ children }) {
         });
       }
 
-      // Fallback offline
       if (!navigator.onLine) {
         const idbUser = await idbGet("users", "user_active").catch(() => null);
         if (idbUser?._id) {
@@ -363,17 +375,17 @@ export function AuthProvider({ children }) {
   }, [syncUserToIDB]);
 
   // ============================================
-  // 🔥 CONNEXION — DEBUG COMPLET
+  // CONNEXION
   // ============================================
   const login = useCallback(async (email, password, rememberMe = false) => {
     const safeEmail = (email || "").toString().trim().toLowerCase();
     setLoading(true);
 
     debugLog('log', 'Login', '🔑 Tentative connexion', {
-      email:      safeEmail,
+      email:     safeEmail,
       rememberMe,
-      url:        `${authAxios.defaults.baseURL}/api/auth/login`,
-      withCreds:  authAxios.defaults.withCredentials,
+      url:       `${authAxios.defaults.baseURL}/api/auth/login`,
+      withCreds: authAxios.defaults.withCredentials,
     });
 
     try {
@@ -382,9 +394,9 @@ export function AuthProvider({ children }) {
       });
 
       debugLog('log', 'Login', '✅ Réponse login', {
-        status:   res.status,
-        success:  res.data?.success,
-        hasToken: !!res.data?.token,
+        status:    res.status,
+        success:   res.data?.success,
+        hasToken:  !!res.data?.token,
         setCookie: !!res.headers?.['set-cookie'],
       });
 
@@ -482,8 +494,9 @@ export function AuthProvider({ children }) {
     if (!currentToken) return null;
     try {
       const res = await axios.get(`${API_URL}/admin/verify`, {
-        headers: { Authorization: `Bearer ${currentToken}` },
-        withCredentials: true, timeout: 10000,
+        headers:         { Authorization: `Bearer ${currentToken}` },
+        withCredentials: true,
+        timeout:         10000,
       });
       if (res.status === 200 && (res.data.user?.role === "admin" || res.data.user?.role === "superadmin")) {
         return currentToken;
@@ -503,18 +516,18 @@ export function AuthProvider({ children }) {
     debugLog('log', 'Socket', `Connexion à ${SOCKET_URL}`);
 
     const newSocket = io(SOCKET_URL, {
-      auth: { token },
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 10000,
+      auth:                  { token },
+      transports:            ["websocket", "polling"],
+      reconnection:          true,
+      reconnectionAttempts:  5,
+      reconnectionDelay:     1000,
+      reconnectionDelayMax:  5000,
+      timeout:               10000,
     });
 
-    newSocket.on("connect", () => debugLog('log', 'Socket', `✅ Connecté: ${newSocket.id}`));
+    newSocket.on("connect",       ()    => debugLog('log',  'Socket', `✅ Connecté: ${newSocket.id}`));
     newSocket.on("connect_error", (err) => debugLog('warn', 'Socket', `⚠️ Erreur: ${err.message}`));
-    newSocket.on("disconnect", (reason) => {
+    newSocket.on("disconnect",    (reason) => {
       if (reason !== "io client disconnect")
         debugLog('log', 'Socket', `🔌 Déconnecté: ${reason}`);
     });
