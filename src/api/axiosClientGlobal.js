@@ -1,42 +1,43 @@
 // ============================================
 // 📁 src/api/axiosClientGlobal.js
 // ✅ VERSION FINALE CORRIGÉE AVEC EXPORTS
-// ✅ Adapté aux noms de variables Vercel exacts
+// ✅ Détection automatique prod/dev sans variables _PROD
 // 🔥 RETRY cold start Render (2s, 4s, 6s)
 // ============================================
 import axios from "axios";
 
-// ✅ Base URL — lit toutes les variantes possibles dans l'ordre de priorité
-const API_BASE_URL = 
-  import.meta.env.VITE_API_URL ||
-  import.meta.env.VITE_API_URL_PROD ||
-  'http://localhost:5000/api';
+// ✅ Détection de l'environnement
+const isProd = import.meta.env.PROD; // true sur Vercel, false en local
 
-// ✅ Backend URL — lit toutes les variantes possibles
-const BACKEND_URL_RAW =
-  import.meta.env.VITE_BACKEND_URL ||
-  import.meta.env.URL_BACKEND_VITE ||
-  import.meta.env.VITE_BACKEND_URL_LOCAL ||
-  API_BASE_URL.replace('/api', '');
+// ✅ Base URL — en prod on force l'URL Render, sinon on lit les variables
+const API_BASE_URL = isProd
+  ? (import.meta.env.VITE_API_URL_PROD || "https://chantilink-backend.onrender.com/api")
+  : (import.meta.env.VITE_API_URL_LOCAL || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+
+// ✅ Backend URL (sans /api)
+const BACKEND_URL_RAW = isProd
+  ? (import.meta.env.VITE_BACKEND_URL_PROD || "https://chantilink-backend.onrender.com")
+  : (import.meta.env.VITE_BACKEND_URL_LOCAL || import.meta.env.VITE_BACKEND_URL || "http://localhost:5000");
 
 export const BACKEND_URL = BACKEND_URL_RAW;
 
-console.log('🔧 [AxiosClient] Base URL:', API_BASE_URL);
-console.log('🔧 [AxiosClient] Backend URL:', BACKEND_URL);
+console.log("🔧 [AxiosClient] Environnement:", isProd ? "PRODUCTION" : "DÉVELOPPEMENT");
+console.log("🔧 [AxiosClient] Base URL:", API_BASE_URL);
+console.log("🔧 [AxiosClient] Backend URL:", BACKEND_URL);
 
 export const API_ENDPOINTS = {
   VIDEOS: {
-    LIST: '/videos',
+    LIST: "/videos",
     DELETE: (id) => `/videos/${id}`,
     LIKE: (id) => `/videos/${id}/like`,
     COMMENT: (id) => `/videos/${id}/comment`,
     VIEW: (id) => `/videos/${id}/view`,
   },
   AUTH: {
-    LOGIN: '/auth/login',
-    REGISTER: '/auth/register',
-    REFRESH: '/auth/refresh',
-  }
+    LOGIN: "/auth/login",
+    REGISTER: "/auth/register",
+    REFRESH: "/auth/refresh",
+  },
 };
 
 const axiosClient = axios.create({
@@ -53,10 +54,19 @@ export const injectAuthHandlers = (handlers) => {
   console.log("✅ [AxiosClient] Handlers Auth injectés");
 };
 
+// ============================================
+// INTERCEPTEUR REQUEST — ajout du token Bearer
+// ============================================
 axiosClient.interceptors.request.use(
   async (config) => {
-    const publicRoutes = ['/auth/login', '/auth/register', '/auth/refresh', '/health'];
-    const isPublic = publicRoutes.some(r => config.url?.includes(r));
+    const publicRoutes = [
+      "/auth/login",
+      "/auth/register",
+      "/auth/refresh",
+      "/health",
+    ];
+    const isPublic = publicRoutes.some((r) => config.url?.includes(r));
+
     if (!isPublic) {
       if (authHandlers?.getToken) {
         const token = await authHandlers.getToken();
@@ -66,24 +76,31 @@ axiosClient.interceptors.request.use(
         if (token) config.headers.Authorization = `Bearer ${token}`;
       }
     }
+
     return config;
   },
   (error) => Promise.reject(error)
 );
 
+// ============================================
+// INTERCEPTEUR RESPONSE — gestion 401, réseau, retry
+// ============================================
 axiosClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
 
+    // ── 401 : tentative de refresh ──────────────────────────────────
     if (error.response?.status === 401 && !originalRequest._retry) {
-      if (originalRequest.url?.includes('/auth/refresh')) {
+      if (originalRequest.url?.includes("/auth/refresh")) {
         console.error("❌ [AxiosClient] Refresh token invalide - Déconnexion");
         if (authHandlers?.logout) await authHandlers.logout();
         return Promise.reject(error);
       }
+
       console.warn("⚠️ [AxiosClient] 401 - Tentative de refresh...");
       originalRequest._retry = true;
+
       try {
         if (authHandlers?.refreshTokenForUser) {
           const success = await authHandlers.refreshTokenForUser();
@@ -100,17 +117,20 @@ axiosClient.interceptors.response.use(
       }
     }
 
+    // ── Erreur réseau / timeout : retry cold start Render ───────────
     if (error.code === "ECONNABORTED" || error.code === "ERR_NETWORK") {
       console.error("❌ [AxiosClient] Erreur réseau ou timeout");
       console.error("🔍 [AxiosClient] URL tentée:", originalRequest?.url);
       console.error("🔍 [AxiosClient] Base URL:", API_BASE_URL);
 
-      // 🔥 RETRY cold start Render — max 3 tentatives avec délai croissant
       originalRequest._retryCount = (originalRequest._retryCount || 0) + 1;
+
       if (originalRequest._retryCount <= 3) {
         const delay = originalRequest._retryCount * 2000; // 2s, 4s, 6s
-        console.warn(`🔁 [AxiosClient] Retry ${originalRequest._retryCount}/3 dans ${delay / 1000}s...`);
-        await new Promise(res => setTimeout(res, delay));
+        console.warn(
+          `🔁 [AxiosClient] Retry ${originalRequest._retryCount}/3 dans ${delay / 1000}s...`
+        );
+        await new Promise((res) => setTimeout(res, delay));
         return axiosClient(originalRequest);
       }
 
@@ -119,6 +139,7 @@ axiosClient.interceptors.response.use(
       }
     }
 
+    // ── Erreur 500+ ─────────────────────────────────────────────────
     if (error.response?.status >= 500) {
       console.error("❌ [AxiosClient] Erreur Serveur", error.response.status);
       if (authHandlers?.notify) {
@@ -126,24 +147,31 @@ axiosClient.interceptors.response.use(
       }
     }
 
+    // ── 404 ─────────────────────────────────────────────────────────
     if (error.response?.status === 404) {
-      console.error("❌ [AxiosClient] 404 - Route introuvable:", originalRequest?.url);
+      console.error(
+        "❌ [AxiosClient] 404 - Route introuvable:",
+        originalRequest?.url
+      );
     }
 
     return Promise.reject(error);
   }
 );
 
+// ============================================
+// HELPER apiRequest
+// ============================================
 export const apiRequest = async (method, url, data = null, config = {}) => {
   try {
     const response = await axiosClient({ method, url, data, ...config });
     return { success: true, data: response.data };
   } catch (error) {
     console.error(`❌ [apiRequest] ${method.toUpperCase()} ${url}:`, error);
-    return { 
-      success: false, 
+    return {
+      success: false,
       error: error.response?.data?.message || error.message,
-      status: error.response?.status
+      status: error.response?.status,
     };
   }
 };
