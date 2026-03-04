@@ -1,8 +1,25 @@
 // 📁 src/pages/Home/Home.jsx
 // 🏆 ZERO-JANK SCROLL — niveau Instagram
 //
-// ✅ FIX PEXELS v2 : hasStale bloque TOUTE URL videos.pexels.com (pas seulement un pattern)
-//    Cohérent avec PostsContext.jsx filterPexelsPosts
+// 🔥 FIX PEXELS URLs EXPIRÉES — 3 niveaux de protection :
+//
+//   NIVEAU 1 — isValidPost() : filtre AVANT affichage
+//     → posts avec URLs Pexels signées (video-files/) → retirés du pool
+//     → posts sans media valide → retirés
+//
+//   NIVEAU 2 — usePexelsFreshUrl() : résout les URLs expirées à la volée
+//     → PostCard demande une URL fraîche au backend via /api/videos/refresh-url
+//     → Cache sessionStorage 80min pour éviter re-fetch
+//
+//   NIVEAU 3 — PexelsMediaWrapper : fallback visuel si URL morte
+//     → onError sur <video>/<img> → retry avec URL fraîche
+//     → si retry échoue → masquer le media proprement (pas de broken image)
+//
+// 🎨 FEED PREMIUM :
+//   → Skeleton shimmer animé (dégradé orange/rose)
+//   → Wave animation staggerée à l'entrée des posts
+//   → Pull-to-refresh avec indicateur progressif
+//   → Virtual scroll → DOM léger même avec 300+ posts
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -72,6 +89,69 @@ const StoryViewer              = lazy(() => import("./StoryViewer"));
 const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 🔥 PEXELS URL DETECTION & RESOLUTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Cache sessionStorage 80min pour URLs Pexels fraîches */
+const PEXELS_CACHE_TTL    = 80 * 60 * 1000;
+const PEXELS_CACHE_PREFIX = "pex_";
+
+const pexCacheRead = (id) => {
+  try {
+    const raw = sessionStorage.getItem(PEXELS_CACHE_PREFIX + id);
+    if (!raw) return null;
+    const { url, exp } = JSON.parse(raw);
+    if (Date.now() > exp) { sessionStorage.removeItem(PEXELS_CACHE_PREFIX + id); return null; }
+    return url;
+  } catch { return null; }
+};
+const pexCacheWrite = (id, url) => {
+  try { sessionStorage.setItem(PEXELS_CACHE_PREFIX + id, JSON.stringify({ url, exp: Date.now() + PEXELS_CACHE_TTL })); }
+  catch {}
+};
+
+/**
+ * ✅ NIVEAU 1 — Détecter une URL Pexels signée (expirable)
+ * Les URLs signées ont TOUJOURS la forme :
+ *   https://videos.pexels.com/video-files/<ID>/<filename>.mp4
+ * Elles expirent ~2h après génération.
+ */
+const isPexelsSigned = (url) =>
+  typeof url === "string" && url.includes("videos.pexels.com/video-files/");
+
+/** Extraire l'ID numérique d'une URL ou d'un externalId Pexels */
+const extractPexId = (src) => {
+  if (!src) return null;
+  const byId  = String(src).match(/^pexels_(\d+)$/);
+  if (byId) return byId[1];
+  const byUrl = String(src).match(/video-files\/(\d+)\//);
+  return byUrl ? byUrl[1] : null;
+};
+
+/** Extraire l'ID Pexels depuis un post (externalId ou videoUrl) */
+const getPexIdFromPost = (post) =>
+  extractPexId(post?.externalId) ||
+  extractPexId(post?.videoUrl)   ||
+  extractPexId(post?.embedUrl)   ||
+  null;
+
+/**
+ * ✅ NIVEAU 2 — Résoudre une URL fraîche via le backend
+ * Utilise le cache sessionStorage pour éviter N appels réseau.
+ */
+const resolvePexUrl = async (videoId) => {
+  if (!videoId) return null;
+  const cached = pexCacheRead(videoId);
+  if (cached) return cached;
+  try {
+    const res = await axiosClient.get(`/videos/refresh-url?id=${videoId}`);
+    const url = res.data?.url || res.data?.videoUrl || null;
+    if (url) pexCacheWrite(videoId, url);
+    return url;
+  } catch { return null; }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LCP PRELOAD
 // ─────────────────────────────────────────────────────────────────────────────
 const _preloaded = new Set();
@@ -96,33 +176,23 @@ const videoPoster = (u) => {
       const pid = u
         .substring(i + 8)
         .split("/")
-        .filter(
-          (s) =>
-            !s.includes(",") &&
-            !(/^[a-z]+_[a-z]/.test(s) && !s.includes("."))
-        )
+        .filter((s) => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes(".")))
         .join("/")
         .replace(/\.(mp4|webm|mov|avi)$/i, "");
-      return pid
-        ? `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${pid}.jpg`
-        : null;
+      return pid ? `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${pid}.jpg` : null;
     }
     return `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${u
       .replace(/^\/+/, "")
       .replace(/\.(mp4|webm|mov|avi)$/i, "")}.jpg`;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 };
 const getLCPUrl = (posts) => {
   const p = posts?.[0];
   if (!p) return null;
   const m = p.images?.[0] || p.media?.[0];
   const u = m?.url || m;
-  if (!u) return null;
-  return isVideoUrl(u)
-    ? { url: videoPoster(u), type: "image" }
-    : { url: u, type: "image" };
+  if (!u || isPexelsSigned(u)) return null; // ✅ Ne pas preload une URL Pexels expirée
+  return isVideoUrl(u) ? { url: videoPoster(u), type: "image" } : { url: u, type: "image" };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,11 +202,8 @@ const seededShuffle = (arr, seed) => {
   const r = [...arr];
   let s   = seed >>> 0;
   for (let i = r.length - 1; i > 0; i--) {
-    s =
-      (Math.imul(s ^ (s >>> 15), s | 1) ^
-        (s + Math.imul(s ^ (s >>> 7), s | 61))) >>>
-      0;
-    const j    = s % (i + 1);
+    s = (Math.imul(s ^ (s >>> 15), s | 1) ^ (s + Math.imul(s ^ (s >>> 7), s | 61))) >>> 0;
+    const j      = s % (i + 1);
     [r[i], r[j]] = [r[j], r[i]];
   }
   return r;
@@ -158,18 +225,12 @@ const mixPostsByBlocks = (real, bots) => {
       const cr = ri < real.length;
       if (!cb && !cr) break;
       if (cb && cr) {
-        if (bc < Math.floor((block.length * MIX_MAX_BOTS) / MIX_BLOCK)) {
-          block.push({ ...bots[bi++], _isBot: true });
-          bc++;
-        } else {
-          block.push(real[ri++]);
-        }
-      } else if (cr) {
-        block.push(real[ri++]);
-      } else {
-        block.push({ ...bots[bi++], _isBot: true });
-        bc++;
-      }
+        block.push(bc < Math.floor((block.length * MIX_MAX_BOTS) / MIX_BLOCK)
+          ? { ...bots[bi++], _isBot: true } && (bc++, block[block.length - 1])
+          : real[ri++]
+        );
+      } else if (cr) { block.push(real[ri++]); }
+        else        { block.push({ ...bots[bi++], _isBot: true }); bc++; }
     }
     const [head, ...tail] = block;
     result.push(head, ...tail.sort(() => Math.random() - 0.5));
@@ -178,16 +239,12 @@ const mixPostsByBlocks = (real, bots) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX PEXELS v2 — hasStale
+// ✅ NIVEAU 1 — hasStale : détecte TOUTE URL media expirable
 //
-// AVANT : RE_PEX = regex spécifique → laissait passer certaines URLs Pexels
-//   /videos\.pexels\.com\/video-files\/\d+\/\d+-\w+_\d+_\d+/i
-//
-// APRÈS : bloque TOUTE URL contenant "videos.pexels.com"
-//   Cohérent avec PostsContext.jsx filterPexelsPosts
-//
-// Pixabay : regex conservée car les URLs Pixabay ont un format plus stable
-//   et l'expiration est moins fréquente.
+// Règles :
+//  • videos.pexels.com/video-files/ → TOUJOURS expirable (URLs signées)
+//  • cdn.pixabay.com/video/...      → expirable si pattern regex
+//  • images.pexels.com/...          → SAFE (URLs statiques, pas de token)
 // ─────────────────────────────────────────────────────────────────────────────
 const RE_PIX = /cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\/\d+-\d+_large\.mp4/i;
 
@@ -203,10 +260,8 @@ const hasStale = (post) => {
   return srcs.some((m) => {
     const u = typeof m === "string" ? m : m?.url;
     if (!u) return false;
-    // ✅ FIX : bloquer TOUTE URL videos.pexels.com
-    if (u.includes("videos.pexels.com")) return true;
-    // Pixabay : regex conservée (format plus stable)
-    if (RE_PIX.test(u)) return true;
+    if (isPexelsSigned(u)) return true; // ✅ Pexels signé → TOUJOURS stale
+    if (RE_PIX.test(u))   return true; // Pixabay pattern
     return false;
   });
 };
@@ -232,21 +287,12 @@ const computeBatch = (prev, pool, loopRef) => {
   const nextIdx    = prev.length - cycleStart;
   const abs        = prev.length;
   if (nextIdx < pool.length) {
-    const batch = pool
-      .slice(nextIdx, nextIdx + PAGE_SIZE)
-      .map((p, i) => ({
-        ...p,
-        _displayKey: `p${abs + i}_l${loopRef.current}_${p._id}`,
-      }));
+    const batch = pool.slice(nextIdx, nextIdx + PAGE_SIZE).map((p, i) => ({ ...p, _displayKey: `p${abs + i}_l${loopRef.current}_${p._id}` }));
     return { posts: [...prev, ...batch], boundary: null };
   }
   loopRef.current++;
   const ln    = loopRef.current;
-  const batch = pool.slice(0, PAGE_SIZE).map((p, i) => ({
-    ...p,
-    _displayKey: `p${abs + i}_l${ln}_${p._id}`,
-    _loopStart: i === 0,
-  }));
+  const batch = pool.slice(0, PAGE_SIZE).map((p, i) => ({ ...p, _displayKey: `p${abs + i}_l${ln}_${p._id}`, _loopStart: i === 0 }));
   let next = [...prev, ...batch];
   if (next.length > MAX_DOM_POSTS) next = next.slice(next.length - MAX_DOM_POSTS);
   return { posts: next, boundary: prev.length };
@@ -262,34 +308,20 @@ const useVirtualWindow = (scrollContainerRef, postH, overscan) => {
   useEffect(() => {
     const container = scrollContainerRef?.current;
     if (!container) return;
-
     const compute = () => {
       rafRef.current = null;
       const scrollTop  = container.scrollTop;
       const viewportH  = container.clientHeight || window.innerHeight || 900;
       const overscanPx = overscan * postH;
-      const winTop     = Math.max(0, scrollTop - overscanPx);
-      const winBottom  = scrollTop + viewportH + overscanPx;
-      const start      = Math.max(0, Math.floor(winTop / postH));
-      const end        = Math.ceil(winBottom / postH);
-      setWin(prev =>
-        prev.start === start && prev.end === end ? prev : { start, end }
-      );
+      const start      = Math.max(0, Math.floor(Math.max(0, scrollTop - overscanPx) / postH));
+      const end        = Math.ceil((scrollTop + viewportH + overscanPx) / postH);
+      setWin(prev => prev.start === start && prev.end === end ? prev : { start, end });
     };
-
-    const onScroll = () => {
-      if (rafRef.current) return;
-      rafRef.current = requestAnimationFrame(compute);
-    };
-
+    const onScroll = () => { if (rafRef.current) return; rafRef.current = requestAnimationFrame(compute); };
     compute();
     container.addEventListener("scroll", onScroll, { passive: true });
-
     let ro;
-    if (typeof ResizeObserver !== "undefined") {
-      ro = new ResizeObserver(compute);
-      ro.observe(container);
-    }
+    if (typeof ResizeObserver !== "undefined") { ro = new ResizeObserver(compute); ro.observe(container); }
     return () => {
       container.removeEventListener("scroll", onScroll);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -301,28 +333,35 @@ const useVirtualWindow = (scrollContainerRef, postH, overscan) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SKELETON
+// 🎨 SKELETON PREMIUM — shimmer orange/rose
 // ─────────────────────────────────────────────────────────────────────────────
 const SkeletonPosts = memo(({ count = 3, isDarkMode }) => (
   <div>
+    <style>{`
+      @keyframes sk-shimmer {
+        0%   { background-position: -400px 0; }
+        100% { background-position:  400px 0; }
+      }
+      .sk-shimmer {
+        background: ${isDarkMode
+          ? "linear-gradient(90deg,#1f1f1f 25%,#2d2d2d 50%,#1f1f1f 75%)"
+          : "linear-gradient(90deg,#f0f0f0 25%,#fde8d8 50%,#f0f0f0 75%)"};
+        background-size: 800px 100%;
+        animation: sk-shimmer 1.4s ease-in-out infinite;
+      }
+    `}</style>
     {Array.from({ length: count }).map((_, i) => (
-      <div
-        key={i}
-        className={isDarkMode ? "bg-black" : "bg-white"}
-        style={{ marginBottom: 1 }}
-      >
+      <div key={i} className={isDarkMode ? "bg-black" : "bg-white"} style={{ marginBottom: 1 }}>
         <div className="p-3 flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-full flex-shrink-0 animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
+          <div className="sk-shimmer w-10 h-10 rounded-full flex-shrink-0" />
           <div className="flex-1 space-y-2">
-            <div className={`h-4 rounded w-32 animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
-            <div className={`h-3 rounded w-20 animate-pulse ${isDarkMode ? "bg-gray-700" : "bg-gray-100"}`} />
+            <div className="sk-shimmer h-4 rounded w-32" />
+            <div className="sk-shimmer h-3 rounded w-20" />
           </div>
         </div>
-        <div className={`w-full aspect-square animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
+        <div className="sk-shimmer w-full" style={{ aspectRatio: "1/1" }} />
         <div className="flex items-center gap-4 p-3">
-          {[0, 1, 2].map((j) => (
-            <div key={j} className={`w-6 h-6 rounded animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
-          ))}
+          {[0, 1, 2].map((j) => <div key={j} className="sk-shimmer w-6 h-6 rounded" />)}
         </div>
       </div>
     ))}
@@ -364,90 +403,75 @@ NewPostsBanner.displayName = "NewPostsBanner";
 const PTR_THRESHOLD = 100;
 const CR = 16, CC = 2 * Math.PI * CR;
 
-const PullToRefreshIndicator = memo(
-  ({ isPulling, pullDistance, isRefreshing, isDarkMode }) => {
-    const progress = Math.min(pullDistance / PTR_THRESHOLD, 1);
-    const opacity  = Math.min(pullDistance / 50, 1);
-    return (
-      <AnimatePresence>
-        {(pullDistance > 15 || isRefreshing) && (
-          <motion.div
-            initial={{ opacity: 0, y: -10, scale: 0.75 }}
-            animate={{
-              opacity: isRefreshing ? 1 : opacity,
-              y: 0,
-              scale: isPulling || isRefreshing ? 1.08 : 1,
+const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isRefreshing, isDarkMode }) => {
+  const progress = Math.min(pullDistance / PTR_THRESHOLD, 1);
+  const opacity  = Math.min(pullDistance / 50, 1);
+  return (
+    <AnimatePresence>
+      {(pullDistance > 15 || isRefreshing) && (
+        <motion.div
+          initial={{ opacity: 0, y: -10, scale: 0.75 }}
+          animate={{ opacity: isRefreshing ? 1 : opacity, y: 0, scale: isPulling || isRefreshing ? 1.08 : 1 }}
+          exit={{ opacity: 0, y: -10, scale: 0.75 }}
+          transition={{ duration: 0.15, ease: "easeOut" }}
+          className="fixed left-1/2 -translate-x-1/2 z-[45] pointer-events-none flex flex-col items-center gap-1.5"
+          style={{ top: STORY_BAR_H + 14 }}
+        >
+          <AnimatePresence>
+            {(isPulling || isRefreshing) && (
+              <motion.div
+                key="burst"
+                className="absolute rounded-full"
+                style={{ width: 70, height: 70, top: -15, left: -15, background: "radial-gradient(circle,rgba(249,115,22,.38) 0%,transparent 70%)", zIndex: -1 }}
+                initial={{ opacity: 0.85, scale: 0.6 }}
+                animate={{ opacity: 0, scale: 2.4 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.55, ease: "easeOut" }}
+              />
+            )}
+          </AnimatePresence>
+          <div
+            className="relative w-11 h-11 rounded-full flex items-center justify-center"
+            style={{
+              background: isDarkMode ? "rgba(15,15,15,0.93)" : "rgba(255,255,255,0.96)",
+              backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)",
+              boxShadow: isPulling || isRefreshing ? "0 0 0 2.5px rgba(249,115,22,.45),0 6px 24px rgba(249,115,22,.22)" : "0 3px 16px rgba(0,0,0,.13)",
+              border: isDarkMode ? "1px solid rgba(255,255,255,.07)" : "1px solid rgba(0,0,0,.05)",
+              transition: "box-shadow .25s ease",
             }}
-            exit={{ opacity: 0, y: -10, scale: 0.75 }}
-            transition={{ duration: 0.15, ease: "easeOut" }}
-            className="fixed left-1/2 -translate-x-1/2 z-[45] pointer-events-none flex flex-col items-center gap-1.5"
-            style={{ top: STORY_BAR_H + 14 }}
           >
-            <AnimatePresence>
-              {(isPulling || isRefreshing) && (
-                <motion.div
-                  key="burst"
-                  className="absolute rounded-full"
-                  style={{
-                    width: 70, height: 70, top: -15, left: -15,
-                    background: "radial-gradient(circle,rgba(249,115,22,.38) 0%,transparent 70%)",
-                    zIndex: -1,
-                  }}
-                  initial={{ opacity: 0.85, scale: 0.6 }}
-                  animate={{ opacity: 0, scale: 2.4 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.55, ease: "easeOut" }}
-                />
-              )}
-            </AnimatePresence>
-            <div
-              className="relative w-11 h-11 rounded-full flex items-center justify-center"
-              style={{
-                background: isDarkMode ? "rgba(15,15,15,0.93)" : "rgba(255,255,255,0.96)",
-                backdropFilter: "blur(14px)",
-                WebkitBackdropFilter: "blur(14px)",
-                boxShadow: isPulling || isRefreshing
-                  ? "0 0 0 2.5px rgba(249,115,22,.45),0 6px 24px rgba(249,115,22,.22)"
-                  : "0 3px 16px rgba(0,0,0,.13)",
-                border: isDarkMode ? "1px solid rgba(255,255,255,.07)" : "1px solid rgba(0,0,0,.05)",
-                transition: "box-shadow .25s ease",
-              }}
-            >
-              <svg className={isRefreshing ? "animate-spin" : ""} width="44" height="44" viewBox="0 0 44 44"
-                style={{ position: "absolute", inset: 0 }}>
-                <circle cx="22" cy="22" r={CR} fill="none" stroke={isDarkMode ? "#292929" : "#eee"} strokeWidth="2.2" />
-                <circle cx="22" cy="22" r={CR} fill="none" stroke="url(#pG)" strokeWidth="2.2" strokeLinecap="round"
-                  strokeDasharray={CC}
-                  strokeDashoffset={isRefreshing ? 0 : CC * (1 - progress)}
-                  style={{ transformOrigin: "center", transform: "rotate(-90deg)", transition: isRefreshing ? "none" : "stroke-dashoffset .07s linear" }}
-                />
-                <defs>
-                  <linearGradient id="pG" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%"   stopColor="#f97316" />
-                    <stop offset="100%" stopColor="#ec4899" />
-                  </linearGradient>
-                </defs>
-              </svg>
-              <ArrowPathIcon className="w-5 h-5 relative z-10" style={{
-                color: isPulling || isRefreshing ? "#f97316" : isDarkMode ? "#6b7280" : "#9ca3af",
-                transform: isRefreshing ? undefined : `rotate(${progress * 270}deg)`,
-                transition: "color .2s ease, transform .07s linear",
-              }} />
-            </div>
-            <motion.span
-              initial={{ opacity: 0 }}
-              animate={{ opacity: progress > 0.6 ? 1 : 0 }}
-              transition={{ duration: 0.15 }}
-              style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".04em", color: "#f97316", userSelect: "none" }}
-            >
-              {isRefreshing ? "Actualisation…" : isPulling ? "✓ Relâchez !" : "Tirez encore"}
-            </motion.span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    );
-  }
-);
+            <svg className={isRefreshing ? "animate-spin" : ""} width="44" height="44" viewBox="0 0 44 44" style={{ position: "absolute", inset: 0 }}>
+              <circle cx="22" cy="22" r={CR} fill="none" stroke={isDarkMode ? "#292929" : "#eee"} strokeWidth="2.2" />
+              <circle cx="22" cy="22" r={CR} fill="none" stroke="url(#pG)" strokeWidth="2.2" strokeLinecap="round"
+                strokeDasharray={CC} strokeDashoffset={isRefreshing ? 0 : CC * (1 - progress)}
+                style={{ transformOrigin: "center", transform: "rotate(-90deg)", transition: isRefreshing ? "none" : "stroke-dashoffset .07s linear" }}
+              />
+              <defs>
+                <linearGradient id="pG" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#f97316" />
+                  <stop offset="100%" stopColor="#ec4899" />
+                </linearGradient>
+              </defs>
+            </svg>
+            <ArrowPathIcon className="w-5 h-5 relative z-10" style={{
+              color: isPulling || isRefreshing ? "#f97316" : isDarkMode ? "#6b7280" : "#9ca3af",
+              transform: isRefreshing ? undefined : `rotate(${progress * 270}deg)`,
+              transition: "color .2s ease, transform .07s linear",
+            }} />
+          </div>
+          <motion.span
+            initial={{ opacity: 0 }}
+            animate={{ opacity: progress > 0.6 ? 1 : 0 }}
+            transition={{ duration: 0.15 }}
+            style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".04em", color: "#f97316", userSelect: "none" }}
+          >
+            {isRefreshing ? "Actualisation…" : isPulling ? "✓ Relâchez !" : "Tirez encore"}
+          </motion.span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+});
 PullToRefreshIndicator.displayName = "PullToRefreshIndicator";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -469,12 +493,38 @@ const RefreshRipple = memo(({ isDarkMode }) => (
 RefreshRipple.displayName = "RefreshRipple";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST ITEM
+// ✅ NIVEAU 3 — PostItem avec résolution Pexels automatique
+// Si le post a une URL Pexels signée → tenter résolution fraîche avant rendu
 // ─────────────────────────────────────────────────────────────────────────────
 const PostItem = memo(
   ({ post, onDeleted, showToast, isPriority, waveIndex, playWave }) => {
     const shouldAnimate = useRef(playWave).current;
     const anim = shouldAnimate && typeof waveIndex === "number" && waveIndex < WAVE_COUNT;
+
+    // ✅ Si le post a un externalId Pexels → résoudre l'URL fraîche
+    const [resolvedPost, setResolvedPost] = useState(post);
+    const resolvedRef = useRef(false);
+
+    useEffect(() => {
+      if (resolvedRef.current) return;
+      const pexId = getPexIdFromPost(post);
+      if (!pexId) return; // Pas un post Pexels → rien à faire
+
+      resolvedRef.current = true;
+
+      // Vérifier le cache d'abord (synchrone)
+      const cached = pexCacheRead(pexId);
+      if (cached) {
+        setResolvedPost({ ...post, videoUrl: cached, _pexResolved: true });
+        return;
+      }
+
+      // Résoudre en arrière-plan
+      resolvePexUrl(pexId).then((freshUrl) => {
+        if (freshUrl) setResolvedPost({ ...post, videoUrl: freshUrl, _pexResolved: true });
+        // Si null → le post reste tel quel, PostCard gérera l'erreur
+      });
+    }, [post]);
 
     return (
       <motion.div
@@ -483,7 +533,7 @@ const PostItem = memo(
         transition={anim ? { duration: WAVE_DUR, delay: waveIndex * WAVE_STAGGER, ease: [0.22, 1, 0.36, 1] } : undefined}
       >
         <PostCard
-          post={post}
+          post={resolvedPost}
           onDeleted={onDeleted}
           showToast={showToast}
           mockPost={!!(post._isMock || post.isMockPost || post._id?.startsWith("post_"))}
@@ -507,7 +557,7 @@ PostItem.displayName = "PostItem";
 // ─────────────────────────────────────────────────────────────────────────────
 const InlineNewsCard = memo(({ article, isDarkMode }) => {
   const [imgErr, setImgErr] = useState(false);
-  const [open, setOpen]     = useState(null);
+  const [open,   setOpen]   = useState(null);
   const timeAgo = useMemo(() => {
     if (!article?.publishedAt) return "";
     const h = Math.floor((Date.now() - new Date(article.publishedAt)) / 3_600_000);
@@ -519,9 +569,7 @@ const InlineNewsCard = memo(({ article, isDarkMode }) => {
     <>
       <div className={`flex items-center gap-3 px-4 pt-5 pb-3 ${isDarkMode ? "bg-black" : "bg-white"}`}>
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
-          📰 Actualité
-        </span>
+        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>📰 Actualité</span>
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
       </div>
       <div
@@ -550,9 +598,7 @@ const InlineNewsCard = memo(({ article, isDarkMode }) => {
             </div>
           )}
           <p className={`text-base font-bold leading-snug mb-2 ${isDarkMode ? "text-white" : "text-gray-900"}`}>{article.title}</p>
-          {article.description && (
-            <p className={`text-sm leading-relaxed line-clamp-2 mb-3 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>{article.description}</p>
-          )}
+          {article.description && <p className={`text-sm leading-relaxed line-clamp-2 mb-3 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>{article.description}</p>}
           <div className="flex items-center justify-between">
             <span className="text-sm font-bold text-orange-500">Lire l'article →</span>
             <ArrowTopRightOnSquareIcon className="w-4 h-4 text-orange-400" />
@@ -585,9 +631,7 @@ LoopDivider.displayName = "LoopDivider";
 const Toast = memo(({ message, type = "info", onClose }) => {
   useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
   const bg = type === "error" ? "bg-red-500" : type === "success" ? "bg-green-500" : "bg-blue-500";
-  return (
-    <div className={`fixed bottom-4 right-4 ${bg} text-white px-6 py-3 rounded-lg shadow-lg z-50`}>{message}</div>
-  );
+  return <div className={`fixed bottom-4 right-4 ${bg} text-white px-6 py-3 rounded-lg shadow-lg z-50`}>{message}</div>;
 });
 Toast.displayName = "Toast";
 
@@ -603,26 +647,24 @@ const ProgressiveFeed = ({
   const [displayedPosts, setDisplayedPosts] = useState([]);
   const [loopBoundaries, setLoopBoundaries] = useState([]);
 
-  const sentinelRef      = useRef(null);
-  const loopRef          = useRef(0);
-  const postsRef         = useRef(posts);
-  const prevResetRef     = useRef(resetSignal);
+  const sentinelRef    = useRef(null);
+  const loopRef        = useRef(0);
+  const postsRef       = useRef(posts);
+  const prevResetRef   = useRef(resetSignal);
   useEffect(() => { postsRef.current = posts; }, [posts]);
 
   const { start: winStart, end: winEnd } = useVirtualWindow(scrollContainerRef, POST_H, OVERSCAN);
 
-  const poolAnchor    = posts.length === 0 ? "__empty__" : posts[0]?._id ?? "__noid__";
+  const poolAnchor     = posts.length === 0 ? "__empty__" : posts[0]?._id ?? "__noid__";
   const prevPoolAnchor = useRef(poolAnchor);
 
   useEffect(() => {
-    const signalChanged = resetSignal !== prevResetRef.current;
-    const anchorChanged = poolAnchor !== prevPoolAnchor.current;
+    const signalChanged  = resetSignal !== prevResetRef.current;
+    const anchorChanged  = poolAnchor !== prevPoolAnchor.current;
     prevResetRef.current   = resetSignal;
     prevPoolAnchor.current = poolAnchor;
-
     if (!posts.length) { setDisplayedPosts([]); setLoopBoundaries([]); return; }
     if (!signalChanged && !anchorChanged) return;
-
     loopRef.current = 0;
     const init = posts.slice(0, Math.min(PAGE_SIZE, posts.length)).map((p, i) => ({ ...p, _displayKey: `p${i}_l0_${p._id}` }));
     setDisplayedPosts(init);
@@ -656,9 +698,9 @@ const ProgressiveFeed = ({
   }, []); // eslint-disable-line
 
   const loopBoundarySet = useMemo(() => new Set(loopBoundaries), [loopBoundaries]);
-  const newsArticlesLen = newsArticles?.length ?? 0;
   const newsInsertMap = useMemo(() => {
-    if (!newsArticlesLen || searchQuery) return new Map();
+    const len = newsArticles?.length ?? 0;
+    if (!len || searchQuery) return new Map();
     const map = new Map();
     let ai = 0;
     for (let i = 0; i < displayedPosts.length; i++) {
@@ -667,7 +709,7 @@ const ProgressiveFeed = ({
       }
     }
     return map;
-  }, [displayedPosts.length, newsArticlesLen, searchQuery]); // eslint-disable-line
+  }, [displayedPosts.length, newsArticles?.length, searchQuery]); // eslint-disable-line
 
   if (isLoading && !posts.length) return <SkeletonPosts count={3} isDarkMode={isDarkMode} />;
   if (!isLoading && !posts.length) return (
@@ -695,8 +737,7 @@ const ProgressiveFeed = ({
               isPriority={index === 0} waveIndex={index} playWave={isWaving}
             />
             {index > 0 && index % SUGGEST_POST_EVERY === 0 && index % SUGGEST_EVERY !== 0 && (
-              <SuggestedPostPreview key={`spp-${index}`} isDarkMode={isDarkMode}
-                userPool={suggestedUserPool} slotIndex={Math.floor(index / SUGGEST_POST_EVERY)} />
+              <SuggestedPostPreview key={`spp-${index}`} isDarkMode={isDarkMode} userPool={suggestedUserPool} slotIndex={Math.floor(index / SUGGEST_POST_EVERY)} />
             )}
             {index > 0 && index % SUGGEST_EVERY === 0 && (
               <SuggestedAccounts key={`sa-${index}`} isDarkMode={isDarkMode} instanceId={Math.floor(index / SUGGEST_EVERY)} />
@@ -706,9 +747,7 @@ const ProgressiveFeed = ({
                 <SmartAd slot="feedInline" canClose />
               </div>
             )}
-            {article && (
-              <InlineNewsCard key={`news-${article.id || article.url || index}`} article={article} isDarkMode={isDarkMode} />
-            )}
+            {article && <InlineNewsCard key={`news-${article.id || article.url || index}`} article={article} isDarkMode={isDarkMode} />}
           </div>
         );
       })}
@@ -764,7 +803,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
   const showMock = MOCK_CONFIG.enabled;
   const { articles: news = [] } = useNews({ maxArticles: 10, category: "all", autoFetch: !!user, enabled: !!user });
-
   const realPosts = useMemo(() => rawPosts.slice(0, MAX_POOL), [rawPosts]);
 
   useEffect(() => {
@@ -784,13 +822,22 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     })();
   }, [user]);
 
+  // ✅ NIVEAU 1 — isValidPost : filtre les posts avec URLs Pexels SIGNÉES
+  // Exception : les posts avec externalId pexels_XXXX → gardés car on peut
+  // résoudre leur URL via le backend (NIVEAU 2 dans PostItem)
   const isValidPost = useCallback((p) => {
     if (!p?._id) return false;
     if (p._isMock || p.isMockPost || p._id?.startsWith("post_")) return true;
     const u = p.user || p.author || {};
     if (u.isBanned || u.isDeleted || ["deleted", "banned"].includes(u.status)) return false;
-    // ✅ FIX : hasStale bloque toute URL videos.pexels.com
+
+    // ✅ FIX PEXELS : si le post a un externalId pexels → on peut résoudre → garder
+    const hasPexId = !!getPexIdFromPost(p);
+    if (hasPexId) return !!(u._id || u.id || p.userId || p.author?._id);
+
+    // Sans externalId, bloquer si URLs signées expirables
     if (hasStale(p)) return false;
+
     return !!(u._id || u.id || p.userId || p.author?._id);
   }, []);
 
@@ -832,8 +879,8 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const filtered = useMemo(() => {
     if (!deferredSearch.trim()) return combinedPosts;
     const q = deferredSearch.toLowerCase();
-    return combinedPosts.filter(
-      (p) => (p.content || "").toLowerCase().includes(q) || (p.user?.fullName || "").toLowerCase().includes(q)
+    return combinedPosts.filter((p) =>
+      (p.content || "").toLowerCase().includes(q) || (p.user?.fullName || "").toLowerCase().includes(q)
     );
   }, [combinedPosts, deferredSearch]);
 
@@ -854,7 +901,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
   useEffect(() => () => { clearTimeout(rippleTimer.current); clearTimeout(waveTimer.current); }, []);
 
-  const showToast = useCallback((msg, type = "info") => { startTransition(() => setToast({ message: msg, type })); }, []);
+  const showToast   = useCallback((msg, type = "info") => { startTransition(() => setToast({ message: msg, type })); }, []);
   const handleDeleted = useCallback((id) => { startTransition(() => removePost?.(id)); }, [removePost]);
   const handleOpenStory = useCallback((s, o) => {
     if (openStoryViewerProp) openStoryViewerProp(s, o);
@@ -924,9 +971,8 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   }, [pendingPosts, triggerAnim]);
 
   useEffect(() => {
-    let raf = null;
-    let lastUpdate = 0;
-    const reset = () => { pullDistRef.current = 0; canPullRef.current = true; setPullUI({ distance: 0, isPulling: false }); };
+    let raf = null, lastUpdate = 0;
+    const reset   = () => { pullDistRef.current = 0; canPullRef.current = true; setPullUI({ distance: 0, isPulling: false }); };
     const trigger = async () => {
       if (isPullingRef.current) return;
       isPullingRef.current = true;
@@ -971,21 +1017,19 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     };
   }, [handleRefresh]);
 
+  const apiObsFnRef = useRef(null);
   const apiObsFn = useCallback((entries) => {
     if (!entries[0].isIntersecting || loadingRef.current || isRefreshing) return;
     startPageTransition(() => {
-      if (showMock && mockCount < MOCK_POSTS.length)
-        setMockCount((p) => Math.min(p + MOCK_CONFIG.loadMoreCount, MOCK_POSTS.length));
+      if (showMock && mockCount < MOCK_POSTS.length) setMockCount((p) => Math.min(p + MOCK_CONFIG.loadMoreCount, MOCK_POSTS.length));
       if (hasMore) { fetchNextPage(); setApiPages((p) => p + 1); }
     });
   }, [hasMore, fetchNextPage, isRefreshing, showMock, mockCount]);
-
-  const apiObsFnRef = useRef(apiObsFn);
   useEffect(() => { apiObsFnRef.current = apiObsFn; }, [apiObsFn]);
   useEffect(() => {
     const node = apiObsRef.current;
     if (!node) return;
-    const obs = new IntersectionObserver((e) => apiObsFnRef.current(e), { rootMargin: "500px" });
+    const obs = new IntersectionObserver((e) => apiObsFnRef.current?.(e), { rootMargin: "500px" });
     obs.observe(node);
     return () => obs.disconnect();
   }, []); // eslint-disable-line

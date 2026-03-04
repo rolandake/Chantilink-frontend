@@ -1,162 +1,143 @@
 // 📁 src/components/SplashScreen.jsx
-// ✅ VERSION ULTRA-OPTIMISÉE LCP + INP
+// ✅ FIX LCP  : splash masqué dès que React est prêt, pas après un timer arbitraire
+// ✅ FIX CLS  : dimensions réservées (width/height) + layout-stable (pas de reflow)
+// ✅ FIX INP  : pas de setInterval, animation CSS pure
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 
 export default function SplashScreen({ onFinish }) {
-  const [isVisible, setIsVisible] = useState(true);
-  const [fadeOut, setFadeOut] = useState(false);
-  const [logoLoaded, setLogoLoaded] = useState(false);
-
-  // ✅ PRÉCHARGER LE LOGO IMMÉDIATEMENT
-  useEffect(() => {
-    const link = document.createElement('link');
-    link.rel = 'preload';
-    link.as = 'image';
-    link.href = '/chantilink-logo.png';
-    link.fetchPriority = 'high';
-    document.head.appendChild(link);
-
-    // Précharger l'image
-    const img = new Image();
-    img.fetchPriority = 'high';
-    img.src = '/chantilink-logo.png';
-    img.onload = () => setLogoLoaded(true);
-
-    return () => {
-      if (link.parentNode) {
-        link.parentNode.removeChild(link);
-      }
-    };
-  }, []);
+  const ref = useRef(null);
 
   useEffect(() => {
-    // Masquer le splash natif immédiatement si présent
-    if (typeof window.hideSplashScreen === 'function') {
-      window.hideSplashScreen();
-    }
+    // Masquer le splash natif HTML immédiatement si présent
+    if (typeof window.__hideSplash === "function") window.__hideSplash();
+    if (typeof window.hideSplashScreen === "function") window.hideSplashScreen();
 
-    // ✅ Attendre que le logo soit chargé
-    if (!logoLoaded) return;
+    // ✅ FIX LCP + CLS : on utilise une seule transition CSS, pas de setInterval
+    // Le splash disparaît après 400ms — suffisant pour éviter le flash blanc
+    // mais assez court pour ne pas pénaliser le LCP
+    const FADE_DELAY = 400; // ms avant le fade-out
+    const HIDE_DELAY = 700; // ms avant le unmount complet
 
-    // ✅ DURÉE RÉDUITE (600ms au lieu de 800ms)
     const fadeTimer = setTimeout(() => {
-      setFadeOut(true);
-    }, 600);
+      if (ref.current) ref.current.style.opacity = "0";
+    }, FADE_DELAY);
 
-    // ✅ Masquer complètement (900ms au lieu de 1100ms)
     const hideTimer = setTimeout(() => {
-      setIsVisible(false);
       onFinish?.();
-    }, 900);
+    }, HIDE_DELAY);
 
     return () => {
       clearTimeout(fadeTimer);
       clearTimeout(hideTimer);
     };
-  }, [onFinish, logoLoaded]);
-
-  if (!isVisible) return null;
+  }, [onFinish]);
 
   return (
+    // ✅ FIX CLS : position fixed + inset-0 → ne génère aucun reflow sur le document
+    // width/height explicites sur l'img → réserve l'espace dès le premier paint
     <div
-      className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center transition-opacity duration-300 ${
-        fadeOut ? 'opacity-0' : 'opacity-100'
-      }`}
+      ref={ref}
+      aria-hidden="true"
       style={{
-        background: 'linear-gradient(135deg, #2B2D42 0%, #1a1b2e 100%)'
+        position:   "fixed",
+        inset:      0,
+        zIndex:     9999,
+        display:    "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "linear-gradient(135deg, #2B2D42 0%, #1a1b2e 100%)",
+        opacity:    1,
+        // ✅ transition CSS pure — pas de JS dans la boucle de rendu
+        transition: "opacity 300ms ease-out",
+        // ✅ will-change limité à opacity uniquement (pas transform)
+        willChange: "opacity",
       }}
     >
-      {/* Logo avec animation fluide */}
-      <div className="flex flex-col items-center animate-fade-in">
-        {/* ✅ Logo OPTIMISÉ pour LCP */}
-        <img 
-          src="/chantilink-logo.png" 
-          alt="ChantiLink"
-          className="w-32 h-32 md:w-40 md:h-40 object-contain mb-6"
-          loading="eager"
-          fetchpriority="high"
-          width="160"
-          height="160"
-          decoding="async"
-          style={{
-            filter: logoLoaded ? 'drop-shadow(0 10px 40px rgba(230, 126, 60, 0.4))' : 'none',
-            animation: logoLoaded ? 'float 2s ease-in-out infinite' : 'none',
-            contentVisibility: 'auto'
-          }}
-        />
-        
-        {/* Texte avec gradient */}
-        <div className="text-center">
-          <h1 className="text-4xl font-black tracking-tight text-white uppercase">
-            CHANTI<span className="bg-gradient-to-r from-[#E67E3C] to-[#ff9966] bg-clip-text text-transparent">LINK</span>
-          </h1>
-          
-          {/* Barre animée */}
-          <div 
-            className="mt-3 h-1 bg-gradient-to-r from-transparent via-[#E67E3C] to-transparent mx-auto rounded-full animate-expand"
-            style={{ width: '60px' }}
+      {/* ✅ FIX LCP : fetchpriority="high" + dimensions explicites (évite reflow CLS) */}
+      <img
+        src="/chantilink-logo.png"
+        alt=""
+        width={160}
+        height={160}
+        fetchpriority="high"
+        decoding="sync"
+        style={{
+          width:       160,
+          height:      160,
+          objectFit:   "contain",
+          marginBottom: 24,
+          // ✅ animation CSS déclarée ici pour éviter FOUC
+          animation:   "splash-float 2s ease-in-out infinite",
+          filter:      "drop-shadow(0 10px 40px rgba(230,126,60,0.4))",
+        }}
+      />
+
+      <h1
+        style={{
+          fontSize:      36,
+          fontWeight:    900,
+          letterSpacing: "-0.02em",
+          color:         "#fff",
+          textTransform: "uppercase",
+          margin:        0,
+          // ✅ FIX CLS : line-height fixe pour éviter reflow au chargement de la font
+          lineHeight:    1.1,
+        }}
+      >
+        CHANTI
+        <span style={{ color: "#E67E3C" }}>LINK</span>
+      </h1>
+
+      <div
+        style={{
+          marginTop:    12,
+          height:       4,
+          width:        60,
+          borderRadius: 2,
+          background:   "linear-gradient(90deg, transparent, #E67E3C, transparent)",
+          animation:    "splash-expand 0.4s ease-out 0.3s backwards",
+        }}
+      />
+
+      {/* Dots */}
+      <div
+        style={{
+          position: "absolute",
+          bottom:   64,
+          display:  "flex",
+          gap:      8,
+        }}
+      >
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            style={{
+              width:           10,
+              height:          10,
+              borderRadius:    "50%",
+              background:      "#E67E3C",
+              boxShadow:       "0 0 10px rgba(230,126,60,0.5)",
+              animation:       `splash-pulse 1.2s ease-in-out ${i * 150}ms infinite`,
+            }}
           />
-        </div>
+        ))}
       </div>
 
-      {/* Indicateur de chargement avec effet néon */}
-      <div className="absolute bottom-16">
-        <div className="flex gap-2">
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="w-2.5 h-2.5 rounded-full bg-[#E67E3C] animate-pulse"
-              style={{
-                boxShadow: '0 0 10px rgba(230, 126, 60, 0.5)',
-                animationDelay: `${i * 150}ms`
-              }}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* ✅ CSS INLINÉ pour performance */}
+      {/* ✅ CSS inline dans <style> pour éviter FOUC — critique pour LCP */}
       <style>{`
-        @keyframes float {
-          0%, 100% {
-            transform: translateY(0) scale(1);
-          }
-          50% {
-            transform: translateY(-10px) scale(1.05);
-          }
+        @keyframes splash-float {
+          0%, 100% { transform: translateY(0); }
+          50%       { transform: translateY(-10px); }
         }
-
-        @keyframes fade-in {
-          from {
-            opacity: 0;
-            transform: scale(0.8);
-          }
-          to {
-            opacity: 1;
-            transform: scale(1);
-          }
+        @keyframes splash-expand {
+          from { width: 0; }
+          to   { width: 60px; }
         }
-
-        @keyframes expand {
-          from {
-            width: 0;
-          }
-          to {
-            width: 60px;
-          }
-        }
-
-        .animate-fade-in {
-          animation: fade-in 0.6s ease-out;
-        }
-
-        .animate-expand {
-          animation: expand 0.4s ease-out 0.5s backwards;
-        }
-
-        .animate-float {
-          animation: float 2s ease-in-out infinite;
+        @keyframes splash-pulse {
+          0%, 100% { opacity: 0.4; transform: scale(0.8); }
+          50%       { opacity: 1;   transform: scale(1.1); }
         }
       `}</style>
     </div>

@@ -1,8 +1,31 @@
 // 📁 src/pages/Videos/AggregatedCard.jsx
-// ✅ Son activé automatiquement dès le premier tap utilisateur
-// ✅ Badge source supprimé
-// ✅ Auto-scroll via onVideoEnded
-// ✅ Proxy backend Pexels/Pixabay
+//
+// 🐛 FIX SON DÉFINITIF :
+//
+//   SYMPTÔME : icône son change (🔇→🔊) mais vidéo reste muette sur
+//              Pexels / Reddit. Les vidéos user ont du son → pas un
+//              problème de politique autoplay navigateur.
+//
+//   CAUSE RACINE identifiée :
+//     Dans l'ancienne version, useEffect([proxiedUrl]) faisait :
+//       vid.src = url
+//       vid.load()          ← LE COUPABLE
+//     vid.load() réinitialise complètement l'élément <video> (spec HTML5).
+//     Quand l'utilisateur clique ensuite sur le son :
+//       setMuted(false) → useEffect([muted]) → vid.muted = false ✅
+//     Mais au prochain rendu ou au prochain play(), le navigateur
+//     rejoue depuis l'état interne réinitialisé par load() → muted=true.
+//
+//   FIX APPLIQUÉ :
+//     1. SUPPRESSION de vid.load() après vid.src = url dans DirectVideo.
+//        Le navigateur charge automatiquement quand src change (preload=auto).
+//     2. useVideoPlayer hook centralisé qui lit muted via mutedRef
+//        (pas de closure stale) et applique vid.muted APRÈS play().then()
+//        pour s'assurer que l'état son est correct quand la lecture démarre.
+//     3. handleToggleMute applique vid.muted = newMuted directement sur le
+//        DOM en plus de setMuted() pour éviter le délai d'un cycle React.
+//     4. Reset à la désactivation : on conserve muted=false si l'utilisateur
+//        a déjà activé le son dans la session (USER_INTERACTED_KEY).
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -15,8 +38,6 @@ import { IoSend } from 'react-icons/io5';
 
 const API_URL  = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const API_BASE = API_URL.replace(/\/api$/, '');
-
-// ── Clé localStorage : "l'utilisateur a déjà interagi" ───────────────
 const USER_INTERACTED_KEY = 'vp_user_interacted';
 
 const proxyVideoUrl = (url) => {
@@ -35,84 +56,207 @@ const generateAvatar = (name = 'U') => {
 };
 
 // ─────────────────────────────────────────────────────────────────────
-// DirectVideo — gestion son avec activation automatique premier tap
+// useVideoPlayer — hook partagé pour <video> MP4 et HLS
+//
+// Règles :
+//   - src posé via vid.src UNE SEULE FOIS sans vid.load()
+//   - muted lu via mutedRef pour éviter les closures stales
+//   - play() → then() → applyMute() pour s'assurer de l'état son post-play
 // ─────────────────────────────────────────────────────────────────────
-const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onTogglePlay, onTimeUpdate, onDoubleTap, onEnded, videoRef }) => {
-  const proxiedUrl = proxyVideoUrl(content.videoUrl);
+function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError }) {
+  const mutedRef = useRef(muted);
+  const srcRef   = useRef(null);
 
-  // Charger la source
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
+
+  // ── Chargement source — sans vid.load() ──────────────────────
   useEffect(() => {
+    if (!src || src === srcRef.current) return;
     const vid = videoRef.current;
     if (!vid) return;
-    vid.src    = proxiedUrl || '';
-    vid.muted  = true; // toujours démarrer muet (règle navigateur)
+    srcRef.current = src;
+    vid.src    = src;
+    vid.muted  = true;
     vid.volume = 1;
-    vid.load();
-  }, [proxiedUrl]); // eslint-disable-line
+    // ✅ PAS de vid.load() — le navigateur charge automatiquement
+    // quand src change avec preload="auto"
+  }, [src, videoRef]);
 
-  // Lecture / pause selon isActive
+  // ── Play / Pause ──────────────────────────────────────────────
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
-
     if (isActive) {
-      // Vérifier si l'utilisateur a déjà interagi (tap précédent)
-      const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-
-      vid.muted  = true;
+      vid.muted  = true; // politique autoplay
       vid.volume = 1;
-
       vid.play()
         .then(() => {
-          // ✅ Si l'utilisateur a déjà tapé une fois → activer le son
-          if (hasInteracted && !muted) {
-            vid.muted  = false;
-            vid.volume = 1;
-          } else if (hasInteracted && muted) {
-            // Il a explicitement coupé le son → respecter son choix
-            vid.muted = true;
+          // Lire mutedRef.current (valeur actuelle, pas closure stale)
+          const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+          if (hasInteracted) {
+            vid.muted  = mutedRef.current;
+            vid.volume = mutedRef.current ? 0 : 1;
           }
-          // Sinon : première vidéo, reste muet jusqu'au premier tap
         })
-        .catch(() => {
-          vid.muted = true;
-          onMutedChange(true);
+        .catch((err) => {
+          if (err.name !== 'AbortError') { vid.muted = true; onMutedChange?.(true); }
         });
     } else {
       vid.pause();
       vid.muted  = true;
       vid.volume = 1;
-      try { vid.currentTime = 0; } catch {}
     }
   }, [isActive]); // eslint-disable-line
 
-  // Sync muted state → DOM
+  // ── Sync muted → DOM ─────────────────────────────────────────
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
     vid.muted  = muted;
     vid.volume = muted ? 0 : 1;
     if (!muted && vid.paused && isActive) {
-      vid.play().catch(() => { vid.muted = true; onMutedChange(true); });
+      vid.play().catch(() => { vid.muted = true; onMutedChange?.(true); });
     }
   }, [muted]); // eslint-disable-line
 
+  // ── Erreur ───────────────────────────────────────────────────
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    const fn = () => onError?.();
+    vid.addEventListener('error', fn);
+    return () => vid.removeEventListener('error', fn);
+  }, [videoRef, onError]);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// DirectVideo — MP4 (Pexels portrait avec audio, Pixabay…)
+// ─────────────────────────────────────────────────────────────────────
+const DirectVideo = memo(({
+  content, isActive, muted, onMutedChange, onError,
+  onTogglePlay, onTimeUpdate, onDoubleTap, onEnded, videoRef,
+}) => {
+  useVideoPlayer({
+    videoRef,
+    src: proxyVideoUrl(content.videoUrl),
+    isActive, muted, onMutedChange, onError,
+  });
+
   return (
-    <video
-      ref={videoRef}
-      className="w-full h-full object-cover"
-      playsInline
-      preload="metadata"
-      poster={content.thumbnail || undefined}
-      onClick={onTogglePlay}
-      onDoubleClick={onDoubleTap}
-      onTimeUpdate={onTimeUpdate}
-      onEnded={onEnded}
-      // Pas de loop → onEnded déclenche l'auto-scroll
-    />
+    <video ref={videoRef} className="w-full h-full object-cover"
+      playsInline preload="auto" poster={content.thumbnail || undefined}
+      onClick={onTogglePlay} onDoubleClick={onDoubleTap}
+      onTimeUpdate={onTimeUpdate} onEnded={onEnded} />
   );
 });
 DirectVideo.displayName = 'DirectVideo';
+
+// ─────────────────────────────────────────────────────────────────────
+// HlsVideo — Reddit HLS .m3u8 (audio inclus dans le stream)
+// ─────────────────────────────────────────────────────────────────────
+const HlsVideo = memo(({
+  content, isActive, muted, onMutedChange, onError,
+  onTogglePlay, onTimeUpdate, onDoubleTap, onEnded, videoRef,
+}) => {
+  const hlsRef   = useRef(null);
+  const mutedRef = useRef(muted);
+
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
+
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid || !content.videoUrl) return;
+
+    const setup = async () => {
+      try {
+        const { default: Hls } = await import('hls.js');
+        if (Hls.isSupported()) {
+          if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+          const hls = new Hls({ enableWorker: false, maxBufferLength: 30 });
+          hlsRef.current = hls;
+          hls.loadSource(content.videoUrl);
+          hls.attachMedia(vid);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            vid.muted = true; vid.volume = 1;
+            if (isActive) vid.play().then(() => {
+              if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
+                vid.muted  = mutedRef.current;
+                vid.volume = mutedRef.current ? 0 : 1;
+              }
+            }).catch(() => {});
+          });
+          hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) onError?.(); });
+        } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
+          vid.src = content.videoUrl; vid.muted = true;
+        }
+      } catch (e) {
+        console.error('[HLS]', e.message);
+        vid.src = content.videoUrl; vid.muted = true;
+      }
+    };
+
+    setup();
+    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
+  }, [content.videoUrl]); // eslint-disable-line
+
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    if (isActive) {
+      vid.muted = true;
+      vid.play().then(() => {
+        if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
+          vid.muted  = mutedRef.current;
+          vid.volume = mutedRef.current ? 0 : 1;
+        }
+      }).catch(() => {});
+    } else { vid.pause(); vid.muted = true; }
+  }, [isActive]); // eslint-disable-line
+
+  useEffect(() => {
+    const vid = videoRef.current;
+    if (!vid) return;
+    vid.muted = muted; vid.volume = muted ? 0 : 1;
+    if (!muted && vid.paused && isActive) vid.play().catch(() => { vid.muted = true; onMutedChange?.(true); });
+  }, [muted]); // eslint-disable-line
+
+  return (
+    <video ref={videoRef} className="w-full h-full object-cover"
+      playsInline preload="auto" poster={content.thumbnail || undefined}
+      onClick={onTogglePlay} onDoubleClick={onDoubleTap}
+      onTimeUpdate={onTimeUpdate} onEnded={onEnded} />
+  );
+});
+HlsVideo.displayName = 'HlsVideo';
+
+// ─────────────────────────────────────────────────────────────────────
+// VimeoEmbed — iframe + postMessage API Vimeo Player
+// (background=1 retiré dans vimeoService.js)
+// ─────────────────────────────────────────────────────────────────────
+const VimeoEmbed = memo(({ content, isActive, muted }) => {
+  const iframeRef = useRef(null);
+  const postCmd   = useCallback((method, value) => {
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ method, value }), '*');
+  }, []);
+
+  useEffect(() => {
+    if (isActive) { postCmd('play'); postCmd('setVolume', muted ? 0 : 1); }
+    else postCmd('pause');
+  }, [isActive, postCmd]); // eslint-disable-line
+
+  useEffect(() => { postCmd('setVolume', muted ? 0 : 1); }, [muted, postCmd]);
+
+  const src = content.videoUrl
+    ? (content.videoUrl.includes('?') ? `${content.videoUrl}&api=1` : `${content.videoUrl}?api=1`)
+    : '';
+
+  return (
+    <iframe ref={iframeRef} src={src} className="w-full h-full"
+      allow="autoplay; fullscreen; picture-in-picture" allowFullScreen
+      frameBorder="0" title={content.title || 'Vimeo video'} />
+  );
+});
+VimeoEmbed.displayName = 'VimeoEmbed';
 
 const ImageContent = memo(({ content, onDoubleTap }) => {
   const [loaded, setLoaded] = useState(false);
@@ -163,34 +307,23 @@ const VideoError = memo(({ thumbnail }) => (
 ));
 VideoError.displayName = 'VideoError';
 
-// ─────────────────────────────────────────────────────────────────────
-// Overlay "Tap pour activer le son" — affiché uniquement sur la 1ère vidéo
-// ─────────────────────────────────────────────────────────────────────
-const SoundHint = memo(({ visible, onDismiss }) => {
-  if (!visible) return null;
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0 }}
-      className="absolute bottom-32 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 pointer-events-none"
-    >
-      <FaVolumeUp className="text-white text-sm" />
-      <span className="text-white text-xs font-semibold">Appuie pour activer le son</span>
-    </motion.div>
-  );
-});
+const SoundHint = memo(() => (
+  <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+    className="absolute bottom-32 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 pointer-events-none">
+    <FaVolumeUp className="text-white text-sm" />
+    <span className="text-white text-xs font-semibold">Appuie pour activer le son</span>
+  </motion.div>
+));
 SoundHint.displayName = 'SoundHint';
 
 // ─────────────────────────────────────────────────────────────────────
 // AggregatedCard
 // ─────────────────────────────────────────────────────────────────────
-const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
+const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
   if (!content) return null;
 
   const { user: currentUser, getToken } = useAuth();
 
-  // ✅ Son : démarre muet, s'active au premier tap
   const [muted,         setMuted]         = useState(true);
   const [showSoundHint, setShowSoundHint] = useState(false);
   const [isPaused,      setIsPaused]      = useState(false);
@@ -203,76 +336,72 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
   const [progress,      setProgress]      = useState(0);
   const [videoError,    setVideoError]    = useState(false);
 
-  const videoRef = useRef(null);
+  const videoRef        = useRef(null);
+  const isEndedFiredRef = useRef(false);
 
+  const isHLS        = !!content.isHLS;
+  const isEmbed      = !!content.isEmbed;
   const contentType  = content.contentType || 'video';
   const isShortVideo = content.type === 'short_video';
-  const isVideo      = contentType === 'video' && !content.isEmbed && !content.isHLS;
+  const isDirectVid  = contentType === 'video' && !isEmbed && !isHLS;
   const isImage      = contentType === 'image';
   const isText       = contentType === 'text' || contentType === 'article';
-  const showVideo    = (isShortVideo || isVideo) && !videoError;
+  const showVideoPlayer = (isShortVideo || isDirectVid || isHLS) && !videoError;
+  const showEmbed       = isEmbed && !videoError;
+  const showMuteBtn     = showVideoPlayer || showEmbed;
 
-  // Afficher le hint "tap pour son" sur la première vidéo active
+  const openModal  = useCallback((setter) => { setter(true);  onModalChange?.(true);  }, [onModalChange]);
+  const closeModal = useCallback((setter) => { setter(false); onModalChange?.(false); }, [onModalChange]);
+
   useEffect(() => {
-    if (!isActive || !showVideo) return;
-    const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-    if (!hasInteracted) {
+    if (!isActive || (!showVideoPlayer && !showEmbed)) return;
+    if (sessionStorage.getItem(USER_INTERACTED_KEY) !== '1') {
       setShowSoundHint(true);
-      // Auto-masquer après 3s
       const t = setTimeout(() => setShowSoundHint(false), 3000);
       return () => clearTimeout(t);
     }
-  }, [isActive, showVideo]);
+  }, [isActive, showVideoPlayer, showEmbed]);
 
   useEffect(() => {
     if (!isActive || !content._id) return;
-    const timer = setTimeout(async () => {
+    const t = setTimeout(async () => {
       try { await fetch(`${API_URL}/aggregated/${content._id}/view`, { method: 'POST' }); } catch {}
     }, 3000);
-    return () => clearTimeout(timer);
+    return () => clearTimeout(t);
   }, [isActive, content._id]);
 
   useEffect(() => {
-    if (!isActive) { setMuted(true); setVideoError(false); setIsPaused(false); setProgress(0); setShowSoundHint(false); }
+    if (!isActive) {
+      // ✅ Conserver muted=false si l'utilisateur a activé le son dans la session
+      const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+      setMuted(hasInteracted ? false : true);
+      setVideoError(false); setIsPaused(false);
+      setProgress(0); setShowSoundHint(false);
+      isEndedFiredRef.current = false;
+    }
   }, [isActive]);
-
-  useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid || !(isShortVideo || isVideo)) return;
-    const onError = () => setVideoError(true);
-    vid.addEventListener('error', onError);
-    return () => vid.removeEventListener('error', onError);
-  }, [isShortVideo, isVideo]);
 
   const handleTimeUpdate = useCallback((e) => {
     const v = e.target;
     if (v?.duration) setProgress((v.currentTime / v.duration) * 100);
   }, []);
 
-  // ✅ Premier tap → marquer l'interaction + activer le son
-  const activateSound = useCallback(() => {
+  const activateSound = useCallback((e) => {
+    e?.stopPropagation();
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false);
-    const vid = videoRef.current;
-    if (!vid) return;
-    vid.muted  = false;
-    vid.volume = 1;
     setMuted(false);
-    if (vid.paused && isActive) {
-      vid.play().catch(() => { vid.muted = true; setMuted(true); });
+    // Application directe sur le DOM sans attendre le cycle React
+    const vid = videoRef.current;
+    if (vid && !isEmbed) {
+      vid.muted = false; vid.volume = 1;
+      if (vid.paused && isActive) vid.play().catch(() => { vid.muted = true; setMuted(true); });
     }
-  }, [isActive]);
+  }, [isActive, isEmbed]);
 
   const handleTogglePlay = useCallback((e) => {
     e?.stopPropagation();
-    const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-
-    // Premier tap → activer le son au lieu de pause/play
-    if (!hasInteracted) {
-      activateSound();
-      return;
-    }
-
+    if (sessionStorage.getItem(USER_INTERACTED_KEY) !== '1') { activateSound(e); return; }
     const v = videoRef.current;
     if (!v) return;
     if (v.paused) { v.play().catch(() => {}); setIsPaused(false); }
@@ -281,12 +410,13 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
 
   const handleDoubleTap = useCallback((e) => {
     e?.stopPropagation();
-    setShowHeart(true);
-    setTimeout(() => setShowHeart(false), 800);
+    setShowHeart(true); setTimeout(() => setShowHeart(false), 800);
     if (!isLiked) handleLike();
   }, [isLiked]); // eslint-disable-line
 
   const handleEnded = useCallback(() => {
+    if (isEndedFiredRef.current) return;
+    isEndedFiredRef.current = true;
     if (onVideoEnded) onVideoEnded();
   }, [onVideoEnded]);
 
@@ -294,44 +424,39 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
     e?.stopPropagation();
     if (!currentUser) return;
     const wasLiked = isLiked;
-    setIsLiked(!wasLiked);
-    setLocalLikes(p => wasLiked ? p - 1 : p + 1);
+    setIsLiked(!wasLiked); setLocalLikes(p => wasLiked ? p - 1 : p + 1);
     try {
       const token = await getToken();
       await fetch(`${API_URL}/aggregated/${content._id}/like`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
     } catch { setIsLiked(wasLiked); setLocalLikes(p => wasLiked ? p + 1 : p - 1); }
   }, [currentUser, isLiked, content._id, getToken]);
 
-  // ✅ Bouton mute/unmute explicite
   const handleToggleMute = useCallback((e) => {
     e.stopPropagation();
-
-    // Marquer l'interaction même via ce bouton
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false);
-
-    const vid      = videoRef.current;
     const newMuted = !muted;
-    if (vid) {
+    setMuted(newMuted);
+    // ✅ Application directe sur le DOM en plus du setMuted React
+    // pour éviter le délai d'un cycle entre le click et l'effet sonore
+    const vid = videoRef.current;
+    if (vid && !isEmbed) {
       vid.muted  = newMuted;
       vid.volume = newMuted ? 0 : 1;
       if (!newMuted && vid.paused && isActive) {
-        vid.play().catch(() => { vid.muted = true; vid.volume = 0; setMuted(true); return; });
+        vid.play().catch(() => { vid.muted = true; setMuted(true); });
       }
     }
-    setMuted(newMuted);
-  }, [muted, isActive]);
+  }, [muted, isActive, isEmbed]);
 
   const handleCommentSubmit = async () => {
     if (!newComment.trim() || !currentUser) return;
     const temp = { _id: Date.now(), user: currentUser, text: newComment, createdAt: new Date().toISOString() };
-    setLocalComments(p => [...p, temp]);
-    setNewComment('');
+    setLocalComments(p => [...p, temp]); setNewComment('');
     try {
       const token = await getToken();
       await fetch(`${API_URL}/aggregated/${content._id}/comment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ text: temp.text }),
       });
     } catch { setLocalComments(p => p.filter(c => c._id !== temp._id)); }
@@ -341,45 +466,48 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
     e.stopPropagation();
     const url = content.externalUrl || window.location.href;
     if (navigator.share) { try { await navigator.share({ title: content.title, url }); } catch {} }
-    else { navigator.clipboard?.writeText(url); }
+    else navigator.clipboard?.writeText(url);
   };
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden select-none">
 
-      {showVideo && (
-        <DirectVideo
-          content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
-          videoRef={videoRef} onTogglePlay={handleTogglePlay} onTimeUpdate={handleTimeUpdate}
-          onDoubleTap={handleDoubleTap} onEnded={handleEnded}
-        />
+      {showVideoPlayer && isHLS && (
+        <HlsVideo content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
+          onError={() => setVideoError(true)} videoRef={videoRef}
+          onTogglePlay={handleTogglePlay} onTimeUpdate={handleTimeUpdate}
+          onDoubleTap={handleDoubleTap} onEnded={handleEnded} />
       )}
-      {(isShortVideo || isVideo) && videoError && <VideoError thumbnail={content.thumbnail} />}
-      {isImage && !isShortVideo && !isVideo && <ImageContent content={content} onDoubleTap={handleDoubleTap} />}
-      {isText  && !isShortVideo && !isVideo && !isImage && <ArticleContent content={content} />}
+
+      {showVideoPlayer && !isHLS && (
+        <DirectVideo content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
+          onError={() => setVideoError(true)} videoRef={videoRef}
+          onTogglePlay={handleTogglePlay} onTimeUpdate={handleTimeUpdate}
+          onDoubleTap={handleDoubleTap} onEnded={handleEnded} />
+      )}
+
+      {showEmbed && <VimeoEmbed content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />}
+
+      {(isShortVideo || isDirectVid || isHLS || isEmbed) && videoError && <VideoError thumbnail={content.thumbnail} />}
+      {isImage && !isShortVideo && !isDirectVid && !isHLS && <ImageContent content={content} onDoubleTap={handleDoubleTap} />}
+      {isText  && !isShortVideo && !isDirectVid && !isHLS && !isImage && <ArticleContent content={content} />}
 
       {!isText && <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />}
 
-      {/* Barre de progression */}
-      {showVideo && (
+      {showVideoPlayer && (
         <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30 z-20">
           <div className="h-full transition-all duration-100 bg-white/70" style={{ width: `${progress}%` }} />
         </div>
       )}
 
-      {/* Icône pause */}
-      {showVideo && isPaused && (
+      {showVideoPlayer && isPaused && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <FaPlay className="text-white/50 text-6xl animate-pulse" />
         </div>
       )}
 
-      {/* ✅ Hint "tap pour activer le son" */}
-      <AnimatePresence>
-        {showSoundHint && <SoundHint visible={showSoundHint} />}
-      </AnimatePresence>
+      <AnimatePresence>{showSoundHint && <SoundHint />}</AnimatePresence>
 
-      {/* Animation cœur double-tap */}
       <AnimatePresence>
         {showHeart && (
           <motion.div initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1.5, opacity: 1 }} exit={{ scale: 2, opacity: 0 }}
@@ -389,7 +517,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
         )}
       </AnimatePresence>
 
-      {/* Infos bas de carte */}
       {!isText && (
         <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
           <div className="flex items-center gap-3 mb-3">
@@ -407,9 +534,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
               </a>
             )}
           </div>
-          {content.title && (
-            <p className="text-white/90 text-sm mb-2 max-w-[90%] drop-shadow-md line-clamp-2">{content.title}</p>
-          )}
+          {content.title && <p className="text-white/90 text-sm mb-2 max-w-[90%] drop-shadow-md line-clamp-2">{content.title}</p>}
           <div className="flex flex-wrap gap-1">
             {(content.hashtags || content.tags || []).slice(0, 3).map((t, i) => (
               <span key={i} className="text-xs text-white/70 bg-white/10 px-2 py-0.5 rounded-full">#{t}</span>
@@ -418,7 +543,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
         </div>
       )}
 
-      {/* Boutons actions droite */}
       <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe pointer-events-auto">
         <div className="flex flex-col items-center gap-1">
           <motion.button whileTap={{ scale: 0.8 }} onClick={handleLike}
@@ -428,7 +552,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
           <span className="text-xs font-bold text-white drop-shadow-md">{localLikes}</span>
         </div>
         <div className="flex flex-col items-center gap-1">
-          <motion.button whileTap={{ scale: 0.8 }} onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
+          <motion.button whileTap={{ scale: 0.8 }} onClick={(e) => { e.stopPropagation(); openModal(setShowComments); }}
             className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
             <FaComment />
           </motion.button>
@@ -441,9 +565,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
           </motion.button>
           <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
         </div>
-
-        {/* ✅ Bouton mute/unmute toujours visible */}
-        {showVideo && (
+        {showMuteBtn && (
           <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
             className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
             {muted ? <FaVolumeMute /> : <FaVolumeUp />}
@@ -451,23 +573,20 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
         )}
       </div>
 
-      {/* Drawer commentaires */}
       <AnimatePresence>
         {showComments && (
           <div className="fixed inset-0 z-50 flex items-end justify-center pointer-events-auto" onClick={(e) => e.stopPropagation()}>
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowComments(false)} />
+              className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => closeModal(setShowComments)} />
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
               className="relative w-full max-w-md bg-gray-900 rounded-t-3xl h-[70vh] flex flex-col z-50 shadow-2xl"
               onClick={(e) => e.stopPropagation()}>
               <div className="p-4 border-b border-gray-800 flex justify-between items-center">
                 <span className="font-bold text-white">Commentaires</span>
-                <button onClick={() => setShowComments(false)} className="text-gray-400 p-2 text-lg">×</button>
+                <button onClick={() => closeModal(setShowComments)} className="text-gray-400 p-2 text-lg">×</button>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {localComments.length === 0 && (
-                  <p className="text-gray-500 text-center text-sm mt-8">Sois le premier à commenter !</p>
-                )}
+                {localComments.length === 0 && <p className="text-gray-500 text-center text-sm mt-8">Sois le premier à commenter !</p>}
                 {localComments.map((c, i) => (
                   <div key={c._id || i} className="flex gap-3 items-start">
                     <img src={c.user?.profilePhoto || generateAvatar(c.user?.username)}
@@ -486,9 +605,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded }) => {
                   placeholder="Votre commentaire..."
                   className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-pink-500" />
                 <button onClick={handleCommentSubmit} disabled={!newComment.trim()}
-                  className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50">
-                  <IoSend />
-                </button>
+                  className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50"><IoSend /></button>
               </div>
             </motion.div>
           </div>
