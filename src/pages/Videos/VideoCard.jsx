@@ -8,15 +8,30 @@
 // 🐛 FIX : Modales via createPortal → échappent à overflow-hidden
 // 🐛 FIX : autoFocus supprimé sur input commentaires
 // 🐛 FIX : currentTime=0 retiré du bloc isActive=false
+// 🐛 FIX : activateSound() et togglePlay() → e.stopPropagation()
+// 🐛 FIX : onModalChange(bool) → suspend IntersectionObservers via ModalOpenContext
+// 🐛 FIX : pointer-events:none sur overlay gradient
 //
-// 🐛 FIX SAUT VIDÉO au tap son / ouverture commentaires (ce commit) :
-//   1. activateSound() et togglePlay() appellent e.stopPropagation()
-//      → le click ne remonte plus jusqu'au container de scroll.
-//   2. onModalChange(bool) appelé à chaque ouverture/fermeture de modale
-//      → VideosPage suspend les IntersectionObservers via ModalOpenContext
-//      → aucun déclenchement parasite pendant l'animation du portal.
-//   3. pointer-events:none ajouté sur l'overlay gradient de la vidéo
-//      → les clicks sur les bords de la vidéo ne propagent plus.
+// ✅ FIXES SAUT ALÉATOIRE (commits précédents) :
+//
+//   G. isEndedFiredRef reset dans useEffect([video._id]) séparé
+//   H. onVideoEndedRef interne → handleEnded sans closure stale
+//   I. <video> avec position:absolute + contain:strict
+//
+// ✅ FIX SAUT SANS LECTURE (ce commit) :
+//
+//   J. preload="auto" au lieu de preload="metadata"
+//      CAUSE : preload="metadata" → le navigateur ne charge que les métadonnées.
+//      Quand isActive=true, vid.play() est appelé immédiatement mais la vidéo
+//      n'est pas suffisamment bufferisée → la promesse rejette → onError se
+//      déclenche parfois → VideosPage détecte une slide "morte" → saut.
+//      FIX : preload="auto" aligne le comportement avec AggregatedCard qui
+//      ne sautait pas (elle utilisait déjà preload="auto").
+//
+//   K. onError handler → log silencieux + setVideoError(true)
+//      Sans ce handler, les erreurs de chargement (src invalide, réseau)
+//      étaient silencieuses → la vidéo restait bloquée sans jamais déclencher
+//      onEnded → le feed se retrouvait bloqué sur une slide morte.
 
 import React, { useEffect, useRef, useState, useMemo, memo, useCallback } from "react";
 import { createPortal } from "react-dom";
@@ -68,15 +83,28 @@ const SoundHint = memo(({ visible }) => {
 });
 SoundHint.displayName = 'SoundHint';
 
-// 🐛 FIX : onModalChange ajouté en prop
-// Permet à VideoCard de signaler à VideosPage qu'une modale est ouverte
-// → VideosPage suspend les IntersectionObservers via ModalOpenContext
+// ✅ FIX K : VideoError affiché quand la vidéo ne peut pas être chargée
+const VideoErrorDisplay = memo(({ thumbnail }) => (
+  <div className="relative w-full h-full bg-gray-900 flex flex-col items-center justify-center gap-3">
+    {thumbnail && <img src={thumbnail} alt="" className="absolute inset-0 w-full h-full object-cover opacity-20" />}
+    <div className="relative z-10 flex flex-col items-center gap-2">
+      <div className="text-gray-400 text-4xl">📹</div>
+      <p className="text-gray-400 text-xs text-center px-6">Vidéo indisponible</p>
+    </div>
+  </div>
+));
+VideoErrorDisplay.displayName = 'VideoErrorDisplay';
+
 const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange }) => {
   if (!video) return null;
 
   const navigate        = useNavigate();
   const videoRef        = useRef(null);
   const isEndedFiredRef = useRef(false);
+
+  // ✅ FIX H : ref stable pour onVideoEnded → handleEnded sans closure stale
+  const onVideoEndedRef = useRef(onVideoEnded);
+  useEffect(() => { onVideoEndedRef.current = onVideoEnded; }, [onVideoEnded]);
 
   const { user: currentUser, getToken } = useAuth();
   const { likeVideo, commentVideo, deleteVideo, incrementViews } = useVideos();
@@ -100,6 +128,8 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
   const [followLoading,  setFollowLoading]  = useState(false);
   const [boostLoading,   setBoostLoading]   = useState(false);
   const [selectedBoost,  setSelectedBoost]  = useState(null);
+  // ✅ FIX K : état d'erreur vidéo pour afficher un fallback
+  const [videoError,     setVideoError]     = useState(false);
 
   const videoId = video._id;
   const owner = useMemo(() => {
@@ -114,7 +144,6 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
 
   const isOwner = currentUser && owner._id && (owner._id === currentUser._id);
 
-  // 🐛 FIX : helper pour ouvrir/fermer une modale en notifiant le parent
   const openModal  = useCallback((setter) => { setter(true);  onModalChange?.(true);  }, [onModalChange]);
   const closeModal = useCallback((setter) => { setter(false); onModalChange?.(false); }, [onModalChange]);
 
@@ -129,6 +158,12 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     }
     setLocalComments(video.comments || []);
   }, [videoId, currentUser, owner._id]); // eslint-disable-line
+
+  // ✅ FIX G : reset isEndedFiredRef + videoError quand la vidéo change
+  useEffect(() => {
+    isEndedFiredRef.current = false;
+    setVideoError(false);
+  }, [video._id]);
 
   useEffect(() => {
     if (!isActive) { setShowSoundHint(false); return; }
@@ -145,7 +180,6 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     if (!vid) return;
 
     if (isActive) {
-      isEndedFiredRef.current = false;
       const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
       vid.muted = true;
       vid.volume = 1;
@@ -191,10 +225,6 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     if (vid?.duration) setProgress((vid.currentTime / vid.duration) * 100);
   }, []);
 
-  // 🐛 FIX : e.stopPropagation() ajouté dans activateSound et togglePlay
-  // Sans ça, le click sur la vidéo remontait jusqu'au container de scroll
-  // qui pouvait interpréter l'événement comme une interaction de scroll
-  // → micro-déplacement → IntersectionObserver → saut de vidéo.
   const activateSound = useCallback((e) => {
     e?.stopPropagation();
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
@@ -312,11 +342,22 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     finally { setBoostLoading(false); }
   };
 
+  // ✅ FIX H : handleEnded utilise onVideoEndedRef → jamais de closure stale
   const handleEnded = useCallback(() => {
     if (isEndedFiredRef.current) return;
     isEndedFiredRef.current = true;
-    if (onVideoEnded) onVideoEnded();
-  }, [onVideoEnded]);
+    onVideoEndedRef.current?.();
+  }, []); // eslint-disable-line
+
+  // ✅ FIX K : handleVideoError — log + fallback visuel
+  // Sans ce handler, une src invalide ou une erreur réseau restait silencieuse
+  // → la vidéo se bloquait sans jamais déclencher onEnded → feed bloqué.
+  const handleVideoError = useCallback((e) => {
+    const errCode = e.target?.error?.code;
+    const errMsg  = e.target?.error?.message || 'Erreur inconnue';
+    console.warn(`[VideoCard] ⚠️ Erreur vidéo id=${videoId} code=${errCode} msg="${errMsg}"`);
+    setVideoError(true);
+  }, [videoId]);
 
   // ─── Portails ────────────────────────────────────────────────────
   const commentsPortal = createPortal(
@@ -358,7 +399,6 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
               ))}
             </div>
             <div className="p-4 bg-gray-800 flex gap-2 items-center">
-              {/* autoFocus intentionnellement absent — voir commit précédent */}
               <input
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
@@ -481,23 +521,39 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
         </div>
       )}
 
-      <video
-        ref={videoRef}
-        src={video.videoUrl || video.url}
-        className="w-full h-full object-cover"
-        style={{ filter: video.filter && video.filter !== 'none' ? video.filter : undefined }}
-        muted={muted}
-        playsInline
-        preload="metadata"
-        onClick={togglePlay}
-        onDoubleClick={handleDoubleTap}
-        onTimeUpdate={handleTimeUpdate}
-        onEnded={handleEnded}
-      />
+      {/* ✅ FIX K : afficher un fallback si la vidéo est en erreur */}
+      {videoError ? (
+        <VideoErrorDisplay thumbnail={video.thumbnail} />
+      ) : (
+        // ✅ FIX I : position:absolute + contain:strict
+        // ✅ FIX J : preload="auto" (était "metadata" → causait les sauts sans lecture)
+        //   preload="metadata" ne charge que les métadonnées → vid.play() rejetait
+        //   si la vidéo n'était pas encore bufferisée → feed bloqué sur slide morte.
+        //   preload="auto" aligne le comportement avec AggregatedCard (qui ne sautait pas).
+        <video
+          ref={videoRef}
+          src={video.videoUrl || video.url}
+          className="w-full h-full object-cover"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: '100%',
+            height: '100%',
+            contain: 'strict',
+            filter: video.filter && video.filter !== 'none' ? video.filter : undefined,
+          }}
+          muted={muted}
+          playsInline
+          preload="auto"
+          onClick={togglePlay}
+          onDoubleClick={handleDoubleTap}
+          onTimeUpdate={handleTimeUpdate}
+          onEnded={handleEnded}
+          onError={handleVideoError}
+        />
+      )}
 
-      {/* 🐛 FIX : pointer-events:none sur l'overlay gradient
-          → les clicks sur les bords de la vidéo ne propagent plus
-          au container de scroll */}
+      {/* pointer-events:none sur l'overlay gradient */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/80 pointer-events-none" />
 
       <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30 z-20">
@@ -505,7 +561,7 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
       </div>
 
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-        {isPaused && <FaPlay className="text-white/50 text-6xl animate-pulse" />}
+        {isPaused && !videoError && <FaPlay className="text-white/50 text-6xl animate-pulse" />}
         <AnimatePresence>
           {showHeart && (
             <motion.div initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1.5, opacity: 1 }} exit={{ scale: 2, opacity: 0 }} className="absolute">
@@ -596,10 +652,12 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
           <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
         </div>
 
-        <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
-          className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
-          {muted ? <FaVolumeMute /> : <FaVolumeUp />}
-        </motion.button>
+        {!videoError && (
+          <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
+            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
+            {muted ? <FaVolumeMute /> : <FaVolumeUp />}
+          </motion.button>
+        )}
 
         <button onClick={(e) => { e.stopPropagation(); openModal(setShowOptions); }} className="text-white text-xl drop-shadow-lg p-2">
           <HiDotsVertical />
@@ -614,8 +672,11 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
 };
 
 VideoCard.displayName = "VideoCard";
+
+// ✅ memo : onVideoEnded exclu de la comparaison car géré via onVideoEndedRef interne
 export default memo(VideoCard, (prev, next) =>
-  prev.isActive   === next.isActive   &&
-  prev.video._id  === next.video._id  &&
-  prev.isAutoPost === next.isAutoPost
+  prev.isActive      === next.isActive      &&
+  prev.video._id     === next.video._id     &&
+  prev.isAutoPost    === next.isAutoPost    &&
+  prev.onModalChange === next.onModalChange
 );

@@ -1,31 +1,20 @@
 // 📁 src/pages/Videos/AggregatedCard.jsx
 //
-// 🐛 FIX SON DÉFINITIF :
+// ✅ FIXES PRÉCÉDENTS CONSERVÉS :
+//   - Suppression de vid.load() → le navigateur charge automatiquement
+//   - useVideoPlayer hook centralisé avec mutedRef (pas de closure stale)
+//   - handleToggleMute applique vid.muted directement sur le DOM
+//   - Reset à la désactivation conserve muted=false si USER_INTERACTED_KEY
 //
-//   SYMPTÔME : icône son change (🔇→🔊) mais vidéo reste muette sur
-//              Pexels / Reddit. Les vidéos user ont du son → pas un
-//              problème de politique autoplay navigateur.
+// ✅ FIX SAUT ALÉATOIRE (ce commit) :
 //
-//   CAUSE RACINE identifiée :
-//     Dans l'ancienne version, useEffect([proxiedUrl]) faisait :
-//       vid.src = url
-//       vid.load()          ← LE COUPABLE
-//     vid.load() réinitialise complètement l'élément <video> (spec HTML5).
-//     Quand l'utilisateur clique ensuite sur le son :
-//       setMuted(false) → useEffect([muted]) → vid.muted = false ✅
-//     Mais au prochain rendu ou au prochain play(), le navigateur
-//     rejoue depuis l'état interne réinitialisé par load() → muted=true.
+//   J. <video> avec position:absolute + contain:strict dans DirectVideo et HlsVideo
+//      → empêche les reflows Cloudinary/Pexels de faire fluctuer les dimensions
+//      → IntersectionObserver dans VideosPage reste stable pendant la lecture
 //
-//   FIX APPLIQUÉ :
-//     1. SUPPRESSION de vid.load() après vid.src = url dans DirectVideo.
-//        Le navigateur charge automatiquement quand src change (preload=auto).
-//     2. useVideoPlayer hook centralisé qui lit muted via mutedRef
-//        (pas de closure stale) et applique vid.muted APRÈS play().then()
-//        pour s'assurer que l'état son est correct quand la lecture démarre.
-//     3. handleToggleMute applique vid.muted = newMuted directement sur le
-//        DOM en plus de setMuted() pour éviter le délai d'un cycle React.
-//     4. Reset à la désactivation : on conserve muted=false si l'utilisateur
-//        a déjà activé le son dans la session (USER_INTERACTED_KEY).
+//   K. isEndedFiredRef reset dans useEffect([content._id]) séparé
+//      → même fix que VideoCard : corrige le cas de réutilisation d'instance
+//        via la virtualisation.
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -57,11 +46,6 @@ const generateAvatar = (name = 'U') => {
 
 // ─────────────────────────────────────────────────────────────────────
 // useVideoPlayer — hook partagé pour <video> MP4 et HLS
-//
-// Règles :
-//   - src posé via vid.src UNE SEULE FOIS sans vid.load()
-//   - muted lu via mutedRef pour éviter les closures stales
-//   - play() → then() → applyMute() pour s'assurer de l'état son post-play
 // ─────────────────────────────────────────────────────────────────────
 function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError }) {
   const mutedRef = useRef(muted);
@@ -78,8 +62,7 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
     vid.src    = src;
     vid.muted  = true;
     vid.volume = 1;
-    // ✅ PAS de vid.load() — le navigateur charge automatiquement
-    // quand src change avec preload="auto"
+    // PAS de vid.load() — le navigateur charge automatiquement quand src change avec preload="auto"
   }, [src, videoRef]);
 
   // ── Play / Pause ──────────────────────────────────────────────
@@ -87,11 +70,10 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
     const vid = videoRef.current;
     if (!vid) return;
     if (isActive) {
-      vid.muted  = true; // politique autoplay
+      vid.muted  = true;
       vid.volume = 1;
       vid.play()
         .then(() => {
-          // Lire mutedRef.current (valeur actuelle, pas closure stale)
           const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
           if (hasInteracted) {
             vid.muted  = mutedRef.current;
@@ -143,10 +125,27 @@ const DirectVideo = memo(({
   });
 
   return (
-    <video ref={videoRef} className="w-full h-full object-cover"
-      playsInline preload="auto" poster={content.thumbnail || undefined}
-      onClick={onTogglePlay} onDoubleClick={onDoubleTap}
-      onTimeUpdate={onTimeUpdate} onEnded={onEnded} />
+    // ✅ FIX J : position:absolute + contain:strict
+    // → empêche les reflows de faire fluctuer les dimensions
+    // → l'IntersectionObserver dans VideosPage reste stable pendant la lecture
+    <video
+      ref={videoRef}
+      className="w-full h-full object-cover"
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        contain: 'strict',
+      }}
+      playsInline
+      preload="auto"
+      poster={content.thumbnail || undefined}
+      onClick={onTogglePlay}
+      onDoubleClick={onDoubleTap}
+      onTimeUpdate={onTimeUpdate}
+      onEnded={onEnded}
+    />
   );
 });
 DirectVideo.displayName = 'DirectVideo';
@@ -221,17 +220,31 @@ const HlsVideo = memo(({
   }, [muted]); // eslint-disable-line
 
   return (
-    <video ref={videoRef} className="w-full h-full object-cover"
-      playsInline preload="auto" poster={content.thumbnail || undefined}
-      onClick={onTogglePlay} onDoubleClick={onDoubleTap}
-      onTimeUpdate={onTimeUpdate} onEnded={onEnded} />
+    // ✅ FIX J : même fix que DirectVideo
+    <video
+      ref={videoRef}
+      className="w-full h-full object-cover"
+      style={{
+        position: 'absolute',
+        inset: 0,
+        width: '100%',
+        height: '100%',
+        contain: 'strict',
+      }}
+      playsInline
+      preload="auto"
+      poster={content.thumbnail || undefined}
+      onClick={onTogglePlay}
+      onDoubleClick={onDoubleTap}
+      onTimeUpdate={onTimeUpdate}
+      onEnded={onEnded}
+    />
   );
 });
 HlsVideo.displayName = 'HlsVideo';
 
 // ─────────────────────────────────────────────────────────────────────
 // VimeoEmbed — iframe + postMessage API Vimeo Player
-// (background=1 retiré dans vimeoService.js)
 // ─────────────────────────────────────────────────────────────────────
 const VimeoEmbed = memo(({ content, isActive, muted }) => {
   const iframeRef = useRef(null);
@@ -339,6 +352,10 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
   const videoRef        = useRef(null);
   const isEndedFiredRef = useRef(false);
 
+  // ✅ FIX H (même pattern que VideoCard) : ref stable pour onVideoEnded
+  const onVideoEndedRef = useRef(onVideoEnded);
+  useEffect(() => { onVideoEndedRef.current = onVideoEnded; }, [onVideoEnded]);
+
   const isHLS        = !!content.isHLS;
   const isEmbed      = !!content.isEmbed;
   const contentType  = content.contentType || 'video';
@@ -352,6 +369,11 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
 
   const openModal  = useCallback((setter) => { setter(true);  onModalChange?.(true);  }, [onModalChange]);
   const closeModal = useCallback((setter) => { setter(false); onModalChange?.(false); }, [onModalChange]);
+
+  // ✅ FIX K : reset isEndedFiredRef quand le contenu change (content._id)
+  useEffect(() => {
+    isEndedFiredRef.current = false;
+  }, [content._id]);
 
   useEffect(() => {
     if (!isActive || (!showVideoPlayer && !showEmbed)) return;
@@ -372,12 +394,11 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
 
   useEffect(() => {
     if (!isActive) {
-      // ✅ Conserver muted=false si l'utilisateur a activé le son dans la session
       const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
       setMuted(hasInteracted ? false : true);
       setVideoError(false); setIsPaused(false);
       setProgress(0); setShowSoundHint(false);
-      isEndedFiredRef.current = false;
+      // isEndedFiredRef géré par useEffect([content._id])
     }
   }, [isActive]);
 
@@ -391,7 +412,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false);
     setMuted(false);
-    // Application directe sur le DOM sans attendre le cycle React
     const vid = videoRef.current;
     if (vid && !isEmbed) {
       vid.muted = false; vid.volume = 1;
@@ -414,11 +434,12 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
     if (!isLiked) handleLike();
   }, [isLiked]); // eslint-disable-line
 
+  // ✅ FIX K : handleEnded utilise onVideoEndedRef → pas de closure stale
   const handleEnded = useCallback(() => {
     if (isEndedFiredRef.current) return;
     isEndedFiredRef.current = true;
-    if (onVideoEnded) onVideoEnded();
-  }, [onVideoEnded]);
+    onVideoEndedRef.current?.();
+  }, []); // eslint-disable-line
 
   const handleLike = useCallback(async (e) => {
     e?.stopPropagation();
@@ -437,8 +458,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
     setShowSoundHint(false);
     const newMuted = !muted;
     setMuted(newMuted);
-    // ✅ Application directe sur le DOM en plus du setMuted React
-    // pour éviter le délai d'un cycle entre le click et l'effet sonore
     const vid = videoRef.current;
     if (vid && !isEmbed) {
       vid.muted  = newMuted;
@@ -616,6 +635,10 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
 };
 
 AggregatedCard.displayName = 'AggregatedCard';
+
+// ✅ memo : onVideoEnded exclu de la comparaison car géré via onVideoEndedRef interne
 export default memo(AggregatedCard, (prev, next) =>
-  prev.isActive === next.isActive && prev.content._id === next.content._id
+  prev.isActive     === next.isActive     &&
+  prev.content._id  === next.content._id  &&
+  prev.onModalChange === next.onModalChange
 );

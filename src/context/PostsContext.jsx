@@ -4,13 +4,42 @@
 // ✅ FIX PEXELS v2 : filtre toutes les URLs videos.pexels.com (tokens expirent ~2h)
 // ✅ FIX PIXABAY v3 : filtre toutes les URLs cdn.pixabay.com/video
 // ✅ FIX POSTS PROFIL NON AFFICHÉS
-// 🚀 FIX PUBLICATION LENTE :
-//   - addPostOptimistic  → affiche le post INSTANTANÉMENT avec blob URLs locales
-//   - replaceOptimisticPost → remplace le fantôme par le vrai post serveur
-//   - removeOptimisticPost  → rollback propre si l'upload échoue
-//   - createPost supprimé du context (géré directement dans CreatePost via axiosClient)
+// 🚀 FIX PUBLICATION LENTE : addPostOptimistic / replaceOptimisticPost / removeOptimisticPost
 // ✅ FIX TDZ : fetchPosts déclaré AVANT replaceOptimisticPost
-// ✅ FIX HTTP 400 : garde ObjectId sur fetchUserPosts — rejette les IDs temporaires clients
+// ✅ FIX HTTP 400 : garde ObjectId sur fetchUserPosts
+//
+// ✅ FIX RE-RENDER GLOBAL / SAUT VIDÉOS (ce commit) :
+//
+//   SYMPTÔME : les vidéos (VideosPage) sautent et redémarrent aléatoirement.
+//
+//   CAUSE RACINE IDENTIFIÉE :
+//     1. useEffect([token]) remet initialLoadDone.current = false à chaque
+//        changement de token (refresh, reconnect socket...).
+//        → fetchPosts(1, false) refait un reset complet → setPosts([...]) avec
+//          un nouveau tableau → React re-render tout l'arbre de providers →
+//          VideosProvider/VideosPage se démontent et remontent → feed repart à 0.
+//
+//     2. replaceOptimisticPost appelle fetchPosts(1, false) après 800ms
+//        → idem : reset complet du feed posts → re-render global.
+//
+//     3. fetchPosts dépend de [token, normalizePost] → token change →
+//        fetchPosts est recréé → toutes les dépendances en cascade sont
+//        recréées → re-renders en cascade.
+//
+//   FIXES APPLIQUÉS :
+//
+//   A. tokenRef dans fetchPosts — fetchPosts lit le token via tokenRef.current
+//      au lieu de capturer token dans sa closure. Dépendances : [] (stable).
+//      → Plus aucun re-render cascade quand le token se refresh.
+//
+//   B. initialLoadDone.current NOT reset dans useEffect([token]) — on utilise
+//      un tokenUsedRef pour ne déclencher le fetch initial qu'une seule fois
+//      par session, même si le token change (refresh silencieux).
+//      → Le feed posts ne se remet plus à zéro au refresh de token.
+//
+//   C. replaceOptimisticPost ne fait plus fetchPosts() — on insère directement
+//      le vrai post normalisé dans le state via setPosts. Aucun appel réseau
+//      supplémentaire → pas de re-render global.
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useAuth } from "./AuthContext";
@@ -31,12 +60,6 @@ const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
 
 // ─────────────────────────────────────────────
 // FILTRE EXTERNES — v3
-//
-// Bloque TOUTE URL contenant :
-//   - "videos.pexels.com"      → tokens expirent ~2h
-//   - "cdn.pixabay.com/video"  → URLs directes bloquées par CORS
-//
-// Un post avec une telle URL en DB sera toujours en erreur → on le masque.
 // ─────────────────────────────────────────────
 function hasBlockedExternalVideoUrl(post) {
   const sources = [
@@ -170,10 +193,20 @@ export const PostsProvider = ({ children }) => {
   const initialLoadDone = useRef(false);
   const abortController = useRef(null);
 
+  // ✅ FIX A : tokenRef — fetchPosts lit toujours le token courant
+  // sans capturer token dans sa closure → fetchPosts a des dépendances []
+  // → jamais recréé → pas de re-render en cascade quand le token se refresh
   const tokenRef = useRef(token);
   useEffect(() => { tokenRef.current = token; }, [token]);
 
+  // ✅ FIX B : tokenUsedRef — mémorise le token qui a déclenché le fetch initial
+  // Si le token change silencieusement (refresh), on ne refait pas le fetch initial
+  // → le feed posts ne se remet plus à zéro → pas de re-render global → pas de saut vidéo
+  const tokenUsedRef = useRef(null);
+
   const userId = user?._id || user?.id;
+  const userIdRef = useRef(userId);
+  useEffect(() => { userIdRef.current = userId; }, [userId]);
 
   const waitForToken = useCallback(async (maxWaitMs = 3000) => {
     if (tokenRef.current) return tokenRef.current;
@@ -191,6 +224,7 @@ export const PostsProvider = ({ children }) => {
   // ============================================
   // NORMALISATION
   // ============================================
+  // ✅ FIX A : normalizePost n'a aucune dépendance externe instable
   const normalizePost = useCallback((p) => {
     if (p.isOptimistic) return p;
 
@@ -229,14 +263,18 @@ export const PostsProvider = ({ children }) => {
       views:    Array.isArray(p.views)    ? p.views    : [],
       shares:   Array.isArray(p.shares)   ? p.shares   : [],
     };
-  }, []);
+  }, []); // ✅ Aucune dépendance → stable
 
   // ============================================
   // FETCH FEED GLOBAL (Home)
-  // ✅ Déclaré EN PREMIER pour éviter la TDZ dans replaceOptimisticPost
+  // ✅ FIX A : dépendances [] — lit token via tokenRef.current
+  //   → fetchPosts ne sera JAMAIS recréé → pas de re-render en cascade
   // ============================================
   const fetchPosts = useCallback(async (pageNumber = 1, append = false) => {
-    if (!token) {
+    // ✅ Lire le token via ref → pas de closure stale, pas de dépendance instable
+    const currentToken = tokenRef.current;
+
+    if (!currentToken) {
       console.warn("⚠️ [PostsContext] fetchPosts bloqué : pas de token");
       return { success: false, posts: [] };
     }
@@ -262,7 +300,7 @@ export const PostsProvider = ({ children }) => {
 
     try {
       const res = await fetch(`${API_URL}/posts?page=${pageNumber}&limit=20`, {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${currentToken}` },
         signal:  abortController.current.signal,
       });
 
@@ -273,7 +311,6 @@ export const PostsProvider = ({ children }) => {
       const normalized = postsArray.map(normalizePost);
       console.log(`✅ [PostsContext] ${normalized.length} posts reçus`);
 
-      // ✅ Filtrer les posts Pexels + Pixabay AVANT le render
       const clean = filterBlockedPosts(normalized);
       preloadFirstPostLCP(clean);
 
@@ -303,15 +340,20 @@ export const PostsProvider = ({ children }) => {
       setLoading(false);
       isLoadingRef.current = false;
     }
-  }, [token, normalizePost]);
+  }, [normalizePost]); // ✅ normalizePost est stable (dépendances []) → fetchPosts aussi
 
   // ============================================
   // FETCH NEXT PAGE
   // ============================================
+  const pageRef2 = useRef(page);
+  const hasMoreRef2 = useRef(hasMore);
+  useEffect(() => { pageRef2.current = page; },     [page]);
+  useEffect(() => { hasMoreRef2.current = hasMore; }, [hasMore]);
+
   const fetchNextPage = useCallback(() => {
-    if (!hasMore || isLoadingRef.current || loading) return;
-    return fetchPosts(page + 1, true);
-  }, [hasMore, loading, page, fetchPosts]);
+    if (!hasMoreRef2.current || isLoadingRef.current || loading) return;
+    return fetchPosts(pageRef2.current + 1, true);
+  }, [loading, fetchPosts]);
 
   // ============================================
   // FETCH USER POSTS (Profil)
@@ -355,7 +397,6 @@ export const PostsProvider = ({ children }) => {
       const postsArray = data.posts || data.data || (Array.isArray(data) ? data : []);
       const normalized = postsArray.map(normalizePost);
 
-      // ✅ Filtrer les posts Pexels + Pixabay aussi sur le profil
       const clean = filterBlockedPosts(normalized);
       console.log(`✅ [PostsContext] fetchUserPosts : ${clean.length} posts pour userId=${targetUserId}`);
       return clean;
@@ -388,14 +429,28 @@ export const PostsProvider = ({ children }) => {
     });
   }, []);
 
+  // ✅ FIX C : replaceOptimisticPost n'appelle PLUS fetchPosts()
+  // Avant : fetchPosts(1, false) après 800ms → reset complet du feed posts
+  //         → re-render global → VideosPage se démonte → saut vidéo
+  // Après : on insère directement le vrai post normalisé dans le state
+  //         → aucun appel réseau supplémentaire → pas de re-render global
   const replaceOptimisticPost = useCallback((tempId, realPost) => {
     const normalized = normalizePost(realPost);
-    syncNewPost(normalized, normalized.user?._id || userId).catch(() => {});
-    setPosts(prev => prev.filter(p => p._id !== tempId));
-    setTimeout(() => {
-      fetchPosts(1, false).catch(() => {});
-    }, 800);
-  }, [normalizePost, userId, fetchPosts]);
+    syncNewPost(normalized, normalized.user?._id || userIdRef.current).catch(() => {});
+
+    // ✅ Remplacer le post optimiste par le vrai post directement dans le state
+    // Sans appel réseau → sans re-render global → sans saut vidéo
+    setPosts(prev => {
+      const idx = prev.findIndex(p => p._id === tempId);
+      if (idx === -1) {
+        // Le post optimiste n'existe plus → l'ajouter au début
+        return [normalized, ...prev];
+      }
+      const next = [...prev];
+      next[idx] = normalized;
+      return next;
+    });
+  }, [normalizePost]);
 
   const removeOptimisticPost = useCallback((tempId) => {
     setPosts(prev => prev.filter(p => p._id !== tempId));
@@ -405,11 +460,12 @@ export const PostsProvider = ({ children }) => {
   // CREATE POST
   // ============================================
   const createPost = useCallback(async (formData) => {
-    if (!token) throw new Error("Connexion requise");
+    const currentToken = tokenRef.current;
+    if (!currentToken) throw new Error("Connexion requise");
 
     const res = await fetch(`${API_URL}/posts`, {
       method:  "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${currentToken}` },
       body:    formData,
     });
 
@@ -423,33 +479,34 @@ export const PostsProvider = ({ children }) => {
     if (!newPost?._id) throw new Error("Post invalide");
 
     const normalized = normalizePost(newPost);
-    await syncNewPost(normalized, userId);
+    await syncNewPost(normalized, userIdRef.current);
     setPosts(prev => {
       if (prev.some(p => p._id === normalized._id)) return prev;
       return [normalized, ...prev];
     });
     return normalized;
-  }, [token, userId, normalizePost]);
+  }, [normalizePost]);
 
   // ============================================
   // DELETE POST
   // ============================================
   const deletePost = useCallback(async (postId) => {
-    if (!token) return false;
+    const currentToken = tokenRef.current;
+    if (!currentToken) return false;
     try {
       const res = await fetch(`${API_URL}/posts/${postId}`, {
         method:  "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${currentToken}` },
       });
       if (!res.ok) throw new Error("Suppression échouée");
-      await syncDeletePost(postId, userId);
+      await syncDeletePost(postId, userIdRef.current);
       setPosts(prev => prev.filter(p => p._id !== postId));
       return true;
     } catch (err) {
       console.error("❌ Échec suppression:", err.message);
       return false;
     }
-  }, [token, userId]);
+  }, []);
 
   // ============================================
   // REMOVE POST (local uniquement)
@@ -471,14 +528,16 @@ export const PostsProvider = ({ children }) => {
   // TOGGLE LIKE
   // ============================================
   const toggleLike = useCallback(async (postId) => {
-    if (!token || !userId) return false;
+    const currentToken = tokenRef.current;
+    const currentUserId = userIdRef.current;
+    if (!currentToken || !currentUserId) return false;
 
     const optimisticUpdate = () => {
       setPosts(prev => prev.map(p => {
         if (p._id !== postId) return p;
         const likes = [...p.likes];
-        const idx   = likes.indexOf(userId);
-        idx > -1 ? likes.splice(idx, 1) : likes.push(userId);
+        const idx   = likes.indexOf(currentUserId);
+        idx > -1 ? likes.splice(idx, 1) : likes.push(currentUserId);
         return { ...p, likes };
       }));
     };
@@ -488,7 +547,7 @@ export const PostsProvider = ({ children }) => {
     try {
       const res = await fetch(`${API_URL}/posts/${postId}/like`, {
         method:  "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${currentToken}` },
       });
       if (!res.ok) throw new Error("Like échoué");
       const data    = await res.json();
@@ -501,17 +560,18 @@ export const PostsProvider = ({ children }) => {
       optimisticUpdate(); // rollback
       return false;
     }
-  }, [token, userId, normalizePost]);
+  }, [normalizePost]);
 
   // ============================================
   // ADD COMMENT
   // ============================================
   const addComment = useCallback(async (postId, content) => {
-    if (!content?.trim() || !token) return false;
+    const currentToken = tokenRef.current;
+    if (!content?.trim() || !currentToken) return false;
     try {
       const res = await fetch(`${API_URL}/posts/${postId}/comment`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentToken}` },
         body:    JSON.stringify({ content }),
       });
       if (!res.ok) throw new Error("Commentaire échoué");
@@ -526,14 +586,24 @@ export const PostsProvider = ({ children }) => {
       console.error("❌ Échec commentaire:", err.message);
       return false;
     }
-  }, [token]);
+  }, []);
 
   // ============================================
   // INITIAL LOAD
+  // ✅ FIX B : tokenUsedRef — ne déclenche le fetch initial qu'une seule fois
+  // par session, même si le token change (refresh silencieux du JWT).
+  // Sans ce fix : useEffect([token]) se redéclenchait à chaque refresh de token
+  // → initialLoadDone.current = false → fetchPosts reset → re-render global.
   // ============================================
   useEffect(() => {
     if (!token) return;
 
+    // ✅ Si c'est le même token (refresh silencieux) → ne rien faire
+    // On compare les 20 premiers caractères pour éviter les micro-différences
+    const tokenKey = token.slice(0, 20);
+    if (tokenUsedRef.current === tokenKey && initialLoadDone.current) return;
+
+    tokenUsedRef.current  = tokenKey;
     initialLoadDone.current = false;
 
     const init = async () => {
@@ -543,7 +613,6 @@ export const PostsProvider = ({ children }) => {
       try {
         const cached = await idbGetPosts("allPosts");
         if (cached?.length) {
-          // ✅ Filtrer aussi le cache IDB (peut contenir des URLs expirées/bloquées)
           const cleanCached = filterBlockedPosts(cached);
           preloadFirstPostLCP(cleanCached);
           setPosts(cleanCached);
@@ -561,7 +630,7 @@ export const PostsProvider = ({ children }) => {
     };
 
     init();
-  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token, fetchPosts]);
 
   // ============================================
   // CLEANUP

@@ -1,45 +1,39 @@
 // 📁 src/pages/Videos/VideosPage.jsx
 //
-// 🐛 FIX SAUT DÈS LE DÉBUT (ce commit) :
+// ✅ FIXES APPLIQUÉS (ce commit) :
 //
-//   SYMPTÔME : les vidéos user (Cloudinary) sautent dès le début, avant
-//              que l'utilisateur ne touche l'écran.
+//   🐛 FIX SAUT IMMÉDIAT AU CHARGEMENT (cause racine confirmée par logs) :
 //
-//   CAUSES IDENTIFIÉES :
+//   SYMPTÔME : les vidéos sautent dès qu'elles sont affichées, sans que
+//              l'utilisateur ne touche l'écran.
 //
-//   1. IntersectionObserver déclenché au chargement initial :
-//      Au montage, la slide 0 est visible → observer → handleVisible(0) → OK.
-//      Mais Cloudinary provoque un repaint (chargement de la vidéo, thumbnail)
-//      → l'intersectionRatio de la slide 0 fluctue brièvement → observer se
-//      redéclenche avec un ratio légèrement < 0.85 puis > 0.85 → handleVisible(0)
-//      appelé à nouveau → si entre-temps la slide 1 était dans le viewport
-//      (pré-rendu, height pas encore stable) → handleVisible(1) → saut.
+//   CAUSE RACINE (identifiée via logs console) :
+//     1. Les 25 vidéos agrégées (Pexels/Pixabay) arrivent APRÈS le montage
+//        initial via fetchAggregated().
+//     2. setAggContents → shuffledItems change → feedItems change →
+//        TOUS les indices des slides se décalent.
+//     3. L'IntersectionObserver voit des slides à de nouveaux indices →
+//        handleVisible() se déclenche avec le mauvais index → saut.
+//     4. Même problème avec les posts utilisateur (241 posts chargés en
+//        plusieurs fois) → feed reconstruit → indices décalés → saut.
 //
-//   2. Debounce de 400ms insuffisant au boot :
-//      Le premier chargement de Cloudinary peut prendre 1-3 secondes.
-//      Pendant ce temps, des repaints multiples déclenchent handleVisible()
-//      plusieurs fois. Le debounce de 400ms ne couvre pas ce cas.
+//   FIX A : activeItemIdRef — mémorise l'ID de la vidéo active.
+//     Quand feedItems change, on recalcule l'index pour rester sur la même
+//     vidéo (même ID) au lieu de rester sur la même position numérique.
+//     → scrollTo({ behavior: 'instant' }) repositionne silencieusement.
 //
-//   3. VIRTUAL_WINDOW = 2 rend 3 slides visibles dans le DOM au démarrage :
-//      Les slides 0, 1, 2 sont toutes rendues. Si la slide 1 entre à 86%
-//      dans le viewport à cause d'un height instable → handleVisible(1).
+//   FIX B : setShuffledItems append-only — quand le feed existait déjà,
+//     on AJOUTE les nouvelles vidéos à la fin sans reshuffler l'existant.
+//     → Les vidéos déjà en position ne bougent plus quand de nouvelles
+//       arrivent → pas de décalage d'indices → pas de saut.
 //
-//   FIXES APPLIQUÉS :
-//
-//   A. isScrollLocked ref : les 1500ms après le montage initial, handleVisible
-//      est bloqué. Cela couvre le temps de premier chargement Cloudinary.
-//      L'utilisateur ne peut pas scroller aussi vite → pas d'impact UX.
-//
-//   B. scrolledOnce ref : l'observer ne peut changer activeIndex QUE si
-//      l'utilisateur a déjà scrollé (container 'scroll' event fired).
-//      → Au boot, seule la slide 0 peut être active.
-//      → Le premier changement d'index ne peut venir que d'un vrai scroll.
-//
-//   C. VIRTUAL_WINDOW réduit à 1 : seules les slides index-1, index, index+1
-//      sont dans le DOM. Réduit les faux positifs de l'observer au boot.
-//
-//   D. threshold relevé à 0.92 (était 0.85) : encore moins sensible aux
-//      repaints Cloudinary qui font fluctuer le ratio sur ≤ 8% de la slide.
+//   FIXES PRÉCÉDENTS CONSERVÉS :
+//   C. isScrollLocked (1500ms boot)
+//   D. scrolledOnce ref
+//   E. isUserScrolling ref (scroll actif détecté via event + timer 150ms)
+//   F. isAutoScrolling ref (scroll programmatique fin de vidéo)
+//   G. VIRTUAL_WINDOW = 1
+//   H. threshold 0.92
 
 import React, {
   useState, useEffect, useRef, useCallback, memo, useMemo, createContext, useContext
@@ -146,9 +140,7 @@ const LoadingScreen = memo(() => (
 ));
 LoadingScreen.displayName = 'LoadingScreen';
 
-// ✅ FIX C : VIRTUAL_WINDOW réduit à 1
-// Avant : index-2 à index+2 = 5 slides dans le DOM au boot
-// Après : index-1 à index+1 = 3 slides seulement → moins de faux positifs observer
+// ✅ FIX G : VIRTUAL_WINDOW = 1 → 3 slides max dans le DOM
 const VIRTUAL_WINDOW = 1;
 
 const SlidePlaceholder = memo(() => (
@@ -169,10 +161,7 @@ const SlideItem = memo(({ item, index, onVisible, onVideoEnded, isVirtualized, o
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        // ✅ FIX D : threshold 0.92 (était 0.85)
-        // Les repaints Cloudinary font fluctuer le ratio de ±5-8%
-        // → avec 0.92, il faut que 92% de la slide soit visible pour déclencher
-        // → réduit fortement les faux positifs au chargement initial
+        // ✅ FIX H : threshold 0.92 → moins sensible aux repaints
         if (entry.isIntersecting && entry.intersectionRatio >= 0.92) {
           onVisible(index);
         }
@@ -253,14 +242,23 @@ const VideosPage = () => {
   const fetchTriggered  = useRef(false);
   const lastVisibleTime = useRef(0);
 
-  // ✅ FIX A : isScrollLocked — bloque handleVisible pendant 1500ms au boot
-  // Cloudinary peut provoquer des repaints pendant le premier chargement.
-  // 1500ms couvre le cas le plus lent (connexion mobile 3G).
+  // ✅ FIX C : isScrollLocked — bloque handleVisible pendant 1500ms au boot
   const isScrollLocked  = useRef(true);
 
-  // ✅ FIX B : scrolledOnce — l'index ne peut changer QUE si l'utilisateur
-  // a déjà scrollé au moins une fois. Empêche tout saut automatique au boot.
+  // ✅ FIX D : scrolledOnce — l'index ne peut changer QUE si l'user a scrollé
   const scrolledOnce    = useRef(false);
+
+  // ✅ FIX E : isUserScrolling — l'observer ne change l'index QUE si l'user scrolle activement
+  const isUserScrolling = useRef(false);
+  const scrollEndTimer  = useRef(null);
+
+  // ✅ FIX F : isAutoScrolling — bloque handleVisible après scroll programmatique (fin vidéo)
+  const isAutoScrolling = useRef(false);
+
+  // ✅ FIX A : activeItemIdRef — mémorise l'ID de la vidéo active
+  // Quand feedItems change (nouvelles vidéos chargées), on recalcule l'index
+  // pour rester sur la même vidéo au lieu de la même position numérique.
+  const activeItemIdRef = useRef(null);
 
   const userHasMoreRef = useRef(userHasMore);
   const userLoadingRef = useRef(userLoading);
@@ -275,25 +273,34 @@ const VideosPage = () => {
   useEffect(() => { aggLoadingRef.current  = aggLoading;   }, [aggLoading]);
   useEffect(() => { aggPageRef.current     = aggPage;      }, [aggPage]);
 
-  // ✅ FIX A : déverrouiller après 1500ms
+  // ✅ FIX C : déverrouiller après 1500ms
   useEffect(() => {
     const t = setTimeout(() => { isScrollLocked.current = false; }, 1500);
     return () => clearTimeout(t);
   }, []);
 
-  // ✅ FIX B : écouter le scroll du container pour marquer scrolledOnce
+  // ✅ FIX D + E : écouter le scroll du container
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     const onScroll = () => {
+      // FIX D : marquer le premier scroll utilisateur
       if (!scrolledOnce.current) {
-        scrolledOnce.current = true;
-        // Dès que l'utilisateur scrolle, déverrouiller immédiatement aussi
+        scrolledOnce.current   = true;
         isScrollLocked.current = false;
       }
+      // FIX E : fenêtre "scroll actif" de 150ms
+      isUserScrolling.current = true;
+      clearTimeout(scrollEndTimer.current);
+      scrollEndTimer.current = setTimeout(() => {
+        isUserScrolling.current = false;
+      }, 150);
     };
     container.addEventListener('scroll', onScroll, { passive: true });
-    return () => container.removeEventListener('scroll', onScroll);
+    return () => {
+      container.removeEventListener('scroll', onScroll);
+      clearTimeout(scrollEndTimer.current);
+    };
   }, []);
 
   const handleVideoEnded = useCallback((finishedIndex) => {
@@ -301,6 +308,11 @@ const VideosPage = () => {
     if (!container) return;
     const nextIndex = finishedIndex + 1;
     if (nextIndex >= feedLengthRef.current) return;
+
+    // ✅ FIX F : verrouiller handleVisible pendant le scroll automatique
+    isAutoScrolling.current = true;
+    setTimeout(() => { isAutoScrolling.current = false; }, 800);
+
     setActiveIndex(nextIndex);
     requestAnimationFrame(() => {
       container.scrollTo({ top: nextIndex * container.clientHeight, behavior: 'smooth' });
@@ -352,6 +364,10 @@ const VideosPage = () => {
     }
   }, []); // eslint-disable-line
 
+  // ✅ FIX B : setShuffledItems append-only
+  // Quand le feed existait déjà, on AJOUTE les nouvelles vidéos à la fin
+  // sans reshuffler l'existant → les vidéos déjà en position ne bougent plus
+  // → pas de décalage d'indices → pas de saut lors du chargement différé.
   useEffect(() => {
     const userList = (userVideos || []).map(v => ({ ...v, _isUserVideo: true }));
     const mixed    = [];
@@ -362,13 +378,30 @@ const VideosPage = () => {
       if ((i + 1) % ratio === 0 && aggIdx < aggContents.length) mixed.push(aggContents[aggIdx++]);
     });
     while (aggIdx < aggContents.length) mixed.push(aggContents[aggIdx++]);
+
+    // Déduplication
     const seen    = new Set();
     const deduped = [];
     for (const item of mixed) {
       const uid = `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
       if (!seen.has(uid)) { seen.add(uid); deduped.push(item); }
     }
-    setShuffledItems(shuffleArray(deduped));
+
+    setShuffledItems(prev => {
+      // Premier chargement → shuffle complet
+      if (prev.length === 0) return shuffleArray(deduped);
+
+      // Chargements suivants → append uniquement des nouvelles vidéos
+      // Les vidéos déjà présentes restent à leur position → pas de saut
+      const prevIds  = new Set(prev.map(v => `${v._isAggregated ? 'agg' : 'user'}-${v._id || v.externalId}`));
+      const newItems = deduped.filter(v => {
+        const uid = `${v._isAggregated ? 'agg' : 'user'}-${v._id || v.externalId}`;
+        return !prevIds.has(uid);
+      });
+
+      if (newItems.length === 0) return prev; // Rien de nouveau → pas de re-render
+      return [...prev, ...shuffleArray(newItems)];
+    });
   }, [userVideos, aggContents]);
 
   const filteredItems = useMemo(() => {
@@ -395,15 +428,44 @@ const VideosPage = () => {
 
   useEffect(() => { feedLengthRef.current = feedItems.length; }, [feedItems.length]);
 
+  // ✅ FIX A (partie 1) : mémoriser l'ID de la vidéo active à chaque changement
+  useEffect(() => {
+    const item = feedItems[activeIndex];
+    if (item) activeItemIdRef.current = item.id;
+  }, [activeIndex, feedItems]);
+
+  // ✅ FIX A (partie 2) : quand feedItems change, repositionner silencieusement
+  // sur la même vidéo (même ID) si son index a changé.
+  // Cas typique : les 25 vidéos agrégées arrivent → feedItems se reconstruit →
+  // la vidéo active est maintenant à un autre index → scroll instant pour compenser.
+  useEffect(() => {
+    if (!activeItemIdRef.current) return;
+    const newIndex = feedItems.findIndex(item => item.id === activeItemIdRef.current);
+    if (newIndex !== -1 && newIndex !== activeIndex) {
+      setActiveIndex(newIndex);
+      const container = containerRef.current;
+      if (container) {
+        // behavior: 'instant' → repositionnement invisible pour l'utilisateur
+        container.scrollTo({ top: newIndex * container.clientHeight, behavior: 'instant' });
+      }
+    }
+  }, [feedItems]); // eslint-disable-line
+
   const handleVisible = useCallback((index) => {
-    // ✅ FIX A : bloquer pendant le verrouillage initial (1500ms au boot)
+    // FIX C : bloquer pendant le verrouillage initial (1500ms au boot)
     if (isScrollLocked.current) return;
 
-    // ✅ FIX B : l'index ne peut changer que si l'utilisateur a scrollé au moins une fois
-    // Exception : index === 0 toujours autorisé (slide initiale)
+    // FIX D : l'index ne peut changer que si l'utilisateur a scrollé au moins une fois
     if (!scrolledOnce.current && index !== 0) return;
 
-    // Debounce 400ms (anti-repaint des portails)
+    // FIX F : ignorer pendant un scroll automatique (handleVideoEnded)
+    if (isAutoScrolling.current) return;
+
+    // FIX E : ignorer si l'utilisateur ne scrolle pas activement
+    // Exception : index === activeIndex (confirmation slide courante → inoffensif)
+    if (!isUserScrolling.current && index !== activeIndex) return;
+
+    // Debounce 400ms
     const now = Date.now();
     if (now - lastVisibleTime.current < 400) return;
     lastVisibleTime.current = now;
@@ -414,10 +476,11 @@ const VideosPage = () => {
       if (userHasMoreRef.current && !userLoadingRef.current) fetchUserVideosRef.current();
       if (aggHasMoreRef.current  && !aggLoadingRef.current)  fetchAggregatedRef.current(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
     }
-  }, []);
+  }, [activeIndex]);
 
   const handleVideoPublished = useCallback(() => {
     setActiveIndex(0);
+    activeItemIdRef.current = null;
     containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     setShuffledItems([]);
     fetchUserVideos(true);
