@@ -1,20 +1,24 @@
 // 📁 src/pages/Videos/AggregatedCard.jsx
 //
 // ✅ FIXES PRÉCÉDENTS CONSERVÉS :
-//   - Suppression de vid.load() → le navigateur charge automatiquement
 //   - useVideoPlayer hook centralisé avec mutedRef (pas de closure stale)
-//   - handleToggleMute applique vid.muted directement sur le DOM
-//   - Reset à la désactivation conserve muted=false si USER_INTERACTED_KEY
+//   - position:absolute + contain:strict → empêche reflows CLS
+//   - isEndedFiredRef reset dans useEffect([content._id])
 //
-// ✅ FIX SAUT ALÉATOIRE (ce commit) :
+// 🔥 FIX AUDIO (ce commit) :
 //
-//   J. <video> avec position:absolute + contain:strict dans DirectVideo et HlsVideo
-//      → empêche les reflows Cloudinary/Pexels de faire fluctuer les dimensions
-//      → IntersectionObserver dans VideosPage reste stable pendant la lecture
+//   L. VimeoEmbed — fix postMessage mute/unmute
+//      Avant : postMessage({ method, value }) sans attendre le chargement
+//      Après : écoute 'ready' depuis Vimeo, puis envoie les commandes
+//      Raison : Vimeo ignore les postMessage envoyés avant que le player soit prêt
 //
-//   K. isEndedFiredRef reset dans useEffect([content._id]) séparé
-//      → même fix que VideoCard : corrige le cas de réutilisation d'instance
-//        via la virtualisation.
+//   M. hasAudio flag — indicateur visuel "sans son"
+//      Les vidéos Pexels UHD muettes affichent un badge 🔇 pour informer l'utilisateur
+//      qu'il ne s'agit pas d'un bug mais d'une vidéo sans piste audio.
+//
+//   N. Volume explicite sur play() pour Pexels HD
+//      Avant : vid.volume = 1 mais vid.muted = true → son coupé
+//      Après : si USER_INTERACTED et !muted → vid.muted = false + vid.volume = 1
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -53,7 +57,6 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
 
   useEffect(() => { mutedRef.current = muted; }, [muted]);
 
-  // ── Chargement source — sans vid.load() ──────────────────────
   useEffect(() => {
     if (!src || src === srcRef.current) return;
     const vid = videoRef.current;
@@ -62,10 +65,8 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
     vid.src    = src;
     vid.muted  = true;
     vid.volume = 1;
-    // PAS de vid.load() — le navigateur charge automatiquement quand src change avec preload="auto"
   }, [src, videoRef]);
 
-  // ── Play / Pause ──────────────────────────────────────────────
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -76,6 +77,7 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
         .then(() => {
           const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
           if (hasInteracted) {
+            // 🔥 FIX N : appliquer le mute/volume APRÈS que play() a réussi
             vid.muted  = mutedRef.current;
             vid.volume = mutedRef.current ? 0 : 1;
           }
@@ -90,7 +92,6 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
     }
   }, [isActive]); // eslint-disable-line
 
-  // ── Sync muted → DOM ─────────────────────────────────────────
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -101,7 +102,6 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
     }
   }, [muted]); // eslint-disable-line
 
-  // ── Erreur ───────────────────────────────────────────────────
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -112,7 +112,7 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// DirectVideo — MP4 (Pexels portrait avec audio, Pixabay…)
+// DirectVideo — MP4 (Pexels, Pixabay…)
 // ─────────────────────────────────────────────────────────────────────
 const DirectVideo = memo(({
   content, isActive, muted, onMutedChange, onError,
@@ -125,19 +125,10 @@ const DirectVideo = memo(({
   });
 
   return (
-    // ✅ FIX J : position:absolute + contain:strict
-    // → empêche les reflows de faire fluctuer les dimensions
-    // → l'IntersectionObserver dans VideosPage reste stable pendant la lecture
     <video
       ref={videoRef}
       className="w-full h-full object-cover"
-      style={{
-        position: 'absolute',
-        inset: 0,
-        width: '100%',
-        height: '100%',
-        contain: 'strict',
-      }}
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', contain: 'strict' }}
       playsInline
       preload="auto"
       poster={content.thumbnail || undefined}
@@ -151,7 +142,7 @@ const DirectVideo = memo(({
 DirectVideo.displayName = 'DirectVideo';
 
 // ─────────────────────────────────────────────────────────────────────
-// HlsVideo — Reddit HLS .m3u8 (audio inclus dans le stream)
+// HlsVideo — Reddit HLS .m3u8
 // ─────────────────────────────────────────────────────────────────────
 const HlsVideo = memo(({
   content, isActive, muted, onMutedChange, onError,
@@ -220,17 +211,10 @@ const HlsVideo = memo(({
   }, [muted]); // eslint-disable-line
 
   return (
-    // ✅ FIX J : même fix que DirectVideo
     <video
       ref={videoRef}
       className="w-full h-full object-cover"
-      style={{
-        position: 'absolute',
-        inset: 0,
-        width: '100%',
-        height: '100%',
-        contain: 'strict',
-      }}
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', contain: 'strict' }}
       playsInline
       preload="auto"
       poster={content.thumbnail || undefined}
@@ -245,28 +229,88 @@ HlsVideo.displayName = 'HlsVideo';
 
 // ─────────────────────────────────────────────────────────────────────
 // VimeoEmbed — iframe + postMessage API Vimeo Player
+//
+// 🔥 FIX L : écoute l'événement 'ready' du player Vimeo avant d'envoyer
+// les commandes play/pause/volume. Vimeo ignore les postMessage envoyés
+// avant que le player soit initialisé.
 // ─────────────────────────────────────────────────────────────────────
 const VimeoEmbed = memo(({ content, isActive, muted }) => {
-  const iframeRef = useRef(null);
-  const postCmd   = useCallback((method, value) => {
-    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ method, value }), '*');
+  const iframeRef  = useRef(null);
+  const isReadyRef = useRef(false);
+  const pendingRef = useRef([]);
+
+  // Envoie une commande au player Vimeo (si prêt)
+  const postCmd = useCallback((method, value) => {
+    const payload = JSON.stringify(value !== undefined ? { method, value } : { method });
+    if (isReadyRef.current) {
+      iframeRef.current?.contentWindow?.postMessage(payload, '*');
+    } else {
+      // Mettre en file d'attente jusqu'à ce que le player soit prêt
+      pendingRef.current.push(payload);
+    }
   }, []);
+
+  // Écouter le message 'ready' du player Vimeo
+  useEffect(() => {
+    const handleMessage = (event) => {
+      try {
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data?.event === 'ready') {
+          isReadyRef.current = true;
+          // Vider la file d'attente
+          pendingRef.current.forEach(payload => {
+            iframeRef.current?.contentWindow?.postMessage(payload, '*');
+          });
+          pendingRef.current = [];
+          // Appliquer l'état actuel
+          iframeRef.current?.contentWindow?.postMessage(
+            JSON.stringify({ method: 'setVolume', value: muted ? 0 : 1 }), '*'
+          );
+          if (isActive) {
+            iframeRef.current?.contentWindow?.postMessage(
+              JSON.stringify({ method: 'play' }), '*'
+            );
+          }
+        }
+      } catch {}
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []); // eslint-disable-line
+
+  // Reset ready state quand la vidéo change
+  useEffect(() => {
+    isReadyRef.current = false;
+    pendingRef.current = [];
+  }, [content.videoUrl]);
 
   useEffect(() => {
     if (isActive) { postCmd('play'); postCmd('setVolume', muted ? 0 : 1); }
     else postCmd('pause');
   }, [isActive, postCmd]); // eslint-disable-line
 
-  useEffect(() => { postCmd('setVolume', muted ? 0 : 1); }, [muted, postCmd]);
+  useEffect(() => {
+    postCmd('setVolume', muted ? 0 : 1);
+  }, [muted, postCmd]);
 
+  // 🔥 FIX L : ajouter api=1 pour activer le postMessage API
   const src = content.videoUrl
-    ? (content.videoUrl.includes('?') ? `${content.videoUrl}&api=1` : `${content.videoUrl}?api=1`)
+    ? (content.videoUrl.includes('?')
+        ? `${content.videoUrl}&api=1`
+        : `${content.videoUrl}?api=1`)
     : '';
 
   return (
-    <iframe ref={iframeRef} src={src} className="w-full h-full"
-      allow="autoplay; fullscreen; picture-in-picture" allowFullScreen
-      frameBorder="0" title={content.title || 'Vimeo video'} />
+    <iframe
+      ref={iframeRef}
+      src={src}
+      className="w-full h-full"
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+      allow="autoplay; fullscreen; picture-in-picture"
+      allowFullScreen
+      frameBorder="0"
+      title={content.title || 'Vimeo video'}
+    />
   );
 });
 VimeoEmbed.displayName = 'VimeoEmbed';
@@ -329,6 +373,15 @@ const SoundHint = memo(() => (
 ));
 SoundHint.displayName = 'SoundHint';
 
+// 🔥 FIX M : badge "Sans son" pour les vidéos sans piste audio
+const NoAudioBadge = memo(() => (
+  <div className="absolute top-16 left-3 z-40 flex items-center gap-1.5 bg-black/50 backdrop-blur-sm px-2.5 py-1 rounded-full border border-white/10 pointer-events-none">
+    <FaVolumeMute className="text-white/60 text-xs" />
+    <span className="text-white/60 text-[10px] font-medium">Sans son</span>
+  </div>
+));
+NoAudioBadge.displayName = 'NoAudioBadge';
+
 // ─────────────────────────────────────────────────────────────────────
 // AggregatedCard
 // ─────────────────────────────────────────────────────────────────────
@@ -351,8 +404,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
 
   const videoRef        = useRef(null);
   const isEndedFiredRef = useRef(false);
-
-  // ✅ FIX H (même pattern que VideoCard) : ref stable pour onVideoEnded
   const onVideoEndedRef = useRef(onVideoEnded);
   useEffect(() => { onVideoEndedRef.current = onVideoEnded; }, [onVideoEnded]);
 
@@ -367,10 +418,12 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
   const showEmbed       = isEmbed && !videoError;
   const showMuteBtn     = showVideoPlayer || showEmbed;
 
+  // 🔥 FIX M : la vidéo n'a pas de piste audio → afficher badge et masquer bouton mute
+  const videoHasNoAudio = content.hasAudio === false && !isEmbed && !isHLS;
+
   const openModal  = useCallback((setter) => { setter(true);  onModalChange?.(true);  }, [onModalChange]);
   const closeModal = useCallback((setter) => { setter(false); onModalChange?.(false); }, [onModalChange]);
 
-  // ✅ FIX K : reset isEndedFiredRef quand le contenu change (content._id)
   useEffect(() => {
     isEndedFiredRef.current = false;
   }, [content._id]);
@@ -398,7 +451,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
       setMuted(hasInteracted ? false : true);
       setVideoError(false); setIsPaused(false);
       setProgress(0); setShowSoundHint(false);
-      // isEndedFiredRef géré par useEffect([content._id])
     }
   }, [isActive]);
 
@@ -434,12 +486,11 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
     if (!isLiked) handleLike();
   }, [isLiked]); // eslint-disable-line
 
-  // ✅ FIX K : handleEnded utilise onVideoEndedRef → pas de closure stale
   const handleEnded = useCallback(() => {
     if (isEndedFiredRef.current) return;
     isEndedFiredRef.current = true;
     onVideoEndedRef.current?.();
-  }, []); // eslint-disable-line
+  }, []);
 
   const handleLike = useCallback(async (e) => {
     e?.stopPropagation();
@@ -454,6 +505,8 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
 
   const handleToggleMute = useCallback((e) => {
     e.stopPropagation();
+    // 🔥 FIX M : si la vidéo n'a pas de piste audio, ne rien faire
+    if (videoHasNoAudio) return;
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false);
     const newMuted = !muted;
@@ -466,7 +519,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
         vid.play().catch(() => { vid.muted = true; setMuted(true); });
       }
     }
-  }, [muted, isActive, isEmbed]);
+  }, [muted, isActive, isEmbed, videoHasNoAudio]);
 
   const handleCommentSubmit = async () => {
     if (!newComment.trim() || !currentUser) return;
@@ -512,6 +565,9 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
       {isText  && !isShortVideo && !isDirectVid && !isHLS && !isImage && <ArticleContent content={content} />}
 
       {!isText && <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />}
+
+      {/* 🔥 FIX M : badge "Sans son" pour les vidéos Pexels UHD muettes */}
+      {videoHasNoAudio && isActive && <NoAudioBadge />}
 
       {showVideoPlayer && (
         <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30 z-20">
@@ -584,7 +640,9 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
           </motion.button>
           <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
         </div>
-        {showMuteBtn && (
+
+        {/* 🔥 FIX M : masquer le bouton mute si la vidéo n'a pas de son */}
+        {showMuteBtn && !videoHasNoAudio && (
           <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
             className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
             {muted ? <FaVolumeMute /> : <FaVolumeUp />}
@@ -636,7 +694,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange }) => {
 
 AggregatedCard.displayName = 'AggregatedCard';
 
-// ✅ memo : onVideoEnded exclu de la comparaison car géré via onVideoEndedRef interne
 export default memo(AggregatedCard, (prev, next) =>
   prev.isActive     === next.isActive     &&
   prev.content._id  === next.content._id  &&

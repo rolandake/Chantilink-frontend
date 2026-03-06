@@ -1,28 +1,30 @@
 // 📁 src/pages/Videos/VideoCard.jsx
 //
-// 🐛 FIX SAUT DÈS LE DÉBUT (ce commit) :
+// 🔥 FIX SAUTS VIDÉOS MANUELLES (ce commit) :
 //
-//   CAUSE : preload="metadata" sur toutes les slides au boot.
-//   Cloudinary répond aux requêtes metadata (~200-800ms) pour TOUTES les
-//   slides rendues dans le DOM (VIRTUAL_WINDOW=1 → 3 slides). Quand la
-//   réponse metadata arrive, le navigateur parse la durée et les dimensions
-//   → déclenche un 'loadedmetadata' event → micro-resize de l'élément
-//   <video> → IntersectionObserver observe un ratio fluctuant sur slide 1
-//   → handleVisible(1) → saut.
+//   CAUSE : src={video.videoUrl || video.url} est une prop React sur <video>.
+//   Quand isActive change (false → true) ou qu'un parent re-rend VideoCard,
+//   React re-set l'attribut src sur le DOM. Même si la valeur est identique,
+//   Chrome mobile (et Safari) interprètent tout setAttribute('src', ...)
+//   comme un reset de la source → currentTime = 0 → saut visible au début.
 //
-//   FIX : preload="none" quand la slide n'est pas active.
-//         preload="auto" quand elle devient active.
-//   Ainsi, Cloudinary ne reçoit AUCUNE requête pour les slides non-actives
-//   au boot → zéro repaint → zéro faux déclenchement de l'observer.
+//   La prop preload qui passe de "none" → "auto" aggrave le problème :
+//   deux attributs bougent simultanément = garantie de reset sur Chrome.
 //
-// 🐛 FIX LIKES (ce commit) :
-//   Le modèle Video.js a likes: Number et likedBy: [ObjectId].
-//   Le code faisait Array.isArray(video.likes) → toujours false → likes=0.
-//   Fix : utiliser video.likedBy pour le tableau, video.likes pour le count.
+//   FIX A : src injecté manuellement via useEffect + srcRef.
+//           Ne passer JAMAIS src= en prop JSX → React ne touche plus jamais
+//           cet attribut → zéro reset DOM.
 //
-// 🐛 FIX SON (commits précédents) :
-//   mutedRef pour éviter closure stale dans play().then()
-//   Application directe vid.muted sans attendre cycle React
+//   FIX B : preload="auto" fixe dans le JSX.
+//           Le throttle des requêtes est géré par VIRTUAL_WINDOW=1 dans
+//           VideosPage (3 slides max dans le DOM).
+//
+//   FIX C : loop ajouté → la vidéo boucle nativement.
+//           onVideoEnded + handleEnded supprimés (scroll auto déjà retiré).
+//
+// 🔥 FIXES PRÉCÉDENTS CONSERVÉS :
+//   - mutedRef pour éviter closure stale dans play().then()
+//   - FIX LIKES : likedBy pour le tableau, likes pour le count
 
 import React, { useEffect, useRef, useState, useMemo, memo, useCallback } from "react";
 import { createPortal } from "react-dom";
@@ -72,14 +74,15 @@ const SoundHint = memo(({ visible }) => {
 });
 SoundHint.displayName = 'SoundHint';
 
-const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange }) => {
+// ✅ onVideoEnded retiré — scroll à la charge de l'utilisateur
+const VideoCard = ({ video, isActive, isAutoPost, onModalChange }) => {
   if (!video) return null;
 
-  const navigate        = useNavigate();
-  const videoRef        = useRef(null);
-  const isEndedFiredRef = useRef(false);
-  // ✅ FIX SON : mutedRef pour éviter closure stale dans play().then()
-  const mutedRef        = useRef(true);
+  const navigate = useNavigate();
+  const videoRef = useRef(null);
+  const mutedRef = useRef(true);
+  // 🔥 FIX A : src géré manuellement — jamais en prop React
+  const srcRef   = useRef(null);
 
   const { user: currentUser, getToken } = useAuth();
   const { likeVideo, commentVideo, deleteVideo, incrementViews } = useVideos();
@@ -104,10 +107,11 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
   const [boostLoading,   setBoostLoading]   = useState(false);
   const [selectedBoost,  setSelectedBoost]  = useState(null);
 
-  // Sync mutedRef avec state
   useEffect(() => { mutedRef.current = muted; }, [muted]);
 
-  const videoId = video._id;
+  const videoId  = video._id;
+  const videoSrc = video.videoUrl || video.url || null;
+
   const owner = useMemo(() => {
     const u = video.user || video.uploadedBy || {};
     return {
@@ -123,9 +127,18 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
   const openModal  = useCallback((setter) => { setter(true);  onModalChange?.(true);  }, [onModalChange]);
   const closeModal = useCallback((setter) => { setter(false); onModalChange?.(false); }, [onModalChange]);
 
+  // 🔥 FIX A : injecter src sur le DOM uniquement si la valeur change réellement.
+  // React ne passe plus jamais par src= en prop → zéro reset browser au re-render.
   useEffect(() => {
-    // ✅ FIX LIKES : le modèle a likes:Number et likedBy:[ObjectId]
-    // Utiliser likedBy pour le tableau, likes pour le count initial
+    const vid = videoRef.current;
+    if (!vid || !videoSrc) return;
+    if (srcRef.current === videoSrc) return; // même source → ne rien toucher
+    srcRef.current = videoSrc;
+    vid.src = videoSrc;
+    // Pas de vid.load() — le browser charge automatiquement quand src est assigné
+  }, [videoSrc]);
+
+  useEffect(() => {
     const likedByList = Array.isArray(video.likedBy) ? video.likedBy : [];
     const likesCount  = typeof video.likes === 'number' ? video.likes : likedByList.length;
     setLocalLikes(likesCount);
@@ -150,12 +163,12 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     }
   }, [isActive]);
 
+  // 🔥 FIX B : play/pause sans jamais toucher src ni preload
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
 
     if (isActive) {
-      isEndedFiredRef.current = false;
       const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
       vid.muted  = true;
       vid.volume = 1;
@@ -163,7 +176,6 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
         .then(() => {
           setIsPaused(false);
           registerPlayingVideo(vid);
-          // ✅ FIX SON : lire mutedRef.current (valeur actuelle, pas closure stale)
           if (hasInteracted) {
             vid.muted  = mutedRef.current;
             vid.volume = mutedRef.current ? 0 : 1;
@@ -184,7 +196,6 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     }
   }, [isActive]); // eslint-disable-line
 
-  // Sync muted state → DOM
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -320,12 +331,6 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     finally { setBoostLoading(false); }
   };
 
-  const handleEnded = useCallback(() => {
-    if (isEndedFiredRef.current) return;
-    isEndedFiredRef.current = true;
-    if (onVideoEnded) onVideoEnded();
-  }, [onVideoEnded]);
-
   // ─── Portails ─────────────────────────────────────────────────────────────
   const commentsPortal = createPortal(
     <AnimatePresence>
@@ -442,23 +447,32 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
         </div>
       )}
 
+      {/*
+        🔥 FIX A+B+C :
+        - PAS de src= en prop JSX → géré via useEffect + srcRef
+        - preload="auto" fixe → jamais de changement d'attribut DOM
+        - loop natif → boucle sans onEnded
+        - poster= OK (image statique, ne reset pas la vidéo)
+      */}
       <video
         ref={videoRef}
-        src={video.videoUrl || video.url}
         className="w-full h-full object-cover"
-        style={{ filter: video.filter && video.filter !== 'none' ? video.filter : undefined }}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          contain: 'strict',
+          filter: video.filter && video.filter !== 'none' ? video.filter : undefined,
+        }}
         muted={muted}
         playsInline
-        // ✅ FIX SAUT : preload="none" quand inactif → Cloudinary ne charge pas
-        // les metadata des slides voisines → pas de repaint → pas de faux
-        // déclenchement de l'IntersectionObserver au boot.
-        // preload="auto" quand actif → chargement complet pour la lecture.
-        preload={isActive ? "auto" : "none"}
+        preload="auto"
+        loop
         poster={video.thumbnail || undefined}
         onClick={togglePlay}
         onDoubleClick={handleDoubleTap}
         onTimeUpdate={handleTimeUpdate}
-        onEnded={handleEnded}
       />
 
       <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/80 pointer-events-none" />

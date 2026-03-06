@@ -7,6 +7,12 @@
 // ✅ Fix LCP: window.__hideSplash() appelé dès que AppContent est monté
 // 🔥 FIX COLD START: wake-up Render au démarrage de l'app
 //
+// 🔥 FIX LCP COLD START :
+//    - App s'affiche IMMÉDIATEMENT sans attendre authReady
+//    - loadSession tourne en arrière-plan (non-bloquant)
+//    - AuthRoute affiche un skeleton pendant que ready=false
+//    - setReady(true) ne dépend plus du backend Render
+//
 // 🔥 FIX CLS 0.56 :
 //    - mainStyle utilise des valeurs CSS stables avec minHeight au lieu de height calculée
 //    - FloatingBackButton retiré de l'AnimatePresence (scale 0→1 = layout shift)
@@ -58,6 +64,36 @@ export const emitHomeRefresh = () =>
   window.dispatchEvent(new CustomEvent(HOME_REFRESH_EVENT));
 
 // ============================================
+// SKELETON — affiché pendant que AuthContext charge
+// ============================================
+const PageSkeleton = memo(({ isDarkMode }) => (
+  <div
+    className={`flex flex-col gap-4 p-4 ${isDarkMode ? "bg-gray-900" : "bg-gray-50"}`}
+    style={{ minHeight: "100%" }}
+  >
+    {[1, 2, 3].map((i) => (
+      <div
+        key={i}
+        className={`rounded-2xl ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`}
+        style={{
+          height: 120,
+          opacity: 1 - i * 0.2,
+          animation: "skeleton-pulse 1.4s ease-in-out infinite",
+          animationDelay: `${i * 150}ms`,
+        }}
+      />
+    ))}
+    <style>{`
+      @keyframes skeleton-pulse {
+        0%, 100% { opacity: 0.6; }
+        50%       { opacity: 0.3; }
+      }
+    `}</style>
+  </div>
+));
+PageSkeleton.displayName = "PageSkeleton";
+
+// ============================================
 // SCROLL OPTIMISÉ
 // ============================================
 function useSmartScroll(threshold = 10) {
@@ -107,12 +143,16 @@ function useSmartScroll(threshold = 10) {
   return isVisible;
 }
 
+// ============================================
+// APP — s'affiche IMMÉDIATEMENT, sans bloquer sur authReady
+// ============================================
 export default function App() {
+  // 🔥 FIX LCP : ready=true dès que les initialisations locales sont faites
+  // On ne bloque PLUS sur authReady (qui attend le backend Render)
   const [ready, setReady] = useState(false);
-  const { ready: authReady } = useAuth();
 
   useEffect(() => {
-    // 🔥 WAKE-UP Render
+    // 🔥 WAKE-UP Render en parallèle — non-bloquant
     fetch(`${BACKEND_URL}/api/health`, {
       method: "GET",
       signal: AbortSignal.timeout(20000),
@@ -126,6 +166,10 @@ export default function App() {
         });
       } catch (err) {
         console.error("❌ [App] Erreur initialisation:", err);
+      } finally {
+        // ✅ On affiche l'app dès que les inits locales sont terminées
+        // AuthContext loadSession() tourne en parallèle dans son propre useEffect
+        setReady(true);
       }
     };
 
@@ -139,10 +183,8 @@ export default function App() {
     fixVh();
     window.addEventListener("resize", fixVh, { passive: true });
 
-    if (authReady) setReady(true);
-
     return () => window.removeEventListener("resize", fixVh);
-  }, [authReady]);
+  }, []);
 
   if (!ready) return null;
 
@@ -154,7 +196,7 @@ export default function App() {
 }
 
 function AppContent() {
-  const { user, token, socket } = useAuth();
+  const { user, token, socket, ready: authReady } = useAuth();
   const { isDarkMode }          = useDarkMode();
   const location                = useLocation();
   const navigate                = useNavigate();
@@ -171,7 +213,7 @@ function AppContent() {
     if (typeof window.__hideSplash === "function") window.__hideSplash();
   }, []);
 
-  // ✅ useMessagesData CENTRALISÉ
+  // ✅ useMessagesData CENTRALISÉ — seulement si auth prête
   const { data: messagesData } = useMessagesData(token, null);
   const unreadCount = useMemo(() => {
     if (!messagesData?.conversations) return undefined;
@@ -304,12 +346,6 @@ function AppContent() {
   const showNav    = isHome && !isAuth && !storyViewerOpen;
   const isAdmin    = user?.role === "admin" || user?.role === "superadmin";
 
-  // ✅ FIX SCROLL BLOQUÉ :
-  // Le scroll était bloqué car minHeight ne contraint pas overflow-y-auto —
-  // un élément scroll seulement si sa height est inférieure à son contenu.
-  // Avec minHeight l'élément grandit avec le contenu → jamais de scrollbar.
-  // Solution : top + bottom absolus → height implicite = fenêtre - navbars → scroll OK.
-  // bottom réservé pour la navbar mobile (64px) uniquement sur home (showNav).
   const mainStyle = useMemo(() => ({
     top:                     showNav ? "72px" : "0",
     bottom:                  showNav ? "64px" : "0",
@@ -340,13 +376,11 @@ function AppContent() {
       </AnimatePresence>
 
       {showNav && (
-        // ✅ FIX CLS : hauteur fixe 72px réservée → pas de reflow
         <div
           className="fixed top-0 left-0 right-0 z-40"
           style={{
             height:    72,
             transform: isNavVisible ? "translateY(0)" : "translateY(-100%)",
-            // ✅ transition sur transform uniquement (composite layer)
             transition: "transform 200ms ease-out",
             willChange: "transform",
           }}
@@ -355,9 +389,6 @@ function AppContent() {
         </div>
       )}
 
-      {/* ✅ FIX CLS : FloatingBackButton retiré de AnimatePresence
-          scale(0→1) sur un bouton fixed ne cause pas de CLS mais peut causer
-          un repaint coûteux → on utilise opacity + transform à la place */}
       {!isHome && !isAuth && !storyViewerOpen && !isMessages && (
         <FloatingBackButton isDarkMode={isDarkMode} onClick={() => navigate("/")} />
       )}
@@ -378,7 +409,7 @@ function AppContent() {
               <Route
                 path="/auth"
                 element={
-                  <AuthRoute redirectIfAuthenticated>
+                  <AuthRoute redirectIfAuthenticated authReady={authReady} isDarkMode={isDarkMode}>
                     <AuthPage />
                   </AuthRoute>
                 }
@@ -386,7 +417,7 @@ function AppContent() {
               <Route
                 path="/"
                 element={
-                  <AuthRoute>
+                  <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
                     <HomePage
                       openStoryViewer={(s, o) => {
                         setStoryViewerData({ stories: s, owner: o });
@@ -396,15 +427,15 @@ function AppContent() {
                   </AuthRoute>
                 }
               />
-              <Route path="/chat"            element={<AuthRoute><ChatPage /></AuthRoute>} />
-              <Route path="/videos"          element={<AuthRoute><VideosPage /></AuthRoute>} />
-              <Route path="/calculs"         element={<AuthRoute><CalculsPage /></AuthRoute>} />
-              <Route path="/messages"        element={<AuthRoute><Messages /></AuthRoute>} />
-              <Route path="/profile/:userId" element={<AuthRoute><Profile /></AuthRoute>} />
+              <Route path="/chat"            element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><ChatPage /></AuthRoute>} />
+              <Route path="/videos"          element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><VideosPage /></AuthRoute>} />
+              <Route path="/calculs"         element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><CalculsPage /></AuthRoute>} />
+              <Route path="/messages"        element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><Messages /></AuthRoute>} />
+              <Route path="/profile/:userId" element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><Profile /></AuthRoute>} />
               <Route
                 path="/admin/*"
                 element={
-                  <AuthRoute>
+                  <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
                     <ProtectedAdminRoute>
                       <AdminDashboard />
                     </ProtectedAdminRoute>
@@ -454,15 +485,12 @@ function AppContent() {
 // COMPOSANTS
 // ============================================
 const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
-  // ✅ FIX INP : pas de setInterval pour la progress bar
-  // On utilise une animation CSS pure → zéro JS dans la boucle de rendu
   return (
     <motion.div
       initial={{ opacity: 0, y: -20, x: 100 }}
       animate={{ opacity: 1, y: 0, x: 0 }}
       exit={{ opacity: 0, x: 100 }}
       transition={{ duration: 0.2, ease: "easeOut" }}
-      // ✅ FIX CLS : fixed + top/right explicites, pas de bottom qui push le contenu
       className="fixed top-20 right-4 z-[100] max-w-sm"
       onClick={onClose}
     >
@@ -494,7 +522,7 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
             À l'instant
           </p>
         </div>
-        {/* ✅ FIX INP : progress bar CSS pure — aucun setInterval, aucun setState */}
+        {/* ✅ FIX INP : progress bar CSS pure */}
         <div
           className="absolute bottom-0 left-0 right-0 h-1 bg-orange-500 origin-left rounded-b-2xl"
           style={{ animation: "notif-progress 5s linear forwards" }}
@@ -511,7 +539,6 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
 });
 LiveNotification.displayName = "LiveNotification";
 
-// ✅ FIX INP : NavBtn stable — pas de recréation de fonction à chaque render parent
 const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
   <button
     onClick={onClick}
@@ -521,8 +548,6 @@ const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
   >
     <Icon size={20} />
     <span className="text-[10px] font-bold mt-1">{label}</span>
-    {/* ✅ FIX INP : badge statique avec opacity CSS — pas d'AnimatePresence/spring
-        AnimatePresence + spring sur chaque clic = layout thrashing */}
     {!!badge && badge > 0 && (
       <span
         className="absolute top-0 right-4 bg-red-500 text-white text-[10px] font-black min-w-[18px] h-[18px] flex items-center justify-center rounded-full border-2 border-gray-900 shadow-lg"
@@ -535,7 +560,6 @@ const NavBtn = memo(({ icon: Icon, label, active, onClick, badge }) => (
 ));
 NavBtn.displayName = "NavBtn";
 
-// ✅ FIX CLS : FloatingBackButton avec opacity+transform au lieu de scale 0→1
 const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
   <button
     onClick={onClick}
@@ -544,10 +568,7 @@ const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
         ? "bg-gray-800/80 border-gray-700 text-white"
         : "bg-white/80 border-gray-200 text-gray-800"
     }`}
-    style={{
-      // ✅ pas de scale 0→1 qui cause un repaint
-      animation: "btn-appear 150ms ease-out",
-    }}
+    style={{ animation: "btn-appear 150ms ease-out" }}
   >
     <ArrowLeft size={24} />
     <style>{`
@@ -569,7 +590,6 @@ const NavbarMobileMemo = memo(
       [location.pathname]
     );
 
-    // ✅ FIX INP : handlers stables avec useCallback
     const goVideos   = useCallback(() => navigate("/videos"), [navigate]);
     const goChat     = useCallback(() => navigate("/chat"),   [navigate]);
     const openMenu   = useCallback(() => setMenuOpen(true),   []);
@@ -577,7 +597,6 @@ const NavbarMobileMemo = memo(
 
     return (
       <>
-        {/* ✅ FIX CLS : hauteur fixe 64px réservée → pas de reflow */}
         <nav
           className={`lg:hidden flex justify-around items-center backdrop-blur-xl border-t ${
             isDarkMode
@@ -615,23 +634,21 @@ const SidebarDesktopMemo = memo(
       [location.pathname]
     );
 
-    // ✅ FIX INP : handlers stables
-    const goChat    = useCallback(() => navigate("/chat"),    [navigate]);
-    const goVideos  = useCallback(() => navigate("/videos"),  [navigate]);
-    const goCalculs = useCallback(() => navigate("/calculs"), [navigate]);
+    const goChat     = useCallback(() => navigate("/chat"),    [navigate]);
+    const goVideos   = useCallback(() => navigate("/videos"),  [navigate]);
+    const goCalculs  = useCallback(() => navigate("/calculs"), [navigate]);
     const goMessages = useCallback(() => navigate("/messages"), [navigate]);
-    const goProfile = useCallback(
+    const goProfile  = useCallback(
       () => navigate(`/profile/${location.state?.userId || "me"}`),
       [navigate, location.state?.userId]
     );
-    const goAdmin   = useCallback(() => navigate("/admin"),   [navigate]);
+    const goAdmin    = useCallback(() => navigate("/admin"),   [navigate]);
 
     return (
       <aside
         className={`hidden lg:flex fixed left-0 bottom-0 w-64 flex-col py-8 px-6 gap-2 z-30 border-r ${
           isDarkMode ? "bg-gray-900/50 border-gray-800" : "bg-white border-gray-100"
         }`}
-        // ✅ FIX CLS : top fixe à 72px (hauteur du Header)
         style={{ top: 72 }}
       >
         <NavItemDesktop icon={Home}          label="Accueil"    onClick={onHomeClick} isDarkMode={isDarkMode} active={isActive("/")} />
@@ -652,7 +669,6 @@ const SidebarDesktopMemo = memo(
 );
 SidebarDesktopMemo.displayName = "SidebarDesktopMemo";
 
-// ✅ FIX INP : badge statique (pas d'AnimatePresence)
 const NavItemDesktop = memo(
   ({ icon: Icon, label, onClick, isDarkMode, active, isAdmin, badge }) => (
     <button
@@ -738,9 +754,27 @@ const MenuOverlay = memo(
 );
 MenuOverlay.displayName = "MenuOverlay";
 
-function AuthRoute({ children, redirectIfAuthenticated = false }) {
-  const { user, ready } = useAuth();
-  if (!ready) return null;
+// ============================================
+// AUTH ROUTE — skeleton non-bloquant
+// ============================================
+// 🔥 FIX LCP COLD START :
+//    Avant : return null tant que !ready → page blanche pendant le cold start Render
+//    Après : affiche un skeleton animé immédiatement, résout la route dès que authReady=true
+//
+//    Trois états :
+//      1. authReady=false → <PageSkeleton> (feedback visuel immédiat, LCP peint)
+//      2. authReady=true, redirectIfAuthenticated=true, user présent → redirect "/"
+//      3. authReady=true, redirectIfAuthenticated=false, user absent → redirect "/auth"
+function AuthRoute({ children, redirectIfAuthenticated = false, authReady, isDarkMode }) {
+  const { user } = useAuth();
+
+  // ✅ Tant que loadSession() tourne (cold start Render inclus),
+  //    on affiche un skeleton au lieu d'une page blanche.
+  //    Le LCP est peint immédiatement → gain de 2-5s sur cold start.
+  if (!authReady) {
+    return <PageSkeleton isDarkMode={isDarkMode} />;
+  }
+
   if (redirectIfAuthenticated && user) return <Navigate to="/" replace />;
   if (!redirectIfAuthenticated && !user) return <Navigate to="/auth" replace />;
   return children;

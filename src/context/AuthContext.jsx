@@ -5,6 +5,12 @@
 // ✅ "Se souvenir de moi" → 90 jours | sinon → session navigateur
 // ✅ Même appareil = connecté automatiquement | Nouvel appareil = connexion requise
 // 🔥 FIX PROD : API_URL utilise isProd pour ne jamais pointer localhost en production
+//
+// 🔥 FIX LCP COLD START :
+//    - ready=true est émis IMMÉDIATEMENT au démarrage
+//    - loadSession() tourne en arrière-plan sans bloquer le render
+//    - sessionLoading=true pendant le refresh-token → AuthRoute affiche un skeleton
+//    - L'app est visible instantanément même si Render met 5s à répondre
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -37,7 +43,6 @@ export const useAuth = () => {
 
 // ============================================
 // 🔥 FIX CRITIQUE : détection prod/dev identique à axiosClientGlobal.js
-// Ne jamais lire VITE_API_URL directement — il vaut localhost dans le .env local
 // ============================================
 const isProd = import.meta.env.PROD;
 
@@ -49,7 +54,7 @@ const BACKEND_URL = API_URL.replace("/api", "");
 const SOCKET_URL  = BACKEND_URL;
 
 // ============================================
-// 🔥 DEBUG HELPER — log structuré visible en prod
+// 🔥 DEBUG HELPER
 // ============================================
 const debugLog = (level, context, message, data = null) => {
   const prefix    = `[AuthContext:${context}]`;
@@ -62,12 +67,10 @@ const debugLog = (level, context, message, data = null) => {
   else                       console.log(...parts);
 };
 
-// Log de démarrage pour confirmer la bonne URL en prod
 console.log(`🔧 [AuthContext] Environnement: ${isProd ? 'PRODUCTION' : 'DÉVELOPPEMENT'}`);
 console.log(`🔧 [AuthContext] API_URL: ${API_URL}`);
 console.log(`🔧 [AuthContext] BACKEND_URL: ${BACKEND_URL}`);
 
-// Résume une erreur Axios en objet lisible
 const summarizeAxiosError = (err) => ({
   message:    err?.message,
   status:     err?.response?.status,
@@ -107,9 +110,6 @@ const secureGetItem = (key) => {
 };
 const secureRemoveItem = (key) => { try { localStorage.removeItem(key); } catch {} };
 
-// ============================================
-// 🔥 authAxios utilise maintenant BACKEND_URL corrigé
-// ============================================
 const authAxios = axios.create({
   baseURL:         BACKEND_URL,
   timeout:         30000,
@@ -122,8 +122,14 @@ export function AuthProvider({ children }) {
   const [token, setToken]                   = useState(null);
   const [tokenExpiresAt, setTokenExpiresAt] = useState(null);
   const [notifications, setNotifications]   = useState([]);
-  const [loading, setLoading]               = useState(true);
+  const [loading, setLoading]               = useState(false);
+
+  // 🔥 FIX LCP : deux états distincts
+  //   ready        = true dès le démarrage (app affichable immédiatement)
+  //   sessionLoading = true pendant loadSession() (AuthRoute affiche skeleton)
   const [ready, setReady]                   = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(true);
+
   const [loginAttempts, setLoginAttempts]   = useState({});
 
   const isMounted          = useRef(true);
@@ -239,10 +245,7 @@ export function AuthProvider({ children }) {
     }
 
     isRefreshing.current = true;
-    debugLog('log', 'Refresh', `Tentative #${retryCount + 1}`, {
-      url:             `${authAxios.defaults.baseURL}/api/auth/refresh-token`,
-      withCredentials: true,
-    });
+    debugLog('log', 'Refresh', `Tentative #${retryCount + 1}`);
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
@@ -297,21 +300,23 @@ export function AuthProvider({ children }) {
   }, [token, tokenExpiresAt, refreshAccessToken]);
 
   // ============================================
-  // AUTO-LOGIN
+  // AUTO-LOGIN — NON-BLOQUANT
   // ============================================
   const loadSession = useCallback(async () => {
     const storedAttempts = secureGetItem(STORAGE_KEYS.LOGIN_ATTEMPTS) || {};
     setLoginAttempts(storedAttempts);
 
-    debugLog('log', 'AutoLogin', '🔍 Démarrage tentative auto-login', {
+    debugLog('log', 'AutoLogin', '🔍 Démarrage tentative auto-login (non-bloquant)', {
       apiUrl:         API_URL,
       backendBase:    authAxios.defaults.baseURL,
-      refreshUrl:     `${authAxios.defaults.baseURL}/api/auth/refresh-token`,
       online:         navigator.onLine,
       cookiesEnabled: navigator.cookieEnabled,
-      hasCookies:     document.cookie.length > 0,
       env:            import.meta.env.MODE,
     });
+
+    // 🔥 FIX LCP : setReady(true) IMMÉDIATEMENT — l'app s'affiche sans attendre
+    // sessionLoading reste true pendant le refresh-token (AuthRoute affiche skeleton)
+    setReady(true);
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
@@ -337,29 +342,21 @@ export function AuthProvider({ children }) {
       const summary = summarizeAxiosError(err);
 
       if (err.response?.status === 401) {
-        debugLog('log', 'AutoLogin', 'ℹ️ Pas de session (401 — cookie absent ou expiré)', {
-          status: 401,
-          data:   err.response?.data,
-        });
+        debugLog('log', 'AutoLogin', 'ℹ️ Pas de session (401 — cookie absent ou expiré)');
       } else {
-        debugLog('error', 'AutoLogin', '❌ Erreur inattendue — diagnostic complet', {
+        debugLog('error', 'AutoLogin', '❌ Erreur inattendue', {
           ...summary,
-          online:          navigator.onLine,
-          cookieEnabled:   navigator.cookieEnabled,
-          responseHeaders: err.response?.headers ? {
-            'access-control-allow-origin': err.response.headers['access-control-allow-origin'],
-            'content-type':                err.response.headers['content-type'],
-          } : null,
           diagnostic: summary.isNetwork
-            ? '🔴 ERREUR RÉSEAU — vérifier CORS, backend endormi (Render cold start), ou URL incorrecte'
+            ? '🔴 ERREUR RÉSEAU — backend endormi (cold start) ou CORS'
             : summary.status === 403
-            ? '🔴 CORS BLOQUÉ — vérifier CLIENT_URL dans les variables Render'
+            ? '🔴 CORS BLOQUÉ — vérifier CLIENT_URL dans Render'
             : summary.status >= 500
             ? '🔴 ERREUR SERVEUR — vérifier les logs Render'
             : '🟡 Erreur inconnue',
         });
       }
 
+      // Fallback offline : charger depuis IDB
       if (!navigator.onLine) {
         const idbUser = await idbGet("users", "user_active").catch(() => null);
         if (idbUser?._id) {
@@ -368,9 +365,9 @@ export function AuthProvider({ children }) {
         }
       }
     } finally {
-      setReady(true);
-      setLoading(false);
-      debugLog('log', 'AutoLogin', '🏁 loadSession terminé', { ready: true });
+      // ✅ sessionLoading=false → AuthRoute résout la route définitivement
+      setSessionLoading(false);
+      debugLog('log', 'AutoLogin', '🏁 loadSession terminé', { sessionLoading: false });
     }
   }, [syncUserToIDB]);
 
@@ -381,23 +378,11 @@ export function AuthProvider({ children }) {
     const safeEmail = (email || "").toString().trim().toLowerCase();
     setLoading(true);
 
-    debugLog('log', 'Login', '🔑 Tentative connexion', {
-      email:     safeEmail,
-      rememberMe,
-      url:       `${authAxios.defaults.baseURL}/api/auth/login`,
-      withCreds: authAxios.defaults.withCredentials,
-    });
+    debugLog('log', 'Login', '🔑 Tentative connexion', { email: safeEmail, rememberMe });
 
     try {
       const res = await authAxios.post("/api/auth/login", {
         email: safeEmail, password: password.toString(), rememberMe,
-      });
-
-      debugLog('log', 'Login', '✅ Réponse login', {
-        status:    res.status,
-        success:   res.data?.success,
-        hasToken:  !!res.data?.token,
-        setCookie: !!res.headers?.['set-cookie'],
       });
 
       if (!res.data.success) throw new Error(res.data?.message || "Erreur login");
@@ -413,18 +398,7 @@ export function AuthProvider({ children }) {
       return { success: true, user: userData };
     } catch (err) {
       const summary = summarizeAxiosError(err);
-      debugLog('error', 'Login', '❌ Échec connexion — diagnostic', {
-        ...summary,
-        diagnostic: summary.isNetwork
-          ? '🔴 ERREUR RÉSEAU — backend injoignable ou CORS'
-          : summary.status === 401
-          ? '🟡 Identifiants incorrects'
-          : summary.status === 403
-          ? '🔴 CORS BLOQUÉ — vérifier CLIENT_URL dans Render env vars'
-          : summary.status >= 500
-          ? '🔴 ERREUR SERVEUR — voir logs Render'
-          : '🟡 Erreur inconnue',
-      });
+      debugLog('error', 'Login', '❌ Échec connexion', summary);
       trackLoginAttempt(safeEmail);
       const msg = err.response?.data?.message || err.message || "Erreur connexion";
       addNotification("error", msg);
@@ -443,9 +417,6 @@ export function AuthProvider({ children }) {
     try {
       const res = await authAxios.post("/api/auth/register", {
         fullName, email, password, rememberMe,
-      });
-      debugLog('log', 'Register', '✅ Réponse inscription', {
-        status: res.status, success: res.data?.success,
       });
       if (!res.data.success) throw new Error(res.data?.message || "Erreur inscription");
 
@@ -570,12 +541,14 @@ export function AuthProvider({ children }) {
     const isAdmin = user?.role === "admin" || user?.role === "superadmin";
     return {
       user, token, socket: socketRef.current, loading, ready,
+      // 🔥 sessionLoading exposé pour AuthRoute (skeleton non-bloquant)
+      sessionLoading,
       isAuthenticated: !!user && !!token, notifications,
       login, logout, register, getToken, updateUserProfile,
       verifyAdminToken, isAdmin: () => isAdmin, addNotification, isLockedOut,
     };
   }, [
-    user, token, loading, ready, notifications,
+    user, token, loading, ready, sessionLoading, notifications,
     login, logout, register, getToken,
     updateUserProfile, verifyAdminToken, addNotification, isLockedOut,
   ]);

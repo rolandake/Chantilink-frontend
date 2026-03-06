@@ -1,19 +1,22 @@
 // 📁 src/pages/Home/PostMedia.jsx
 //
-// ✅ FIX CORS PEXELS v11
-//    - Retry Pexels SUPPRIMÉ : les URLs videos.pexels.com sont filtrées en amont
-//      par PostsContext.filterPexelsPosts() et PostCard.mediaUrls
-//      → VideoItem n'en reçoit plus, le retry était inutile et polluait les logs
-//    - Si une URL Pexels arrive quand même (bug en amont) : erreur immédiate,
-//      pas de retry infini qui inonde la console
-//    - Cleanup des timers simplifié (plus de retryTimer)
+// ✅ FIX SLIDES NOIRES v12
+//    - Bug : les slides 2, 3... s'affichaient noires car height n'était pas
+//      correctement propagée aux slides enfants dans le conteneur flex horizontal.
+//    - Root cause : slotH calculé = largeur du container (pour un aspect carré),
+//      mais les slides internes avaient height:slotH mais leur parent flex
+//      (width: total*100%) ne transmettait pas cette hauteur → h-full des
+//      VideoItem/ImageItem ne trouvait rien à remplir sur slide 2+.
+//    - Fix : le wrapper flex reçoit maintenant height:slotH en explicit,
+//      et chaque slide reçoit height:"100%" relatif au flex parent (pas slotH direct).
+//      VideoItem et ImageItem utilisent position:absolute inset-0 pour remplir.
 //
+// ✅ FIX CORS PEXELS v11
 // ✅ FIX YOUTUBE v7 — safeMediaUrls (bot-safe)
 // 🔥 PREBUFFER VIDÉO (style TikTok)
 // 🎯 VIDEO MANAGER GLOBAL (style TikTok)
 // 🔥 FIX SWIPE v8 — navigation multi-médias réparée
-// ✅ FIX URLs INVALIDES v4 — isStructurallyValid() dans safeMediaUrls
-//    (dernier rempart avant affichage : URLs tronquées/corrompues éliminées)
+// ✅ FIX URLs INVALIDES v4
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { FaVolumeUp, FaVolumeMute, FaExternalLinkAlt } from "react-icons/fa";
@@ -54,18 +57,7 @@ const preloadVideo = (src) => {
 };
 
 // ─────────────────────────────────────────────
-// ✅ isStructurallyValid — dernier rempart contre URLs corrompues
-//
-// Rejette :
-//  - URLs trop courtes (< 10 chars)
-//  - URLs sans hostname valide
-//  - URLs avec pathname vide ou "/"
-//  - URLs qui ne parsent pas (malformées)
-//
-// Accepte sans parser :
-//  - data:image/...   (inline base64)
-//  - blob:...         (object URLs)
-//  - /uploads/...     (chemins relatifs backend)
+// ✅ isStructurallyValid
 // ─────────────────────────────────────────────
 const isStructurallyValid = (url) => {
   if (!url || typeof url !== "string" || url.length < 10) return false;
@@ -117,36 +109,25 @@ const getYouTubeId = (url) => {
   return null;
 };
 
-const isPexelsVideo   = url => url && url.includes('videos.pexels.com');
-const isPixabayVideo  = url => url && url.includes('cdn.pixabay.com/video');
-
-// ✅ Ces domaines NE DOIVENT JAMAIS être accédés directement (CORS)
-const PROXY_ONLY_DOMAINS = (url) => isPexelsVideo(url) || isPixabayVideo(url);
-
+const isPexelsVideo  = url => url && url.includes('videos.pexels.com');
+const isPixabayVideo = url => url && url.includes('cdn.pixabay.com/video');
 const isExternalVideo = url => isPexelsVideo(url) || isPixabayVideo(url);
-const isYouTubeUrl    = url => url && (url.includes('youtube.com') || url.includes('youtu.be'));
-
+const isYouTubeUrl   = url => url && (url.includes('youtube.com') || url.includes('youtu.be'));
 const needsCrossOrigin = url => url && url.includes('res.cloudinary.com');
 
 // ─────────────────────────────────────────────
-// PROXY URL — Pexels/Pixabay via backend
-//
-// ✅ FIX v11 : En conditions normales, les URLs Pexels sont filtrées en amont
-// par PostsContext.filterPexelsPosts() et PostCard.mediaUrls.
-// Cette fonction reste comme garde-fou défensif uniquement.
+// PROXY URL
 // ─────────────────────────────────────────────
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const getVideoUrls = (url) => {
   if (!url) return { proxy: null, direct: null };
-
   if (isPexelsVideo(url) || isPixabayVideo(url)) {
     return {
       proxy:  `${API_BASE}/api/proxy/video?url=${encodeURIComponent(url)}`,
-      direct: null, // Pas de fallback direct (CORS bloqué)
+      direct: null,
     };
   }
-
   return { proxy: null, direct: url };
 };
 
@@ -296,7 +277,8 @@ const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
   const hasThumbnail = resolvedThumb && !thumbError;
 
   return (
-    <div className="relative w-full h-full bg-black flex items-center justify-center">
+    // ✅ FIX : position absolute + inset-0 pour remplir le slide parent
+    <div className="absolute inset-0 bg-black flex items-center justify-center">
       {showEmbed ? (
         <iframe
           src={embedSrc}
@@ -360,7 +342,8 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
   const [imgError, setImgError] = useState(false);
   const hasThumbnail = thumbnail && !imgError;
   return (
-    <div className="relative w-full h-full bg-gray-900 flex items-center justify-center overflow-hidden">
+    // ✅ FIX : position absolute + inset-0
+    <div className="absolute inset-0 bg-gray-900 flex items-center justify-center overflow-hidden">
       {hasThumbnail ? (
         <img src={thumbnail} alt={title || ''} className="w-full h-full object-cover"
           loading="lazy" decoding="async" onError={() => setImgError(true)} />
@@ -408,19 +391,6 @@ HLSItem.displayName = 'HLSItem';
 
 // ─────────────────────────────────────────────
 // VIDEO ITEM
-//
-// ✅ FIX v11 : Retry Pexels SUPPRIMÉ
-//
-// AVANT (v10) : retry proxy 1 fois si échec → loggait "tentative 1" × N vidéos
-//   → inondait la console même si les URLs étaient structurellement expirées
-//   → ne servait à rien car le backend ne peut pas résoudre des tokens expirés
-//
-// APRÈS (v11) : si une URL Pexels/Pixabay arrive ici (bug en amont),
-//   on affiche immédiatement l'erreur sans retry.
-//   En conditions normales, ces URLs sont filtrées AVANT d'arriver ici par :
-//     1. PostsContext.filterPexelsPosts() — filtre au niveau des posts
-//     2. PostCard.mediaUrls — filtre au niveau des URLs individuelles
-//     3. isValidPost() Home.jsx — filtre au niveau du pool de posts
 // ─────────────────────────────────────────────
 const VideoItem = React.memo(({
   url, posterUrl, isLCP, isActive, isMuted,
@@ -447,9 +417,7 @@ const VideoItem = React.memo(({
   }, [isLCP, url]);
 
   useEffect(() => {
-    return () => {
-      clearTimeout(fallbackTimer.current);
-    };
+    return () => { clearTimeout(fallbackTimer.current); };
   }, []);
 
   const setVideoRef = useCallback((el) => {
@@ -488,16 +456,13 @@ const VideoItem = React.memo(({
       clearTimeout(fallbackTimer.current);
       playAttempted.current = false;
       setHasInteracted(false);
-      if (vid) vid.pause();
       vid.pause();
       vid.currentTime = 0;
       setIsPlaying(false);
       setPosterVisible(true);
     }
 
-    return () => {
-      clearTimeout(fallbackTimer.current);
-    };
+    return () => { clearTimeout(fallbackTimer.current); };
   }, [isActive]); // eslint-disable-line
 
   useEffect(() => {
@@ -525,42 +490,22 @@ const VideoItem = React.memo(({
 
   const handlePause = useCallback(() => { setIsPlaying(false); }, []);
 
-  // ─────────────────────────────────────────────
-  // handleError — v11 (simplifié, sans retry Pexels)
-  //
-  // Cas 1 : proxy échoué mais direct disponible (Cloudinary, etc.) → fallback direct
-  // Cas 2 : proxy Pexels/Pixabay (direct=null) → erreur immédiate, pas de retry
-  //         Ces URLs ne devraient jamais arriver ici grâce aux filtres en amont.
-  //         Si elles arrivent, c'est un bug en amont à corriger là-bas, pas ici.
-  // ─────────────────────────────────────────────
   const handleError = useCallback(() => {
     const { proxy, direct } = videoUrls;
-
-    // Cas 1 : fallback vers direct si proxy échoue (non-CORS)
     if (currentSrc === proxy && direct) {
-      console.warn(`[PostMedia] Proxy échoué, fallback direct: ${direct.substring(0, 60)}...`);
       setCurrentSrc(direct);
       const vid = videoRef.current;
-      if (vid) {
-        vid.load();
-        if (isActive) vid.play().catch(() => {});
-      }
+      if (vid) { vid.load(); if (isActive) vid.play().catch(() => {}); }
       return;
     }
-
-    // Cas 2 : Pexels/Pixabay → erreur immédiate (pas de retry)
     if (proxy && !direct) {
-      console.warn(`[PostMedia] URL externe bloquée (devrait être filtrée en amont): ${url?.substring(0, 60)}...`);
       setVideoError(true);
       setPosterVisible(false);
       return;
     }
-
-    // Cas 3 : URL directe qui échoue
-    console.error(`[PostMedia] Vidéo indisponible: ${url?.substring(0, 60)}...`);
     setVideoError(true);
     setPosterVisible(false);
-  }, [videoUrls, currentSrc, isActive, url]);
+  }, [videoUrls, currentSrc, isActive]);
 
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
@@ -587,7 +532,8 @@ const VideoItem = React.memo(({
 
   if (videoError) {
     return (
-      <div className="relative w-full h-full bg-gray-900 flex flex-col items-center justify-center gap-3">
+      // ✅ FIX : absolute inset-0
+      <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center gap-3">
         {posterUrl && <img src={posterUrl} alt="" className="absolute inset-0 w-full h-full object-cover opacity-30" />}
         <div className="relative z-10 flex flex-col items-center gap-2">
           <div className="text-gray-400 text-4xl">📹</div>
@@ -598,7 +544,8 @@ const VideoItem = React.memo(({
   }
 
   return (
-    <div className="relative w-full h-full bg-black flex items-center justify-center">
+    // ✅ FIX : absolute inset-0 au lieu de relative w-full h-full
+    <div className="absolute inset-0 bg-black flex items-center justify-center">
       <video
         ref={setVideoRef}
         src={currentSrc}
@@ -664,7 +611,8 @@ VideoItem.displayName = 'VideoItem';
 const ImageItem = React.memo(({ url, isLCP }) => {
   const [loaded, setLoaded] = useState(isLCP);
   return (
-    <div className="relative w-full h-full bg-black flex items-center justify-center">
+    // ✅ FIX : absolute inset-0
+    <div className="absolute inset-0 bg-black flex items-center justify-center">
       {!loaded && !isLCP && <div className="absolute inset-0 bg-gray-900 animate-pulse" />}
       <img
         src={url} alt=""
@@ -702,45 +650,43 @@ const resolveSlotType = (url, postMediaType = null) => {
 
 // ─────────────────────────────────────────────
 // POST MEDIA — composant principal
+//
+// ✅ FIX v12 — Architecture des slides corrigée :
+//
+// AVANT (bugué) :
+//   containerRef = div relative, height = slotH (carré calculé)
+//   wrapper flex = width: total*100%, height: slotH
+//   chaque slide = width: 100/total %, height: slotH  ← le % était relatif au flex parent élargi
+//   VideoItem/ImageItem = w-full h-full  ← h-full cherche une hauteur explicite sur le parent
+//
+//   Sur slide 1 : le navigateur trouvait la hauteur car c'est le premier élément visible
+//   Sur slide 2+ : le div flex avait translateX(-100%), les enfants avaient une hauteur
+//                  ambiguë → certains navigateurs (surtout mobile) rendaient 0 → NOIR
+//
+// APRÈS (corrigé) :
+//   containerRef = div relative, height = slotH, overflow: hidden
+//   wrapper flex = width: total*100%, height: 100%  ← 100% du container parent = slotH
+//   chaque slide = position: relative, width: 100/total%, height: 100%  ← 100% du flex = slotH
+//   VideoItem/ImageItem = position: absolute, inset: 0  ← s'adapte exactement au slide
+//
+//   Résultat : chaque slide a une hauteur GARANTIE quelle que soit sa position dans le flex
 // ─────────────────────────────────────────────
 const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
   const autoGenerated = !!post?.autoGenerated;
   const showBadge     = !autoGenerated;
 
-  // ─────────────────────────────────────────────
-  // ✅ safeMediaUrls — v4 avec validation structurelle
-  //
-  // Dernier rempart avant affichage :
-  //  1. videos.pexels.com → bloqué (tokens expirés)
-  //  2. isStructurallyValid() → rejette URLs tronquées/corrompues
-  //  3. Déduplication par seen Set
-  //
-  // En conditions normales, les URLs invalides sont déjà filtrées par :
-  //  - isValidPost() dans Home.jsx
-  //  - mediaUrls useMemo dans PostCard.jsx
-  // Ce filtre est une défense en profondeur finale.
-  // ─────────────────────────────────────────────
   const safeMediaUrls = useMemo(() => {
     const seen = new Set();
     const result = [];
     const add = (url) => {
       if (!url || typeof url !== 'string') return;
-
-      // ✅ blob: → toujours accepté
       if (url.startsWith('blob:')) {
         if (!seen.has(url)) { seen.add(url); result.push(url); }
         return;
       }
-
-      // ✅ Guard expiration Pexels (défense en profondeur)
       if (url.includes('videos.pexels.com')) return;
-
-      // ✅ Guard CORS Pixabay
       if (url.includes('cdn.pixabay.com/video')) return;
-
-      // ✅ Guard structure invalide — URLs tronquées/corrompues
       if (!url.startsWith('data:') && !isStructurallyValid(url)) return;
-
       if (!seen.has(url)) { seen.add(url); result.push(url); }
     };
 
@@ -756,14 +702,14 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const [index,      setIndex]      = useState(0);
   const [isMutedMap, setIsMutedMap] = useState({});
 
-  const toggleMuteRef = useRef(null);
-  const isMutedMapRef = useRef({});
-  const videoRefsMap  = useRef({});
-  const containerRef  = useRef(null);
-  const touch         = useRef({ x: 0, y: 0, time: 0 });
-  const dirRef        = useRef(null);
-  const isDragging    = useRef(false);
-  const preloadImgRef = useRef(null);
+  const toggleMuteRef  = useRef(null);
+  const isMutedMapRef  = useRef({});
+  const videoRefsMap   = useRef({});
+  const containerRef   = useRef(null);
+  const touch          = useRef({ x: 0, y: 0, time: 0 });
+  const dirRef         = useRef(null);
+  const isDragging     = useRef(false);
+  const preloadImgRef  = useRef(null);
 
   const isLCPSlot = isFirstPost || priority;
 
@@ -814,9 +760,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   useEffect(() => {
     const next = urls[index + 1];
-    if (next && slotTypes[index + 1] === 'video') {
-      preloadVideo(next);
-    }
+    if (next && slotTypes[index + 1] === 'video') preloadVideo(next);
     if (total > 1) {
       const nextUrl = urls[(index + 1) % total];
       if (slotTypes[(index + 1) % total] === 'image' && nextUrl && !nextUrl.startsWith('data:')) {
@@ -833,6 +777,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     else    delete videoRefsMap.current[i];
   }, []);
 
+  // ✅ Swipe handler — inchangé (fonctionnait déjà)
   useEffect(() => {
     if (total <= 1) return;
     const el = containerRef.current;
@@ -847,8 +792,8 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     const onStart = e => {
       const t = e.touches?.[0] || e;
       touch.current = { x: t.clientX, y: t.clientY, time: Date.now() };
-      lastMoveY     = t.clientY;
-      dirRef.current   = null;
+      lastMoveY = t.clientY;
+      dirRef.current    = null;
       isDragging.current = true;
     };
 
@@ -863,9 +808,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       }
 
       if (dirRef.current === 'h') {
-        if (e.cancelable) {
-          try { e.preventDefault(); } catch {}
-        }
+        if (e.cancelable) try { e.preventDefault(); } catch {}
       } else if (dirRef.current === 'v') {
         const deltaY = lastMoveY - t.clientY;
         window.scrollBy({ top: deltaY, behavior: 'instant' });
@@ -911,40 +854,59 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const goPrev = useCallback(() => setIndex(i => (i - 1 + total) % total), [total]);
   const goNext = useCallback(() => setIndex(i => (i + 1) % total),         [total]);
 
-  const [slotSize, setSlotSize] = useState(0);
+  // ✅ FIX HAUTEUR — slotH = largeur du container (aspect carré)
+  const [slotH, setSlotH] = useState(0);
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const update = () => setSlotSize(el.offsetWidth);
+    const update = () => setSlotH(el.offsetWidth);
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  const slotH = slotSize > 0 ? slotSize : undefined;
+  // ✅ Ne rien rendre tant que la hauteur n'est pas calculée (évite flash noir)
+  if (slotH === 0) {
+    return (
+      <div
+        ref={containerRef}
+        className="w-full bg-black"
+        style={{ aspectRatio: '1/1' }}
+      />
+    );
+  }
 
   return (
     <div
       ref={containerRef}
       className="relative w-full bg-black overflow-hidden select-none"
       style={{
+        // ✅ Hauteur explicite = largeur (carré), jamais 0
         height:      slotH,
         cursor:      total > 1 ? 'grab' : 'default',
         touchAction: total > 1 ? 'none' : 'pan-y pinch-zoom',
       }}
     >
+      {/*
+        ✅ FIX v12 — wrapper flex :
+          width = total * 100% (pour le défilement)
+          height = 100%        ← hérite de slotH du parent → GARANTI non-nul
+          (avant : height: slotH en px → les slides calculaient leur % sur leur
+           propre taille relative, donnant des valeurs incohérentes sur mobile)
+      */}
       <div
         style={{
           position:      'absolute',
-          top: 0, left:  0,
+          top:    0,
+          left:   0,
           display:       'flex',
           flexDirection: 'row',
-          transform:     `translateX(-${index * 100}%)`,
-          transition:    'transform 0.25s ease',
-          willChange:    total > 1 ? 'transform' : 'auto',
           width:         `${total * 100}%`,
-          height:        slotH,
+          height:        '100%',            // ← FIX CLEF
+          transform:     `translateX(-${index * (100 / total)}%)`,
+          transition:    'transform 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+          willChange:    total > 1 ? 'transform' : 'auto',
         }}
       >
         {urls.map((url, i) => {
@@ -954,7 +916,23 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
           const embedThumbnail = post?.thumbnail || getYouTubeThumbnail(url);
 
           return (
-            <div key={i} style={{ position: 'relative', flexShrink: 0, background: '#000', width: `${100 / total}%`, height: slotH }}>
+            /*
+              ✅ FIX v12 — chaque slide :
+                width  = 100% / total  (chaque slide occupe une fraction du flex)
+                height = 100%          (hérite du flex parent = slotH garanti)
+                position: relative     (pour que les enfants absolute inset-0 fonctionnent)
+            */
+            <div
+              key={i}
+              style={{
+                position:   'relative',
+                flexShrink: 0,
+                width:      `${100 / total}%`,
+                height:     '100%',   // ← FIX CLEF — avant: slotH px (cassait sur mobile)
+                background: '#000',
+                overflow:   'hidden',
+              }}
+            >
               {slotType === 'embed' ? (
                 <EmbedItem
                   url={url}
@@ -988,10 +966,14 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
         })}
       </div>
 
+      {/* NAVIGATION */}
       {total > 1 && (
         <>
+          {/* Tap zones mobile */}
           <div className="absolute inset-y-0 left-0  w-16 sm:hidden z-10" onClick={goPrev} />
           <div className="absolute inset-y-0 right-0 w-16 sm:hidden z-10" onClick={goNext} />
+
+          {/* Flèches desktop */}
           <button onClick={goPrev}
             className="hidden sm:flex absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/70 text-white p-3 rounded-full z-10"
             aria-label="Précédent">
@@ -1006,19 +988,30 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </button>
+
+          {/* Dots indicateurs */}
           <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
             {urls.map((_, i) => (
-              <button key={i} onClick={() => setIndex(i)}
+              <button
+                key={i}
+                onClick={() => setIndex(i)}
                 style={{
-                  width: i === index ? 20 : 8, height: 8, borderRadius: 4,
+                  width:           i === index ? 20 : 8,
+                  height:          8,
+                  borderRadius:    4,
                   backgroundColor: i === index ? 'white' : 'rgba(255,255,255,0.5)',
-                  transition: 'width 0.2s ease, background-color 0.2s ease',
-                  border: 'none', padding: 0, cursor: 'pointer', touchAction: 'manipulation',
+                  transition:      'width 0.2s ease, background-color 0.2s ease',
+                  border:          'none',
+                  padding:         0,
+                  cursor:          'pointer',
+                  touchAction:     'manipulation',
                 }}
                 aria-label={`Aller à l'image ${i + 1}`}
               />
             ))}
           </div>
+
+          {/* Compteur */}
           <div className="absolute top-3 right-3 bg-black/60 text-white px-2.5 py-1 rounded-full text-xs font-semibold z-10">
             {index + 1}/{total}
           </div>
