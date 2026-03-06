@@ -6,10 +6,12 @@
 //   NIVEAU 1 — isValidPost() : filtre AVANT affichage
 //     → posts avec URLs Pexels signées (video-files/) → retirés du pool
 //     → posts sans media valide → retirés
+//     → posts dont toutes les URLs sont dans DEAD_PATTERNS → retirés
 //
 //   NIVEAU 2 — usePexelsFreshUrl() : résout les URLs expirées à la volée
-//     → PostCard demande une URL fraîche au backend via /api/videos/refresh-url
+//     → PostItem attend la résolution AVANT de rendre PostCard
 //     → Cache sessionStorage 80min pour éviter re-fetch
+//     → Si résolution échoue → post masqué (placeholder hauteur fixe)
 //
 //   NIVEAU 3 — PexelsMediaWrapper : fallback visuel si URL morte
 //     → onError sur <video>/<img> → retry avec URL fraîche
@@ -152,6 +154,28 @@ const resolvePexUrl = async (videoId) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ✅ Patterns d'URLs connues comme expirées/bloquées
+// ─────────────────────────────────────────────────────────────────────────────
+const DEAD_URL_PATTERNS = [
+  "videos.pexels.com",
+  "cdn.pixabay.com/video",
+];
+
+/**
+ * ✅ Vérifie qu'une URL a une structure valide (pas tronquée, pas corrompue)
+ */
+const isStructurallyValid = (url) => {
+  if (!url || typeof url !== "string" || url.length < 10) return false;
+  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
+  try {
+    const u = new URL(url);
+    return !!(u.hostname && u.pathname && u.pathname !== "/");
+  } catch {
+    return false;
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LCP PRELOAD
 // ─────────────────────────────────────────────────────────────────────────────
 const _preloaded = new Set();
@@ -191,7 +215,9 @@ const getLCPUrl = (posts) => {
   if (!p) return null;
   const m = p.images?.[0] || p.media?.[0];
   const u = m?.url || m;
-  if (!u || isPexelsSigned(u)) return null; // ✅ Ne pas preload une URL Pexels expirée
+  // ✅ Ne pas preload une URL expirée ou invalide
+  if (!u || isPexelsSigned(u) || !isStructurallyValid(u)) return null;
+  if (DEAD_URL_PATTERNS.some(pat => u.includes(pat))) return null;
   return isVideoUrl(u) ? { url: videoPoster(u), type: "image" } : { url: u, type: "image" };
 };
 
@@ -493,38 +519,65 @@ const RefreshRipple = memo(({ isDarkMode }) => (
 RefreshRipple.displayName = "RefreshRipple";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ NIVEAU 3 — PostItem avec résolution Pexels automatique
-// Si le post a une URL Pexels signée → tenter résolution fraîche avant rendu
+// ✅ NIVEAU 2 — PostItem avec résolution Pexels BLOQUANTE
+//
+// CHANGEMENT CLÉ v2 :
+//   Avant : setResolvedPost(post) immédiatement → PostCard recevait l'URL expirée
+//           puis setResolvedPost(freshUrl) après résolution → flash de broken media
+//   Après : resolvedPost = null pendant la résolution
+//           → placeholder (hauteur fixe, invisible) pendant la résolution
+//           → PostCard rendu SEULEMENT quand l'URL est prête ou confirmée valide
+//           → Si résolution échoue → post reste masqué (pas de broken media)
 // ─────────────────────────────────────────────────────────────────────────────
 const PostItem = memo(
   ({ post, onDeleted, showToast, isPriority, waveIndex, playWave }) => {
     const shouldAnimate = useRef(playWave).current;
     const anim = shouldAnimate && typeof waveIndex === "number" && waveIndex < WAVE_COUNT;
 
-    // ✅ Si le post a un externalId Pexels → résoudre l'URL fraîche
-    const [resolvedPost, setResolvedPost] = useState(post);
-    const resolvedRef = useRef(false);
+    // ✅ null = en attente de résolution, false = résolution échouée, post = prêt
+    const [resolvedPost, setResolvedPost] = useState(() => {
+      // Initialisation synchrone : si pas Pexels → afficher directement
+      const pexId = getPexIdFromPost(post);
+      if (!pexId) return post;
+      // Pexels → vérifier le cache synchrone
+      const cached = pexCacheRead(pexId);
+      if (cached) return { ...post, videoUrl: cached, _pexResolved: true };
+      // Pas en cache → attendre résolution async
+      return null;
+    });
+
+    const resolvedRef = useRef(resolvedPost !== null); // true si déjà résolu au mount
 
     useEffect(() => {
-      if (resolvedRef.current) return;
-      const pexId = getPexIdFromPost(post);
-      if (!pexId) return; // Pas un post Pexels → rien à faire
-
+      if (resolvedRef.current) return; // déjà résolu (non-Pexels ou cache hit)
       resolvedRef.current = true;
 
-      // Vérifier le cache d'abord (synchrone)
-      const cached = pexCacheRead(pexId);
-      if (cached) {
-        setResolvedPost({ ...post, videoUrl: cached, _pexResolved: true });
+      const pexId = getPexIdFromPost(post);
+      if (!pexId) {
+        setResolvedPost(post);
         return;
       }
 
-      // Résoudre en arrière-plan
+      // Résolution asynchrone — PostCard ne rend PAS pendant ce temps
       resolvePexUrl(pexId).then((freshUrl) => {
-        if (freshUrl) setResolvedPost({ ...post, videoUrl: freshUrl, _pexResolved: true });
-        // Si null → le post reste tel quel, PostCard gérera l'erreur
+        if (freshUrl) {
+          setResolvedPost({ ...post, videoUrl: freshUrl, _pexResolved: true });
+        } else {
+          // ✅ Résolution échouée → masquer le post (false = ne pas rendre)
+          setResolvedPost(false);
+        }
       });
     }, [post]);
+
+    // ✅ En cours de résolution Pexels → placeholder hauteur fixe (évite layout shift)
+    if (resolvedPost === null) {
+      return <div style={{ height: POST_H }} aria-hidden="true" />;
+    }
+
+    // ✅ Résolution échouée → ne rien rendre (post avec URL morte masqué)
+    if (resolvedPost === false) {
+      return null;
+    }
 
     return (
       <motion.div
@@ -822,23 +875,62 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     })();
   }, [user]);
 
-  // ✅ NIVEAU 1 — isValidPost : filtre les posts avec URLs Pexels SIGNÉES
-  // Exception : les posts avec externalId pexels_XXXX → gardés car on peut
-  // résoudre leur URL via le backend (NIVEAU 2 dans PostItem)
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ isValidPost — filtre renforcé v2
+  //
+  // Changements par rapport à v1 :
+  //  1. Posts sans media mais avec texte → toujours valides
+  //  2. Posts dont TOUTES les URLs media sont dans DEAD_URL_PATTERNS → bloqués
+  //     même si hasStale() ne les détecte pas (ex: URL Pixabay sans pattern regex)
+  //  3. hasValidUser vérifié AVANT la logique Pexels
+  // ─────────────────────────────────────────────────────────────────────────
   const isValidPost = useCallback((p) => {
     if (!p?._id) return false;
     if (p._isMock || p.isMockPost || p._id?.startsWith("post_")) return true;
+
     const u = p.user || p.author || {};
     if (u.isBanned || u.isDeleted || ["deleted", "banned"].includes(u.status)) return false;
 
-    // ✅ FIX PEXELS : si le post a un externalId pexels → on peut résoudre → garder
-    const hasPexId = !!getPexIdFromPost(p);
-    if (hasPexId) return !!(u._id || u.id || p.userId || p.author?._id);
+    const hasValidUser = !!(u._id || u.id || p.userId || p.author?._id);
+    if (!hasValidUser) return false;
 
-    // Sans externalId, bloquer si URLs signées expirables
+    // ✅ Post Pexels avec externalId → PostItem gérera la résolution async
+    const hasPexId = !!getPexIdFromPost(p);
+    if (hasPexId) return true;
+
+    // ✅ Bloquer posts avec URLs expirables SANS externalId (ne peuvent pas être résolus)
     if (hasStale(p)) return false;
 
-    return !!(u._id || u.id || p.userId || p.author?._id);
+    // ✅ Collecter toutes les URLs media du post
+    const allMediaUrls = [
+      ...(Array.isArray(p.media)  ? p.media  : p.media  ? [p.media]  : []),
+      ...(Array.isArray(p.images) ? p.images : p.images ? [p.images] : []),
+      p.videoUrl,
+      p.embedUrl,
+    ]
+      .filter(Boolean)
+      .map((m) => (typeof m === "string" ? m : m?.url))
+      .filter(Boolean);
+
+    const hasText = !!(p.content || p.contenu);
+
+    // Post texte sans media → valide
+    if (!allMediaUrls.length && hasText) return true;
+
+    // Post vide (pas de texte, pas de media) → invalide
+    if (!allMediaUrls.length && !hasText) return false;
+
+    // ✅ Bloquer si TOUTES les URLs sont connues comme expirées/bloquées
+    const allDead = allMediaUrls.every((url) =>
+      DEAD_URL_PATTERNS.some((pat) => url.includes(pat))
+    );
+    if (allDead) return false;
+
+    // ✅ Bloquer si TOUTES les URLs sont structurellement invalides
+    const allInvalid = allMediaUrls.every((url) => !isStructurallyValid(url));
+    if (allInvalid && !hasText) return false;
+
+    return true;
   }, []);
 
   const combinedPosts = useMemo(() => {

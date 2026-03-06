@@ -15,6 +15,12 @@ export const useVideos = () => {
 const LIMIT = 10;
 const SOCKET_NAMESPACE = '/videos';
 
+// ✅ URL API directe pour les requêtes fire-and-forget (vues)
+// On n'utilise PAS axiosClient ici pour éviter :
+//   - withCredentials: true → CORS strict (origin explicite requise)
+//   - retry 3x avec 2s/4s/6s → maintient des connexions qui bloquent le chargement vidéo
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
 export const VideosProvider = ({ children }) => {
   const { user: currentUser, getToken } = useAuth();
   
@@ -22,14 +28,12 @@ export const VideosProvider = ({ children }) => {
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
-  // ✅ initialLoad commence à true pour afficher le loading screen
   const [initialLoad, setInitialLoad] = useState(true);
 
   const socketRef = useRef(null);
   const fetchingRef = useRef(false);
   const abortController = useRef(null);
   const initialFetchDone = useRef(false);
-  // ✅ Stocker page dans un ref pour que fetchVideos soit stable (pas de boucle infinie)
   const pageRef = useRef(0);
   const hasMoreRef = useRef(true);
 
@@ -67,7 +71,6 @@ export const VideosProvider = ({ children }) => {
   }, [currentUser, getToken]);
 
   // === FETCH VIDÉOS ===
-  // ✅ STABLE : utilise des refs pour page/hasMore → pas de boucle infinie
   const fetchVideos = useCallback(async (reset = false) => {
     if (fetchingRef.current) return;
     if (!reset && !hasMoreRef.current) return;
@@ -95,10 +98,8 @@ export const VideosProvider = ({ children }) => {
       else if (Array.isArray(data.videos)) newVideos = data.videos;
       else if (Array.isArray(data.data)) newVideos = data.data;
 
-      // ✅ S'assurer que chaque vidéo a videoUrl résolu
       const normalizedVideos = newVideos.map(v => ({
         ...v,
-        // videoUrl peut venir de plusieurs champs selon l'upload
         videoUrl: v.videoUrl || v.url || 
           (v.mediaType === 'video' && v.media?.[0]) ||
           (Array.isArray(v.media) && v.media.find(u => /\.(mp4|webm|mov)(\?|$)/i.test(u))) ||
@@ -115,22 +116,18 @@ export const VideosProvider = ({ children }) => {
       hasMoreRef.current = newVideos.length >= LIMIT;
       setPage(targetPage);
       setHasMore(newVideos.length >= LIMIT);
-
-      // ✅ Éteindre initialLoad après le premier fetch réussi
       setInitialLoad(false);
 
     } catch (err) {
       if (err.name === 'CanceledError' || err.name === 'AbortError') return;
       console.error('❌ [VideoContext] Erreur Fetch:', err);
-      // ✅ Éteindre initialLoad même en cas d'erreur pour ne pas bloquer l'UI
       setInitialLoad(false);
     } finally {
       setLoading(false);
       fetchingRef.current = false;
     }
-  }, []); // ✅ Aucune dépendance → fonction 100% stable
+  }, []);
 
-  // ✅ Chargement initial — fetchVideos est stable donc pas de boucle
   useEffect(() => {
     if (!initialFetchDone.current) {
       initialFetchDone.current = true;
@@ -202,25 +199,42 @@ export const VideosProvider = ({ children }) => {
     }
   }, []);
 
-  // === INCREMENT VIEWS ===
+  // ✅ FIX INCREMENT VIEWS
+  // Utilise fetch() natif au lieu d'axiosClient pour éviter :
+  //   1. withCredentials: true → CORS strict bloque sur cold start Render (502)
+  //   2. Retry 3x (2s+4s+6s) → maintient des connexions ouvertes qui
+  //      concurrencent le chargement de la vidéo suivante → sauts
+  // C'est une requête fire-and-forget : on n'attend pas la réponse,
+  // on n'affiche pas d'erreur, on incrémente juste le compteur local.
   const incrementViews = useCallback(async (videoId) => {
     if (!videoId) return;
+
+    // Incrément local immédiat (UI réactive)
     setVideos(prev => prev.map(v =>
       v._id === videoId ? { ...v, views: (v.views || 0) + 1 } : v
     ));
-    try {
-      await axiosClient.post(`/videos/${videoId}/view`);
-    } catch (err) {
-      console.warn("Erreur vue:", err.message);
-    }
-  }, []);
 
-  // ✅ initialLoad EST MAINTENANT EXPORTÉ
+    // Fire-and-forget — pas de retry, pas de throw
+    try {
+      const token = getToken ? await getToken() : null;
+      await fetch(`${API_URL}/videos/${videoId}/view`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        // Pas de credentials: 'include' → évite le CORS strict
+      });
+    } catch {
+      // Silencieux — une vue ratée n'est pas critique
+    }
+  }, [getToken]);
+
   const value = useMemo(() => ({
     videos,
     loading,
     hasMore,
-    initialLoad,      // ✅ MANQUAIT dans la version originale
+    initialLoad,
     fetchVideos,
     likeVideo,
     commentVideo,

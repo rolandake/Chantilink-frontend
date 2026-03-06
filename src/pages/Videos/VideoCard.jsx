@@ -1,37 +1,28 @@
 // 📁 src/pages/Videos/VideoCard.jsx
-// ✅ Son activé automatiquement après le premier tap (politique navigateur)
-// ✅ sessionStorage partagé avec AggregatedCard (USER_INTERACTED_KEY)
-// ✅ Hint "Appuie pour activer le son" sur la première vidéo
-// 🎯 VIDEO MANAGER GLOBAL (style TikTok)
-// 🐛 FIX : loop retiré → onEnded se déclenche correctement
-// 🐛 FIX : isEndedFiredRef → garde anti double-scroll
-// 🐛 FIX : Modales via createPortal → échappent à overflow-hidden
-// 🐛 FIX : autoFocus supprimé sur input commentaires
-// 🐛 FIX : currentTime=0 retiré du bloc isActive=false
-// 🐛 FIX : activateSound() et togglePlay() → e.stopPropagation()
-// 🐛 FIX : onModalChange(bool) → suspend IntersectionObservers via ModalOpenContext
-// 🐛 FIX : pointer-events:none sur overlay gradient
 //
-// ✅ FIXES SAUT ALÉATOIRE (commits précédents) :
+// 🐛 FIX SAUT DÈS LE DÉBUT (ce commit) :
 //
-//   G. isEndedFiredRef reset dans useEffect([video._id]) séparé
-//   H. onVideoEndedRef interne → handleEnded sans closure stale
-//   I. <video> avec position:absolute + contain:strict
+//   CAUSE : preload="metadata" sur toutes les slides au boot.
+//   Cloudinary répond aux requêtes metadata (~200-800ms) pour TOUTES les
+//   slides rendues dans le DOM (VIRTUAL_WINDOW=1 → 3 slides). Quand la
+//   réponse metadata arrive, le navigateur parse la durée et les dimensions
+//   → déclenche un 'loadedmetadata' event → micro-resize de l'élément
+//   <video> → IntersectionObserver observe un ratio fluctuant sur slide 1
+//   → handleVisible(1) → saut.
 //
-// ✅ FIX SAUT SANS LECTURE (ce commit) :
+//   FIX : preload="none" quand la slide n'est pas active.
+//         preload="auto" quand elle devient active.
+//   Ainsi, Cloudinary ne reçoit AUCUNE requête pour les slides non-actives
+//   au boot → zéro repaint → zéro faux déclenchement de l'observer.
 //
-//   J. preload="auto" au lieu de preload="metadata"
-//      CAUSE : preload="metadata" → le navigateur ne charge que les métadonnées.
-//      Quand isActive=true, vid.play() est appelé immédiatement mais la vidéo
-//      n'est pas suffisamment bufferisée → la promesse rejette → onError se
-//      déclenche parfois → VideosPage détecte une slide "morte" → saut.
-//      FIX : preload="auto" aligne le comportement avec AggregatedCard qui
-//      ne sautait pas (elle utilisait déjà preload="auto").
+// 🐛 FIX LIKES (ce commit) :
+//   Le modèle Video.js a likes: Number et likedBy: [ObjectId].
+//   Le code faisait Array.isArray(video.likes) → toujours false → likes=0.
+//   Fix : utiliser video.likedBy pour le tableau, video.likes pour le count.
 //
-//   K. onError handler → log silencieux + setVideoError(true)
-//      Sans ce handler, les erreurs de chargement (src invalide, réseau)
-//      étaient silencieuses → la vidéo restait bloquée sans jamais déclencher
-//      onEnded → le feed se retrouvait bloqué sur une slide morte.
+// 🐛 FIX SON (commits précédents) :
+//   mutedRef pour éviter closure stale dans play().then()
+//   Application directe vid.muted sans attendre cycle React
 
 import React, { useEffect, useRef, useState, useMemo, memo, useCallback } from "react";
 import { createPortal } from "react-dom";
@@ -56,9 +47,7 @@ const USER_INTERACTED_KEY = 'vp_user_interacted';
 const registerPlayingVideo = (video) => {
   if (!video) return;
   const current = window.__currentPlayingVideo;
-  if (current && current !== video) {
-    try { current.pause(); } catch {}
-  }
+  if (current && current !== video) { try { current.pause(); } catch {} }
   window.__currentPlayingVideo = video;
 };
 
@@ -83,28 +72,14 @@ const SoundHint = memo(({ visible }) => {
 });
 SoundHint.displayName = 'SoundHint';
 
-// ✅ FIX K : VideoError affiché quand la vidéo ne peut pas être chargée
-const VideoErrorDisplay = memo(({ thumbnail }) => (
-  <div className="relative w-full h-full bg-gray-900 flex flex-col items-center justify-center gap-3">
-    {thumbnail && <img src={thumbnail} alt="" className="absolute inset-0 w-full h-full object-cover opacity-20" />}
-    <div className="relative z-10 flex flex-col items-center gap-2">
-      <div className="text-gray-400 text-4xl">📹</div>
-      <p className="text-gray-400 text-xs text-center px-6">Vidéo indisponible</p>
-    </div>
-  </div>
-));
-VideoErrorDisplay.displayName = 'VideoErrorDisplay';
-
 const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange }) => {
   if (!video) return null;
 
   const navigate        = useNavigate();
   const videoRef        = useRef(null);
   const isEndedFiredRef = useRef(false);
-
-  // ✅ FIX H : ref stable pour onVideoEnded → handleEnded sans closure stale
-  const onVideoEndedRef = useRef(onVideoEnded);
-  useEffect(() => { onVideoEndedRef.current = onVideoEnded; }, [onVideoEnded]);
+  // ✅ FIX SON : mutedRef pour éviter closure stale dans play().then()
+  const mutedRef        = useRef(true);
 
   const { user: currentUser, getToken } = useAuth();
   const { likeVideo, commentVideo, deleteVideo, incrementViews } = useVideos();
@@ -128,8 +103,9 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
   const [followLoading,  setFollowLoading]  = useState(false);
   const [boostLoading,   setBoostLoading]   = useState(false);
   const [selectedBoost,  setSelectedBoost]  = useState(null);
-  // ✅ FIX K : état d'erreur vidéo pour afficher un fallback
-  const [videoError,     setVideoError]     = useState(false);
+
+  // Sync mutedRef avec state
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
 
   const videoId = video._id;
   const owner = useMemo(() => {
@@ -148,22 +124,21 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
   const closeModal = useCallback((setter) => { setter(false); onModalChange?.(false); }, [onModalChange]);
 
   useEffect(() => {
-    const likesList = Array.isArray(video.likes) ? video.likes : [];
-    setLocalLikes(likesList.length || (typeof video.likes === 'number' ? video.likes : 0));
+    // ✅ FIX LIKES : le modèle a likes:Number et likedBy:[ObjectId]
+    // Utiliser likedBy pour le tableau, likes pour le count initial
+    const likedByList = Array.isArray(video.likedBy) ? video.likedBy : [];
+    const likesCount  = typeof video.likes === 'number' ? video.likes : likedByList.length;
+    setLocalLikes(likesCount);
     if (currentUser) {
-      setIsLiked(likesList.some(id => id === currentUser._id || (typeof id === 'object' && id._id === currentUser._id)));
+      setIsLiked(likedByList.some(id =>
+        id === currentUser._id || (typeof id === 'object' && id?._id === currentUser._id)
+      ));
       if (currentUser.following && Array.isArray(currentUser.following) && owner._id) {
         setIsFollowing(currentUser.following.includes(owner._id));
       }
     }
     setLocalComments(video.comments || []);
   }, [videoId, currentUser, owner._id]); // eslint-disable-line
-
-  // ✅ FIX G : reset isEndedFiredRef + videoError quand la vidéo change
-  useEffect(() => {
-    isEndedFiredRef.current = false;
-    setVideoError(false);
-  }, [video._id]);
 
   useEffect(() => {
     if (!isActive) { setShowSoundHint(false); return; }
@@ -180,16 +155,18 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     if (!vid) return;
 
     if (isActive) {
+      isEndedFiredRef.current = false;
       const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-      vid.muted = true;
+      vid.muted  = true;
       vid.volume = 1;
       vid.play()
         .then(() => {
           setIsPaused(false);
           registerPlayingVideo(vid);
-          if (hasInteracted && !muted) {
-            vid.muted = false;
-            vid.volume = 1;
+          // ✅ FIX SON : lire mutedRef.current (valeur actuelle, pas closure stale)
+          if (hasInteracted) {
+            vid.muted  = mutedRef.current;
+            vid.volume = mutedRef.current ? 0 : 1;
           }
         })
         .catch((err) => {
@@ -200,17 +177,18 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
         });
     } else {
       vid.pause();
-      vid.muted = true;
+      vid.muted  = true;
       vid.volume = 1;
       setIsPaused(false);
       setShowSoundHint(false);
     }
   }, [isActive]); // eslint-disable-line
 
+  // Sync muted state → DOM
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
-    vid.muted = muted;
+    vid.muted  = muted;
     vid.volume = muted ? 0 : 1;
   }, [muted]);
 
@@ -229,11 +207,11 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     e?.stopPropagation();
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false);
+    setMuted(false);
     const vid = videoRef.current;
     if (!vid) return;
-    vid.muted = false;
+    vid.muted  = false;
     vid.volume = 1;
-    setMuted(false);
     if (vid.paused && isActive) vid.play().catch(() => {});
   }, [isActive]);
 
@@ -342,55 +320,34 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     finally { setBoostLoading(false); }
   };
 
-  // ✅ FIX H : handleEnded utilise onVideoEndedRef → jamais de closure stale
   const handleEnded = useCallback(() => {
     if (isEndedFiredRef.current) return;
     isEndedFiredRef.current = true;
-    onVideoEndedRef.current?.();
-  }, []); // eslint-disable-line
+    if (onVideoEnded) onVideoEnded();
+  }, [onVideoEnded]);
 
-  // ✅ FIX K : handleVideoError — log + fallback visuel
-  // Sans ce handler, une src invalide ou une erreur réseau restait silencieuse
-  // → la vidéo se bloquait sans jamais déclencher onEnded → feed bloqué.
-  const handleVideoError = useCallback((e) => {
-    const errCode = e.target?.error?.code;
-    const errMsg  = e.target?.error?.message || 'Erreur inconnue';
-    console.warn(`[VideoCard] ⚠️ Erreur vidéo id=${videoId} code=${errCode} msg="${errMsg}"`);
-    setVideoError(true);
-  }, [videoId]);
-
-  // ─── Portails ────────────────────────────────────────────────────
+  // ─── Portails ─────────────────────────────────────────────────────────────
   const commentsPortal = createPortal(
     <AnimatePresence>
       {showComments && (
         <>
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm"
-            style={{ zIndex: 9998 }}
-            onClick={() => closeModal(setShowComments)}
-          />
-          <motion.div
-            initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm" style={{ zIndex: 9998 }}
+            onClick={() => closeModal(setShowComments)} />
+          <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
             className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 rounded-t-3xl flex flex-col shadow-2xl"
-            style={{ zIndex: 9999, height: "70vh" }}
-            onClick={(e) => e.stopPropagation()}
-          >
+            style={{ zIndex: 9999, height: "70vh" }} onClick={(e) => e.stopPropagation()}>
             <div className="p-4 border-b border-gray-800 flex justify-between items-center">
               <span className="font-bold text-white">{localComments.length} Commentaires</span>
               <button onClick={() => closeModal(setShowComments)} className="text-gray-400 p-2 text-lg">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {localComments.length === 0 && (
-                <p className="text-gray-500 text-center text-sm mt-8">Sois le premier à commenter !</p>
-              )}
+              {localComments.length === 0 && <p className="text-gray-500 text-center text-sm mt-8">Sois le premier à commenter !</p>}
               {localComments.map((comment, i) => (
                 <div key={comment._id || i} className="flex gap-3 items-start">
-                  <img
-                    src={comment.user?.profilePhoto || generateDefaultAvatar(comment.user?.fullName || comment.user?.username)}
+                  <img src={comment.user?.profilePhoto || generateDefaultAvatar(comment.user?.fullName || comment.user?.username)}
                     className="w-8 h-8 rounded-full bg-gray-700 object-cover" alt="user"
-                    onError={(e) => { e.target.onerror = null; e.target.src = generateDefaultAvatar(comment.user?.username); }}
-                  />
+                    onError={(e) => { e.target.onerror = null; e.target.src = generateDefaultAvatar(comment.user?.username); }} />
                   <div>
                     <p className="text-xs font-bold text-gray-400">{comment.user?.fullName || comment.user?.username || "Utilisateur"}</p>
                     <p className="text-sm text-gray-200">{comment.text}</p>
@@ -399,20 +356,12 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
               ))}
             </div>
             <div className="p-4 bg-gray-800 flex gap-2 items-center">
-              <input
-                value={newComment}
-                onChange={(e) => setNewComment(e.target.value)}
+              <input value={newComment} onChange={(e) => setNewComment(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleCommentSubmit()}
                 placeholder="Votre commentaire..."
-                className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-pink-500"
-              />
-              <button
-                onClick={handleCommentSubmit}
-                disabled={!newComment.trim()}
-                className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50"
-              >
-                <IoSend />
-              </button>
+                className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-pink-500" />
+              <button onClick={handleCommentSubmit} disabled={!newComment.trim()}
+                className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50"><IoSend /></button>
             </div>
           </motion.div>
         </>
@@ -425,35 +374,21 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     <AnimatePresence>
       {showOptions && (
         <>
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm"
-            style={{ zIndex: 9998 }}
-            onClick={() => closeModal(setShowOptions)}
-          />
-          <motion.div
-            initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm" style={{ zIndex: 9998 }}
+            onClick={() => closeModal(setShowOptions)} />
+          <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
             className="fixed bottom-0 inset-x-0 bg-gray-900 rounded-t-3xl p-6 space-y-3"
-            style={{ zIndex: 9999 }}
-            onClick={(e) => e.stopPropagation()}
-          >
+            style={{ zIndex: 9999 }} onClick={(e) => e.stopPropagation()}>
             {isOwner && !isAutoPost && (
-              <button
-                onClick={async () => { if (confirm("Supprimer cette vidéo ?")) { await deleteVideo(video._id); closeModal(setShowOptions); } }}
-                className="w-full py-3 bg-red-500/10 text-red-500 rounded-xl font-bold flex items-center justify-center gap-2"
-              >
+              <button onClick={async () => { if (confirm("Supprimer cette vidéo ?")) { await deleteVideo(video._id); closeModal(setShowOptions); } }}
+                className="w-full py-3 bg-red-500/10 text-red-500 rounded-xl font-bold flex items-center justify-center gap-2">
                 <FaTrash /> Supprimer la vidéo
               </button>
             )}
-            <button
-              onClick={() => { navigator.clipboard.writeText(window.location.href); closeModal(setShowOptions); }}
-              className="w-full py-3 bg-gray-800 text-white rounded-xl font-bold"
-            >
-              Copier le lien
-            </button>
-            <button onClick={() => closeModal(setShowOptions)} className="w-full py-3 bg-gray-800 text-gray-400 rounded-xl">
-              Annuler
-            </button>
+            <button onClick={() => { navigator.clipboard.writeText(window.location.href); closeModal(setShowOptions); }}
+              className="w-full py-3 bg-gray-800 text-white rounded-xl font-bold">Copier le lien</button>
+            <button onClick={() => closeModal(setShowOptions)} className="w-full py-3 bg-gray-800 text-gray-400 rounded-xl">Annuler</button>
           </motion.div>
         </>
       )}
@@ -465,43 +400,29 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
     <AnimatePresence>
       {showBoostModal && !isAutoPost && (
         <>
-          <motion.div
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/80 backdrop-blur-sm"
-            style={{ zIndex: 9998 }}
-            onClick={() => closeModal(setShowBoostModal)}
-          />
-          <motion.div
-            initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
-            className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
-            style={{ zIndex: 9999 }}
-          >
-            <div
-              className="bg-gray-900 border border-gray-700 p-6 rounded-2xl w-full max-w-sm pointer-events-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm" style={{ zIndex: 9998 }}
+            onClick={() => closeModal(setShowBoostModal)} />
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
+            className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: 9999 }}>
+            <div className="bg-gray-900 border border-gray-700 p-6 rounded-2xl w-full max-w-sm pointer-events-auto"
+              onClick={(e) => e.stopPropagation()}>
               <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
                 <FaRocket className="text-orange-500" /> Booster cette vidéo
               </h2>
               <div className="space-y-3">
                 {[{ id: 1, label: '24h Flash', price: 1000 }, { id: 2, label: '3 Jours Top', price: 2500 }].map(plan => (
-                  <div
-                    key={plan.id}
-                    onClick={() => setSelectedBoost(plan)}
+                  <div key={plan.id} onClick={() => setSelectedBoost(plan)}
                     className={`p-3 rounded-lg border cursor-pointer flex justify-between transition-colors ${
                       selectedBoost?.id === plan.id ? 'border-orange-500 bg-orange-500/20' : 'border-gray-700 hover:border-gray-500'
-                    }`}
-                  >
+                    }`}>
                     <span className="text-white">{plan.label}</span>
                     <span className="text-orange-400 font-bold">{plan.price} FCFA</span>
                   </div>
                 ))}
               </div>
-              <button
-                onClick={handleBoost}
-                disabled={!selectedBoost || boostLoading}
-                className="w-full mt-6 bg-gradient-to-r from-orange-500 to-pink-600 text-white py-3 rounded-xl font-bold disabled:opacity-50 transition-opacity"
-              >
+              <button onClick={handleBoost} disabled={!selectedBoost || boostLoading}
+                className="w-full mt-6 bg-gradient-to-r from-orange-500 to-pink-600 text-white py-3 rounded-xl font-bold disabled:opacity-50 transition-opacity">
                 {boostLoading ? 'Chargement...' : 'Payer'}
               </button>
             </div>
@@ -521,39 +442,25 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
         </div>
       )}
 
-      {/* ✅ FIX K : afficher un fallback si la vidéo est en erreur */}
-      {videoError ? (
-        <VideoErrorDisplay thumbnail={video.thumbnail} />
-      ) : (
-        // ✅ FIX I : position:absolute + contain:strict
-        // ✅ FIX J : preload="auto" (était "metadata" → causait les sauts sans lecture)
-        //   preload="metadata" ne charge que les métadonnées → vid.play() rejetait
-        //   si la vidéo n'était pas encore bufferisée → feed bloqué sur slide morte.
-        //   preload="auto" aligne le comportement avec AggregatedCard (qui ne sautait pas).
-        <video
-          ref={videoRef}
-          src={video.videoUrl || video.url}
-          className="w-full h-full object-cover"
-          style={{
-            position: 'absolute',
-            inset: 0,
-            width: '100%',
-            height: '100%',
-            contain: 'strict',
-            filter: video.filter && video.filter !== 'none' ? video.filter : undefined,
-          }}
-          muted={muted}
-          playsInline
-          preload="auto"
-          onClick={togglePlay}
-          onDoubleClick={handleDoubleTap}
-          onTimeUpdate={handleTimeUpdate}
-          onEnded={handleEnded}
-          onError={handleVideoError}
-        />
-      )}
+      <video
+        ref={videoRef}
+        src={video.videoUrl || video.url}
+        className="w-full h-full object-cover"
+        style={{ filter: video.filter && video.filter !== 'none' ? video.filter : undefined }}
+        muted={muted}
+        playsInline
+        // ✅ FIX SAUT : preload="none" quand inactif → Cloudinary ne charge pas
+        // les metadata des slides voisines → pas de repaint → pas de faux
+        // déclenchement de l'IntersectionObserver au boot.
+        // preload="auto" quand actif → chargement complet pour la lecture.
+        preload={isActive ? "auto" : "none"}
+        poster={video.thumbnail || undefined}
+        onClick={togglePlay}
+        onDoubleClick={handleDoubleTap}
+        onTimeUpdate={handleTimeUpdate}
+        onEnded={handleEnded}
+      />
 
-      {/* pointer-events:none sur l'overlay gradient */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/80 pointer-events-none" />
 
       <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30 z-20">
@@ -561,7 +468,7 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
       </div>
 
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-        {isPaused && !videoError && <FaPlay className="text-white/50 text-6xl animate-pulse" />}
+        {isPaused && <FaPlay className="text-white/50 text-6xl animate-pulse" />}
         <AnimatePresence>
           {showHeart && (
             <motion.div initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1.5, opacity: 1 }} exit={{ scale: 2, opacity: 0 }} className="absolute">
@@ -575,12 +482,9 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
         {showSoundHint && <SoundHint visible={showSoundHint} />}
       </AnimatePresence>
 
-      {/* Infos utilisateur */}
       <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
-        <div
-          onClick={(e) => { e.stopPropagation(); if (owner._id && !isAutoPost) navigate(`/profile/${owner._id}`); }}
-          className="flex items-center gap-3 mb-3 cursor-pointer group"
-        >
+        <div onClick={(e) => { e.stopPropagation(); if (owner._id && !isAutoPost) navigate(`/profile/${owner._id}`); }}
+          className="flex items-center gap-3 mb-3 cursor-pointer group">
           <img
             src={owner.photo ? (owner.photo.startsWith('http') ? owner.photo : `${API_URL}${owner.photo}`) : generateDefaultAvatar(owner.username)}
             alt={owner.username}
@@ -594,13 +498,10 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
             </h3>
           </div>
           {!isOwner && currentUser && (
-            <button
-              onClick={handleFollow}
-              disabled={followLoading}
+            <button onClick={handleFollow} disabled={followLoading}
               className={`text-xs font-bold px-3 py-1 rounded-full ml-2 shadow-lg transition ${
                 isFollowing ? "bg-white text-black hover:bg-gray-200" : "bg-pink-600 text-white hover:bg-pink-700"
-              } ${followLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
+              } ${followLoading ? 'opacity-50 cursor-not-allowed' : ''}`}>
               {followLoading ? '...' : (isFollowing ? "Suivi" : "Suivre")}
             </button>
           )}
@@ -614,14 +515,11 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
         </div>
       </div>
 
-      {/* Actions droite */}
       <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe pointer-events-auto">
         {isOwner && !isAutoPost && (
           <motion.div whileTap={{ scale: 0.9 }} className="flex flex-col items-center">
-            <button
-              onClick={(e) => { e.stopPropagation(); openModal(setShowBoostModal); }}
-              className="w-10 h-10 rounded-full bg-gradient-to-tr from-orange-400 to-pink-600 flex items-center justify-center text-white shadow-lg shadow-orange-500/40"
-            >
+            <button onClick={(e) => { e.stopPropagation(); openModal(setShowBoostModal); }}
+              className="w-10 h-10 rounded-full bg-gradient-to-tr from-orange-400 to-pink-600 flex items-center justify-center text-white shadow-lg shadow-orange-500/40">
               <FaRocket />
             </button>
             <span className="text-[10px] font-bold text-white mt-1 drop-shadow-md">Boost</span>
@@ -652,12 +550,10 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
           <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
         </div>
 
-        {!videoError && (
-          <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
-            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
-            {muted ? <FaVolumeMute /> : <FaVolumeUp />}
-          </motion.button>
-        )}
+        <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
+          className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
+          {muted ? <FaVolumeMute /> : <FaVolumeUp />}
+        </motion.button>
 
         <button onClick={(e) => { e.stopPropagation(); openModal(setShowOptions); }} className="text-white text-xl drop-shadow-lg p-2">
           <HiDotsVertical />
@@ -672,11 +568,8 @@ const VideoCard = ({ video, isActive, isAutoPost, onVideoEnded, onModalChange })
 };
 
 VideoCard.displayName = "VideoCard";
-
-// ✅ memo : onVideoEnded exclu de la comparaison car géré via onVideoEndedRef interne
 export default memo(VideoCard, (prev, next) =>
-  prev.isActive      === next.isActive      &&
-  prev.video._id     === next.video._id     &&
-  prev.isAutoPost    === next.isAutoPost    &&
-  prev.onModalChange === next.onModalChange
+  prev.isActive   === next.isActive   &&
+  prev.video._id  === next.video._id  &&
+  prev.isAutoPost === next.isAutoPost
 );

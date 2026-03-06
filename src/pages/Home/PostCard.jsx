@@ -10,6 +10,8 @@
 //    (tokens expirent ~2h — cohérent avec PostsContext.jsx filterBlockedPosts)
 // ✅ FIX PIXABAY v3 : bloque toutes URLs cdn.pixabay.com/video dans mediaUrls
 //    (CORS bloqué côté navigateur — cohérent avec PostsContext.jsx filterBlockedPosts)
+// ✅ FIX URLs INVALIDES v4 : isStructurallyValid() filtre les URLs tronquées/corrompues
+//    dans resolveMediaUrl ET dans le useMemo mediaUrls
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -38,24 +40,50 @@ const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 // ─────────────────────────────────────────────
-// ✅ FIX PEXELS v2 + PIXABAY v3 — EXTERNAL_URL_PATTERNS & resolveMediaUrl
+// ✅ FIX PEXELS v2 + PIXABAY v3 + URLs INVALIDES v4
 //
 // resolveMediaUrl retourne null pour :
 //   - videos.pexels.com  → tokens expirés ~2h
 //   - cdn.pixabay.com/video → CORS bloqué navigateur
+//   - URLs structurellement invalides → tronquées, path vide, corrompues
 //
 // Note : ce guard est une défense en profondeur. En conditions normales,
-// ces posts sont déjà filtrés par PostsContext.filterBlockedPosts().
+// ces posts sont déjà filtrés par PostsContext.filterBlockedPosts()
+// et par isValidPost() dans Home.jsx.
 // ─────────────────────────────────────────────
 const EXTERNAL_URL_PATTERNS = [
   'youtube.com', 'youtu.be', 'player.vimeo.com', 'dailymotion.com',
   'cdn.pixabay.com', 'images.pexels.com',
   'img.youtube.com', 'i.vimeocdn.com', 'pixabay.com',
-  // ⚠️ 'videos.pexels.com' et 'cdn.pixabay.com/video' gérés séparément ci-dessous
 ];
 
 const isExternalMediaUrl = (url) =>
   url && EXTERNAL_URL_PATTERNS.some(p => url.includes(p));
+
+// ─────────────────────────────────────────────
+// ✅ isStructurallyValid — détecte les URLs tronquées/corrompues
+//
+// Rejette :
+//  - URLs trop courtes (< 10 chars)
+//  - URLs sans hostname valide
+//  - URLs avec pathname vide ou "/"
+//  - URLs qui ne parsent pas
+//
+// Accepte sans parser :
+//  - data:image/...   (inline base64)
+//  - blob:...         (object URLs)
+//  - /uploads/...     (chemins relatifs backend)
+// ─────────────────────────────────────────────
+const isStructurallyValid = (url) => {
+  if (!url || typeof url !== "string" || url.length < 10) return false;
+  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
+  try {
+    const u = new URL(url);
+    return !!(u.hostname && u.pathname && u.pathname !== "/");
+  } catch {
+    return false;
+  }
+};
 
 // ─────────────────────────────────────────────
 // OBSERVER VIDÉO
@@ -100,6 +128,9 @@ const getCloudinaryUrl = (id, opts = {}) => {
   return `${base}${t ? t + "/" : ""}${id.replace(/^\/+/, "")}`;
 };
 
+// ─────────────────────────────────────────────
+// ✅ resolveMediaUrl — v4 avec validation structurelle
+// ─────────────────────────────────────────────
 const resolveMediaUrl = (raw, opts = {}) => {
   if (!raw || typeof raw !== 'string') return null;
   if (raw.startsWith('data:image')) return raw;
@@ -109,6 +140,9 @@ const resolveMediaUrl = (raw, opts = {}) => {
 
   // ✅ FIX : bloquer TOUTE URL cdn.pixabay.com/video — CORS bloqué
   if (raw.includes('cdn.pixabay.com/video')) return null;
+
+  // ✅ FIX v4 : rejeter les URLs structurellement invalides
+  if (!isStructurallyValid(raw)) return null;
 
   if (isExternalMediaUrl(raw)) return raw;
   return getCloudinaryUrl(raw, opts);
@@ -475,12 +509,27 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const imagesLen  = Array.isArray(post.images) ? post.images.length : 0;
   const mediaLen   = Array.isArray(post.media)  ? post.media.length  : 0;
 
+  // ─────────────────────────────────────────────
+  // ✅ mediaUrls — v4 avec validation structurelle
+  //
+  // Filtres appliqués sur chaque URL :
+  //  1. videos.pexels.com → bloqué (tokens expirés)
+  //  2. cdn.pixabay.com/video → bloqué (CORS)
+  //  3. isStructurallyValid() → rejette URLs tronquées/corrompues
+  //  4. resolveMediaUrl() → transforme en URL Cloudinary optimisée ou retourne null
+  //  5. Déduplication par seen Set
+  // ─────────────────────────────────────────────
   const mediaUrls = useMemo(() => {
     const seen = new Set();
     const result = [];
     const addUrl = (raw) => {
       if (!raw || typeof raw !== 'string') return;
-      if (raw.startsWith('blob:')) { if (!seen.has(raw)) { seen.add(raw); result.push(raw); } return; }
+
+      // ✅ blob: URLs → toujours acceptées sans transformation
+      if (raw.startsWith('blob:')) {
+        if (!seen.has(raw)) { seen.add(raw); result.push(raw); }
+        return;
+      }
 
       // ✅ FIX PEXELS v2 : bloquer videos.pexels.com — tokens expirés ~2h
       if (raw.includes('videos.pexels.com')) return;
@@ -488,10 +537,18 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       // ✅ FIX PIXABAY v3 : bloquer cdn.pixabay.com/video — CORS bloqué navigateur
       if (raw.includes('cdn.pixabay.com/video')) return;
 
+      // ✅ FIX v4 : rejeter les URLs structurellement invalides AVANT résolution
+      if (!raw.startsWith('data:') && !isStructurallyValid(raw)) return;
+
       const url = raw.startsWith('data:image') ? raw
         : isExternalMediaUrl(raw) ? raw
         : getCloudinaryUrl(raw, { width: 1080, format: 'auto' });
-      if (url && !seen.has(url)) { seen.add(url); result.push(url); }
+
+      // ✅ Vérifier aussi l'URL résolue
+      if (url && !seen.has(url) && isStructurallyValid(url)) {
+        seen.add(url);
+        result.push(url);
+      }
     };
     if (post.embedUrl) addUrl(post.embedUrl);
     if (post.videoUrl) addUrl(post.videoUrl);
