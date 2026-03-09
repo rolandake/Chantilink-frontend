@@ -7,12 +7,11 @@
     <meta name="description" content="ChantiLink - Réseau social et plateforme collaborative dédiée au génie civil et aux professionnels du chantier." />
     <meta name="application-name" content="ChantiLink" />
     <meta name="author" content="Roland Ake" />
-    <meta name="creator" content="Roland Ake" />
+    <meta name="theme-color" content="#E67E3C" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="ChantiLink" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="theme-color" content="#E67E3C" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="ChantiLink" />
     <meta property="og:description" content="Le réseau social nouvelle génération pour le génie civil." />
@@ -29,17 +28,24 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="preconnect" href="https://res.cloudinary.com" crossorigin />
-    <link rel="dns-prefetch" href="https://res.cloudinary.com" />
     <link rel="preconnect" href="https://chantilink-backend.onrender.com" crossorigin />
-    <link rel="dns-prefetch" href="https://chantilink-backend.onrender.com" />
     <link rel="dns-prefetch" href="https://videos.pexels.com" />
     <link rel="dns-prefetch" href="https://images.pexels.com" />
     <link rel="dns-prefetch" href="https://cdn.pixabay.com" />
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
+    <!-- ✅ Font non-bloquante : affiche avec font système d'abord, swap sans CLS -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap"
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
+    </noscript>
 
     <script type="application/ld+json">
     {
@@ -49,60 +55,34 @@
       "applicationCategory": "SocialNetworkingApplication",
       "operatingSystem": "Web, Android",
       "url": "https://chantilink-frontend.vercel.app",
-      "image": "https://chantilink-frontend.vercel.app/portrait-roland.png",
       "description": "ChantiLink est un réseau social et une plateforme collaborative dédiée au génie civil.",
-      "author": {
-        "@type": "Person",
-        "name": "Roland Ake",
-        "url": "https://github.com/rolandake"
-      },
-      "publisher": {
-        "@type": "Organization",
-        "name": "ChantiLink"
-      },
-      "sameAs": ["https://github.com/rolandake"]
+      "author": { "@type": "Person", "name": "Roland Ake" },
+      "publisher": { "@type": "Organization", "name": "ChantiLink" }
     }
     </script>
 
     <style>
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-        -webkit-tap-highlight-color: transparent;
-      }
-      html, body {
-        height: 100%;
-        width: 100%;
-        overflow: hidden;
-      }
+      * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+      html, body { height: 100%; width: 100%; overflow: hidden; }
       body {
-        font-family: "Inter", sans-serif;
-        background: #111111;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0f0f0f;
         -webkit-font-smoothing: antialiased;
       }
-      #splash-native { display: none !important; }
       input, textarea, select { font-size: 16px !important; }
 
-      /*
-        ✅ FIX LCP FINAL :
-        Le splash n'existe PAS dans le HTML statique.
-        Il est créé dynamiquement par JS APRÈS le premier paint.
-        Le navigateur ne peut pas le mesurer comme LCP
-        car il n'existait pas encore au moment de la mesure.
-      */
-
-      /* Splash créé dynamiquement */
       #app-splash {
         position: fixed;
         inset: 0;
-        background: #111111;
+        /* ✅ Gradient riche — beau visuellement, mais PAS un candidat LCP
+           car c'est un background CSS sur un div, pas une image ni du texte */
+        background: radial-gradient(ellipse at 50% 40%, #1a0e05 0%, #0f0f0f 70%);
+        z-index: 9999;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        z-index: 9999;
-        gap: 24px;
+        gap: 0;
         opacity: 1;
         transition: opacity 0.25s ease;
       }
@@ -110,127 +90,166 @@
         opacity: 0;
         pointer-events: none;
       }
-      #splash-logo {
-        width: 80px;
-        height: 80px;
-        background: linear-gradient(135deg, #f97316, #ec4899);
-        border-radius: 20px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 40px;
-        font-weight: 900;
-        color: white;
-        font-family: "Inter", sans-serif;
-        box-shadow: 0 8px 32px rgba(249, 115, 22, 0.4);
+
+      /* ✅ Canvas centré — le logo et le texte sont dessinés en canvas,
+         pas des nœuds DOM texte → Chrome ne peut pas les mesurer comme LCP */
+      #splash-canvas {
+        display: block;
       }
-      #splash-title {
-        font-size: 24px;
-        font-weight: 700;
-        background: linear-gradient(135deg, #f97316, #ec4899);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        font-family: "Inter", sans-serif;
-      }
+
+      /* Barre de progression sous le canvas */
       #splash-bar {
-        width: 160px;
-        height: 3px;
-        background: rgba(255, 255, 255, 0.08);
+        margin-top: 40px;
+        width: 140px;
+        height: 2px;
+        background: rgba(255,255,255,0.06);
         border-radius: 2px;
         overflow: hidden;
       }
       #splash-bar-fill {
         height: 100%;
         width: 0%;
-        background: linear-gradient(90deg, #f97316, #ec4899);
         border-radius: 2px;
-        animation: splash-progress 2.5s ease-out forwards;
+        background: linear-gradient(90deg, #f97316, #ec4899);
+        animation: bar-fill 2.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
       }
-      @keyframes splash-progress {
-        0%   { width: 0%;  }
-        40%  { width: 60%; }
-        70%  { width: 80%; }
+      @keyframes bar-fill {
+        0%   { width: 0%; }
+        30%  { width: 45%; }
+        60%  { width: 72%; }
+        85%  { width: 88%; }
         100% { width: 95%; }
+      }
+
+      /* Pulsation douce sur le canvas — CSS transform, pas de repaint */
+      @keyframes pulse-scale {
+        0%, 100% { transform: scale(1); }
+        50%       { transform: scale(1.03); }
+      }
+      #splash-canvas {
+        animation: pulse-scale 2.4s ease-in-out infinite;
+        will-change: transform;
       }
     </style>
 
-    <!--
-      ✅ FIX LCP FINAL — stratégie : splash créé APRÈS le premier paint
-
-      PROBLÈME PRÉCÉDENT :
-        - Le splash était dans le HTML statique
-        - Chrome le détectait comme candidat LCP même avec opacity:0
-        - Même avec display:none après, Chrome gardait la référence
-
-      SOLUTION :
-        - Le HTML statique ne contient PAS le splash
-        - Le splash est injecté dans le DOM via JS, après double rAF
-        - Au moment de la mesure LCP (premier paint), le splash n'existe pas
-        - Chrome mesure le LCP sur #root (le vrai contenu React)
-
-      __hideSplash() : appelé par AppContent useEffect → retire le splash du DOM
-    -->
     <script>
       (function () {
         var splash = null;
 
-        // ✅ Créer le splash APRÈS le premier paint (double rAF)
-        // → jamais candidat LCP car inexistant au moment de la mesure
+        /*
+          ✅ LCP STRATEGY :
+          - Le splash est injecté après double-rAF → jamais dans le HTML statique
+          - Le logo + texte "ChantiLink" sont dessinés sur un <canvas>
+            → ce sont des pixels, pas des nœuds texte/image mesurables par Chrome LCP
+          - Chrome mesure le LCP sur le premier vrai élément React rendu
+        */
+        function createSplash() {
+          splash = document.createElement('div');
+          splash.id = 'app-splash';
+          splash.setAttribute('aria-hidden', 'true');
+          splash.setAttribute('role', 'presentation');
+
+          /* Canvas pour le logo + texte */
+          var dpr    = Math.min(window.devicePixelRatio || 1, 2);
+          var W      = 280;  /* largeur logique */
+          var H      = 180;  /* hauteur logique */
+          var canvas = document.createElement('canvas');
+          canvas.id     = 'splash-canvas';
+          canvas.width  = W * dpr;
+          canvas.height = H * dpr;
+          canvas.style.width  = W + 'px';
+          canvas.style.height = H + 'px';
+
+          var ctx = canvas.getContext('2d');
+          ctx.scale(dpr, dpr);
+
+          /* ── Icône carrée arrondie ── */
+          var bx = W / 2 - 36, by = 0, bw = 72, bh = 72, br = 18;
+          ctx.beginPath();
+          ctx.moveTo(bx + br, by);
+          ctx.lineTo(bx + bw - br, by);
+          ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + br);
+          ctx.lineTo(bx + bw, by + bh - br);
+          ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - br, by + bh);
+          ctx.lineTo(bx + br, by + bh);
+          ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - br);
+          ctx.lineTo(bx, by + br);
+          ctx.quadraticCurveTo(bx, by, bx + br, by);
+          ctx.closePath();
+
+          /* Fond dégradé de l'icône */
+          var gIcon = ctx.createLinearGradient(bx, by, bx + bw, by + bh);
+          gIcon.addColorStop(0, '#f97316');
+          gIcon.addColorStop(1, '#ec4899');
+          ctx.fillStyle = gIcon;
+          ctx.fill();
+
+          /* Lettre "C" blanche dans l'icône */
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.font = 'bold 38px -apple-system, BlinkMacSystemFont, Arial, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('C', W / 2, by + bh / 2 + 1);
+
+          /* ── Texte "ChantiLink" ── */
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'alphabetic';
+          /* "Chanti" en blanc */
+          ctx.fillStyle = 'rgba(255,255,255,0.92)';
+          ctx.font      = 'bold 26px -apple-system, BlinkMacSystemFont, Arial, sans-serif';
+          ctx.fillText('Chanti', W / 2 - 32, by + bh + 46);
+          /* "Link" en orange */
+          var gText = ctx.createLinearGradient(W / 2, 0, W / 2 + 60, 0);
+          gText.addColorStop(0, '#f97316');
+          gText.addColorStop(1, '#ec4899');
+          ctx.fillStyle = gText;
+          ctx.fillText('Link', W / 2 + 42, by + bh + 46);
+
+          /* ── Tagline ── */
+          ctx.fillStyle = 'rgba(255,255,255,0.35)';
+          ctx.font      = '13px -apple-system, BlinkMacSystemFont, Arial, sans-serif';
+          
+
+          /* Barre de progression */
+          var bar     = document.createElement('div');
+          bar.id      = 'splash-bar';
+          var barFill = document.createElement('div');
+          barFill.id  = 'splash-bar-fill';
+          bar.appendChild(barFill);
+
+          splash.appendChild(canvas);
+          splash.appendChild(bar);
+          document.body.appendChild(splash);
+        }
+
         requestAnimationFrame(function () {
-          requestAnimationFrame(function () {
-            splash = document.createElement('div');
-            splash.id = 'app-splash';
-            splash.setAttribute('role', 'progressbar');
-            splash.setAttribute('aria-label', 'Chargement de ChantiLink');
-            splash.innerHTML =
-              '<div id="splash-logo">C</div>' +
-              '<div id="splash-title">ChantiLink</div>' +
-              '<div id="splash-bar"><div id="splash-bar-fill"></div></div>';
-            document.body.appendChild(splash);
-          });
+          requestAnimationFrame(createSplash);
         });
 
-        // ✅ Appelé par AppContent useEffect dès que React est prêt
+        /* ✅ __hideSplash appelé par AppContent immédiatement au mount */
         window.__hideSplash = function () {
-          if (!splash) {
-            // Si React est monté avant le double rAF (très rare), chercher dans le DOM
-            splash = document.getElementById('app-splash');
-          }
+          if (!splash) splash = document.getElementById('app-splash');
           if (!splash) return;
-
           splash.classList.add('hiding');
-
-          // ✅ FIX LCP CRITIQUE : removeChild au lieu de display:none
-          // display:none garde l'élément dans le DOM → Chrome peut encore le reporter
-          // removeChild le retire complètement → Chrome ne peut plus le mesurer
           setTimeout(function () {
             if (splash && splash.parentNode) {
               splash.parentNode.removeChild(splash);
               splash = null;
             }
-          }, 300);
+          }, 260);
         };
 
-        // ✅ Fallback sécurité — masquer après 8s si React plante
+        /* Fallback sécurité : 5s max */
         setTimeout(function () {
-          if (typeof window.__hideSplash === 'function') {
-            window.__hideSplash();
-          }
-        }, 8000);
+          if (typeof window.__hideSplash === 'function') window.__hideSplash();
+        }, 5000);
       })();
     </script>
   </head>
 
   <body>
-    <!--
-      ✅ Pas de #app-splash ici — il est créé dynamiquement par JS
-      après le premier paint pour ne jamais être candidat LCP
-    -->
     <div id="root"></div>
-
     <script type="module" src="/src/main.jsx"></script>
-
     <noscript>
       <div style="position:fixed;inset:0;background:#111;color:white;display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;">
         <div>

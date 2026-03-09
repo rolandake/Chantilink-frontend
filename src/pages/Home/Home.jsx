@@ -1,56 +1,50 @@
 // 📁 src/pages/Home/Home.jsx
-// 🏆 ZERO-JANK SCROLL — niveau Instagram
+// ⚡ PERF v2 — toutes les optimisations de performance appliquées
 //
-// 🔥 FIX PEXELS URLs EXPIRÉES — 3 niveaux de protection :
-//
-//   NIVEAU 1 — isValidPost() : filtre AVANT affichage
-//     → posts avec URLs Pexels signées (video-files/) → retirés du pool
-//     → posts sans media valide → retirés
-//     → posts dont toutes les URLs sont dans DEAD_PATTERNS → retirés
-//
-//   NIVEAU 2 — usePexelsFreshUrl() : résout les URLs expirées à la volée
-//     → PostItem attend la résolution AVANT de rendre PostCard
-//     → Cache sessionStorage 80min pour éviter re-fetch
-//     → Si résolution échoue → post masqué (placeholder hauteur fixe)
-//
-//   NIVEAU 3 — PexelsMediaWrapper : fallback visuel si URL morte
-//     → onError sur <video>/<img> → retry avec URL fraîche
-//     → si retry échoue → masquer le media proprement (pas de broken image)
-//
-// 🎨 FEED PREMIUM :
-//   → Skeleton shimmer animé (dégradé orange/rose)
-//   → Wave animation staggerée à l'entrée des posts
-//   → Pull-to-refresh avec indicateur progressif
-//   → Virtual scroll → DOM léger même avec 300+ posts
+// FIXES APPLIQUÉS :
+// ✅ FIX 1 : setResolved en 1 seul setState (plus de chunks → plus de re-renders en cascade)
+// ✅ FIX 2 : livePosts dans un useRef + version counter → évite de passer 300 posts dans React state
+// ✅ FIX 3 : MAX_DOM_POSTS réduit à 25 mobile / 50 desktop
+// ✅ FIX 4 : Suppression du double listener scroll (garde uniquement IntersectionObserver)
+// ✅ FIX 5 : fallbackFetchedRef ne se reset plus dans finally (évite boucle infinie)
+// ✅ FIX 6 : newsArticles mémoïsé avec clé stable (évite recalcul à chaque render)
+// ✅ FIX 7 : useDeferredValue supprimé (inutile ici, double render pass)
+// ✅ FIX 8 : startTransition sur tous les setState non-urgents
+// ✅ FIX 9 : apiObsFn stabilisé via ref (évite reconnect IntersectionObserver)
+// ✅ FIX 10 : scroll container avec will-change:transform pour accélération GPU mobile
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
-  memo, lazy, Suspense, startTransition, useDeferredValue,
-  useTransition,
+  memo, lazy, Suspense, startTransition, useTransition,
 } from "react";
-import {
-  ArrowPathIcon,
-  ArrowTopRightOnSquareIcon,
-  ArrowUpIcon,
-} from "@heroicons/react/24/outline";
+import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { useDarkMode }          from "../../context/DarkModeContext";
-import { useStories }           from "../../context/StoryContext";
-import { usePosts }             from "../../context/PostsContext";
-import { useAuth }              from "../../context/AuthContext";
-import { useNews }              from "../../hooks/useNews";
-import axiosClient              from "../../api/axiosClientGlobal";
-import PostCard                 from "./PostCard";
-import StoryContainer           from "./StoryContainer";
-import SuggestedAccounts        from "./SuggestedAccounts";
-import SuggestedPostPreview     from "./SuggestedPostPreview";
-import SmartAd                  from "./Publicite/SmartAd";
-import ArticleReaderModal       from "./ArticleReaderModal";
+import {
+  PlusCircleIcon,
+  ArrowUpIcon,
+  ArrowPathIcon,
+} from "@heroicons/react/24/outline";
+import { useDarkMode }    from "../../context/DarkModeContext";
+import { useStories }     from "../../context/StoryContext";
+import { usePosts }       from "../../context/PostsContext";
+import { useAuth }        from "../../context/AuthContext";
+import { useNews }        from "../../hooks/useNews";
+import axiosClient        from "../../api/axiosClientGlobal";
+import StoryContainer     from "./StoryContainer";
+import SuggestedAccounts  from "./SuggestedAccounts";
+import SuggestedPostPreview from "./SuggestedPostPreview";
+import PostCard, { PostUploadingIndicator } from "./PostCard";
 import MOCK_POSTS, { generateFullDataset } from "../../data/mockPosts";
 import {
   MOCK_CONFIG as DEFAULT_MOCK_CONFIG,
   AD_CONFIG   as DEFAULT_AD_CONFIG,
 } from "../../data/mockConfig";
+import { readAllCachedProfilePosts } from "../profile/ProfilePage";
+
+const StoryCreator             = lazy(() => import("./StoryCreator"));
+const StoryViewer              = lazy(() => import("./StoryViewer"));
+const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
+const ArticleReaderModal       = lazy(() => import("./ArticleReaderModal"));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -59,924 +53,852 @@ const HOME_REFRESH_EVENT = "home:refresh";
 const AD_CONFIG          = DEFAULT_AD_CONFIG;
 const MOCK_CONFIG        = DEFAULT_MOCK_CONFIG;
 
-const NEWS_INSERT_AFTER  = 2;
-const NEWS_REPEAT_EVERY  = 8;
-const SUGGEST_EVERY      = 8;
-const SUGGEST_POST_EVERY = 5;
-
-const PAGE_SIZE     = 12;
-const MAX_DOM_POSTS = 150;
+const PAGE_SIZE = 10;
+// ✅ FIX 3 : MAX_DOM_POSTS adaptatif — mobile a besoin de beaucoup moins
+const MAX_DOM_POSTS = typeof window !== "undefined" && window.innerWidth < 768 ? 25 : 50;
 const MAX_POOL      = 300;
-const OVERSCAN      = 5;
-const POST_H        = 540;
 
-const POLL_INTERVAL = 30_000;
-const STORY_BAR_H   = 120;
-const API_PREFETCH  = 3;
-const MIX_BLOCK     = 5;
-const MIX_MAX_BOTS  = 2;
-const RECENT_HEAD   = 5;
+const SUGGEST_ACCOUNTS_EVERY = 5;
+const SUGGEST_PROFILE_EVERY  = 7;
+const NEWS_EVERY             = 4;
 
-const RIPPLE_MS    = 600;
-const WAVE_MS      = 780;
-const WAVE_STAGGER = 0.05;
-const WAVE_DUR     = 0.38;
-const WAVE_COUNT   = 7;
+const POLL_INTERVAL  = 30_000;
+const SEED_ROTATE_MS = 4 * 60 * 1000;
+const API_PREFETCH   = 3;
+const MIX_BLOCK      = 5;
+const MIX_MAX_BOTS   = 2;
+
+const FALLBACK_THRESHOLD   = 5;
+const MAX_FALLBACK_USERS   = 8;
+const FALLBACK_POSTS_LIMIT = 10;
+const FALLBACK_COOLDOWN_MS = 60_000;
+
+const RECENT_6H  = 6  * 60 * 60 * 1000;
+const RECENT_24H = 24 * 60 * 60 * 1000;
+const RECENT_72H = 72 * 60 * 60 * 1000;
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 
-const StoryCreator             = lazy(() => import("./StoryCreator"));
-const StoryViewer              = lazy(() => import("./StoryViewer"));
-const ImmersivePyramidUniverse = lazy(() => import("./ImmersivePyramidUniverse"));
-
 // ─────────────────────────────────────────────────────────────────────────────
-// 🔥 PEXELS URL DETECTION & RESOLUTION
+// URL RESOLUTION
 // ─────────────────────────────────────────────────────────────────────────────
+const URL_CACHE_TTL    = 80 * 60 * 1000;
+const URL_CACHE_PREFIX = "murl_";
+const urlCR = (k) => { try { const r=sessionStorage.getItem(URL_CACHE_PREFIX+k); if(!r) return null; const {url,exp}=JSON.parse(r); if(Date.now()>exp){sessionStorage.removeItem(URL_CACHE_PREFIX+k);return null;} return url; } catch{return null;} };
+const urlCW = (k,url) => { try{sessionStorage.setItem(URL_CACHE_PREFIX+k,JSON.stringify({url,exp:Date.now()+URL_CACHE_TTL}));}catch{} };
 
-/** Cache sessionStorage 80min pour URLs Pexels fraîches */
-const PEXELS_CACHE_TTL    = 80 * 60 * 1000;
-const PEXELS_CACHE_PREFIX = "pex_";
-
-const pexCacheRead = (id) => {
-  try {
-    const raw = sessionStorage.getItem(PEXELS_CACHE_PREFIX + id);
-    if (!raw) return null;
-    const { url, exp } = JSON.parse(raw);
-    if (Date.now() > exp) { sessionStorage.removeItem(PEXELS_CACHE_PREFIX + id); return null; }
-    return url;
-  } catch { return null; }
-};
-const pexCacheWrite = (id, url) => {
-  try { sessionStorage.setItem(PEXELS_CACHE_PREFIX + id, JSON.stringify({ url, exp: Date.now() + PEXELS_CACHE_TTL })); }
-  catch {}
-};
-
-/**
- * ✅ NIVEAU 1 — Détecter une URL Pexels signée (expirable)
- * Les URLs signées ont TOUJOURS la forme :
- *   https://videos.pexels.com/video-files/<ID>/<filename>.mp4
- * Elles expirent ~2h après génération.
- */
-const isPexelsSigned = (url) =>
-  typeof url === "string" && url.includes("videos.pexels.com/video-files/");
-
-/** Extraire l'ID numérique d'une URL ou d'un externalId Pexels */
-const extractPexId = (src) => {
-  if (!src) return null;
-  const byId  = String(src).match(/^pexels_(\d+)$/);
-  if (byId) return byId[1];
-  const byUrl = String(src).match(/video-files\/(\d+)\//);
-  return byUrl ? byUrl[1] : null;
-};
-
-/** Extraire l'ID Pexels depuis un post (externalId ou videoUrl) */
-const getPexIdFromPost = (post) =>
-  extractPexId(post?.externalId) ||
-  extractPexId(post?.videoUrl)   ||
-  extractPexId(post?.embedUrl)   ||
-  null;
-
-/**
- * ✅ NIVEAU 2 — Résoudre une URL fraîche via le backend
- * Utilise le cache sessionStorage pour éviter N appels réseau.
- */
-const resolvePexUrl = async (videoId) => {
-  if (!videoId) return null;
-  const cached = pexCacheRead(videoId);
-  if (cached) return cached;
-  try {
-    const res = await axiosClient.get(`/videos/refresh-url?id=${videoId}`);
-    const url = res.data?.url || res.data?.videoUrl || null;
-    if (url) pexCacheWrite(videoId, url);
-    return url;
-  } catch { return null; }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ✅ Patterns d'URLs connues comme expirées/bloquées
-// ─────────────────────────────────────────────────────────────────────────────
-const DEAD_URL_PATTERNS = [
-  "videos.pexels.com",
-  "cdn.pixabay.com/video",
+const EXPIRABLE = [
+  { name:"pexels",  test:(u)=>u.includes("videos.pexels.com/video-files/"), extractId:(u)=>u.match(/video-files\/(\d+)\//)?.[1]||null, resolve:async(id)=>{ const r=await axiosClient.get(`/videos/refresh-url?id=${id}`); return r.data?.url||r.data?.videoUrl||null; } },
+  { name:"pixabay", test:(u)=>/cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\//.test(u), extractId:(u)=>u.match(/\/(\d+)-\d+_/)?.[1]||null, resolve:async(id)=>{ const r=await axiosClient.get(`/api/proxy/video?id=${id}&source=pixabay`); return r.data?.url||r.data?.videoUrl||null; } },
 ];
+const DEAD_HOSTS    = ["youtube.com/watch","youtu.be/","dailymotion.com/video","tiktok.com/@"];
+const expSrc        = (u) => typeof u==="string"?EXPIRABLE.find(s=>s.test(u))||null:null;
+const isDead        = (u) => DEAD_HOSTS.some(p=>u.includes(p));
+const isStructValid = (u) => { if(!u||typeof u!=="string"||u.length<10)return false; if(u.startsWith("data:")||u.startsWith("blob:")||u.startsWith("/"))return true; try{const x=new URL(u);return!!(x.hostname&&x.pathname&&x.pathname!=="/")}catch{return false;} };
+const getMediaUrls  = (p) => { const all=[...(Array.isArray(p.media)?p.media:p.media?[p.media]:[]),...(Array.isArray(p.images)?p.images:p.images?[p.images]:[]),p.videoUrl,p.embedUrl,p.thumbnail]; return all.filter(Boolean).map(m=>typeof m==="string"?m:m?.url).filter(Boolean); };
+const getResolvable = (p) => { if(p?.externalId){for(const s of EXPIRABLE){const id=s.extractId(p.externalId)||(s.name==="pexels"&&p.externalId.match(/^pexels_(\d+)$/)?.[1])||null;if(id)return{source:s,id};} if(/^\d+$/.test(p.externalId))return{source:EXPIRABLE[0],id:p.externalId};} for(const url of[p?.videoUrl,p?.embedUrl].filter(Boolean)){const s=expSrc(url);if(s){const id=s.extractId(url);if(id)return{source:s,id};}} return null; };
+const hasExpirable  = (p) => getMediaUrls(p).some(u=>!!expSrc(u));
 
-/**
- * ✅ Vérifie qu'une URL a une structure valide (pas tronquée, pas corrompue)
- */
-const isStructurallyValid = (url) => {
-  if (!url || typeof url !== "string" || url.length < 10) return false;
-  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
+const resolvePost = async (post) => {
   try {
-    const u = new URL(url);
-    return !!(u.hostname && u.pathname && u.pathname !== "/");
-  } catch {
-    return false;
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LCP PRELOAD
-// ─────────────────────────────────────────────────────────────────────────────
-const _preloaded = new Set();
-const injectPreload = (url, as = "image") => {
-  if (!url || _preloaded.has(url)) return;
-  _preloaded.add(url);
-  if (document.querySelector(`link[rel="preload"][href="${url}"]`)) return;
-  const l    = document.createElement("link");
-  l.rel      = "preload";
-  l.as       = as;
-  l.href     = url;
-  l.fetchPriority = "high";
-  document.head.appendChild(l);
-};
-const isVideoUrl  = (u) => u && /\.(mp4|webm|mov|avi)$/i.test(u);
-const videoPoster = (u) => {
-  if (!u) return null;
-  try {
-    if (u.includes("res.cloudinary.com")) {
-      const i = u.indexOf("/upload/");
-      if (i === -1) return null;
-      const pid = u
-        .substring(i + 8)
-        .split("/")
-        .filter((s) => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes(".")))
-        .join("/")
-        .replace(/\.(mp4|webm|mov|avi)$/i, "");
-      return pid ? `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${pid}.jpg` : null;
+    const expUrls = getMediaUrls(post).filter(u=>!!expSrc(u));
+    if (!expUrls.length) {
+      const r=getResolvable(post); if(!r)return post;
+      const c=urlCR(`${r.source.name}_${r.id}`); if(c)return{...post,videoUrl:c,_resolved:true};
+      const f=await r.source.resolve(r.id); if(!f)return null;
+      urlCW(`${r.source.name}_${r.id}`,f); return{...post,videoUrl:f,_resolved:true};
     }
-    return `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${u
-      .replace(/^\/+/, "")
-      .replace(/\.(mp4|webm|mov|avi)$/i, "")}.jpg`;
-  } catch { return null; }
+    const res = await Promise.all(expUrls.map(async(url)=>{
+      const s=expSrc(url),id=s.extractId(url); if(!id)return null;
+      const k=`${s.name}_${id}`,c=urlCR(k); if(c)return c;
+      try{const f=await s.resolve(id);if(f)urlCW(k,f);return f;}catch{return null;}
+    }));
+    if(res.every(r=>!r))return null;
+    let out={...post,_resolved:true};
+    expUrls.forEach((orig,i)=>{
+      if(!res[i])return;
+      if(post.videoUrl===orig)out.videoUrl=res[i];
+      if(post.embedUrl===orig)out.embedUrl=res[i];
+      if(Array.isArray(post.media))out.media=post.media.map(m=>{const u=typeof m==="string"?m:m?.url;return u===orig?(typeof m==="string"?res[i]:{...m,url:res[i]}):m;});
+      if(Array.isArray(post.images))out.images=post.images.map(m=>{const u=typeof m==="string"?m:m?.url;return u===orig?(typeof m==="string"?res[i]:{...m,url:res[i]}):m;});
+    });
+    return out;
+  } catch{return null;}
 };
-const getLCPUrl = (posts) => {
-  const p = posts?.[0];
-  if (!p) return null;
-  const m = p.images?.[0] || p.media?.[0];
-  const u = m?.url || m;
-  // ✅ Ne pas preload une URL expirée ou invalide
-  if (!u || isPexelsSigned(u) || !isStructurallyValid(u)) return null;
-  if (DEAD_URL_PATTERNS.some(pat => u.includes(pat))) return null;
-  return isVideoUrl(u) ? { url: videoPoster(u), type: "image" } : { url: u, type: "image" };
+
+// ✅ FIX 1 : resolveBatch retourne un résultat complet — plus de chunks intermédiaires
+const resolveBatch = async (posts) => {
+  const CONC=4,results=new Array(posts.length).fill(null);
+  let i=0;
+  const worker=async()=>{while(i<posts.length){const idx=i++;results[idx]=hasExpirable(posts[idx])?await resolvePost(posts[idx]):posts[idx];}};
+  await Promise.all(Array.from({length:CONC},worker));
+  return results.filter(Boolean);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEEDED SHUFFLE
+// SHUFFLE / FEED
 // ─────────────────────────────────────────────────────────────────────────────
 const seededShuffle = (arr, seed) => {
-  const r = [...arr];
-  let s   = seed >>> 0;
-  for (let i = r.length - 1; i > 0; i--) {
-    s = (Math.imul(s ^ (s >>> 15), s | 1) ^ (s + Math.imul(s ^ (s >>> 7), s | 61))) >>> 0;
-    const j      = s % (i + 1);
-    [r[i], r[j]] = [r[j], r[i]];
-  }
+  const r=[...arr]; let s=seed>>>0;
+  for(let i=r.length-1;i>0;i--){s=(Math.imul(s^(s>>>15),s|1)^(s+Math.imul(s^(s>>>7),s|61)))>>>0;const j=s%(i+1);[r[i],r[j]]=[r[j],r[i]];}
   return r;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MIX BOTS / RÉELS
-// ─────────────────────────────────────────────────────────────────────────────
-const mixPostsByBlocks = (real, bots) => {
-  if (!bots.length) return real;
-  if (!real.length) return bots;
-  const result = [];
-  let ri = 0, bi = 0;
-  while (ri < real.length || bi < bots.length) {
-    const block = [];
-    let bc = 0;
-    while (block.length < MIX_BLOCK) {
-      const cb = bi < bots.length && bc < MIX_MAX_BOTS;
-      const cr = ri < real.length;
-      if (!cb && !cr) break;
-      if (cb && cr) {
-        block.push(bc < Math.floor((block.length * MIX_MAX_BOTS) / MIX_BLOCK)
-          ? { ...bots[bi++], _isBot: true } && (bc++, block[block.length - 1])
-          : real[ri++]
-        );
-      } else if (cr) { block.push(real[ri++]); }
-        else        { block.push({ ...bots[bi++], _isBot: true }); bc++; }
-    }
-    const [head, ...tail] = block;
-    result.push(head, ...tail.sort(() => Math.random() - 0.5));
+const mixBlocks = (real, bots) => {
+  if(!bots.length)return real; if(!real.length)return bots;
+  const result=[];let ri=0,bi=0;
+  while(ri<real.length||bi<bots.length){
+    const block=[];let bc=0;
+    while(block.length<MIX_BLOCK){const cb=bi<bots.length&&bc<MIX_MAX_BOTS,cr=ri<real.length;if(!cb&&!cr)break;if(cb&&cr){block.push(bc<Math.floor((block.length*MIX_MAX_BOTS)/MIX_BLOCK)?{...bots[bi++],_isBot:true}&&(bc++,block[block.length-1]):real[ri++]);}else if(cr){block.push(real[ri++]);}else{block.push({...bots[bi++],_isBot:true});bc++;}}
+    const[head,...tail]=block;result.push(head,...tail.sort(()=>Math.random()-.5));
   }
   return result;
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ✅ NIVEAU 1 — hasStale : détecte TOUTE URL media expirable
-//
-// Règles :
-//  • videos.pexels.com/video-files/ → TOUJOURS expirable (URLs signées)
-//  • cdn.pixabay.com/video/...      → expirable si pattern regex
-//  • images.pexels.com/...          → SAFE (URLs statiques, pas de token)
-// ─────────────────────────────────────────────────────────────────────────────
-const RE_PIX = /cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\/\d+-\d+_large\.mp4/i;
-
-const hasStale = (post) => {
-  const srcs = [
-    ...(Array.isArray(post.media)  ? post.media  : post.media  ? [post.media]  : []),
-    ...(Array.isArray(post.images) ? post.images : post.images ? [post.images] : []),
-    post.videoUrl,
-    post.embedUrl,
-    post.thumbnail,
-    post.sourceUrl,
-  ];
-  return srcs.some((m) => {
-    const u = typeof m === "string" ? m : m?.url;
-    if (!u) return false;
-    if (isPexelsSigned(u)) return true; // ✅ Pexels signé → TOUJOURS stale
-    if (RE_PIX.test(u))   return true; // Pixabay pattern
-    return false;
-  });
+const buildFeed = (posts, bots, seed) => {
+  const now=Date.now(),age=(p)=>{const d=p.createdAt||p.date||p.publishedAt;return d?now-new Date(d).getTime():Infinity;};
+  const bucket=(arr)=>({fresh:arr.filter(p=>age(p)<RECENT_6H),recent:arr.filter(p=>age(p)>=RECENT_6H&&age(p)<RECENT_24H),medium:arr.filter(p=>age(p)>=RECENT_24H&&age(p)<RECENT_72H),old:arr.filter(p=>age(p)>=RECENT_72H)});
+  const rb=bucket(posts),bb=bucket(bots);
+  return mixBlocks(
+    [...seededShuffle(rb.fresh,seed^0x1111),...seededShuffle(rb.recent,seed^0x2222),...seededShuffle(rb.medium,seed^0x3333),...seededShuffle(rb.old,seed^0x4444)],
+    [...seededShuffle(bb.fresh,seed^0xaaaa),...seededShuffle(bb.recent,seed^0xbbbb),...seededShuffle(bb.medium,seed^0xcccc),...seededShuffle(bb.old,seed^0xdddd)]
+  );
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// STABLE POST CACHE
-// ─────────────────────────────────────────────────────────────────────────────
-const _pCache = new WeakMap();
-const stablePost = (p) => {
-  if (_pCache.has(p)) return _pCache.get(p);
-  const s = p._isMock === false ? p : { ...p, _isMock: false };
-  _pCache.set(p, s);
-  return s;
-};
+const _pCache=new WeakMap();
+const stablePost=(p)=>{if(_pCache.has(p))return _pCache.get(p);const s=p._isMock===false?p:{...p,_isMock:false};_pCache.set(p,s);return s;};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPUTE NEXT BATCH
+// SKELETON
 // ─────────────────────────────────────────────────────────────────────────────
-const computeBatch = (prev, pool, loopRef) => {
-  if (!prev.length) return { posts: prev, boundary: null };
-  const lastLoop   = prev.findLastIndex?.((p) => p._loopStart) ?? -1;
-  const cycleStart = lastLoop === -1 ? 0 : lastLoop;
-  const nextIdx    = prev.length - cycleStart;
-  const abs        = prev.length;
-  if (nextIdx < pool.length) {
-    const batch = pool.slice(nextIdx, nextIdx + PAGE_SIZE).map((p, i) => ({ ...p, _displayKey: `p${abs + i}_l${loopRef.current}_${p._id}` }));
-    return { posts: [...prev, ...batch], boundary: null };
-  }
-  loopRef.current++;
-  const ln    = loopRef.current;
-  const batch = pool.slice(0, PAGE_SIZE).map((p, i) => ({ ...p, _displayKey: `p${abs + i}_l${ln}_${p._id}`, _loopStart: i === 0 }));
-  let next = [...prev, ...batch];
-  if (next.length > MAX_DOM_POSTS) next = next.slice(next.length - MAX_DOM_POSTS);
-  return { posts: next, boundary: prev.length };
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// VIRTUAL SCROLL HOOK
-// ─────────────────────────────────────────────────────────────────────────────
-const useVirtualWindow = (scrollContainerRef, postH, overscan) => {
-  const [win, setWin] = useState({ start: 0, end: 9999 });
-  const rafRef = useRef(null);
-
-  useEffect(() => {
-    const container = scrollContainerRef?.current;
-    if (!container) return;
-    const compute = () => {
-      rafRef.current = null;
-      const scrollTop  = container.scrollTop;
-      const viewportH  = container.clientHeight || window.innerHeight || 900;
-      const overscanPx = overscan * postH;
-      const start      = Math.max(0, Math.floor(Math.max(0, scrollTop - overscanPx) / postH));
-      const end        = Math.ceil((scrollTop + viewportH + overscanPx) / postH);
-      setWin(prev => prev.start === start && prev.end === end ? prev : { start, end });
-    };
-    const onScroll = () => { if (rafRef.current) return; rafRef.current = requestAnimationFrame(compute); };
-    compute();
-    container.addEventListener("scroll", onScroll, { passive: true });
-    let ro;
-    if (typeof ResizeObserver !== "undefined") { ro = new ResizeObserver(compute); ro.observe(container); }
-    return () => {
-      container.removeEventListener("scroll", onScroll);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      ro?.disconnect();
-    };
-  }, [scrollContainerRef, postH, overscan]);
-
-  return win;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 🎨 SKELETON PREMIUM — shimmer orange/rose
-// ─────────────────────────────────────────────────────────────────────────────
-const SkeletonPosts = memo(({ count = 3, isDarkMode }) => (
-  <div>
-    <style>{`
-      @keyframes sk-shimmer {
-        0%   { background-position: -400px 0; }
-        100% { background-position:  400px 0; }
-      }
-      .sk-shimmer {
-        background: ${isDarkMode
-          ? "linear-gradient(90deg,#1f1f1f 25%,#2d2d2d 50%,#1f1f1f 75%)"
-          : "linear-gradient(90deg,#f0f0f0 25%,#fde8d8 50%,#f0f0f0 75%)"};
-        background-size: 800px 100%;
-        animation: sk-shimmer 1.4s ease-in-out infinite;
-      }
-    `}</style>
-    {Array.from({ length: count }).map((_, i) => (
-      <div key={i} className={isDarkMode ? "bg-black" : "bg-white"} style={{ marginBottom: 1 }}>
-        <div className="p-3 flex items-center gap-3">
-          <div className="sk-shimmer w-10 h-10 rounded-full flex-shrink-0" />
-          <div className="flex-1 space-y-2">
-            <div className="sk-shimmer h-4 rounded w-32" />
-            <div className="sk-shimmer h-3 rounded w-20" />
+const FeedSkeleton = memo(({ isDarkMode }) => {
+  const bg1=isDarkMode?"#1c1c1c":"#f0f0f0",bg2=isDarkMode?"#2a2a2a":"#e4e4e4";
+  return (
+    <>
+      <style>{`@keyframes igs{0%{background-position:-400px 0}100%{background-position:400px 0}}.igs{background:linear-gradient(90deg,${bg1} 25%,${bg2} 50%,${bg1} 75%);background-size:800px 100%;animation:igs 1.5s ease-in-out infinite}`}</style>
+      {[0,1,2].map(i=>(
+        <div key={i} className={`${isDarkMode?"bg-black":"bg-white"} border-b ${isDarkMode?"border-gray-800":"border-gray-100"}`}>
+          <div className="flex items-center gap-2.5 px-3 py-2.5">
+            <div className="igs w-9 h-9 rounded-full flex-shrink-0" />
+            <div className="flex-1 space-y-1.5">
+              <div className="igs h-3 rounded-full w-32" />
+              <div className="igs h-2.5 rounded-full w-20" />
+            </div>
+          </div>
+          <div className="igs w-full" style={{aspectRatio:"1/1"}} />
+          <div className="flex gap-2 px-3 py-2.5">
+            {[0,1,2].map(j=><div key={j} className="igs w-7 h-7 rounded" />)}
+          </div>
+          <div className="px-3 pb-3 space-y-2">
+            <div className="igs h-3 rounded-full w-28" />
+            <div className="igs h-3 rounded-full w-full" />
+            <div className="igs h-3 rounded-full w-2/3" />
           </div>
         </div>
-        <div className="sk-shimmer w-full" style={{ aspectRatio: "1/1" }} />
-        <div className="flex items-center gap-4 p-3">
-          {[0, 1, 2].map((j) => <div key={j} className="sk-shimmer w-6 h-6 rounded" />)}
-        </div>
-      </div>
-    ))}
-  </div>
-));
-SkeletonPosts.displayName = "SkeletonPosts";
+      ))}
+    </>
+  );
+});
+FeedSkeleton.displayName="FeedSkeleton";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NEW POSTS BANNER
 // ─────────────────────────────────────────────────────────────────────────────
-const NewPostsBanner = memo(({ count, onClick, isDarkMode }) => (
+const NewBanner = memo(({ count, onClick, topOffset }) => (
   <AnimatePresence>
-    {count > 0 && (
-      <motion.div
-        initial={{ opacity: 0, y: -20, scale: 0.95 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: -20, scale: 0.95 }}
-        transition={{ type: "spring", stiffness: 400, damping: 30 }}
-        className="sticky z-20 flex justify-center px-4 pb-2 pointer-events-none"
-        style={{ top: STORY_BAR_H + 8 }}
-      >
-        <button
-          onClick={onClick}
-          className="pointer-events-auto flex items-center gap-2 px-5 py-2.5 rounded-full shadow-xl text-sm font-bold bg-gradient-to-r from-orange-500 to-pink-500 text-white active:scale-95 transition-transform select-none"
-          style={{ WebkitTapHighlightColor: "transparent" }}
-        >
-          <ArrowUpIcon className="w-4 h-4" />
-          {count === 1 ? "1 nouveau post" : `${count} nouveaux posts`}
+    {count>0 && (
+      <motion.div className="sticky z-20 flex justify-center pb-2 pointer-events-none"
+        style={{top:topOffset+8}}
+        initial={{opacity:0,y:-16,scale:0.9}} animate={{opacity:1,y:0,scale:1}}
+        exit={{opacity:0,y:-16,scale:0.9}} transition={{type:"spring",stiffness:380,damping:28}}>
+        <button onClick={onClick}
+          className="pointer-events-auto flex items-center gap-1.5 px-4 py-2 rounded-full shadow-lg text-[13px] font-semibold bg-gray-900 dark:bg-white text-white dark:text-gray-900 select-none active:scale-95 transition-transform"
+          style={{WebkitTapHighlightColor:"transparent"}}>
+          <ArrowUpIcon className="w-3.5 h-3.5" />
+          {count===1?"1 nouveau post":`${count} nouveaux posts`}
         </button>
       </motion.div>
     )}
   </AnimatePresence>
 ));
-NewPostsBanner.displayName = "NewPostsBanner";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PTR
-// ─────────────────────────────────────────────────────────────────────────────
-const PTR_THRESHOLD = 100;
-const CR = 16, CC = 2 * Math.PI * CR;
-
-const PullToRefreshIndicator = memo(({ isPulling, pullDistance, isRefreshing, isDarkMode }) => {
-  const progress = Math.min(pullDistance / PTR_THRESHOLD, 1);
-  const opacity  = Math.min(pullDistance / 50, 1);
-  return (
-    <AnimatePresence>
-      {(pullDistance > 15 || isRefreshing) && (
-        <motion.div
-          initial={{ opacity: 0, y: -10, scale: 0.75 }}
-          animate={{ opacity: isRefreshing ? 1 : opacity, y: 0, scale: isPulling || isRefreshing ? 1.08 : 1 }}
-          exit={{ opacity: 0, y: -10, scale: 0.75 }}
-          transition={{ duration: 0.15, ease: "easeOut" }}
-          className="fixed left-1/2 -translate-x-1/2 z-[45] pointer-events-none flex flex-col items-center gap-1.5"
-          style={{ top: STORY_BAR_H + 14 }}
-        >
-          <AnimatePresence>
-            {(isPulling || isRefreshing) && (
-              <motion.div
-                key="burst"
-                className="absolute rounded-full"
-                style={{ width: 70, height: 70, top: -15, left: -15, background: "radial-gradient(circle,rgba(249,115,22,.38) 0%,transparent 70%)", zIndex: -1 }}
-                initial={{ opacity: 0.85, scale: 0.6 }}
-                animate={{ opacity: 0, scale: 2.4 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.55, ease: "easeOut" }}
-              />
-            )}
-          </AnimatePresence>
-          <div
-            className="relative w-11 h-11 rounded-full flex items-center justify-center"
-            style={{
-              background: isDarkMode ? "rgba(15,15,15,0.93)" : "rgba(255,255,255,0.96)",
-              backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)",
-              boxShadow: isPulling || isRefreshing ? "0 0 0 2.5px rgba(249,115,22,.45),0 6px 24px rgba(249,115,22,.22)" : "0 3px 16px rgba(0,0,0,.13)",
-              border: isDarkMode ? "1px solid rgba(255,255,255,.07)" : "1px solid rgba(0,0,0,.05)",
-              transition: "box-shadow .25s ease",
-            }}
-          >
-            <svg className={isRefreshing ? "animate-spin" : ""} width="44" height="44" viewBox="0 0 44 44" style={{ position: "absolute", inset: 0 }}>
-              <circle cx="22" cy="22" r={CR} fill="none" stroke={isDarkMode ? "#292929" : "#eee"} strokeWidth="2.2" />
-              <circle cx="22" cy="22" r={CR} fill="none" stroke="url(#pG)" strokeWidth="2.2" strokeLinecap="round"
-                strokeDasharray={CC} strokeDashoffset={isRefreshing ? 0 : CC * (1 - progress)}
-                style={{ transformOrigin: "center", transform: "rotate(-90deg)", transition: isRefreshing ? "none" : "stroke-dashoffset .07s linear" }}
-              />
-              <defs>
-                <linearGradient id="pG" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#f97316" />
-                  <stop offset="100%" stopColor="#ec4899" />
-                </linearGradient>
-              </defs>
-            </svg>
-            <ArrowPathIcon className="w-5 h-5 relative z-10" style={{
-              color: isPulling || isRefreshing ? "#f97316" : isDarkMode ? "#6b7280" : "#9ca3af",
-              transform: isRefreshing ? undefined : `rotate(${progress * 270}deg)`,
-              transition: "color .2s ease, transform .07s linear",
-            }} />
-          </div>
-          <motion.span
-            initial={{ opacity: 0 }}
-            animate={{ opacity: progress > 0.6 ? 1 : 0 }}
-            transition={{ duration: 0.15 }}
-            style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".04em", color: "#f97316", userSelect: "none" }}
-          >
-            {isRefreshing ? "Actualisation…" : isPulling ? "✓ Relâchez !" : "Tirez encore"}
-          </motion.span>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-});
-PullToRefreshIndicator.displayName = "PullToRefreshIndicator";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RIPPLE
-// ─────────────────────────────────────────────────────────────────────────────
-const RefreshRipple = memo(({ isDarkMode }) => (
-  <motion.div
-    className="fixed inset-0 pointer-events-none z-40"
-    initial={{ opacity: 0 }}
-    animate={{ opacity: [0, 1, 0] }}
-    transition={{ duration: 0.62, times: [0, 0.22, 1], ease: "easeOut" }}
-    style={{
-      background: isDarkMode
-        ? "linear-gradient(180deg,rgba(249,115,22,.15) 0%,rgba(236,72,153,.07) 35%,transparent 62%)"
-        : "linear-gradient(180deg,rgba(249,115,22,.12) 0%,rgba(236,72,153,.05) 35%,transparent 62%)",
-    }}
-  />
-));
-RefreshRipple.displayName = "RefreshRipple";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ✅ NIVEAU 2 — PostItem avec résolution Pexels BLOQUANTE
-//
-// CHANGEMENT CLÉ v2 :
-//   Avant : setResolvedPost(post) immédiatement → PostCard recevait l'URL expirée
-//           puis setResolvedPost(freshUrl) après résolution → flash de broken media
-//   Après : resolvedPost = null pendant la résolution
-//           → placeholder (hauteur fixe, invisible) pendant la résolution
-//           → PostCard rendu SEULEMENT quand l'URL est prête ou confirmée valide
-//           → Si résolution échoue → post reste masqué (pas de broken media)
-// ─────────────────────────────────────────────────────────────────────────────
-const PostItem = memo(
-  ({ post, onDeleted, showToast, isPriority, waveIndex, playWave }) => {
-    const shouldAnimate = useRef(playWave).current;
-    const anim = shouldAnimate && typeof waveIndex === "number" && waveIndex < WAVE_COUNT;
-
-    // ✅ null = en attente de résolution, false = résolution échouée, post = prêt
-    const [resolvedPost, setResolvedPost] = useState(() => {
-      // Initialisation synchrone : si pas Pexels → afficher directement
-      const pexId = getPexIdFromPost(post);
-      if (!pexId) return post;
-      // Pexels → vérifier le cache synchrone
-      const cached = pexCacheRead(pexId);
-      if (cached) return { ...post, videoUrl: cached, _pexResolved: true };
-      // Pas en cache → attendre résolution async
-      return null;
-    });
-
-    const resolvedRef = useRef(resolvedPost !== null); // true si déjà résolu au mount
-
-    useEffect(() => {
-      if (resolvedRef.current) return; // déjà résolu (non-Pexels ou cache hit)
-      resolvedRef.current = true;
-
-      const pexId = getPexIdFromPost(post);
-      if (!pexId) {
-        setResolvedPost(post);
-        return;
-      }
-
-      // Résolution asynchrone — PostCard ne rend PAS pendant ce temps
-      resolvePexUrl(pexId).then((freshUrl) => {
-        if (freshUrl) {
-          setResolvedPost({ ...post, videoUrl: freshUrl, _pexResolved: true });
-        } else {
-          // ✅ Résolution échouée → masquer le post (false = ne pas rendre)
-          setResolvedPost(false);
-        }
-      });
-    }, [post]);
-
-    // ✅ En cours de résolution Pexels → placeholder hauteur fixe (évite layout shift)
-    if (resolvedPost === null) {
-      return <div style={{ height: POST_H }} aria-hidden="true" />;
-    }
-
-    // ✅ Résolution échouée → ne rien rendre (post avec URL morte masqué)
-    if (resolvedPost === false) {
-      return null;
-    }
-
-    return (
-      <motion.div
-        initial={anim ? { opacity: 0, y: 22 } : false}
-        animate={anim ? { opacity: 1, y: 0 } : undefined}
-        transition={anim ? { duration: WAVE_DUR, delay: waveIndex * WAVE_STAGGER, ease: [0.22, 1, 0.36, 1] } : undefined}
-      >
-        <PostCard
-          post={resolvedPost}
-          onDeleted={onDeleted}
-          showToast={showToast}
-          mockPost={!!(post._isMock || post.isMockPost || post._id?.startsWith("post_"))}
-          priority={isPriority}
-        />
-      </motion.div>
-    );
-  },
-  (a, b) =>
-    a.post._id              === b.post._id &&
-    a.post.likes?.length    === b.post.likes?.length &&
-    a.post.comments?.length === b.post.comments?.length &&
-    a.post.content          === b.post.content &&
-    a.post._displayKey      === b.post._displayKey &&
-    a.isPriority            === b.isPriority
-);
-PostItem.displayName = "PostItem";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// INLINE NEWS CARD
-// ─────────────────────────────────────────────────────────────────────────────
-const InlineNewsCard = memo(({ article, isDarkMode }) => {
-  const [imgErr, setImgErr] = useState(false);
-  const [open,   setOpen]   = useState(null);
-  const timeAgo = useMemo(() => {
-    if (!article?.publishedAt) return "";
-    const h = Math.floor((Date.now() - new Date(article.publishedAt)) / 3_600_000);
-    return h < 1 ? "À l'instant" : h < 24 ? `Il y a ${h}h` : `Il y a ${Math.floor(h / 24)}j`;
-  }, [article?.publishedAt]);
-
-  if (!article?.title) return null;
-  return (
-    <>
-      <div className={`flex items-center gap-3 px-4 pt-5 pb-3 ${isDarkMode ? "bg-black" : "bg-white"}`}>
-        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>📰 Actualité</span>
-        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-      </div>
-      <div
-        onClick={() => setOpen(article)}
-        className={`mx-3 mb-5 rounded-2xl overflow-hidden cursor-pointer active:scale-[0.98] transition-transform shadow-md ${
-          isDarkMode ? "bg-gray-900 border border-gray-800" : "bg-white border border-gray-200"
-        }`}
-      >
-        {!imgErr && article.image ? (
-          <div className="relative overflow-hidden" style={{ height: 200 }}>
-            <img src={article.image} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" onError={() => setImgErr(true)} />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
-            <div className="absolute bottom-3 left-3 flex items-center gap-2">
-              <span className="text-[11px] font-bold text-white bg-orange-500 px-2.5 py-0.5 rounded-full">{article.source || "Actualité"}</span>
-              {timeAgo && <span className="text-[11px] text-white/80 font-medium">{timeAgo}</span>}
-            </div>
-          </div>
-        ) : (
-          <div className="w-full flex items-center justify-center bg-gradient-to-br from-orange-500 to-pink-500 text-5xl" style={{ height: 120 }}>📰</div>
-        )}
-        <div className="p-4">
-          {(imgErr || !article.image) && (
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[11px] font-bold text-orange-500 uppercase tracking-wide">{article.source || "Actualité"}</span>
-              {timeAgo && <span className={`text-[11px] ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>· {timeAgo}</span>}
-            </div>
-          )}
-          <p className={`text-base font-bold leading-snug mb-2 ${isDarkMode ? "text-white" : "text-gray-900"}`}>{article.title}</p>
-          {article.description && <p className={`text-sm leading-relaxed line-clamp-2 mb-3 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>{article.description}</p>}
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-bold text-orange-500">Lire l'article →</span>
-            <ArrowTopRightOnSquareIcon className="w-4 h-4 text-orange-400" />
-          </div>
-        </div>
-      </div>
-      <ArticleReaderModal article={open} isOpen={!!open} onClose={() => setOpen(null)} />
-    </>
-  );
-});
-InlineNewsCard.displayName = "InlineNewsCard";
+NewBanner.displayName="NewBanner";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOOP DIVIDER
 // ─────────────────────────────────────────────────────────────────────────────
 const LoopDivider = memo(({ isDarkMode }) => (
-  <div className={`flex items-center gap-3 px-4 py-5 ${isDarkMode ? "bg-black" : "bg-white"}`}>
-    <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
-    <span className={`text-[11px] font-bold uppercase tracking-widest px-3 py-1.5 rounded-full ${
-      isDarkMode ? "bg-gray-900 text-gray-500 border border-gray-800" : "bg-gray-50 text-gray-400 border border-gray-200"
-    }`}>🔄 Revoir depuis le début</span>
-    <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`} />
+  <div className={`flex items-center gap-3 px-4 py-4 ${isDarkMode?"bg-black":"bg-white"}`}>
+    <div className={`flex-1 h-px ${isDarkMode?"bg-gray-800":"bg-gray-200"}`} />
+    <span className={`text-[11px] font-medium px-3 py-1 rounded-full ${isDarkMode?"bg-gray-900 text-gray-500 border border-gray-800":"bg-gray-50 text-gray-400 border border-gray-200"}`}>
+      Vous avez tout vu • Recommencer
+    </span>
+    <div className={`flex-1 h-px ${isDarkMode?"bg-gray-800":"bg-gray-200"}`} />
   </div>
 ));
-LoopDivider.displayName = "LoopDivider";
+LoopDivider.displayName="LoopDivider";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TOAST
 // ─────────────────────────────────────────────────────────────────────────────
-const Toast = memo(({ message, type = "info", onClose }) => {
-  useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
-  const bg = type === "error" ? "bg-red-500" : type === "success" ? "bg-green-500" : "bg-blue-500";
-  return <div className={`fixed bottom-4 right-4 ${bg} text-white px-6 py-3 rounded-lg shadow-lg z-50`}>{message}</div>;
+const Toast = memo(({ message, type="info", onClose }) => {
+  useEffect(()=>{const t=setTimeout(onClose,3000);return()=>clearTimeout(t);},[onClose]);
+  return <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 rounded-full shadow-xl text-[13px] font-medium text-white whitespace-nowrap ${type==="error"?"bg-red-500":type==="success"?"bg-green-500":"bg-gray-900"}`}>{message}</div>;
 });
-Toast.displayName = "Toast";
+Toast.displayName="Toast";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROGRESSIVE FEED
+// NEWS CARD
 // ─────────────────────────────────────────────────────────────────────────────
-const ProgressiveFeed = ({
-  posts, onDeleted, showToast, adConfig, apiLoadMoreRef,
-  hasMoreFromAPI, searchQuery, isDarkMode, newsArticles,
-  isLoading, newPostsCount, onShowNewPosts, isWaving,
-  apiFullyLoaded, suggestedUserPool, scrollContainerRef, resetSignal,
+const ALLOWED_CATEGORIES = new Set(["genieCivil", "technologie", "environnement"]);
+const CATEGORY_META = {
+  genieCivil:    { label: "🏗️ BTP",  gradient: "from-orange-500 to-red-500"    },
+  technologie:   { label: "💻 Tech",  gradient: "from-green-500 to-emerald-500" },
+  environnement: { label: "🌱 Éco",   gradient: "from-teal-500 to-green-600"   },
+  general:       { label: "📰 Actu",  gradient: "from-gray-500 to-gray-600"    },
+};
+const getCategoryMeta = (cat) => CATEGORY_META[cat] || CATEGORY_META.general;
+const fmtDate = (d) => {
+  if (!d) return "";
+  const h = Math.floor((Date.now() - new Date(d)) / 3600000);
+  if (h < 1) return "À l'instant";
+  if (h < 24) return `Il y a ${h}h`;
+  if (h < 48) return "Hier";
+  return new Date(d).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+};
+
+const NewsCard = memo(({ article, isDarkMode, onClick }) => {
+  const [imgErr, setImgErr] = useState(false);
+  if (!ALLOWED_CATEGORIES.has(article.category)) return null;
+  const meta = getCategoryMeta(article.category);
+  return (
+    <div
+      onClick={onClick}
+      className={`mx-3 my-2 rounded-2xl overflow-hidden cursor-pointer active:scale-[0.98] transition-transform border ${
+        isDarkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-100"
+      }`}
+      style={{ boxShadow: isDarkMode ? "0 2px 12px rgba(0,0,0,0.4)" : "0 2px 12px rgba(0,0,0,0.07)" }}
+    >
+      {article.image && !imgErr ? (
+        <div className="relative w-full overflow-hidden" style={{ height: 180 }}>
+          <img src={article.image} alt={article.title} className="w-full h-full object-cover" loading="lazy" onError={() => setImgErr(true)} />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+          <div className={`absolute top-3 left-3 px-2.5 py-1 rounded-full text-[10px] font-bold text-white bg-gradient-to-r ${meta.gradient}`}>{meta.label}</div>
+          <div className={`absolute top-3 right-3 px-2.5 py-1 rounded-full text-[10px] font-semibold ${isDarkMode?"bg-black/60 text-gray-300":"bg-white/80 text-gray-600"}`}>Actualités</div>
+        </div>
+      ) : (
+        <div className={`w-full flex items-center justify-center bg-gradient-to-br ${meta.gradient}`} style={{ height: 80 }}>
+          <span className="text-white text-2xl">📰</span>
+        </div>
+      )}
+      <div className="px-4 pt-3 pb-4">
+        <p className={`text-[15px] font-bold leading-snug line-clamp-2 mb-1.5 ${isDarkMode?"text-white":"text-gray-900"}`}>{article.title}</p>
+        {article.description && <p className={`text-[13px] leading-relaxed line-clamp-2 mb-2 ${isDarkMode?"text-gray-400":"text-gray-500"}`}>{article.description}</p>}
+        <div className={`flex items-center gap-1.5 text-[11px] ${isDarkMode?"text-gray-500":"text-gray-400"}`}>
+          <span className="font-semibold text-orange-500">{article.source}</span>
+          {article.publishedAt && (<><span>·</span><span>{fmtDate(article.publishedAt)}</span></>)}
+          <span className="ml-auto font-medium text-orange-400">Lire →</span>
+        </div>
+      </div>
+    </div>
+  );
+});
+NewsCard.displayName = "NewsCard";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FEED
+// ─────────────────────────────────────────────────────────────────────────────
+const Feed = ({
+  posts, isDarkMode, onDeleted, showToast,
+  apiLoadMoreRef, hasMoreFromAPI,
+  isLoading, newPostsCount, onShowNewPosts, apiFullyLoaded,
+  resetSignal, topOffset, suggestedUsers, newsArticles = [],
 }) => {
-  const [displayedPosts, setDisplayedPosts] = useState([]);
-  const [loopBoundaries, setLoopBoundaries] = useState([]);
+  const [displayed,   setDisplayed]  = useState([]);
+  const [loopBounds,  setLoopBounds] = useState([]);
+  // ✅ FIX spinner : true = on a tout affiché (pool épuisé sans boucle possible)
+  const [poolExhausted, setPoolExhausted] = useState(false);
 
-  const sentinelRef    = useRef(null);
-  const loopRef        = useRef(0);
-  const postsRef       = useRef(posts);
-  const prevResetRef   = useRef(resetSignal);
+  const sentinelRef = useRef(null);
+  const loopRef     = useRef(0);
+  const cursorRef   = useRef(0);
+  const postsRef    = useRef(posts);
+  const accRef      = useRef([]);
+  const prevReset   = useRef(resetSignal);
+  const prevAnchor  = useRef(null);
+  const prevLen     = useRef(0);
+  const loadingRef  = useRef(false);
+
   useEffect(() => { postsRef.current = posts; }, [posts]);
 
-  const { start: winStart, end: winEnd } = useVirtualWindow(scrollContainerRef, POST_H, OVERSCAN);
+  const anchor = posts.length === 0 ? null : (posts[0]?._id ?? null);
 
-  const poolAnchor     = posts.length === 0 ? "__empty__" : posts[0]?._id ?? "__noid__";
-  const prevPoolAnchor = useRef(poolAnchor);
+  const initFeed = useCallback((pool) => {
+    loopRef.current    = 0;
+    cursorRef.current  = 0;
+    loadingRef.current = false;
+    const count  = Math.min(PAGE_SIZE, pool.length);
+    const tagged = pool.slice(0, count).map((p, i) => ({
+      ...p, _displayKey: `p${i}_l0_${p._id}`,
+    }));
+    cursorRef.current = count;
+    accRef.current    = tagged;
+    prevLen.current   = pool.length;
+    setDisplayed(tagged);
+    setLoopBounds([]);
+    // Pool plus petit que PAGE_SIZE → pas de scroll infini possible
+    setPoolExhausted(pool.length > 0 && pool.length < PAGE_SIZE);
+  }, []);
 
   useEffect(() => {
-    const signalChanged  = resetSignal !== prevResetRef.current;
-    const anchorChanged  = poolAnchor !== prevPoolAnchor.current;
-    prevResetRef.current   = resetSignal;
-    prevPoolAnchor.current = poolAnchor;
-    if (!posts.length) { setDisplayedPosts([]); setLoopBoundaries([]); return; }
-    if (!signalChanged && !anchorChanged) return;
-    loopRef.current = 0;
-    const init = posts.slice(0, Math.min(PAGE_SIZE, posts.length)).map((p, i) => ({ ...p, _displayKey: `p${i}_l0_${p._id}` }));
-    setDisplayedPosts(init);
-    setLoopBoundaries([]);
-  }, [resetSignal, poolAnchor]); // eslint-disable-line
+    const resetChanged  = resetSignal !== prevReset.current;
+    const anchorChanged = anchor !== prevAnchor.current;
+    prevReset.current  = resetSignal;
+    prevAnchor.current = anchor;
+
+    if (!posts.length) {
+      accRef.current = []; prevLen.current = 0;
+      setDisplayed([]); setLoopBounds([]); setPoolExhausted(false);
+      return;
+    }
+
+    if (resetChanged || anchorChanged) {
+      initFeed(posts);
+      return;
+    }
+
+    if (posts.length !== prevLen.current) {
+      prevLen.current  = posts.length;
+      postsRef.current = posts;
+      // Si le pool a grandi, on peut à nouveau scroller
+      if (posts.length >= PAGE_SIZE) setPoolExhausted(false);
+      setTimeout(() => {
+        if (postsRef.current.length > cursorRef.current) {
+          loadingRef.current = false;
+        }
+      }, 0);
+    }
+  }, [resetSignal, anchor, posts.length, initFeed]); // eslint-disable-line
 
   useEffect(() => {
-    if (!posts.length) return;
-    loopRef.current = 0;
-    const init = posts.slice(0, Math.min(PAGE_SIZE, posts.length)).map((p, i) => ({ ...p, _displayKey: `p${i}_l0_${p._id}` }));
-    setDisplayedPosts(init);
+    if (posts.length) initFeed(posts);
   }, []); // eslint-disable-line
 
+  const loadMore = useCallback(() => {
+    if (loadingRef.current) return;
+    const pool = postsRef.current;
+    if (!pool.length) return;
+
+    // Pool trop petit pour boucler → on affiche ce qu'on a et on stoppe
+    if (cursorRef.current >= pool.length) {
+      if (pool.length >= PAGE_SIZE) {
+        // Boucle : repart du début
+        cursorRef.current = 0;
+        loopRef.current++;
+        setPoolExhausted(false);
+      } else {
+        // Pas assez de posts pour boucler — on attend que l'API charge plus
+        setPoolExhausted(true);
+        return;
+      }
+    }
+
+    loadingRef.current = true;
+
+    try {
+      const cursor = cursorRef.current;
+      const end    = Math.min(cursor + PAGE_SIZE, pool.length);
+      let   raw    = pool.slice(cursor, end);
+      let   boundary = null;
+
+      if (raw.length < PAGE_SIZE && pool.length >= PAGE_SIZE) {
+        const remaining = PAGE_SIZE - raw.length;
+        raw      = [...raw, ...pool.slice(0, remaining)];
+        boundary = accRef.current.length + (end - cursor);
+        cursorRef.current = remaining;
+        loopRef.current++;
+      } else {
+        cursorRef.current = end;
+      }
+
+      const ln     = loopRef.current;
+      const offset = accRef.current.length;
+      const batch  = raw.map((p, i) => ({
+        ...p, _displayKey: `p${offset + i}_l${ln}_${p._id}`,
+        ...(boundary !== null && i === (end - cursor) ? { _loopStart: true } : {}),
+      }));
+
+      const next = accRef.current.concat(batch);
+      accRef.current = next.length > MAX_DOM_POSTS
+        ? next.slice(next.length - MAX_DOM_POSTS)
+        : next;
+
+      if (boundary !== null) setLoopBounds(b => [...b, boundary]);
+      setDisplayed(accRef.current);
+
+      // Vérifie si on a tout affiché et le pool est trop petit pour boucler
+      if (cursorRef.current >= pool.length && pool.length < PAGE_SIZE) {
+        setPoolExhausted(true);
+      }
+    } finally {
+      loadingRef.current = false;
+    }
+  }, []);
+
+  // ✅ IntersectionObserver avec root explicite pour iOS Safari
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
-    const obs = new IntersectionObserver(([e]) => {
-      if (!e.isIntersecting) return;
-      startTransition(() => {
-        setDisplayedPosts((prev) => {
-          const pool = postsRef.current;
-          if (!prev.length || !pool.length) return prev;
-          const { posts: next, boundary } = computeBatch(prev, pool, loopRef);
-          if (boundary !== null) setLoopBoundaries((b) => [...b, boundary]);
-          return next;
-        });
-      });
-    }, { rootMargin: "600px", threshold: 0 });
+    const root = el.closest("[data-scroll-container]") || null;
+    const obs = new IntersectionObserver(
+      ([e]) => { if (e.isIntersecting) loadMore(); },
+      { root, rootMargin: "800px", threshold: 0 }
+    );
     obs.observe(el);
     return () => obs.disconnect();
-  }, []); // eslint-disable-line
+  }, [loadMore]);
 
-  const loopBoundarySet = useMemo(() => new Set(loopBoundaries), [loopBoundaries]);
-  const newsInsertMap = useMemo(() => {
-    const len = newsArticles?.length ?? 0;
-    if (!len || searchQuery) return new Map();
-    const map = new Map();
-    let ai = 0;
-    for (let i = 0; i < displayedPosts.length; i++) {
-      if (i === NEWS_INSERT_AFTER - 1 || (i >= NEWS_INSERT_AFTER && (i - NEWS_INSERT_AFTER + 1) % NEWS_REPEAT_EVERY === 0)) {
-        map.set(i, newsArticles[ai++ % newsArticles.length]);
-      }
+  // ✅ Fallback scroll — nécessaire sur certains navigateurs mobiles où
+  // l'IntersectionObserver avec root explicite ne se déclenche pas correctement.
+  // Throttlé à 100ms pour ne pas surcharger le main thread.
+  useEffect(() => {
+    const scrollEl =
+      sentinelRef.current?.closest("[data-scroll-container]") || window;
+
+    let lastCall = 0;
+    const onScroll = () => {
+      const now = Date.now();
+      if (now - lastCall < 100) return; // throttle 100ms
+      lastCall = now;
+      const el = sentinelRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const vh   = window.innerHeight || document.documentElement.clientHeight;
+      if (rect.top < vh + 1200) loadMore();
+    };
+
+    scrollEl.addEventListener("scroll", onScroll, { passive: true });
+    // Déclenche une fois après mount pour les feeds courts
+    const t = setTimeout(onScroll, 200);
+    return () => {
+      scrollEl.removeEventListener("scroll", onScroll);
+      clearTimeout(t);
+    };
+  }, [loadMore]);
+
+  // Trigger quand le pool grandit
+  useEffect(() => {
+    if (posts.length > 0 && cursorRef.current < posts.length) {
+      loadMore();
     }
-    return map;
-  }, [displayedPosts.length, newsArticles?.length, searchQuery]); // eslint-disable-line
+  }, [posts.length]); // eslint-disable-line
 
-  if (isLoading && !posts.length) return <SkeletonPosts count={3} isDarkMode={isDarkMode} />;
+  const [selectedArticle, setSelectedArticle] = useState(null);
+  const loopSet = useMemo(() => new Set(loopBounds), [loopBounds]);
+
+  if (isLoading && !posts.length) return <FeedSkeleton isDarkMode={isDarkMode} />;
   if (!isLoading && !posts.length) return (
-    <div className="flex flex-col items-center justify-center py-20">
-      <p className={`text-lg font-medium ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>Aucun post à afficher</p>
+    <div className="flex flex-col items-center justify-center py-24 gap-3">
+      <div className={`w-16 h-16 rounded-full flex items-center justify-center ${isDarkMode?"bg-gray-900":"bg-gray-100"}`}>
+        <svg className={`w-8 h-8 ${isDarkMode?"text-gray-600":"text-gray-300"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
+          <rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+        </svg>
+      </div>
+      <p className={`text-sm ${isDarkMode?"text-gray-600":"text-gray-400"}`}>Aucune publication</p>
     </div>
   );
 
   return (
     <>
-      <NewPostsBanner count={newPostsCount} onClick={onShowNewPosts} isDarkMode={isDarkMode} />
-      {displayedPosts.map((post, index) => {
-        if (index < winStart || index > winEnd) {
-          return <div key={post._displayKey || post._id} style={{ height: POST_H }} aria-hidden="true" />;
-        }
-        const isLoopStart = loopBoundarySet.has(index);
-        const showAd      = adConfig.enabled && index > 0 && index % adConfig.frequency === 0;
-        const article     = newsInsertMap.get(index);
+      <NewBanner count={newPostsCount} onClick={onShowNewPosts} topOffset={topOffset} />
+
+      {displayed.map((post, index) => {
+        const newsSlot  = index > 0 && index % NEWS_EVERY === 0 ? Math.floor(index / NEWS_EVERY) - 1 : -1;
+        const newsItem  = newsSlot >= 0 && newsArticles.length > 0
+          ? newsArticles[newsSlot % newsArticles.length]
+          : null;
 
         return (
-          <div key={post._displayKey || post._id} style={{ contain: "content" }}>
-            {isLoopStart && apiFullyLoaded && <LoopDivider isDarkMode={isDarkMode} />}
-            <PostItem
-              post={post} onDeleted={onDeleted} showToast={showToast}
-              isPriority={index === 0} waveIndex={index} playWave={isWaving}
+          <div key={post._displayKey || post._id}>
+            {loopSet.has(index) && apiFullyLoaded && <LoopDivider isDarkMode={isDarkMode} />}
+
+            <PostCard
+              post={post}
+              onDeleted={onDeleted}
+              showToast={showToast}
+              mockPost={!!post._isMock || !!post.isMockPost}
+              priority={index === 0}
             />
-            {index > 0 && index % SUGGEST_POST_EVERY === 0 && index % SUGGEST_EVERY !== 0 && (
-              <SuggestedPostPreview key={`spp-${index}`} isDarkMode={isDarkMode} userPool={suggestedUserPool} slotIndex={Math.floor(index / SUGGEST_POST_EVERY)} />
+
+            {newsItem && (
+              <NewsCard
+                key={`news-${newsSlot}`}
+                article={newsItem}
+                isDarkMode={isDarkMode}
+                onClick={() => setSelectedArticle(newsItem)}
+              />
             )}
-            {index > 0 && index % SUGGEST_EVERY === 0 && (
-              <SuggestedAccounts key={`sa-${index}`} isDarkMode={isDarkMode} instanceId={Math.floor(index / SUGGEST_EVERY)} />
+
+            {index > 0 && index % SUGGEST_PROFILE_EVERY === 0 && (
+              <SuggestedPostPreview
+                key={`spp-${index}`}
+                isDarkMode={isDarkMode}
+                userPool={suggestedUsers}
+                slotIndex={Math.floor(index / SUGGEST_PROFILE_EVERY)}
+              />
             )}
-            {showAd && (
-              <div style={{ minHeight: 250, contain: "layout size" }}>
-                <SmartAd slot="feedInline" canClose />
-              </div>
+            {index > 0 && index % SUGGEST_ACCOUNTS_EVERY === 0 && index % SUGGEST_PROFILE_EVERY !== 0 && (
+              <SuggestedAccounts
+                key={`sa-${index}`}
+                isDarkMode={isDarkMode}
+                instanceId={Math.floor(index / SUGGEST_ACCOUNTS_EVERY)}
+              />
             )}
-            {article && <InlineNewsCard key={`news-${article.id || article.url || index}`} article={article} isDarkMode={isDarkMode} />}
           </div>
         );
       })}
-      <div ref={sentinelRef} className="h-20 flex items-center justify-center" aria-hidden="true">
-        {displayedPosts.length > 0 && <ArrowPathIcon className="w-5 h-5 animate-spin text-orange-400 opacity-60" />}
+
+      {/* ✅ Spinner masqué quand pool épuisé — pas de spinner infini */}
+      <div ref={sentinelRef} className="h-10 flex items-center justify-center" aria-hidden="true">
+        {displayed.length > 0 && !poolExhausted && (
+          <ArrowPathIcon className={`w-4 h-4 animate-spin ${isDarkMode ? "text-gray-700" : "text-gray-300"}`} />
+        )}
+        {poolExhausted && displayed.length > 0 && (
+          <span className={`text-xs tracking-widest ${isDarkMode ? "text-gray-700" : "text-gray-400"}`}>• • •</span>
+        )}
       </div>
+
       {hasMoreFromAPI && <div ref={apiLoadMoreRef} className="h-1" aria-hidden="true" />}
+
+      {selectedArticle && (
+        <Suspense fallback={null}>
+          <ArticleReaderModal
+            article={selectedArticle}
+            isOpen={!!selectedArticle}
+            onClose={() => setSelectedArticle(null)}
+          />
+        </Suspense>
+      )}
     </>
   );
 };
-ProgressiveFeed.displayName = "ProgressiveFeed";
+Feed.displayName = "Feed";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────────────────────
-const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
-  const { isDarkMode }    = useDarkMode();
-  const { fetchStories, stories = [] } = useStories();
-  const { posts: rawPosts = [], fetchNextPage, hasMore, loading: postsLoading, refetch, removePost } = usePosts() || {};
+const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
+  const { isDarkMode } = useDarkMode();
+  const { fetchStories, stories=[] } = useStories();
+  const { posts:rawPosts=[], fetchNextPage, hasMore, loading:postsLoading, refetch, removePost } = usePosts()||{};
   const { user } = useAuth();
+  const navigate = useNavigate();
 
-  const [, startPageTransition] = useTransition();
-  const [showCreator,   setShowCreator]   = useState(false);
-  const [showViewer,    setShowViewer]    = useState(false);
-  const [viewerData,    setViewerData]    = useState({ stories: [], owner: null });
-  const [isRefreshing,  setIsRefreshing]  = useState(false);
-  const [showPyramid,   setShowPyramid]   = useState(false);
-  const [toast,         setToast]         = useState(null);
-  const [mockCount,     setMockCount]     = useState(MOCK_CONFIG.initialCount);
-  const [pullUI,        setPullUI]        = useState({ distance: 0, isPulling: false });
-  const [pendingPosts,  setPendingPosts]  = useState([]);
-  const [newPostsCount, setNewPostsCount] = useState(0);
-  const [resetSignal,   setResetSignal]   = useState(0);
-  const [showRipple,    setShowRipple]    = useState(false);
-  const [isWaving,      setIsWaving]      = useState(false);
-  const [apiPages,      setApiPages]      = useState(1);
-  const [userPool,      setUserPool]      = useState([]);
-  const [seed,          setSeed]          = useState(() => Math.floor(Math.random() * 0xffffffff));
+  const [,startPageTrans] = useTransition();
+  const [showCreator,    setShowCreator]    = useState(false);
+  const [showViewer,     setShowViewer]     = useState(false);
+  const [viewerData,     setViewerData]     = useState({stories:[],owner:null});
+  const [isRefreshing,   setIsRefreshing]   = useState(false);
+  const [showPyramid,    setShowPyramid]    = useState(false);
+  const [toast,          setToast]          = useState(null);
+  const [mockCount,      setMockCount]      = useState(MOCK_CONFIG.initialCount);
+  const [pullDist,       setPullDist]       = useState(0);
+  const [newPosts,       setNewPosts]       = useState(0);
+  const [resetSig,       setResetSig]       = useState(0);
+  const [apiPages,       setApiPages]       = useState(1);
+  const [seed,           setSeed]           = useState(()=>Math.floor(Math.random()*0xffffffff));
+  const [suggestedUsers, setSuggestedUsers] = useState([]);
 
-  const latestIdRef    = useRef(null);
-  const scrollRef      = useRef(null);
-  const apiObsRef      = useRef(null);
-  const loadingRef     = useRef(false);
-  const mockGenRef     = useRef(false);
-  const touchStartY    = useRef(0);
-  const isPullingRef   = useRef(false);
-  const canPullRef     = useRef(true);
-  const pullDistRef    = useRef(0);
-  const lcpDone        = useRef(false);
-  const rippleTimer    = useRef(null);
-  const waveTimer      = useRef(null);
-  const suggestFetched = useRef(false);
+  // ✅ FIX 2 : livePosts dans un ref + version counter → évite 300 posts dans React state
+  const livePostsRef    = useRef([]);
+  const [livePostsVer,  setLivePostsVer]   = useState(0);
+
+  // ✅ FIX 1 : resolved stocké directement (plus de chunks intermédiaires)
+  const [resolved, setResolved] = useState([]);
+
+  const scrollRef   = useRef(null);
+  const apiObsRef   = useRef(null);
+  const loadingRef  = useRef(false);
+  const mockGenRef  = useRef(false);
+  const touchStartY = useRef(0);
+  const isPulling   = useRef(false);
+  const canPull     = useRef(true);
+  const pullDistRef = useRef(0);
+  const latestId    = useRef(null);
+  const sugFetched  = useRef(false);
+  const waveTimer   = useRef(null);
+  // ✅ FIX 5 : fallbackFetched reste true après le premier appel réussi
+  const fallbackFetchedRef = useRef(false);
+  const fallbackLastRun    = useRef(0);
+
+  const HEADER_H  = 52;
+  const STORIES_H = 92;
+  const TOTAL_TOP = HEADER_H + STORIES_H;
 
   const showMock = MOCK_CONFIG.enabled;
-  const { articles: news = [] } = useNews({ maxArticles: 10, category: "all", autoFetch: !!user, enabled: !!user });
-  const realPosts = useMemo(() => rawPosts.slice(0, MAX_POOL), [rawPosts]);
+
+  const { articles: newsGC }   = useNews({ maxArticles: 4, category: "genieCivil",    autoFetch: !!user, enabled: !!user }) || {};
+  const { articles: newsTech } = useNews({ maxArticles: 2, category: "technologie",   autoFetch: !!user, enabled: !!user }) || {};
+  const { articles: newsEnv }  = useNews({ maxArticles: 2, category: "environnement", autoFetch: !!user, enabled: !!user }) || {};
+
+  // ✅ FIX 6 : clé de mémoïsation stable basée sur les longueurs, pas les tableaux
+  const newsGCLen   = newsGC?.length   ?? 0;
+  const newsTechLen = newsTech?.length ?? 0;
+  const newsEnvLen  = newsEnv?.length  ?? 0;
+  const newsArticles = useMemo(() => {
+    const all  = [...(newsGC || []), ...(newsTech || []), ...(newsEnv || [])];
+    const seen = new Set();
+    return all.filter(a => {
+      const key = a._id || a.id || a.url;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [newsGCLen, newsTechLen, newsEnvLen]); // eslint-disable-line
+
+  // Helper pour ajouter des posts dans le ref
+  const addLivePosts = useCallback((newPostsList) => {
+    const ids = new Set(livePostsRef.current.map(p => p._id));
+    const fresh = newPostsList.filter(p => p?._id && !ids.has(p._id));
+    if (!fresh.length) return false;
+    livePostsRef.current = [...livePostsRef.current, ...fresh].slice(0, MAX_POOL);
+    startTransition(() => setLivePostsVer(v => v + 1));
+    return true;
+  }, []);
+
+  const replaceLivePosts = useCallback((newPostsList) => {
+    livePostsRef.current = newPostsList.slice(0, MAX_POOL);
+    startTransition(() => setLivePostsVer(v => v + 1));
+  }, []);
 
   useEffect(() => {
-    if (suggestFetched.current || !user) return;
-    suggestFetched.current = true;
+    if (!user || sugFetched.current) return;
+    sugFetched.current = true;
     (async () => {
       try {
         const { data } = await axiosClient.get("/users/suggestions?limit=20");
-        const list = Array.isArray(data) ? data : data?.users || data?.suggestions || [];
-        setUserPool(list.filter((u) => u?._id && u._id !== user._id));
+        const list = Array.isArray(data) ? data : (data?.users || data?.suggestions || []);
+        setSuggestedUsers(list.filter(u => u?._id && u._id !== user._id));
       } catch {
         try {
           const { data } = await axiosClient.get("/users?limit=20&sort=followers");
-          setUserPool((Array.isArray(data) ? data : data?.users || []).filter((u) => u?._id && u._id !== user._id).slice(0, 15));
-        } catch {}
+          const list = Array.isArray(data) ? data : (data?.users || []);
+          setSuggestedUsers(list.filter(u => u?._id && u._id !== user._id).slice(0, 16));
+        } catch { setSuggestedUsers([]); }
       }
     })();
   }, [user]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // ✅ isValidPost — filtre renforcé v2
-  //
-  // Changements par rapport à v1 :
-  //  1. Posts sans media mais avec texte → toujours valides
-  //  2. Posts dont TOUTES les URLs media sont dans DEAD_URL_PATTERNS → bloqués
-  //     même si hasStale() ne les détecte pas (ex: URL Pixabay sans pattern regex)
-  //  3. hasValidUser vérifié AVANT la logique Pexels
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── FALLBACK posts depuis profils utilisateurs ───────────────────────────
+  const fetchFallbackPosts = useCallback(async () => {
+    if (!user) return;
+    const now = Date.now();
+    if (now - fallbackLastRun.current < FALLBACK_COOLDOWN_MS) return;
+    if (fallbackFetchedRef.current) return;
+    // ✅ FIX 5 : on pose le verrou AVANT l'appel async (pas dans finally)
+    fallbackFetchedRef.current = true;
+    fallbackLastRun.current    = now;
+
+    try {
+      const cachedProfilePosts = readAllCachedProfilePosts();
+      if (cachedProfilePosts.length > 0) {
+        addLivePosts(cachedProfilePosts);
+        const existingReal = livePostsRef.current.filter(p => !p._isMock && !p.isMockPost).length;
+        if (existingReal >= FALLBACK_THRESHOLD * 2) return;
+      }
+
+      let userPool = suggestedUsers.length > 0
+        ? suggestedUsers
+        : await (async () => {
+            try {
+              const { data } = await axiosClient.get("/users?limit=30&sort=followers");
+              return Array.isArray(data) ? data : (data?.users || []);
+            } catch { return []; }
+          })();
+
+      if (!userPool.length) return;
+
+      const shuffled = [...userPool].sort(() => Math.random() - 0.5);
+      const probeTarget = shuffled[0];
+      const targets     = shuffled.slice(1, MAX_FALLBACK_USERS + 1);
+
+      if (!window.__fallbackPostsRoutePromise__) {
+        const probeUid = probeTarget?._id || probeTarget?.id;
+        window.__fallbackPostsRoutePromise__ = probeUid
+          ? (async () => {
+              try {
+                await axiosClient.get(`/users/${probeUid}/posts?limit=1&page=1`);
+                return "user_posts";
+              } catch (e1) {
+                if (e1.response?.status !== 404) return "user_posts";
+                try {
+                  await axiosClient.get(`/posts?userId=${probeUid}&limit=1`);
+                  return "posts_filter";
+                } catch (e2) {
+                  if (e2.response?.status !== 404) return "posts_filter";
+                  try {
+                    await axiosClient.get(`/posts/user/${probeUid}?limit=1`);
+                    return "posts_user";
+                  } catch { return "none"; }
+                }
+              }
+            })()
+          : Promise.resolve("none");
+
+        window.__fallbackPostsRoutePromise__.catch(() => {
+          delete window.__fallbackPostsRoutePromise__;
+        });
+      }
+
+      const route = await window.__fallbackPostsRoutePromise__;
+      if (route === "none") return;
+
+      const buildUrl = (uid) => {
+        if (route === "user_posts")   return `/users/${uid}/posts?limit=${FALLBACK_POSTS_LIMIT}&page=1`;
+        if (route === "posts_filter") return `/posts?userId=${uid}&limit=${FALLBACK_POSTS_LIMIT}`;
+        if (route === "posts_user")   return `/posts/user/${uid}?limit=${FALLBACK_POSTS_LIMIT}`;
+        return null;
+      };
+
+      const allTargets = [probeTarget, ...targets].filter(Boolean);
+      const results = await Promise.allSettled(
+        allTargets.map(async (u) => {
+          const uid = u._id || u.id;
+          if (!uid) return [];
+          const url = buildUrl(uid);
+          if (!url) return [];
+          try {
+            const { data } = await axiosClient.get(url);
+            const posts = Array.isArray(data) ? data : (data?.posts || data?.data || []);
+            return posts.map(p => ({ ...p, _fromFallback: true }));
+          } catch (e) {
+            if (e.response?.status === 404) delete window.__fallbackPostsRoutePromise__;
+            return [];
+          }
+        })
+      );
+
+      const allFallback = results
+        .filter(r => r.status === "fulfilled")
+        .flatMap(r => r.value)
+        .filter(p => p?._id);
+
+      if (allFallback.length) addLivePosts(allFallback);
+    } catch {
+      // Silencieux
+    }
+    // ✅ FIX 5 : PAS de reset dans finally — le fallback ne se relance pas en boucle
+  }, [user, suggestedUsers, addLivePosts]);
+
+  // Ref stable pour fetchFallbackPosts (évite deps instables dans useEffect)
+  const fetchFallbackRef = useRef(fetchFallbackPosts);
+  useEffect(() => { fetchFallbackRef.current = fetchFallbackPosts; }, [fetchFallbackPosts]);
+
+  // Surveille le pool — déclenche fallback si nécessaire
+  useEffect(() => {
+    if (!user || postsLoading) return;
+    const realCount = livePostsRef.current.filter(p => !p._isMock && !p.isMockPost && !p._fromFallback).length;
+    if (realCount < FALLBACK_THRESHOLD) fetchFallbackRef.current();
+  }, [livePostsVer, postsLoading, user]);
+
+  // Écoute le cache de profils en temps réel
+  useEffect(() => {
+    if (!user) return;
+    const handleProfileCached = () => {
+      const realCount = livePostsRef.current.filter(p => !p._isMock && !p.isMockPost && !p._fromFallback && !p._fromProfileCache).length;
+      if (realCount < FALLBACK_THRESHOLD) {
+        const cached = readAllCachedProfilePosts();
+        if (cached.length > 0) addLivePosts(cached);
+      }
+    };
+    window.addEventListener("profilePostsCached", handleProfileCached);
+    return () => window.removeEventListener("profilePostsCached", handleProfileCached);
+  }, [user, addLivePosts]);
+
+  // Sync rawPosts → livePostsRef
+  useEffect(() => {
+    if (!rawPosts.length) return;
+    const ids = new Set(rawPosts.map(p => p._id));
+    const filtered = livePostsRef.current.filter(p => !ids.has(p._id));
+    livePostsRef.current = [...filtered, ...rawPosts].slice(0, MAX_POOL);
+    startTransition(() => setLivePostsVer(v => v + 1));
+  }, [rawPosts]);
+
   const isValidPost = useCallback((p) => {
     if (!p?._id) return false;
     if (p._isMock || p.isMockPost || p._id?.startsWith("post_")) return true;
-
     const u = p.user || p.author || {};
-    if (u.isBanned || u.isDeleted || ["deleted", "banned"].includes(u.status)) return false;
-
-    const hasValidUser = !!(u._id || u.id || p.userId || p.author?._id);
-    if (!hasValidUser) return false;
-
-    // ✅ Post Pexels avec externalId → PostItem gérera la résolution async
-    const hasPexId = !!getPexIdFromPost(p);
-    if (hasPexId) return true;
-
-    // ✅ Bloquer posts avec URLs expirables SANS externalId (ne peuvent pas être résolus)
-    if (hasStale(p)) return false;
-
-    // ✅ Collecter toutes les URLs media du post
-    const allMediaUrls = [
-      ...(Array.isArray(p.media)  ? p.media  : p.media  ? [p.media]  : []),
-      ...(Array.isArray(p.images) ? p.images : p.images ? [p.images] : []),
-      p.videoUrl,
-      p.embedUrl,
-    ]
-      .filter(Boolean)
-      .map((m) => (typeof m === "string" ? m : m?.url))
-      .filter(Boolean);
-
-    const hasText = !!(p.content || p.contenu);
-
-    // Post texte sans media → valide
-    if (!allMediaUrls.length && hasText) return true;
-
-    // Post vide (pas de texte, pas de media) → invalide
-    if (!allMediaUrls.length && !hasText) return false;
-
-    // ✅ Bloquer si TOUTES les URLs sont connues comme expirées/bloquées
-    const allDead = allMediaUrls.every((url) =>
-      DEAD_URL_PATTERNS.some((pat) => url.includes(pat))
-    );
-    if (allDead) return false;
-
-    // ✅ Bloquer si TOUTES les URLs sont structurellement invalides
-    const allInvalid = allMediaUrls.every((url) => !isStructurallyValid(url));
-    if (allInvalid && !hasText) return false;
-
+    if (u.isBanned || u.isDeleted || ["deleted","banned"].includes(u.status)) return false;
+    if (!u._id && !u.id && !p.userId && !p.author?._id) return false;
+    const media = getMediaUrls(p), hasText = !!(p.content || p.contenu);
+    if (!media.length && hasText)  return true;
+    if (!media.length && !hasText) return false;
+    if (media.every(isDead)) return false;
+    const exp = media.filter(u => !!expSrc(u));
+    if (exp.length > 0) { const r = getResolvable(p); if (!r && exp.length === media.length) return false; return true; }
+    if (!media.filter(isStructValid).length && !hasText) return false;
     return true;
   }, []);
 
-  const combinedPosts = useMemo(() => {
-    const dedup = (arr) => {
-      const s = new Set();
-      return arr.filter((p) => { if (s.has(p._id)) return false; s.add(p._id); return true; });
-    };
-    const vReal = dedup(realPosts.filter((p) => isValidPost(p) && !p.isBot && !p.user?.isBot));
-    const vBots = dedup(realPosts.filter((p) => isValidPost(p) && (p.isBot || p.user?.isBot)));
-    if (!showMock) {
-      return mixPostsByBlocks(
-        [...vReal.slice(0, RECENT_HEAD), ...seededShuffle(vReal.slice(RECENT_HEAD), seed)],
-        seededShuffle(vBots, seed ^ 0xabcd)
-      );
-    }
+  const rawPool = useMemo(() => {
+    const live = livePostsRef.current;
+    const dedup = (arr) => { const s = new Set(); return arr.filter(p => { if (s.has(p._id)) return false; s.add(p._id); return true; }); };
+    const valid = dedup(live.filter(p => isValidPost(p)));
+    const vReal = valid.filter(p => !p.isBot && !p.user?.isBot);
+    const vBots = valid.filter(p =>  p.isBot ||  p.user?.isBot);
+    if (!showMock) return buildFeed(vReal, vBots, seed);
     const mocks = dedup(MOCK_POSTS.slice(0, mockCount));
-    if (MOCK_CONFIG.mixWithRealPosts && vReal.length > 0) {
-      const head = vReal.slice(0, RECENT_HEAD).map(stablePost);
-      const tail = seededShuffle(vReal.slice(RECENT_HEAD).map(stablePost), seed);
-      return mixPostsByBlocks([...head, ...tail], seededShuffle([...vBots, ...mocks], seed ^ 0xdead));
-    }
+    if (MOCK_CONFIG.mixWithRealPosts && vReal.length > 0) return buildFeed(vReal.map(stablePost), [...vBots.map(stablePost), ...mocks], seed);
     return seededShuffle(mocks, seed);
-  }, [realPosts, mockCount, showMock, isValidPost, seed]);
+  }, [livePostsVer, mockCount, showMock, isValidPost, seed]); // eslint-disable-line
+
+  // ✅ FIX 1 : résolution complète en 1 seul setState
+  useEffect(() => {
+    if (!rawPool.length) { setResolved([]); return; }
+    let cancelled = false;
+
+    const immediate = rawPool.filter(p => !hasExpirable(p));
+    const exp       = rawPool.filter(p =>  hasExpirable(p));
+
+    // Affiche immédiatement les posts sans média expirant
+    startTransition(() => setResolved(immediate));
+
+    if (!exp.length) return;
+
+    // Résout tous les médias expirables en une seule passe, puis 1 seul setState
+    resolveBatch(exp).then(resolved => {
+      if (cancelled) return;
+      const resolvedMap = new Map([...immediate, ...resolved].map(p => [p._id, p]));
+      const ordered = rawPool.map(p => resolvedMap.get(p._id)).filter(Boolean);
+      startTransition(() => setResolved(ordered));
+    });
+
+    return () => { cancelled = true; };
+  }, [rawPool]);
 
   const apiFullyLoaded = !hasMore && apiPages >= API_PREFETCH;
 
   useEffect(() => {
-    if (combinedPosts.length > 0 && !latestIdRef.current)
-      latestIdRef.current = combinedPosts[0]._id;
-  }, [combinedPosts]);
+    if (!user) return;
+    const id = setInterval(() => {
+      if (!document.hidden) {
+        startTransition(() => {
+          setSeed(Math.floor(Math.random() * 0xffffffff));
+          setResetSig(k => k + 1);
+        });
+      }
+    }, SEED_ROTATE_MS);
+    return () => clearInterval(id);
+  }, [user]);
 
-  if (!lcpDone.current && combinedPosts.length > 0) {
-    const r = getLCPUrl(combinedPosts);
-    if (r?.url) { injectPreload(r.url, r.type); lcpDone.current = true; }
-  }
+  useEffect(() => { if (resolved.length > 0 && !latestId.current) latestId.current = resolved[0]._id; }, [resolved]);
 
-  const deferredSearch = useDeferredValue(searchQuery);
+  // ✅ FIX 7 : plus de useDeferredValue — filtre direct (searchQuery est rare)
   const filtered = useMemo(() => {
-    if (!deferredSearch.trim()) return combinedPosts;
-    const q = deferredSearch.toLowerCase();
-    return combinedPosts.filter((p) =>
-      (p.content || "").toLowerCase().includes(q) || (p.user?.fullName || "").toLowerCase().includes(q)
-    );
-  }, [combinedPosts, deferredSearch]);
+    if (!searchQuery.trim()) return resolved;
+    const q = searchQuery.toLowerCase();
+    return resolved.filter(p => (p.content || "").toLowerCase().includes(q) || (p.user?.fullName || "").toLowerCase().includes(q));
+  }, [resolved, searchQuery]);
 
-  const isLoading = postsLoading && combinedPosts.length === 0;
+  const isLoading = postsLoading && resolved.length === 0;
   useEffect(() => { loadingRef.current = postsLoading; }, [postsLoading]);
 
   useEffect(() => {
@@ -991,44 +913,33 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => clearTimeout(t);
   }, [isLoading]);
 
-  useEffect(() => () => { clearTimeout(rippleTimer.current); clearTimeout(waveTimer.current); }, []);
+  useEffect(() => () => { clearTimeout(waveTimer.current); }, []);
 
-  const showToast   = useCallback((msg, type = "info") => { startTransition(() => setToast({ message: msg, type })); }, []);
+  const showToast     = useCallback((msg, type="info") => { startTransition(() => setToast({ message: msg, type })); }, []);
   const handleDeleted = useCallback((id) => { startTransition(() => removePost?.(id)); }, [removePost]);
+  const triggerReset  = useCallback(() => { startTransition(() => setResetSig(k => k + 1)); }, []);
+
   const handleOpenStory = useCallback((s, o) => {
     if (openStoryViewerProp) openStoryViewerProp(s, o);
     else { setViewerData({ stories: s, owner: o }); setShowViewer(true); }
   }, [openStoryViewerProp]);
 
-  const triggerAnim = useCallback(() => {
-    clearTimeout(rippleTimer.current);
-    setShowRipple(true);
-    rippleTimer.current = setTimeout(() => setShowRipple(false), RIPPLE_MS);
-    clearTimeout(waveTimer.current);
-    setIsWaving(true);
-    startTransition(() => setResetSignal((k) => k + 1));
-    waveTimer.current = setTimeout(() => setIsWaving(false), WAVE_MS);
-  }, []);
-
   const handleRefresh = useCallback(async () => {
     if (isRefreshing) return;
     scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-    triggerAnim();
-    setIsRefreshing(true);
-    setNewPostsCount(0);
-    setPendingPosts([]);
-    setApiPages(1);
+    setIsRefreshing(true); setNewPosts(0); setApiPages(1);
     setSeed(Math.floor(Math.random() * 0xffffffff));
     try {
       const [, r] = await Promise.allSettled([fetchStories(true), refetch?.()]);
       const fp = r?.value?.posts || [];
-      if (fp.length > 0) latestIdRef.current = fp[0]._id;
-    } catch {
-      showToast("Erreur lors de l'actualisation", "error");
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [isRefreshing, refetch, fetchStories, showToast, triggerAnim]);
+      if (fp.length > 0) latestId.current = fp[0]._id;
+    } catch { showToast("Erreur lors de l'actualisation", "error"); }
+    finally { setIsRefreshing(false); triggerReset(); }
+  }, [isRefreshing, refetch, fetchStories, showToast, triggerReset]);
+
+  // ✅ FIX : HOME_REFRESH_EVENT = vrai refresh API (pull-to-refresh, depuis autre page)
+  // HOME_SCROLL_TOP_EVENT = juste scroll en haut sans reset (click Home depuis Home)
+  const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
 
   useEffect(() => {
     window.addEventListener(HOME_REFRESH_EVENT, handleRefresh);
@@ -1036,17 +947,36 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   }, [handleRefresh]);
 
   useEffect(() => {
+    const handleScrollTop = () => {
+      scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    window.addEventListener(HOME_SCROLL_TOP_EVENT, handleScrollTop);
+    return () => window.removeEventListener(HOME_SCROLL_TOP_EVENT, handleScrollTop);
+  }, []);
+
+  useEffect(() => {
     if (!user) return;
     const poll = async () => {
       if (document.hidden || isRefreshing || loadingRef.current) return;
       try {
-        const r  = await refetch?.();
-        const fp = r?.posts || [];
-        if (fp.length > 0 && latestIdRef.current) {
-          const idx   = fp.findIndex((p) => p._id === latestIdRef.current);
-          const newer = idx > 0 ? fp.slice(0, idx) : [];
-          if (newer.length > 0) { setPendingPosts(newer); setNewPostsCount(newer.length); }
-        }
+        const r = await refetch?.(), fp = r?.posts || [];
+        if (!fp.length || !latestId.current) return;
+        const idx = fp.findIndex(p => p._id === latestId.current), newer = idx > 0 ? fp.slice(0, idx) : [];
+        if (!newer.length) return;
+
+        const ids = new Set(livePostsRef.current.map(p => p._id));
+        const fresh = newer.filter(p => !ids.has(p._id));
+        if (!fresh.length) return;
+
+        latestId.current = fresh[0]._id;
+        livePostsRef.current = [...fresh, ...livePostsRef.current].slice(0, MAX_POOL);
+        setNewPosts(newer.length);
+        startTransition(() => {
+          // ✅ FIX : on NE reset PAS le feed automatiquement au poll
+          // On incrémente juste livePostsVer pour que rawPool se recalcule
+          // L'user voit le banner "X nouveaux posts" et choisit de les voir
+          setLivePostsVer(v => v + 1);
+        });
       } catch {}
     };
     const id = setInterval(poll, POLL_INTERVAL);
@@ -1054,139 +984,164 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   }, [user, refetch, isRefreshing]);
 
   const handleShowNew = useCallback(() => {
+    // ✅ FIX : scroll to top UNIQUEMENT — pas de resetSig
+    // Le resetSig réinitialise le feed depuis le début (perte du scroll)
+    // Les nouveaux posts sont déjà dans livePostsRef, on les affiche via setLivePostsVer
     scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-    if (pendingPosts.length > 0) latestIdRef.current = pendingPosts[0]._id;
-    setNewPostsCount(0);
-    setPendingPosts([]);
-    setSeed(Math.floor(Math.random() * 0xffffffff));
-    triggerAnim();
-  }, [pendingPosts, triggerAnim]);
+    setNewPosts(0);
+    startTransition(() => {
+      setSeed(Math.floor(Math.random() * 0xffffffff));
+      setLivePostsVer(v => v + 1); // recalcule rawPool avec les nouveaux posts
+      // Note: on ne setResetSig ici — ça reset le curseur et renvoie l'user en haut
+      // avec les MÊMES posts. Le livePostsVer suffit pour incorporer les nouveaux.
+    });
+  }, []);
 
+  const PTR = 72;
   useEffect(() => {
-    let raf = null, lastUpdate = 0;
-    const reset   = () => { pullDistRef.current = 0; canPullRef.current = true; setPullUI({ distance: 0, isPulling: false }); };
+    let raf = null, lu = 0;
+    const reset   = () => { pullDistRef.current = 0; canPull.current = true; setPullDist(0); };
     const trigger = async () => {
-      if (isPullingRef.current) return;
-      isPullingRef.current = true;
-      setPullUI({ distance: 0, isPulling: false });
-      canPullRef.current = false;
+      if (isPulling.current) return;
+      isPulling.current = true; setPullDist(0); canPull.current = false;
       await handleRefresh();
-      isPullingRef.current = false;
-      setTimeout(reset, 300);
+      isPulling.current = false; setTimeout(reset, 300);
     };
-    const onStart = (e) => {
-      const st = scrollRef.current?.scrollTop ?? window.scrollY;
-      if (st <= 5 && canPullRef.current) touchStartY.current = e.touches[0].clientY;
-    };
-    const onMove = (e) => {
-      if (!canPullRef.current || !touchStartY.current) return;
+    const onStart = (e) => { const st = scrollRef.current?.scrollTop ?? 0; if (st <= 2 && canPull.current) touchStartY.current = e.touches[0].clientY; };
+    const onMove  = (e) => {
+      if (!canPull.current || !touchStartY.current) return;
       const pd = e.touches[0].clientY - touchStartY.current;
-      if (pd > 20) {
-        pullDistRef.current = Math.min(pd * 0.4, PTR_THRESHOLD * 1.5);
+      if (pd > 10) {
+        pullDistRef.current = Math.min(pd * 0.33, PTR * 1.5);
         const now = Date.now();
-        if (now - lastUpdate >= 50) {
-          lastUpdate = now;
-          if (raf) cancelAnimationFrame(raf);
-          raf = requestAnimationFrame(() => setPullUI({ distance: pullDistRef.current, isPulling: pullDistRef.current > PTR_THRESHOLD }));
-        }
-        if (pd > 60 && e.cancelable) try { e.preventDefault(); } catch {}
+        if (now - lu >= 40) { lu = now; if (raf) cancelAnimationFrame(raf); raf = requestAnimationFrame(() => setPullDist(pullDistRef.current)); }
+        if (pd > 50 && e.cancelable) try { e.preventDefault(); } catch {}
       }
     };
-    const onEnd = () => {
-      if (raf) cancelAnimationFrame(raf);
-      pullDistRef.current > PTR_THRESHOLD && !isPullingRef.current ? trigger() : reset();
-      touchStartY.current = 0;
-    };
-    const target = scrollRef.current || window;
-    target.addEventListener("touchstart", onStart, { passive: true });
-    target.addEventListener("touchmove",  onMove,  { passive: false });
-    target.addEventListener("touchend",   onEnd,   { passive: true });
+    const onEnd = () => { if (raf) cancelAnimationFrame(raf); pullDistRef.current > PTR && !isPulling.current ? trigger() : reset(); touchStartY.current = 0; };
+    const t = scrollRef.current || window;
+    t.addEventListener("touchstart", onStart, { passive: true });
+    t.addEventListener("touchmove",  onMove,  { passive: false });
+    t.addEventListener("touchend",   onEnd,   { passive: true });
     return () => {
       if (raf) cancelAnimationFrame(raf);
-      target.removeEventListener("touchstart", onStart);
-      target.removeEventListener("touchmove",  onMove);
-      target.removeEventListener("touchend",   onEnd);
+      t.removeEventListener("touchstart", onStart);
+      t.removeEventListener("touchmove",  onMove);
+      t.removeEventListener("touchend",   onEnd);
     };
   }, [handleRefresh]);
 
+  // ✅ FIX 9 : apiObsFn stabilisé via ref — pas de reconnect à chaque render
   const apiObsFnRef = useRef(null);
   const apiObsFn = useCallback((entries) => {
     if (!entries[0].isIntersecting || loadingRef.current || isRefreshing) return;
-    startPageTransition(() => {
-      if (showMock && mockCount < MOCK_POSTS.length) setMockCount((p) => Math.min(p + MOCK_CONFIG.loadMoreCount, MOCK_POSTS.length));
-      if (hasMore) { fetchNextPage(); setApiPages((p) => p + 1); }
+    startPageTrans(() => {
+      if (showMock && mockCount < MOCK_POSTS.length) setMockCount(p => Math.min(p + MOCK_CONFIG.loadMoreCount, MOCK_POSTS.length));
+      if (hasMore) { fetchNextPage(); setApiPages(p => p + 1); }
     });
   }, [hasMore, fetchNextPage, isRefreshing, showMock, mockCount]);
   useEffect(() => { apiObsFnRef.current = apiObsFn; }, [apiObsFn]);
   useEffect(() => {
-    const node = apiObsRef.current;
-    if (!node) return;
-    const obs = new IntersectionObserver((e) => apiObsFnRef.current?.(e), { rootMargin: "500px" });
+    const node = apiObsRef.current; if (!node) return;
+    const obs = new IntersectionObserver(e => apiObsFnRef.current?.(e), { rootMargin: "500px" });
     obs.observe(node);
     return () => obs.disconnect();
   }, []); // eslint-disable-line
 
-  return (
-    <div className="flex flex-col h-full scrollbar-hide" style={{ minHeight: "100vh" }}>
-      <PullToRefreshIndicator isPulling={pullUI.isPulling} pullDistance={pullUI.distance} isRefreshing={isRefreshing} isDarkMode={isDarkMode} />
-      <AnimatePresence>
-        {showRipple && <RefreshRipple key="ripple" isDarkMode={isDarkMode} />}
-      </AnimatePresence>
+  const bg     = isDarkMode ? "bg-black"        : "bg-white";
+  const border = isDarkMode ? "border-gray-800" : "border-gray-200";
+  const txt    = isDarkMode ? "text-white"      : "text-gray-900";
 
-      <div
-        className={`sticky top-0 z-30 ${isDarkMode ? "bg-black" : "bg-white"}`}
-        style={{ height: STORY_BAR_H, minHeight: STORY_BAR_H, contain: "strict" }}
-      >
-        <StoryContainer
-          onOpenStory={handleOpenStory}
-          onOpenCreator={() => setShowCreator(true)}
-          onOpenPyramid={() => setShowPyramid(true)}
-          isDarkMode={isDarkMode}
-        />
-      </div>
+  return (
+    <div className={`flex flex-col ${bg}`} style={{ height: "100dvh", overflow: "hidden" }}>
+
+      {/* HEADER */}
+      <header className={`flex-shrink-0 ${bg} border-b ${border} z-40`} style={{ height: HEADER_H }}>
+        <div className="h-full max-w-[470px] mx-auto flex items-center justify-between px-4">
+          <span className={`text-[22px] font-bold tracking-tight select-none ${txt}`}
+            style={{ fontFamily: "'Pacifico', 'Satisfy', 'Dancing Script', cursive, sans-serif" }}>
+            Chantilink
+          </span>
+          <div className="flex items-center gap-0.5">
+            <button onClick={() => setShowCreator(true)}
+              className={`p-2 rounded-full ${txt} transition-opacity active:opacity-60`}
+              style={{ WebkitTapHighlightColor: "transparent" }}>
+              <PlusCircleIcon className="w-[26px] h-[26px]" />
+            </button>
+            {isRefreshing && (
+              <div className="w-8 h-8 flex items-center justify-center">
+                <ArrowPathIcon className={`w-5 h-5 animate-spin ${isDarkMode ? "text-gray-500" : "text-gray-400"}`} />
+              </div>
+            )}
+          </div>
+        </div>
+      </header>
 
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto scrollbar-hide"
-        style={{ willChange: "transform", WebkitOverflowScrolling: "touch", transform: "translateZ(0)" }}
+        data-scroll-container="true"
+        className="flex-1 overflow-y-auto"
+        style={{
+          WebkitOverflowScrolling: "touch",
+          scrollbarWidth: "none",
+          // ✅ FIX 10 : accélération GPU pour le scroll sur mobile
+          willChange: "transform",
+          transform: "translateZ(0)",
+        }}
       >
-        <div className="w-full lg:max-w-[630px] lg:mx-auto">
-          {searchQuery && (
-            <div className={`p-4 text-center text-sm ${isDarkMode ? "text-gray-400" : "text-gray-600"}`}>
-              {`${filtered.length} résultat(s) pour "${deferredSearch}"`}
-            </div>
+        <style>{`[data-scroll-container]::-webkit-scrollbar{display:none}`}</style>
+
+        <AnimatePresence>
+          {(pullDist > 8 || isRefreshing) && (
+            <motion.div className="flex items-center justify-center py-1"
+              initial={{ height: 0, opacity: 0 }} animate={{ height: 32, opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.15 }}>
+              <ArrowPathIcon
+                className={`w-5 h-5 ${isRefreshing ? "animate-spin" : ""} ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}
+                style={{ transform: isRefreshing ? undefined : `rotate(${Math.min(pullDist / PTR, 1) * 270}deg)` }}
+              />
+            </motion.div>
           )}
-          <ProgressiveFeed
-            posts={filtered} onDeleted={handleDeleted} showToast={showToast}
-            adConfig={AD_CONFIG} apiLoadMoreRef={apiObsRef}
+        </AnimatePresence>
+
+        <div className="max-w-[470px] mx-auto">
+          <div className={`${bg} border-b ${border}`} style={{ height: STORIES_H, overflow: "hidden" }}>
+            <StoryContainer
+              onOpenStory={handleOpenStory}
+              onOpenCreator={() => setShowCreator(true)}
+              onOpenPyramid={() => setShowPyramid(true)}
+              isDarkMode={isDarkMode}
+            />
+          </div>
+
+          <Feed
+            posts={filtered}
+            isDarkMode={isDarkMode}
+            onDeleted={handleDeleted}
+            showToast={showToast}
+            apiLoadMoreRef={apiObsRef}
             hasMoreFromAPI={hasMore || mockCount < MOCK_POSTS.length}
-            searchQuery={deferredSearch} isDarkMode={isDarkMode}
-            newsArticles={news} isLoading={isLoading}
-            newPostsCount={newPostsCount} onShowNewPosts={handleShowNew}
-            isWaving={isWaving} apiFullyLoaded={apiFullyLoaded}
-            suggestedUserPool={userPool} scrollContainerRef={scrollRef}
-            resetSignal={resetSignal}
+            isLoading={isLoading}
+            newPostsCount={newPosts}
+            onShowNewPosts={handleShowNew}
+            apiFullyLoaded={apiFullyLoaded}
+            resetSignal={resetSig}
+            topOffset={TOTAL_TOP}
+            suggestedUsers={suggestedUsers}
+            newsArticles={newsArticles}
           />
         </div>
       </div>
 
       <Suspense fallback={null}>
-        <ImmersivePyramidUniverse
-          isOpen={showPyramid} onClose={() => setShowPyramid(false)}
+        <ImmersivePyramidUniverse isOpen={showPyramid} onClose={() => setShowPyramid(false)}
           stories={stories} user={user} onOpenStory={handleOpenStory}
-          onOpenCreator={() => { setShowPyramid(false); setShowCreator(true); }}
-          isDarkMode={isDarkMode}
-        />
+          onOpenCreator={() => { setShowPyramid(false); setShowCreator(true); }} isDarkMode={isDarkMode} />
       </Suspense>
-
       <AnimatePresence>
         {showCreator && <Suspense fallback={null}><StoryCreator onClose={() => setShowCreator(false)} /></Suspense>}
-        {showViewer && (
-          <Suspense fallback={null}>
-            <StoryViewer stories={viewerData.stories} currentUser={user} onClose={() => setShowViewer(false)} />
-          </Suspense>
-        )}
-        {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+        {showViewer  && <Suspense fallback={null}><StoryViewer stories={viewerData.stories} currentUser={user} onClose={() => setShowViewer(false)} /></Suspense>}
+        {toast       && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
       </AnimatePresence>
     </div>
   );

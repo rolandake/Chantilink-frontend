@@ -1,21 +1,19 @@
 // 📁 src/pages/Home/PostMedia.jsx
 //
-// ✅ FIX SLIDES NOIRES v12
-//    - Bug : les slides 2, 3... s'affichaient noires car height n'était pas
-//      correctement propagée aux slides enfants dans le conteneur flex horizontal.
-//    - Root cause : slotH calculé = largeur du container (pour un aspect carré),
-//      mais les slides internes avaient height:slotH mais leur parent flex
-//      (width: total*100%) ne transmettait pas cette hauteur → h-full des
-//      VideoItem/ImageItem ne trouvait rien à remplir sur slide 2+.
-//    - Fix : le wrapper flex reçoit maintenant height:slotH en explicit,
-//      et chaque slide reçoit height:"100%" relatif au flex parent (pas slotH direct).
-//      VideoItem et ImageItem utilisent position:absolute inset-0 pour remplir.
+// ✅ FIX SLIDES NOIRES v13
+//    - Root cause finale : contain:"layout style" dans PostCardInner crée un
+//      contexte de formatage indépendant. Sur Safari iOS et Samsung Internet,
+//      height:100% à l'intérieur d'un contain:layout container ne se résout pas
+//      correctement quand le parent flex a width > 100% (multi-slides).
+//    - Fix : on passe slotH en px explicite à chaque slide et au wrapper flex,
+//      au lieu de height:100%. Plus aucune dépendance sur la cascade CSS.
 //
+// ✅ FIX SLIDES NOIRES v12 (conservé)
 // ✅ FIX CORS PEXELS v11
-// ✅ FIX YOUTUBE v7 — safeMediaUrls (bot-safe)
+// ✅ FIX YOUTUBE v7
 // 🔥 PREBUFFER VIDÉO (style TikTok)
 // 🎯 VIDEO MANAGER GLOBAL (style TikTok)
-// 🔥 FIX SWIPE v8 — navigation multi-médias réparée
+// 🔥 FIX SWIPE v8
 // ✅ FIX URLs INVALIDES v4
 
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
@@ -26,142 +24,103 @@ const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 // ─────────────────────────────────────────────
-// 🎯 VIDEO MANAGER GLOBAL (style TikTok)
+// 🎯 VIDEO MANAGER GLOBAL
 // ─────────────────────────────────────────────
 let currentPlayingVideo = null;
-
 const registerPlayingVideo = (video) => {
   if (!video) return;
   if (currentPlayingVideo && currentPlayingVideo !== video) {
-    try {
-      currentPlayingVideo.pause();
-      currentPlayingVideo.currentTime = currentPlayingVideo.currentTime;
-    } catch {}
+    try { currentPlayingVideo.pause(); } catch {}
   }
   currentPlayingVideo = video;
 };
 
 // ─────────────────────────────────────────────
-// 🔥 PREBUFFER VIDÉO GLOBAL (style TikTok)
+// 🔥 PREBUFFER VIDÉO GLOBAL
 // ─────────────────────────────────────────────
 const preloadedVideos = new Set();
-
 const preloadVideo = (src) => {
   if (!src || preloadedVideos.has(src)) return;
   if (!/\.(mp4|webm|mov|avi)/i.test(src.split('?')[0])) return;
   const video = document.createElement("video");
-  video.src = src;
-  video.preload = "auto";
-  video.muted = true;
+  video.src = src; video.preload = "auto"; video.muted = true;
   preloadedVideos.add(src);
 };
 
 // ─────────────────────────────────────────────
-// ✅ isStructurallyValid
+// HELPERS
 // ─────────────────────────────────────────────
 const isStructurallyValid = (url) => {
   if (!url || typeof url !== "string" || url.length < 10) return false;
   if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
-  try {
-    const u = new URL(url);
-    return !!(u.hostname && u.pathname && u.pathname !== "/");
-  } catch {
-    return false;
-  }
+  try { const u = new URL(url); return !!(u.hostname && u.pathname && u.pathname !== "/"); }
+  catch { return false; }
 };
 
-// ─────────────────────────────────────────────
-// DÉTECTION DU TYPE D'URL
-// ─────────────────────────────────────────────
-const isVideoUrl = url =>
-  url && /\.(mp4|webm|mov|avi)$/i.test(url.split('?')[0]);
+const isVideoUrl     = url => url && /\.(mp4|webm|mov|avi)$/i.test(url.split('?')[0]);
+const isHLSUrl       = url => url && /\.m3u8/i.test(url);
+const isPexelsVideo  = url => url && url.includes('videos.pexels.com');
+const isPixabayVideo = url => url && url.includes('cdn.pixabay.com/video');
+const isExternalVideo= url => isPexelsVideo(url) || isPixabayVideo(url);
+const isYouTubeUrl   = url => url && (url.includes('youtube.com') || url.includes('youtu.be'));
+const needsCrossOrigin = url => url && url.includes('res.cloudinary.com');
 
-const isHLSUrl = url =>
-  url && /\.m3u8/i.test(url);
-
-const isEmbedUrl = url =>
-  url && (
-    url.includes('player.vimeo.com')      ||
-    url.includes('youtube.com/embed')     ||
-    url.includes('youtube.com/watch')     ||
-    url.includes('youtu.be/')             ||
-    url.includes('dailymotion.com/embed')
-  );
+const isEmbedUrl = url => url && (
+  url.includes('player.vimeo.com') || url.includes('youtube.com/embed') ||
+  url.includes('youtube.com/watch') || url.includes('youtu.be/') ||
+  url.includes('dailymotion.com/embed')
+);
 
 const toEmbedUrl = (url) => {
   if (!url) return url;
   if (url.includes('youtube.com/embed')) return url.split('?')[0];
-  const shortMatch = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-  if (shortMatch) return `https://www.youtube.com/embed/${shortMatch[1]}`;
-  const watchMatch = url.match(/youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/);
-  if (watchMatch) return `https://www.youtube.com/embed/${watchMatch[1]}`;
+  const s = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+  if (s) return `https://www.youtube.com/embed/${s[1]}`;
+  const w = url.match(/youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/);
+  if (w) return `https://www.youtube.com/embed/${w[1]}`;
   return url;
 };
 
 const getYouTubeId = (url) => {
   if (!url) return null;
-  const shortMatch = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-  if (shortMatch) return shortMatch[1];
-  const embedMatch = url.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-  if (embedMatch) return embedMatch[1];
-  const watchMatch = url.match(/youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/);
-  if (watchMatch) return watchMatch[1];
+  const s = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);      if (s) return s[1];
+  const e = url.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/); if (e) return e[1];
+  const w = url.match(/youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/); if (w) return w[1];
   return null;
 };
 
-const isPexelsVideo  = url => url && url.includes('videos.pexels.com');
-const isPixabayVideo = url => url && url.includes('cdn.pixabay.com/video');
-const isExternalVideo = url => isPexelsVideo(url) || isPixabayVideo(url);
-const isYouTubeUrl   = url => url && (url.includes('youtube.com') || url.includes('youtu.be'));
-const needsCrossOrigin = url => url && url.includes('res.cloudinary.com');
-
-// ─────────────────────────────────────────────
-// PROXY URL
-// ─────────────────────────────────────────────
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const getVideoUrls = (url) => {
   if (!url) return { proxy: null, direct: null };
-  if (isPexelsVideo(url) || isPixabayVideo(url)) {
-    return {
-      proxy:  `${API_BASE}/api/proxy/video?url=${encodeURIComponent(url)}`,
-      direct: null,
-    };
-  }
+  if (isPexelsVideo(url) || isPixabayVideo(url))
+    return { proxy: `${API_BASE}/api/proxy/video?url=${encodeURIComponent(url)}`, direct: null };
   return { proxy: null, direct: url };
 };
 
-// ─────────────────────────────────────────────
-// POSTER URL
-// ─────────────────────────────────────────────
 const getVideoPosterUrl = (videoUrl, postData = null) => {
   if (!videoUrl) return null;
   if (postData?.thumbnail) return postData.thumbnail;
   try {
     if (videoUrl.includes('res.cloudinary.com')) {
-      const uploadIndex = videoUrl.indexOf('/upload/');
-      if (uploadIndex === -1) return null;
-      const afterUpload = videoUrl.substring(uploadIndex + 8);
-      const segments = afterUpload.split('/');
-      const publicIdSegments = [];
-      for (const seg of segments) {
-        const isTransform = seg.includes(',') || (/^[a-z]+_[a-z]/.test(seg) && !seg.includes('.'));
-        if (!isTransform) publicIdSegments.push(seg);
+      const idx = videoUrl.indexOf('/upload/'); if (idx === -1) return null;
+      const after = videoUrl.substring(idx + 8);
+      const segs  = after.split('/');
+      const parts = [];
+      for (const s of segs) {
+        const isTx = s.includes(',') || (/^[a-z]+_[a-z]/.test(s) && !s.includes('.'));
+        if (!isTx) parts.push(s);
       }
-      const publicId = publicIdSegments.join('/').replace(/\.(mp4|webm|mov|avi)$/i, '');
-      if (!publicId) return null;
-      return `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${publicId}.jpg`;
+      const pub = parts.join('/').replace(/\.(mp4|webm|mov|avi)$/i, '');
+      return pub ? `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${pub}.jpg` : null;
     }
     if (isPexelsVideo(videoUrl)) {
-      const match = videoUrl.match(/video-files\/(\d+)\//);
-      if (match) return `https://images.pexels.com/videos/${match[1]}/pictures/preview-0.jpg`;
+      const m = videoUrl.match(/video-files\/(\d+)\//);
+      return m ? `https://images.pexels.com/videos/${m[1]}/pictures/preview-0.jpg` : null;
     }
     if (isPixabayVideo(videoUrl)) {
-      const thumb = videoUrl
-        .replace('_large.mp4',  '_tiny.jpg')
-        .replace('_medium.mp4', '_tiny.jpg')
-        .replace('_small.mp4',  '_tiny.jpg');
-      if (thumb !== videoUrl) return thumb;
+      const t = videoUrl.replace('_large.mp4','_tiny.jpg').replace('_medium.mp4','_tiny.jpg').replace('_small.mp4','_tiny.jpg');
+      return t !== videoUrl ? t : null;
     }
     return null;
   } catch { return null; }
@@ -169,45 +128,45 @@ const getVideoPosterUrl = (videoUrl, postData = null) => {
 
 const getYouTubeThumbnail = (url) => {
   const id = getYouTubeId(url);
-  if (!id) return null;
-  return `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
+  return id ? `https://img.youtube.com/vi/${id}/hqdefault.jpg` : null;
 };
 
-// ─────────────────────────────────────────────
-// getOptimizedUrl
-// ─────────────────────────────────────────────
 const getOptimizedUrl = (url, isLCP = false) => {
   if (!url) return null;
   if (url.startsWith('data:')) return url;
   if (isEmbedUrl(url) || isHLSUrl(url)) return toEmbedUrl(url);
   if (isExternalVideo(url)) return url;
   if (url.startsWith('http') && !url.includes('res.cloudinary.com')) return url;
-
   if (url.includes('res.cloudinary.com')) {
     if (url.includes('q_auto') || url.includes('w_1080')) return url;
     try {
-      const uploadIndex = url.indexOf('/upload/');
-      if (uploadIndex !== -1) {
-        const afterUpload = url.substring(uploadIndex + 8);
-        let publicId = afterUpload;
-        const firstPart = afterUpload.split('/')[0];
-        if (firstPart.includes(',') || /^[a-z]_/.test(firstPart)) {
-          publicId = afterUpload.substring(firstPart.length + 1);
-        }
-        const video = isVideoUrl(publicId);
-        const base  = video ? VID_BASE : IMG_BASE;
-        if (video) return `${base}q_auto:good,f_auto,w_1080,c_limit/${publicId}`;
-        if (isLCP) return `${base}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${publicId}`;
-        return `${base}q_auto,f_auto,fl_progressive:steep,w_1080,c_limit/${publicId}`;
+      const idx = url.indexOf('/upload/');
+      if (idx !== -1) {
+        const after = url.substring(idx + 8);
+        const first = after.split('/')[0];
+        const pub   = (first.includes(',') || /^[a-z]_/.test(first)) ? after.substring(first.length + 1) : after;
+        const vid   = isVideoUrl(pub);
+        const base  = vid ? VID_BASE : IMG_BASE;
+        if (vid)   return `${base}q_auto:good,f_auto,w_1080,c_limit/${pub}`;
+        if (isLCP) return `${base}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${pub}`;
+        return `${base}q_auto,f_auto,fl_progressive:steep,w_1080,c_limit/${pub}`;
       }
     } catch { return url; }
   }
-
-  const id    = url.replace(/^\/+/, '');
-  const video = isVideoUrl(id);
-  if (video) return `${VID_BASE}q_auto:good,f_auto,w_1080,c_limit/${id}`;
+  const id  = url.replace(/^\/+/, '');
+  const vid = isVideoUrl(id);
+  if (vid)   return `${VID_BASE}q_auto:good,f_auto,w_1080,c_limit/${id}`;
   if (isLCP) return `${IMG_BASE}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${id}`;
   return `${IMG_BASE}q_auto,f_auto,fl_progressive:steep,w_1080,c_limit/${id}`;
+};
+
+const resolveSlotType = (url, postMediaType = null) => {
+  if (!url) return 'unknown';
+  if (postMediaType === 'youtube') return 'embed';
+  if (isEmbedUrl(url))             return 'embed';
+  if (isHLSUrl(url))               return 'hls';
+  if (isVideoUrl(url) || isExternalVideo(url)) return 'video';
+  return 'image';
 };
 
 // ─────────────────────────────────────────────
@@ -220,16 +179,11 @@ const VideoSourceBadge = ({ url }) => {
     if (isYouTubeUrl(url))   return { label: 'YouTube', bg: '#FF0000' };
     return null;
   }, [url]);
-
   if (!info) return null;
   return (
-    <div
-      className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-white text-[11px] font-bold pointer-events-none"
-      style={{ background: info.bg, backdropFilter: 'blur(4px)', boxShadow: '0 1px 6px rgba(0,0,0,0.3)' }}
-    >
-      <svg viewBox="0 0 10 10" className="w-2.5 h-2.5" fill="white">
-        <polygon points="2,1 9,5 2,9" />
-      </svg>
+    <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-white text-[11px] font-bold pointer-events-none"
+      style={{ background: info.bg, backdropFilter: 'blur(4px)', boxShadow: '0 1px 6px rgba(0,0,0,0.3)' }}>
+      <svg viewBox="0 0 10 10" className="w-2.5 h-2.5" fill="white"><polygon points="2,1 9,5 2,9" /></svg>
       {info.label}
     </div>
   );
@@ -238,93 +192,62 @@ const VideoSourceBadge = ({ url }) => {
 // ─────────────────────────────────────────────
 // EMBED ITEM
 // ─────────────────────────────────────────────
-const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
+const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true, slotH }) => {
   const [showEmbed,    setShowEmbed]    = useState(false);
   const [thumbError,   setThumbError]   = useState(false);
   const [thumbLoaded,  setThumbLoaded]  = useState(false);
   const [thumbQuality, setThumbQuality] = useState('hq');
-
   const normalizedUrl = useMemo(() => toEmbedUrl(url), [url]);
-
   const resolvedThumb = useMemo(() => {
     if (thumbnail) return thumbnail;
-    const id = getYouTubeId(url);
-    if (!id) return null;
+    const id = getYouTubeId(url); if (!id) return null;
     if (thumbQuality === 'hq') return `https://img.youtube.com/vi/${id}/hqdefault.jpg`;
     if (thumbQuality === 'mq') return `https://img.youtube.com/vi/${id}/mqdefault.jpg`;
     if (thumbQuality === 'sd') return `https://img.youtube.com/vi/${id}/sddefault.jpg`;
     return null;
   }, [url, thumbnail, thumbQuality]);
-
   const handleThumbError = useCallback(() => {
     if (thumbQuality === 'hq') setThumbQuality('mq');
     else if (thumbQuality === 'mq') setThumbQuality('sd');
     else { setThumbQuality('error'); setThumbError(true); }
   }, [thumbQuality]);
-
   const embedSrc = useMemo(() => {
     if (!showEmbed) return '';
-    if (url.includes('player.vimeo.com')) {
-      const base = url.split('?')[0];
-      return `${base}?autoplay=1&muted=0`;
-    }
-    if (isYouTubeUrl(url)) {
-      return `${normalizedUrl}?autoplay=1&rel=0&modestbranding=1`;
-    }
+    if (url.includes('player.vimeo.com')) return `${url.split('?')[0]}?autoplay=1&muted=0`;
+    if (isYouTubeUrl(url)) return `${normalizedUrl}?autoplay=1&rel=0&modestbranding=1`;
     return url;
   }, [showEmbed, url, normalizedUrl]);
-
   const hasThumbnail = resolvedThumb && !thumbError;
 
+  // ✅ FIX v13 : hauteur px explicite au lieu de inset-0 / 100%
   return (
-    // ✅ FIX : position absolute + inset-0 pour remplir le slide parent
-    <div className="absolute inset-0 bg-black flex items-center justify-center">
+    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {showEmbed ? (
-        <iframe
-          src={embedSrc}
-          className="w-full h-full"
-          frameBorder="0"
-          allow="autoplay; picture-in-picture"
-          allowFullScreen
-          title={title || 'Vidéo'}
-          referrerPolicy="strict-origin-when-cross-origin"
-        />
+        <iframe src={embedSrc} style={{ width: '100%', height: '100%' }} frameBorder="0"
+          allow="autoplay; picture-in-picture" allowFullScreen title={title || 'Vidéo'}
+          referrerPolicy="strict-origin-when-cross-origin" />
       ) : (
         <>
           {hasThumbnail ? (
             <>
-              {!thumbLoaded && <div className="absolute inset-0 bg-gray-900 animate-pulse" />}
-              <img
-                src={resolvedThumb}
-                alt={title || 'Vidéo'}
-                className="w-full h-full object-cover"
-                style={{ opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.25s' }}
-                loading="lazy" decoding="async"
-                onLoad={() => setThumbLoaded(true)}
-                onError={handleThumbError}
-                referrerPolicy="no-referrer"
-              />
+              {!thumbLoaded && <div style={{ position: 'absolute', inset: 0, background: '#111', animation: 'pulse 1.5s ease-in-out infinite' }} />}
+              <img src={resolvedThumb} alt={title || 'Vidéo'}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.25s' }}
+                loading="lazy" decoding="async" onLoad={() => setThumbLoaded(true)} onError={handleThumbError} referrerPolicy="no-referrer" />
             </>
           ) : (
-            <div className="w-full h-full bg-gray-900 flex items-center justify-center">
-              <div className="text-gray-600 text-5xl select-none">▶</div>
+            <div style={{ width: '100%', height: '100%', background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ color: '#555', fontSize: 48 }}>▶</div>
             </div>
           )}
           {hasThumbnail && thumbLoaded && (
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent pointer-events-none" />
+            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.6), rgba(0,0,0,0.1), transparent)', pointerEvents: 'none' }} />
           )}
-          <button
-            onClick={() => setShowEmbed(true)}
-            className="absolute inset-0 flex items-center justify-center"
-            style={{ background: 'transparent' }}
-            aria-label="Lire la vidéo"
-          >
-            <div className="w-16 h-16 rounded-full bg-white/90 hover:bg-white flex items-center justify-center shadow-2xl transition-all hover:scale-105 active:scale-95">
-              <div className="w-0 h-0 ml-1.5" style={{
-                borderTop:    '13px solid transparent',
-                borderBottom: '13px solid transparent',
-                borderLeft:   '22px solid #111',
-              }} />
+          <button onClick={() => setShowEmbed(true)}
+            style={{ position: 'absolute', inset: 0, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            aria-label="Lire la vidéo">
+            <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 24px rgba(0,0,0,0.4)' }}>
+              <div style={{ width: 0, height: 0, marginLeft: 6, borderTop: '13px solid transparent', borderBottom: '13px solid transparent', borderLeft: '22px solid #111' }} />
             </div>
           </button>
         </>
@@ -342,48 +265,33 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
   const [imgError, setImgError] = useState(false);
   const hasThumbnail = thumbnail && !imgError;
   return (
-    // ✅ FIX : position absolute + inset-0
-    <div className="absolute inset-0 bg-gray-900 flex items-center justify-center overflow-hidden">
+    <div style={{ position: 'absolute', inset: 0, background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
       {hasThumbnail ? (
-        <img src={thumbnail} alt={title || ''} className="w-full h-full object-cover"
+        <img src={thumbnail} alt={title || ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           loading="lazy" decoding="async" onError={() => setImgError(true)} />
       ) : (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3"
-          style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%)' }}>
-          <div className="w-20 h-20 rounded-full flex items-center justify-center"
-            style={{ background: 'rgba(255,69,0,0.15)', border: '2px solid rgba(255,69,0,0.4)' }}>
-            <svg viewBox="0 0 24 24" className="w-10 h-10" fill="rgba(255,69,0,0.9)"><path d="M8 5v14l11-7z"/></svg>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'linear-gradient(135deg, #1a1a2e, #16213e, #0f3460)' }}>
+          <div style={{ width: 80, height: 80, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,69,0,0.15)', border: '2px solid rgba(255,69,0,0.4)' }}>
+            <svg viewBox="0 0 24 24" style={{ width: 40, height: 40 }} fill="rgba(255,69,0,0.9)"><path d="M8 5v14l11-7z"/></svg>
           </div>
-          {title && <p className="text-white/70 text-xs text-center px-6 line-clamp-2 max-w-[200px]">{title}</p>}
+          {title && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, textAlign: 'center', padding: '0 24px', maxWidth: 200 }}>{title}</p>}
         </div>
       )}
-      {hasThumbnail && <div className="absolute inset-0 bg-black/20" />}
+      {hasThumbnail && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.2)' }} />}
       {externalUrl && (
         <a href={externalUrl} target="_blank" rel="noopener noreferrer"
-          className="absolute inset-0 flex items-center justify-center" onClick={e => e.stopPropagation()}>
+          style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={e => e.stopPropagation()}>
           {hasThumbnail && (
-            <div className="w-16 h-16 rounded-full flex items-center justify-center shadow-xl"
-              style={{ background: 'rgba(255,69,0,0.85)', backdropFilter: 'blur(4px)' }}>
-              <svg viewBox="0 0 24 24" className="w-8 h-8 ml-1" fill="white"><path d="M8 5v14l11-7z"/></svg>
+            <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(255,69,0,0.85)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
+              <svg viewBox="0 0 24 24" style={{ width: 32, height: 32, marginLeft: 4 }} fill="white"><path d="M8 5v14l11-7z"/></svg>
             </div>
           )}
         </a>
       )}
-      <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-white text-xs font-bold backdrop-blur-sm"
-        style={{ background: 'rgba(255,69,0,0.85)' }}>
-        <svg viewBox="0 0 20 20" className="w-3.5 h-3.5" fill="currentColor">
-          <path d="M10 0C4.478 0 0 4.478 0 10c0 5.523 4.478 10 10 10 5.523 0 10-4.477 10-10C20 4.478 15.523 0 10 0zm6.4 10.8c.04.27.06.55.06.83 0 3.26-4.33 5.9-9.66 5.9C1.5 17.53 0 15.32 0 13.32c0-.28.02-.56.06-.83-.66-.3-1.06-.93-1.06-1.6 0-1.06.86-1.92 1.92-1.92.52 0 .98.2 1.33.52 1.3-.88 3.07-1.44 5.04-1.5l.9-4.05.1-.02 2.72.57c.18-.43.62-.74 1.13-.74.68 0 1.23.55 1.23 1.23 0 .68-.55 1.23-1.23 1.23-.67 0-1.22-.54-1.23-1.2l-2.4-.5-.8 3.56c1.94.07 3.68.63 4.97 1.5.34-.32.8-.52 1.3-.52 1.06 0 1.92.86 1.92 1.92 0 .67-.4 1.3-1.06 1.6z"/>
-        </svg>
+      <div style={{ position: 'absolute', top: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 9999, background: 'rgba(255,69,0,0.85)', backdropFilter: 'blur(4px)', color: 'white', fontSize: 11, fontWeight: 700 }}>
         Reddit
       </div>
-      {externalUrl && !hasThumbnail && (
-        <a href={externalUrl} target="_blank" rel="noopener noreferrer"
-          className="absolute bottom-4 flex items-center gap-2 px-4 py-2 rounded-full text-white text-xs font-semibold"
-          style={{ background: 'rgba(255,69,0,0.85)', backdropFilter: 'blur(4px)' }}
-          onClick={e => e.stopPropagation()}>
-          <FaExternalLinkAlt className="text-xs" /> Voir sur Reddit
-        </a>
-      )}
     </div>
   );
 });
@@ -392,13 +300,9 @@ HLSItem.displayName = 'HLSItem';
 // ─────────────────────────────────────────────
 // VIDEO ITEM
 // ─────────────────────────────────────────────
-const VideoItem = React.memo(({
-  url, posterUrl, isLCP, isActive, isMuted,
-  toggleMuteRef, slotIndex,
-  videoRefCallback, showBadge = true,
-}) => {
-  const videoRef    = useRef(null);
-  const videoUrls   = useMemo(() => getVideoUrls(url), [url]);
+const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, toggleMuteRef, slotIndex, videoRefCallback, showBadge = true }) => {
+  const videoRef  = useRef(null);
+  const videoUrls = useMemo(() => getVideoUrls(url), [url]);
 
   const [currentSrc,    setCurrentSrc]    = useState(() => videoUrls.proxy || videoUrls.direct);
   const [videoError,    setVideoError]    = useState(false);
@@ -406,123 +310,61 @@ const VideoItem = React.memo(({
   const [posterVisible, setPosterVisible] = useState(true);
   const [hasInteracted, setHasInteracted] = useState(false);
 
-  const playAttempted  = useRef(false);
-  const fallbackTimer  = useRef(null);
-
+  const playAttempted = useRef(false);
+  const fallbackTimer = useRef(null);
   const useCrossOrigin  = useMemo(() => needsCrossOrigin(url), [url]);
-  const preloadStrategy = useMemo(() => {
-    if (isLCP) return 'auto';
-    if (isExternalVideo(url)) return 'auto';
-    return 'metadata';
-  }, [isLCP, url]);
+  const preloadStrategy = useMemo(() => { if (isLCP || isExternalVideo(url)) return 'auto'; return 'metadata'; }, [isLCP, url]);
+
+  useEffect(() => () => clearTimeout(fallbackTimer.current), []);
+
+  const setVideoRef = useCallback((el) => { videoRef.current = el; videoRefCallback?.(el); }, [videoRefCallback]);
 
   useEffect(() => {
-    return () => { clearTimeout(fallbackTimer.current); };
-  }, []);
-
-  const setVideoRef = useCallback((el) => {
-    videoRef.current = el;
-    videoRefCallback?.(el);
-  }, [videoRefCallback]);
-
-  useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid || hasInteracted) return;
-    vid.muted  = isMuted;
-    vid.volume = isMuted ? 0 : 1;
+    const vid = videoRef.current; if (!vid || hasInteracted) return;
+    vid.muted = isMuted; vid.volume = isMuted ? 0 : 1;
   }, [isMuted, hasInteracted]);
 
   useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid) return;
-
+    const vid = videoRef.current; if (!vid) return;
     if (isActive) {
-      vid.muted  = true;
-      vid.volume = 0;
-      setHasInteracted(false);
-      setVideoError(false);
-
-      const tryPlay = () => {
-        if (playAttempted.current) return;
-        playAttempted.current = true;
-        vid.play().catch(() => {});
-      };
-      tryPlay();
-
-      fallbackTimer.current = setTimeout(() => {
-        if (vid && vid.paused) { vid.muted = true; vid.volume = 0; vid.play().catch(() => {}); }
-      }, 1500);
+      vid.muted = true; vid.volume = 0;
+      setHasInteracted(false); setVideoError(false);
+      if (!playAttempted.current) { playAttempted.current = true; vid.play().catch(() => {}); }
+      fallbackTimer.current = setTimeout(() => { if (vid?.paused) { vid.muted = true; vid.volume = 0; vid.play().catch(() => {}); } }, 1500);
     } else {
       clearTimeout(fallbackTimer.current);
-      playAttempted.current = false;
-      setHasInteracted(false);
-      vid.pause();
-      vid.currentTime = 0;
-      setIsPlaying(false);
-      setPosterVisible(true);
+      playAttempted.current = false; setHasInteracted(false);
+      vid.pause(); vid.currentTime = 0;
+      setIsPlaying(false); setPosterVisible(true);
     }
-
-    return () => { clearTimeout(fallbackTimer.current); };
+    return () => clearTimeout(fallbackTimer.current);
   }, [isActive]); // eslint-disable-line
 
   useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid || !isActive) return;
-    const obs = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting && entry.intersectionRatio >= 0.1) {
-        playAttempted.current = false;
-        vid.muted = true; vid.volume = 0;
-        vid.play().catch(() => {});
-      } else {
-        vid.pause();
-      }
+    const vid = videoRef.current; if (!vid || !isActive) return;
+    const obs = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting && e.intersectionRatio >= 0.1) { playAttempted.current = false; vid.muted = true; vid.volume = 0; vid.play().catch(() => {}); }
+      else vid.pause();
     }, { threshold: [0.1, 0.5] });
     obs.observe(vid);
     return () => obs.disconnect();
   }, [isActive]);
 
-  const handlePlay = useCallback(() => {
-    const vid = videoRef.current;
-    if (vid) registerPlayingVideo(vid);
-    setIsPlaying(true);
-    setPosterVisible(false);
-  }, []);
-
-  const handlePause = useCallback(() => { setIsPlaying(false); }, []);
-
+  const handlePlay  = useCallback(() => { registerPlayingVideo(videoRef.current); setIsPlaying(true); setPosterVisible(false); }, []);
+  const handlePause = useCallback(() => setIsPlaying(false), []);
   const handleError = useCallback(() => {
     const { proxy, direct } = videoUrls;
-    if (currentSrc === proxy && direct) {
-      setCurrentSrc(direct);
-      const vid = videoRef.current;
-      if (vid) { vid.load(); if (isActive) vid.play().catch(() => {}); }
-      return;
-    }
-    if (proxy && !direct) {
-      setVideoError(true);
-      setPosterVisible(false);
-      return;
-    }
-    setVideoError(true);
-    setPosterVisible(false);
+    if (currentSrc === proxy && direct) { setCurrentSrc(direct); const v = videoRef.current; if (v) { v.load(); if (isActive) v.play().catch(() => {}); } return; }
+    setVideoError(true); setPosterVisible(false);
   }, [videoUrls, currentSrc, isActive]);
 
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
-    const vid = videoRef.current;
-    if (!vid) return;
-    const newMuted = !vid.muted;
-    vid.muted  = newMuted;
-    vid.volume = newMuted ? 0 : 1;
+    const vid = videoRef.current; if (!vid) return;
+    const newMuted = !vid.muted; vid.muted = newMuted; vid.volume = newMuted ? 0 : 1;
     setHasInteracted(true);
     if (!newMuted && vid.paused) {
-      vid.play()
-        .then(() => { toggleMuteRef?.current?.(slotIndex, false); })
-        .catch(() => {
-          vid.muted  = true;
-          vid.volume = 0;
-          toggleMuteRef?.current?.(slotIndex, true);
-        });
+      vid.play().then(() => toggleMuteRef?.current?.(slotIndex, false)).catch(() => { vid.muted = true; vid.volume = 0; toggleMuteRef?.current?.(slotIndex, true); });
       return;
     }
     toggleMuteRef?.current?.(slotIndex, newMuted);
@@ -530,74 +372,45 @@ const VideoItem = React.memo(({
 
   const showSoundBadge = isActive && isPlaying && isMuted && !hasInteracted;
 
-  if (videoError) {
-    return (
-      // ✅ FIX : absolute inset-0
-      <div className="absolute inset-0 bg-gray-900 flex flex-col items-center justify-center gap-3">
-        {posterUrl && <img src={posterUrl} alt="" className="absolute inset-0 w-full h-full object-cover opacity-30" />}
-        <div className="relative z-10 flex flex-col items-center gap-2">
-          <div className="text-gray-400 text-4xl">📹</div>
-          <p className="text-gray-400 text-xs">Vidéo indisponible</p>
-        </div>
+  if (videoError) return (
+    <div style={{ position: 'absolute', inset: 0, background: '#111', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+      {posterUrl && <img src={posterUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3 }} />}
+      <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontSize: 40 }}>📹</div>
+        <p style={{ color: '#666', fontSize: 12 }}>Vidéo indisponible</p>
       </div>
-    );
-  }
+    </div>
+  );
 
   return (
-    // ✅ FIX : absolute inset-0 au lieu de relative w-full h-full
-    <div className="absolute inset-0 bg-black flex items-center justify-center">
-      <video
-        ref={setVideoRef}
-        src={currentSrc}
-        className="w-full h-full"
-        style={{ objectFit: 'contain' }}
-        preload={preloadStrategy}
-        playsInline
-        loop
+    <div style={{ position: 'absolute', inset: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <video ref={setVideoRef} src={currentSrc}
+        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
+        preload={preloadStrategy} playsInline loop
         crossOrigin={useCrossOrigin ? 'anonymous' : undefined}
-        onPlay={handlePlay}
-        onPause={handlePause}
-        onError={handleError}
-      />
+        onPlay={handlePlay} onPause={handlePause} onError={handleError} />
 
-      {posterUrl && !videoError && (
-        <img
-          src={posterUrl} alt=""
-          className="absolute inset-0 w-full h-full pointer-events-none"
-          style={{
-            objectFit:  'cover',
-            zIndex:     posterVisible ? 2 : -1,
-            opacity:    isLCP ? 1 : (posterVisible ? 1 : 0),
-            transition: isLCP ? 'none' : 'opacity 0.3s ease',
-          }}
-          loading={isLCP ? 'eager' : 'lazy'}
-          fetchpriority={isLCP ? 'high' : 'auto'}
-          decoding={isLCP ? 'sync' : 'async'}
-          draggable="false"
-        />
+      {posterUrl && (
+        <img src={posterUrl} alt=""
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none',
+            zIndex: posterVisible ? 2 : -1, opacity: isLCP ? 1 : (posterVisible ? 1 : 0), transition: isLCP ? 'none' : 'opacity 0.3s ease' }}
+          loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'} draggable="false" />
       )}
 
       {showBadge && <VideoSourceBadge url={url} />}
 
       {isActive && (
-        <button
-          onClick={handleMuteClick}
-          className="absolute bottom-3 right-3 z-20 w-9 h-9 rounded-full bg-black/60 backdrop-blur-md border border-white/20 flex items-center justify-center text-white transition-transform active:scale-90"
-          style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
-          aria-label={isMuted ? 'Activer le son' : 'Couper le son'}
-        >
-          {isMuted ? <FaVolumeMute className="text-sm" /> : <FaVolumeUp className="text-sm" />}
+        <button onClick={handleMuteClick}
+          style={{ position: 'absolute', bottom: 12, right: 12, zIndex: 20, width: 36, height: 36, borderRadius: '50%', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.2)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
+          aria-label={isMuted ? 'Activer le son' : 'Couper le son'}>
+          {isMuted ? <FaVolumeMute style={{ fontSize: 14 }} /> : <FaVolumeUp style={{ fontSize: 14 }} />}
         </button>
       )}
 
       {showSoundBadge && (
-        <button
-          onClick={handleMuteClick}
-          className="absolute bottom-3 left-3 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/70 backdrop-blur-md border border-white/20 text-white text-xs font-semibold transition-all active:scale-95"
-          style={{ touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
-        >
-          <FaVolumeUp className="text-xs" />
-          Appuyer pour le son
+        <button onClick={handleMuteClick}
+          style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 20, display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 9999, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.2)', color: 'white', fontSize: 12, fontWeight: 600, cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}>
+          <FaVolumeUp style={{ fontSize: 12 }} /> Appuyer pour le son
         </button>
       )}
     </div>
@@ -611,85 +424,51 @@ VideoItem.displayName = 'VideoItem';
 const ImageItem = React.memo(({ url, isLCP }) => {
   const [loaded, setLoaded] = useState(isLCP);
   return (
-    // ✅ FIX : absolute inset-0
-    <div className="absolute inset-0 bg-black flex items-center justify-center">
-      {!loaded && !isLCP && <div className="absolute inset-0 bg-gray-900 animate-pulse" />}
-      <img
-        src={url} alt=""
-        className="w-full h-full"
-        style={{
-          objectFit:  'contain',
-          opacity:    isLCP ? 1 : (loaded ? 1 : 0),
-          transition: isLCP ? 'none' : 'opacity 0.2s ease',
-          userSelect: 'none',
-          display:    'block',
-        }}
-        loading={isLCP ? 'eager' : 'lazy'}
-        fetchpriority={isLCP ? 'high' : 'low'}
-        decoding={isLCP ? 'sync' : 'async'}
-        onLoad={()  => setLoaded(true)}
-        onError={() => setLoaded(true)}
-        draggable="false"
-      />
+    <div style={{ position: 'absolute', inset: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {!loaded && !isLCP && <div style={{ position: 'absolute', inset: 0, background: '#111' }} />}
+      <img src={url} alt=""
+        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', userSelect: 'none',
+          opacity: isLCP ? 1 : (loaded ? 1 : 0), transition: isLCP ? 'none' : 'opacity 0.2s ease' }}
+        loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'}
+        onLoad={() => setLoaded(true)} onError={() => setLoaded(true)} draggable="false" />
     </div>
   );
 });
 ImageItem.displayName = 'ImageItem';
 
 // ─────────────────────────────────────────────
-// RÉSOUDRE LE TYPE DE SLOT
-// ─────────────────────────────────────────────
-const resolveSlotType = (url, postMediaType = null) => {
-  if (!url) return 'unknown';
-  if (postMediaType === 'youtube') return 'embed';
-  if (isEmbedUrl(url))                         return 'embed';
-  if (isHLSUrl(url))                           return 'hls';
-  if (isVideoUrl(url) || isExternalVideo(url)) return 'video';
-  return 'image';
-};
-
-// ─────────────────────────────────────────────
-// POST MEDIA — composant principal
+// POST MEDIA
 //
-// ✅ FIX v12 — Architecture des slides corrigée :
+// ✅ FIX v13 — Architecture définitive :
 //
-// AVANT (bugué) :
-//   containerRef = div relative, height = slotH (carré calculé)
-//   wrapper flex = width: total*100%, height: slotH
-//   chaque slide = width: 100/total %, height: slotH  ← le % était relatif au flex parent élargi
-//   VideoItem/ImageItem = w-full h-full  ← h-full cherche une hauteur explicite sur le parent
+//   PROBLÈME contain:layout :
+//     PostCardInner a contain:"layout style". Sur Safari iOS et Samsung Internet,
+//     ce contain crée un contexte de formatage isolé. Dans ce contexte, height:100%
+//     sur un enfant dont le parent flex a width > 100vw (multi-slides) ne se résout
+//     PAS car le navigateur ne peut pas remonter la chaîne de hauteur à travers
+//     le contain boundary pour les éléments hors-écran.
 //
-//   Sur slide 1 : le navigateur trouvait la hauteur car c'est le premier élément visible
-//   Sur slide 2+ : le div flex avait translateX(-100%), les enfants avaient une hauteur
-//                  ambiguë → certains navigateurs (surtout mobile) rendaient 0 → NOIR
-//
-// APRÈS (corrigé) :
-//   containerRef = div relative, height = slotH, overflow: hidden
-//   wrapper flex = width: total*100%, height: 100%  ← 100% du container parent = slotH
-//   chaque slide = position: relative, width: 100/total%, height: 100%  ← 100% du flex = slotH
-//   VideoItem/ImageItem = position: absolute, inset: 0  ← s'adapte exactement au slide
-//
-//   Résultat : chaque slide a une hauteur GARANTIE quelle que soit sa position dans le flex
+//   SOLUTION :
+//     Toutes les hauteurs sont exprimées en px (slotH) et non en %.
+//     Le wrapper flex a height: slotH (px).
+//     Chaque slide a height: slotH (px).
+//     Les enfants (VideoItem, ImageItem, EmbedItem) ont position:absolute inset:0
+//     mais leur parent a une hauteur px garantie non-nulle dans tous les cas.
+//     → Plus aucune ambiguïté CSS quelle que soit la propriété contain du parent.
 // ─────────────────────────────────────────────
 const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
   const autoGenerated = !!post?.autoGenerated;
   const showBadge     = !autoGenerated;
 
   const safeMediaUrls = useMemo(() => {
-    const seen = new Set();
-    const result = [];
+    const seen = new Set(); const result = [];
     const add = (url) => {
       if (!url || typeof url !== 'string') return;
-      if (url.startsWith('blob:')) {
-        if (!seen.has(url)) { seen.add(url); result.push(url); }
-        return;
-      }
-      if (url.includes('videos.pexels.com')) return;
-      if (url.includes('cdn.pixabay.com/video')) return;
+      if (url.startsWith('blob:')) { if (!seen.has(url)) { seen.add(url); result.push(url); } return; }
+      if (url.includes('videos.pexels.com') || url.includes('cdn.pixabay.com/video')) return;
       if (!url.startsWith('data:') && !isStructurallyValid(url)) return;
       if (!seen.has(url)) { seen.add(url); result.push(url); }
     };
-
     if (Array.isArray(mediaUrls)) mediaUrls.filter(Boolean).forEach(add);
     if (post?.embedUrl)  add(post.embedUrl);
     if (post?.videoUrl)  add(post.videoUrl);
@@ -702,14 +481,14 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const [index,      setIndex]      = useState(0);
   const [isMutedMap, setIsMutedMap] = useState({});
 
-  const toggleMuteRef  = useRef(null);
-  const isMutedMapRef  = useRef({});
-  const videoRefsMap   = useRef({});
-  const containerRef   = useRef(null);
-  const touch          = useRef({ x: 0, y: 0, time: 0 });
-  const dirRef         = useRef(null);
-  const isDragging     = useRef(false);
-  const preloadImgRef  = useRef(null);
+  const toggleMuteRef = useRef(null);
+  const isMutedMapRef = useRef({});
+  const videoRefsMap  = useRef({});
+  const containerRef  = useRef(null);
+  const touch         = useRef({ x: 0, y: 0, time: 0 });
+  const dirRef        = useRef(null);
+  const isDragging    = useRef(false);
+  const preloadImgRef = useRef(null);
 
   const isLCPSlot = isFirstPost || priority;
 
@@ -733,28 +512,20 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   useEffect(() => {
     const initial = {};
     urls.forEach((_, i) => { if (slotTypes[i] === 'video') initial[i] = true; });
-    isMutedMapRef.current = initial;
-    setIsMutedMap(initial);
+    isMutedMapRef.current = initial; setIsMutedMap(initial);
   }, [urls.length]); // eslint-disable-line
 
   useEffect(() => {
     toggleMuteRef.current = (i, newMuted) => {
       const vid = videoRefsMap.current[i];
       if (vid) {
-        vid.muted  = newMuted;
-        vid.volume = newMuted ? 0 : 1;
+        vid.muted = newMuted; vid.volume = newMuted ? 0 : 1;
         if (!newMuted && vid.paused) {
-          vid.play().catch(() => {
-            vid.muted  = true;
-            vid.volume = 0;
-            isMutedMapRef.current = { ...isMutedMapRef.current, [i]: true };
-            setIsMutedMap(prev => ({ ...prev, [i]: true }));
-            return;
-          });
+          vid.play().catch(() => { vid.muted = true; vid.volume = 0; isMutedMapRef.current = {...isMutedMapRef.current,[i]:true}; setIsMutedMap(p=>({...p,[i]:true})); return; });
         }
       }
-      isMutedMapRef.current = { ...isMutedMapRef.current, [i]: newMuted };
-      setIsMutedMap(prev => ({ ...prev, [i]: newMuted }));
+      isMutedMapRef.current = {...isMutedMapRef.current,[i]:newMuted};
+      setIsMutedMap(p=>({...p,[i]:newMuted}));
     };
   });
 
@@ -762,148 +533,101 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     const next = urls[index + 1];
     if (next && slotTypes[index + 1] === 'video') preloadVideo(next);
     if (total > 1) {
-      const nextUrl = urls[(index + 1) % total];
-      if (slotTypes[(index + 1) % total] === 'image' && nextUrl && !nextUrl.startsWith('data:')) {
+      const nu = urls[(index + 1) % total];
+      if (slotTypes[(index + 1) % total] === 'image' && nu && !nu.startsWith('data:')) {
         if (preloadImgRef.current) { preloadImgRef.current.src = ''; preloadImgRef.current = null; }
-        const img = new Image(); img.src = nextUrl;
-        preloadImgRef.current = img;
+        const img = new Image(); img.src = nu; preloadImgRef.current = img;
       }
     }
     return () => { if (preloadImgRef.current) { preloadImgRef.current.src = ''; preloadImgRef.current = null; } };
   }, [index, urls, slotTypes, total]);
 
   const registerVideoRef = useCallback((i) => (el) => {
-    if (el) videoRefsMap.current[i] = el;
-    else    delete videoRefsMap.current[i];
+    if (el) videoRefsMap.current[i] = el; else delete videoRefsMap.current[i];
   }, []);
 
-  // ✅ Swipe handler — inchangé (fonctionnait déjà)
+  // ✅ Swipe
   useEffect(() => {
     if (total <= 1) return;
-    const el = containerRef.current;
-    if (!el) return;
-
-    const SWIPE_THRESHOLD = 40;
-    const TIME_THRESHOLD  = 500;
-    const DIR_THRESHOLD   = 8;
-
+    const el = containerRef.current; if (!el) return;
+    const SWIPE_THRESHOLD = 40, TIME_THRESHOLD = 500, DIR_THRESHOLD = 8;
     let lastMoveY = 0;
-
-    const onStart = e => {
-      const t = e.touches?.[0] || e;
-      touch.current = { x: t.clientX, y: t.clientY, time: Date.now() };
-      lastMoveY = t.clientY;
-      dirRef.current    = null;
-      isDragging.current = true;
+    const onStart = e => { const t=e.touches?.[0]||e; touch.current={x:t.clientX,y:t.clientY,time:Date.now()}; lastMoveY=t.clientY; dirRef.current=null; isDragging.current=true; };
+    const onMove  = e => {
+      if (!isDragging.current||!touch.current.x) return;
+      const t=e.touches?.[0]||e, dx=t.clientX-touch.current.x, dy=t.clientY-touch.current.y;
+      if (dirRef.current===null&&(Math.abs(dx)>DIR_THRESHOLD||Math.abs(dy)>DIR_THRESHOLD)) dirRef.current=Math.abs(dx)>Math.abs(dy)?'h':'v';
+      if (dirRef.current==='h') { if(e.cancelable) try{e.preventDefault()}catch{} }
+      else if (dirRef.current==='v') { window.scrollBy({top:lastMoveY-t.clientY,behavior:'instant'}); lastMoveY=t.clientY; }
     };
-
-    const onMove = e => {
-      if (!isDragging.current || !touch.current.x) return;
-      const t  = e.touches?.[0] || e;
-      const dx = t.clientX - touch.current.x;
-      const dy = t.clientY - touch.current.y;
-
-      if (dirRef.current === null && (Math.abs(dx) > DIR_THRESHOLD || Math.abs(dy) > DIR_THRESHOLD)) {
-        dirRef.current = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
-      }
-
-      if (dirRef.current === 'h') {
-        if (e.cancelable) try { e.preventDefault(); } catch {}
-      } else if (dirRef.current === 'v') {
-        const deltaY = lastMoveY - t.clientY;
-        window.scrollBy({ top: deltaY, behavior: 'instant' });
-        lastMoveY = t.clientY;
-      }
-    };
-
     const onEnd = e => {
-      if (!isDragging.current || !touch.current.x) return;
-      const t       = e.changedTouches?.[0] || e;
-      const dx      = touch.current.x - t.clientX;
-      const elapsed = Date.now() - touch.current.time;
-
-      if (dirRef.current === 'h' && Math.abs(dx) > SWIPE_THRESHOLD && elapsed < TIME_THRESHOLD) {
-        setIndex(prev => dx > 0 ? (prev + 1) % total : (prev - 1 + total) % total);
-      }
-
-      touch.current      = { x: 0, y: 0, time: 0 };
-      dirRef.current     = null;
-      isDragging.current = false;
-      lastMoveY          = 0;
+      if (!isDragging.current||!touch.current.x) return;
+      const t=e.changedTouches?.[0]||e, dx=touch.current.x-t.clientX, elapsed=Date.now()-touch.current.time;
+      if (dirRef.current==='h'&&Math.abs(dx)>SWIPE_THRESHOLD&&elapsed<TIME_THRESHOLD) setIndex(p=>dx>0?(p+1)%total:(p-1+total)%total);
+      touch.current={x:0,y:0,time:0}; dirRef.current=null; isDragging.current=false; lastMoveY=0;
     };
-
-    el.addEventListener('touchstart', onStart, { passive: true });
-    el.addEventListener('touchmove',  onMove,  { passive: false });
-    el.addEventListener('touchend',   onEnd,   { passive: true });
-    el.addEventListener('mousedown',  onStart);
-    el.addEventListener('mousemove',  onMove);
-    el.addEventListener('mouseup',    onEnd);
-    el.addEventListener('mouseleave', onEnd);
-
-    return () => {
-      el.removeEventListener('touchstart', onStart);
-      el.removeEventListener('touchmove',  onMove);
-      el.removeEventListener('touchend',   onEnd);
-      el.removeEventListener('mousedown',  onStart);
-      el.removeEventListener('mousemove',  onMove);
-      el.removeEventListener('mouseup',    onEnd);
-      el.removeEventListener('mouseleave', onEnd);
-    };
+    el.addEventListener('touchstart',onStart,{passive:true}); el.addEventListener('touchmove',onMove,{passive:false}); el.addEventListener('touchend',onEnd,{passive:true});
+    el.addEventListener('mousedown',onStart); el.addEventListener('mousemove',onMove); el.addEventListener('mouseup',onEnd); el.addEventListener('mouseleave',onEnd);
+    return () => { el.removeEventListener('touchstart',onStart); el.removeEventListener('touchmove',onMove); el.removeEventListener('touchend',onEnd); el.removeEventListener('mousedown',onStart); el.removeEventListener('mousemove',onMove); el.removeEventListener('mouseup',onEnd); el.removeEventListener('mouseleave',onEnd); };
   }, [total]);
 
-  const goPrev = useCallback(() => setIndex(i => (i - 1 + total) % total), [total]);
-  const goNext = useCallback(() => setIndex(i => (i + 1) % total),         [total]);
+  const goPrev = useCallback(() => setIndex(i=>(i-1+total)%total), [total]);
+  const goNext = useCallback(() => setIndex(i=>(i+1)%total),       [total]);
 
-  // ✅ FIX HAUTEUR — slotH = largeur du container (aspect carré)
+  // ✅ FIX v13 : slotH en px — mesure la VRAIE largeur du container
   const [slotH, setSlotH] = useState(0);
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const update = () => setSlotH(el.offsetWidth);
+    const el = containerRef.current; if (!el) return;
+    // getBoundingClientRect pour contourner contain:layout qui peut affecter offsetWidth
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      const w = rect.width || el.offsetWidth || el.clientWidth;
+      if (w > 0) setSlotH(w);
+    };
     update();
-    const ro = new ResizeObserver(update);
+    const ro = new ResizeObserver(() => update());
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // ✅ Ne rien rendre tant que la hauteur n'est pas calculée (évite flash noir)
+  // Placeholder pendant le calcul de la hauteur
   if (slotH === 0) {
     return (
-      <div
-        ref={containerRef}
-        className="w-full bg-black"
-        style={{ aspectRatio: '1/1' }}
-      />
+      <div ref={containerRef} style={{ width: '100%', aspectRatio: '1/1', background: '#000' }} />
     );
   }
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full bg-black overflow-hidden select-none"
       style={{
-        // ✅ Hauteur explicite = largeur (carré), jamais 0
-        height:      slotH,
-        cursor:      total > 1 ? 'grab' : 'default',
+        position:   'relative',
+        width:      '100%',
+        // ✅ FIX v13 : hauteur px explicite — pas de % qui dépend de contain:layout
+        height:     slotH,
+        background: '#000',
+        overflow:   'hidden',
+        userSelect: 'none',
+        cursor:     total > 1 ? 'grab' : 'default',
         touchAction: total > 1 ? 'none' : 'pan-y pinch-zoom',
       }}
     >
       {/*
-        ✅ FIX v12 — wrapper flex :
-          width = total * 100% (pour le défilement)
-          height = 100%        ← hérite de slotH du parent → GARANTI non-nul
-          (avant : height: slotH en px → les slides calculaient leur % sur leur
-           propre taille relative, donnant des valeurs incohérentes sur mobile)
+        ✅ FIX v13 — wrapper flex :
+          width  = total * 100% (défilement horizontal)
+          height = slotH px    ← valeur absolue, indépendante de contain:layout
+          Chaque slide = width: (slotH)px, height: slotH px → dimensions garanties
       */}
       <div
         style={{
           position:      'absolute',
-          top:    0,
-          left:   0,
+          top:           0,
+          left:          0,
           display:       'flex',
           flexDirection: 'row',
           width:         `${total * 100}%`,
-          height:        '100%',            // ← FIX CLEF
+          // ✅ FIX CLÉ : px au lieu de % → ne dépend pas du contain du parent
+          height:        slotH,
           transform:     `translateX(-${index * (100 / total)}%)`,
           transition:    'transform 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
           willChange:    total > 1 ? 'transform' : 'auto',
@@ -916,48 +640,29 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
           const embedThumbnail = post?.thumbnail || getYouTubeThumbnail(url);
 
           return (
-            /*
-              ✅ FIX v12 — chaque slide :
-                width  = 100% / total  (chaque slide occupe une fraction du flex)
-                height = 100%          (hérite du flex parent = slotH garanti)
-                position: relative     (pour que les enfants absolute inset-0 fonctionnent)
-            */
             <div
               key={i}
               style={{
+                // ✅ FIX CLÉ : width et height en px, pas en %
+                // Sur Safari iOS avec contain:layout, width:X% sur un flex child
+                // dont le parent a width:300% peut donner des valeurs incorrectes
+                // pour height:100% des petits-enfants.
+                // En px : pas d'ambiguïté, la hauteur est TOUJOURS slotH.
                 position:   'relative',
                 flexShrink: 0,
-                width:      `${100 / total}%`,
-                height:     '100%',   // ← FIX CLEF — avant: slotH px (cassait sur mobile)
+                width:      slotH,       // carré : largeur = hauteur = slotH
+                height:     slotH,       // ← FIX CLÉ : px garanti
                 background: '#000',
                 overflow:   'hidden',
               }}
             >
               {slotType === 'embed' ? (
-                <EmbedItem
-                  url={url}
-                  thumbnail={embedThumbnail}
-                  title={post?.content?.substring(0, 60)}
-                  showBadge={showBadge}
-                />
+                <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge={showBadge} slotH={slotH} />
               ) : slotType === 'hls' ? (
-                <HLSItem
-                  thumbnail={post?.thumbnail}
-                  externalUrl={post?.sourceUrl}
-                  title={post?.content?.substring(0, 60)}
-                />
+                <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
               ) : slotType === 'video' ? (
-                <VideoItem
-                  url={url}
-                  posterUrl={posterUrls[i]}
-                  isLCP={isLCP}
-                  isActive={i === index}
-                  isMuted={isMuted}
-                  toggleMuteRef={toggleMuteRef}
-                  slotIndex={i}
-                  videoRefCallback={registerVideoRef(i)}
-                  showBadge={showBadge}
-                />
+                <VideoItem url={url} posterUrl={posterUrls[i]} isLCP={isLCP} isActive={i === index} isMuted={isMuted}
+                  toggleMuteRef={toggleMuteRef} slotIndex={i} videoRefCallback={registerVideoRef(i)} showBadge={showBadge} />
               ) : (
                 <ImageItem url={url} isLCP={isLCP} />
               )}
@@ -969,50 +674,29 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       {/* NAVIGATION */}
       {total > 1 && (
         <>
-          {/* Tap zones mobile */}
-          <div className="absolute inset-y-0 left-0  w-16 sm:hidden z-10" onClick={goPrev} />
-          <div className="absolute inset-y-0 right-0 w-16 sm:hidden z-10" onClick={goNext} />
+          <div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 64 }} className="sm:hidden" onClick={goPrev} />
+          <div style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: 64 }} className="sm:hidden" onClick={goNext} />
 
-          {/* Flèches desktop */}
-          <button onClick={goPrev}
-            className="hidden sm:flex absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/70 text-white p-3 rounded-full z-10"
+          <button onClick={goPrev} className="hidden sm:flex"
+            style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.5)', color: 'white', border: 'none', borderRadius: '50%', width: 44, height: 44, cursor: 'pointer', display: 'none', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}
             aria-label="Précédent">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
+            <svg style={{ width: 24, height: 24 }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
           </button>
-          <button onClick={goNext}
-            className="hidden sm:flex absolute right-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/70 text-white p-3 rounded-full z-10"
+          <button onClick={goNext} className="hidden sm:flex"
+            style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.5)', color: 'white', border: 'none', borderRadius: '50%', width: 44, height: 44, cursor: 'pointer', display: 'none', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}
             aria-label="Suivant">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
+            <svg style={{ width: 24, height: 24 }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
           </button>
 
-          {/* Dots indicateurs */}
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5 z-10">
+          <div style={{ position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 6, zIndex: 10 }}>
             {urls.map((_, i) => (
-              <button
-                key={i}
-                onClick={() => setIndex(i)}
-                style={{
-                  width:           i === index ? 20 : 8,
-                  height:          8,
-                  borderRadius:    4,
-                  backgroundColor: i === index ? 'white' : 'rgba(255,255,255,0.5)',
-                  transition:      'width 0.2s ease, background-color 0.2s ease',
-                  border:          'none',
-                  padding:         0,
-                  cursor:          'pointer',
-                  touchAction:     'manipulation',
-                }}
-                aria-label={`Aller à l'image ${i + 1}`}
-              />
+              <button key={i} onClick={() => setIndex(i)}
+                style={{ width: i === index ? 20 : 8, height: 8, borderRadius: 4, background: i === index ? 'white' : 'rgba(255,255,255,0.5)', border: 'none', padding: 0, cursor: 'pointer', touchAction: 'manipulation', transition: 'width 0.2s ease, background-color 0.2s ease' }}
+                aria-label={`Aller à l'image ${i + 1}`} />
             ))}
           </div>
 
-          {/* Compteur */}
-          <div className="absolute top-3 right-3 bg-black/60 text-white px-2.5 py-1 rounded-full text-xs font-semibold z-10">
+          <div style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 10px', borderRadius: 9999, fontSize: 12, fontWeight: 600, zIndex: 10 }}>
             {index + 1}/{total}
           </div>
         </>

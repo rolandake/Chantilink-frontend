@@ -1,555 +1,453 @@
-// 📁 src/pages/Videos/VideoCard.jsx
+// src/pages/Videos/VideoCard.jsx
 //
-// 🔥 FIX SAUTS VIDÉOS MANUELLES (ce commit) :
-//
-//   CAUSE : src={video.videoUrl || video.url} est une prop React sur <video>.
-//   Quand isActive change (false → true) ou qu'un parent re-rend VideoCard,
-//   React re-set l'attribut src sur le DOM. Même si la valeur est identique,
-//   Chrome mobile (et Safari) interprètent tout setAttribute('src', ...)
-//   comme un reset de la source → currentTime = 0 → saut visible au début.
-//
-//   La prop preload qui passe de "none" → "auto" aggrave le problème :
-//   deux attributs bougent simultanément = garantie de reset sur Chrome.
-//
-//   FIX A : src injecté manuellement via useEffect + srcRef.
-//           Ne passer JAMAIS src= en prop JSX → React ne touche plus jamais
-//           cet attribut → zéro reset DOM.
-//
-//   FIX B : preload="auto" fixe dans le JSX.
-//           Le throttle des requêtes est géré par VIRTUAL_WINDOW=1 dans
-//           VideosPage (3 slides max dans le DOM).
-//
-//   FIX C : loop ajouté → la vidéo boucle nativement.
-//           onVideoEnded + handleEnded supprimés (scroll auto déjà retiré).
-//
-// 🔥 FIXES PRÉCÉDENTS CONSERVÉS :
-//   - mutedRef pour éviter closure stale dans play().then()
-//   - FIX LIKES : likedBy pour le tableau, likes pour le count
+// ✅ NOUVEAUTÉS :
+//   - Vidéo en BOUCLE : attribut loop sur <video>
+//   - Barre de progression SEEKABLE : clic ou drag pour avancer/reculer
+//     → pointerId capture pour drag fluide même hors de la barre
+//     → lockFeed pendant le drag pour éviter le changement de vidéo
 
-import React, { useEffect, useRef, useState, useMemo, memo, useCallback } from "react";
-import { createPortal } from "react-dom";
-import { motion, AnimatePresence } from "framer-motion";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "../../context/AuthContext";
-import { useVideos } from "../../context/VideoContext";
-import { loadStripe } from "@stripe/stripe-js";
+import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../../context/AuthContext';
+import { useVideos } from '../../context/VideoContext';
 import {
   FaHeart, FaRegHeart, FaComment, FaShare,
-  FaVolumeUp, FaVolumeMute, FaTrash, FaRocket, FaMusic, FaPlay, FaCheckCircle
-} from "react-icons/fa";
-import { HiDotsVertical } from "react-icons/hi";
-import { IoSend } from "react-icons/io5";
+  FaVolumeUp, FaVolumeMute, FaPlay,
+  FaTrash, FaEllipsisV,
+} from 'react-icons/fa';
+import { IoSend } from 'react-icons/io5';
 
-const STRIPE_KEY    = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
-const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
-const API_URL       = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const USER_INTERACTED_KEY = 'vp_user_interacted';
 
-const registerPlayingVideo = (video) => {
-  if (!video) return;
-  const current = window.__currentPlayingVideo;
-  if (current && current !== video) { try { current.pause(); } catch {} }
-  window.__currentPlayingVideo = video;
+// ── feedLock ─────────────────────────────────────────────────────────────────
+let _feedLocked    = false;
+let _feedLockTimer = null;
+export const lockFeed    = () => {
+  _feedLocked = true;
+  if (_feedLockTimer) clearTimeout(_feedLockTimer);
+  _feedLockTimer = setTimeout(() => { _feedLocked = false; _feedLockTimer = null; }, 600);
+};
+export const unlockFeed   = () => {
+  _feedLocked = false;
+  if (_feedLockTimer) { clearTimeout(_feedLockTimer); _feedLockTimer = null; }
+};
+export const isFeedLocked = () => _feedLocked;
+
+const playingVideos = new Set();
+const registerPlay  = (vid) => {
+  playingVideos.forEach(v => { if (v !== vid && !v.paused) { v.pause(); v.muted = true; } });
+  playingVideos.add(vid);
 };
 
-const generateDefaultAvatar = (username = "U") => {
-  const char   = (username || "U").charAt(0).toUpperCase();
-  const colors = ['#EF4444', '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6'];
-  const color  = colors[char.charCodeAt(0) % colors.length];
-  return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${encodeURIComponent(color)}"/><text x="50%" y="50%" font-size="50" fill="white" text-anchor="middle" dy=".3em" font-family="Arial">${char}</text></svg>`;
+const generateAvatar = (name = 'U') => {
+  const c      = (name || 'U').charAt(0).toUpperCase();
+  const colors = ['#EF4444','#3B82F6','#10B981','#F59E0B','#8B5CF6','#EC4899'];
+  const color  = colors[c.charCodeAt(0) % colors.length];
+  return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${encodeURIComponent(color)}"/><text x="50%" y="50%" font-size="50" fill="white" text-anchor="middle" dy=".3em" font-family="Arial">${c}</text></svg>`;
 };
 
-const SoundHint = memo(({ visible }) => {
-  if (!visible) return null;
+// ── SeekBar — barre de progression cliquable + draggable ──────────────────────
+const SeekBar = memo(({ progress, videoRef }) => {
+  const barRef   = useRef(null);
+  const dragging = useRef(false);
+
+  const seekTo = useCallback((clientX) => {
+    const vid = videoRef.current;
+    const bar = barRef.current;
+    if (!vid || !bar || !vid.duration) return;
+    const rect  = bar.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    vid.currentTime = ratio * vid.duration;
+  }, [videoRef]);
+
+  const onPointerDown = useCallback((e) => {
+    e.stopPropagation();
+    dragging.current = true;
+    barRef.current?.setPointerCapture(e.pointerId);
+    seekTo(e.clientX);
+    lockFeed();
+  }, [seekTo]);
+
+  const onPointerMove = useCallback((e) => {
+    if (!dragging.current) return;
+    e.stopPropagation();
+    seekTo(e.clientX);
+  }, [seekTo]);
+
+  const onPointerUp = useCallback((e) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    e.stopPropagation();
+    unlockFeed();
+  }, []);
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-      className="absolute bottom-32 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 pointer-events-none"
+    <div
+      ref={barRef}
+      className="absolute top-0 left-0 right-0 z-20"
+      style={{ height: 20, cursor: 'pointer', touchAction: 'none' }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
     >
-      <FaVolumeUp className="text-white text-sm" />
-      <span className="text-white text-xs font-semibold">Appuie pour activer le son</span>
-    </motion.div>
+      {/* Piste visible */}
+      <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30">
+        <div
+          className="h-full bg-white/70 transition-none"
+          style={{ width: `${progress}%` }}
+        />
+        {/* Poignée */}
+        <div
+          className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow-md"
+          style={{ left: `calc(${progress}% - 6px)`, pointerEvents: 'none' }}
+        />
+      </div>
+    </div>
   );
 });
-SoundHint.displayName = 'SoundHint';
+SeekBar.displayName = 'SeekBar';
 
-// ✅ onVideoEnded retiré — scroll à la charge de l'utilisateur
-const VideoCard = ({ video, isActive, isAutoPost, onModalChange }) => {
+// ── VideoCard ─────────────────────────────────────────────────────────────────
+const VideoCard = ({ video, isActive, isAutoPost = false, onModalChange }) => {
   if (!video) return null;
 
-  const navigate = useNavigate();
+  const { user: currentUser, getToken } = useAuth();
+  const { deleteVideo, likeVideo }      = useVideos();
+
+  const authorObj    = video.user || video.uploadedBy || null;
+  const authorName   = authorObj?.username || authorObj?.fullName || video.username || 'Utilisateur';
+  const authorAvatar = authorObj?.profilePhoto || authorObj?.profilePicture || authorObj?.avatar || generateAvatar(authorName);
+
+  const [muted,         setMuted]         = useState(true);
+  const [isPaused,      setIsPaused]      = useState(false);
+  const [showSoundHint, setShowSoundHint] = useState(false);
+  const [showHeart,     setShowHeart]     = useState(false);
+  const [showComments,  setShowComments]  = useState(false);
+  const [showMenu,      setShowMenu]      = useState(false);
+  const [localLiked,    setLocalLiked]    = useState(false);
+  const [localLikes,    setLocalLikes]    = useState(
+    Array.isArray(video.likes) ? video.likes.length : (video.likesCount ?? video.likes ?? 0)
+  );
+  const [localComments, setLocalComments] = useState(video.comments || []);
+  const [newComment,    setNewComment]    = useState('');
+  const [progress,      setProgress]      = useState(0);
+
   const videoRef = useRef(null);
   const mutedRef = useRef(true);
-  // 🔥 FIX A : src géré manuellement — jamais en prop React
   const srcRef   = useRef(null);
-
-  const { user: currentUser, getToken } = useAuth();
-  const { likeVideo, commentVideo, deleteVideo, incrementViews } = useVideos();
-
-  const incrementViewsRef = useRef(incrementViews);
-  useEffect(() => { incrementViewsRef.current = incrementViews; });
-
-  const [muted,          setMuted]          = useState(true);
-  const [showSoundHint,  setShowSoundHint]  = useState(false);
-  const [isPaused,       setIsPaused]       = useState(false);
-  const [showHeart,      setShowHeart]      = useState(false);
-  const [progress,       setProgress]       = useState(0);
-  const [showComments,   setShowComments]   = useState(false);
-  const [showOptions,    setShowOptions]    = useState(false);
-  const [showBoostModal, setShowBoostModal] = useState(false);
-  const [localLikes,     setLocalLikes]     = useState(0);
-  const [isLiked,        setIsLiked]        = useState(false);
-  const [localComments,  setLocalComments]  = useState([]);
-  const [newComment,     setNewComment]     = useState("");
-  const [isFollowing,    setIsFollowing]    = useState(false);
-  const [followLoading,  setFollowLoading]  = useState(false);
-  const [boostLoading,   setBoostLoading]   = useState(false);
-  const [selectedBoost,  setSelectedBoost]  = useState(null);
 
   useEffect(() => { mutedRef.current = muted; }, [muted]);
 
-  const videoId  = video._id;
-  const videoSrc = video.videoUrl || video.url || null;
+  useEffect(() => {
+    if (!currentUser) return;
+    if (Array.isArray(video.likes))       setLocalLiked(video.likes.some(id => id?.toString() === currentUser._id?.toString()));
+    else if (video.isLiked !== undefined) setLocalLiked(!!video.isLiked);
+  }, [video._id, currentUser]); // eslint-disable-line
 
-  const owner = useMemo(() => {
-    const u = video.user || video.uploadedBy || {};
-    return {
-      _id:        u._id || u.id,
-      username:   u.username || u.fullName || "Utilisateur",
-      photo:      u.profilePhoto || u.profilePicture || u.avatar || null,
-      isVerified: !!u.isVerified,
-    };
-  }, [videoId]); // eslint-disable-line
-
-  const isOwner = currentUser && owner._id && (owner._id === currentUser._id);
-
-  const openModal  = useCallback((setter) => { setter(true);  onModalChange?.(true);  }, [onModalChange]);
-  const closeModal = useCallback((setter) => { setter(false); onModalChange?.(false); }, [onModalChange]);
-
-  // 🔥 FIX A : injecter src sur le DOM uniquement si la valeur change réellement.
-  // React ne passe plus jamais par src= en prop → zéro reset browser au re-render.
+  const videoSrc = video.cloudinaryUrl || video.videoUrl || video.url || '';
   useEffect(() => {
     const vid = videoRef.current;
-    if (!vid || !videoSrc) return;
-    if (srcRef.current === videoSrc) return; // même source → ne rien toucher
+    if (!vid || !videoSrc || videoSrc === srcRef.current) return;
     srcRef.current = videoSrc;
-    vid.src = videoSrc;
-    // Pas de vid.load() — le browser charge automatiquement quand src est assigné
+    vid.src = videoSrc; vid.muted = true; vid.volume = 1;
   }, [videoSrc]);
 
   useEffect(() => {
-    const likedByList = Array.isArray(video.likedBy) ? video.likedBy : [];
-    const likesCount  = typeof video.likes === 'number' ? video.likes : likedByList.length;
-    setLocalLikes(likesCount);
-    if (currentUser) {
-      setIsLiked(likedByList.some(id =>
-        id === currentUser._id || (typeof id === 'object' && id?._id === currentUser._id)
-      ));
-      if (currentUser.following && Array.isArray(currentUser.following) && owner._id) {
-        setIsFollowing(currentUser.following.includes(owner._id));
-      }
-    }
-    setLocalComments(video.comments || []);
-  }, [videoId, currentUser, owner._id]); // eslint-disable-line
-
-  useEffect(() => {
-    if (!isActive) { setShowSoundHint(false); return; }
-    const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-    if (!hasInteracted) {
-      setShowSoundHint(true);
-      const t = setTimeout(() => setShowSoundHint(false), 3000);
-      return () => clearTimeout(t);
-    }
-  }, [isActive]);
-
-  // 🔥 FIX B : play/pause sans jamais toucher src ni preload
-  useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
-
-    if (isActive) {
-      const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-      vid.muted  = true;
-      vid.volume = 1;
+    if (!isActive) {
+      vid.pause(); vid.muted = true; vid.volume = 1;
+      setIsPaused(false); setShowSoundHint(false);
+      return;
+    }
+    vid.muted = true; vid.volume = 1;
+    const tryPlay = () => {
       vid.play()
         .then(() => {
-          setIsPaused(false);
-          registerPlayingVideo(vid);
-          if (hasInteracted) {
-            vid.muted  = mutedRef.current;
-            vid.volume = mutedRef.current ? 0 : 1;
-          }
+          setIsPaused(false); registerPlay(vid);
+          const interacted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+          if (interacted) { vid.muted = mutedRef.current; vid.volume = mutedRef.current ? 0 : 1; }
         })
-        .catch((err) => {
-          if (err.name === 'NotAllowedError' || err.name === 'NotSupportedError') {
-            vid.muted = true;
-            setMuted(true);
-          }
-        });
-    } else {
-      vid.pause();
-      vid.muted  = true;
-      vid.volume = 1;
-      setIsPaused(false);
-      setShowSoundHint(false);
+        .catch(err => { if (err.name === 'NotAllowedError' || err.name === 'NotSupportedError') { vid.muted = true; setMuted(true); } });
+    };
+    if (vid.readyState >= 3) tryPlay();
+    else {
+      const onCan = () => { vid.removeEventListener('canplay', onCan); tryPlay(); };
+      vid.addEventListener('canplay', onCan);
+      return () => vid.removeEventListener('canplay', onCan);
     }
   }, [isActive]); // eslint-disable-line
 
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
-    vid.muted  = muted;
-    vid.volume = muted ? 0 : 1;
-  }, [muted]);
+    vid.muted = muted; vid.volume = muted ? 0 : 1;
+    if (!muted && vid.paused && isActive)
+      vid.play().then(() => { setIsPaused(false); registerPlay(vid); }).catch(() => { vid.muted = true; setMuted(true); });
+  }, [muted]); // eslint-disable-line
 
   useEffect(() => {
-    if (!isActive || isAutoPost || !videoId) return;
-    const timer = setTimeout(() => { incrementViewsRef.current?.(videoId); }, 2000);
-    return () => clearTimeout(timer);
-  }, [isActive, videoId, isAutoPost]);
-
-  const handleTimeUpdate = useCallback(() => {
-    const vid = videoRef.current;
-    if (vid?.duration) setProgress((vid.currentTime / vid.duration) * 100);
-  }, []);
-
-  const activateSound = useCallback((e) => {
-    e?.stopPropagation();
-    sessionStorage.setItem(USER_INTERACTED_KEY, '1');
-    setShowSoundHint(false);
-    setMuted(false);
-    const vid = videoRef.current;
-    if (!vid) return;
-    vid.muted  = false;
-    vid.volume = 1;
-    if (vid.paused && isActive) vid.play().catch(() => {});
+    if (!isActive) return;
+    if (sessionStorage.getItem(USER_INTERACTED_KEY) !== '1') {
+      setShowSoundHint(true);
+      const t = setTimeout(() => setShowSoundHint(false), 3000);
+      return () => clearTimeout(t);
+    }
   }, [isActive]);
 
-  const togglePlay = useCallback((e) => {
+  useEffect(() => {
+    if (!isActive || !video._id) return;
+    const t = setTimeout(async () => {
+      try { await fetch(`${API_URL}/videos/${video._id}/view`, { method: 'POST' }); } catch {}
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [isActive, video._id]);
+
+  const handleTimeUpdate = useCallback(e => {
+    const v = e.target;
+    if (v?.duration) setProgress((v.currentTime / v.duration) * 100);
+  }, []);
+
+  const activateSound = useCallback(e => {
     e?.stopPropagation();
-    const hasInteracted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-    if (!hasInteracted) { activateSound(e); return; }
-    const vid = videoRef.current;
-    if (!vid) return;
-    if (vid.paused) {
-      vid.play().catch(() => {});
-      setIsPaused(false);
-      registerPlayingVideo(vid);
-    } else {
-      vid.pause();
-      setIsPaused(true);
-    }
+    sessionStorage.setItem(USER_INTERACTED_KEY, '1');
+    setShowSoundHint(false); setMuted(false);
+  }, []);
+
+  const handleTogglePlay = useCallback(e => {
+    e?.stopPropagation();
+    if (sessionStorage.getItem(USER_INTERACTED_KEY) !== '1') { activateSound(e); return; }
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) v.play().then(() => { setIsPaused(false); registerPlay(v); }).catch(() => {});
+    else { v.pause(); setIsPaused(true); }
   }, [activateSound]);
 
-  const handleDoubleTap = useCallback((e) => {
-    e.stopPropagation();
-    setShowHeart(true);
-    setTimeout(() => setShowHeart(false), 800);
-    if (!isLiked) handleLike(e);
-  }, [isLiked]); // eslint-disable-line
-
-  const handleLike = useCallback(async (e) => {
+  const handleDoubleTap = useCallback(e => {
     e?.stopPropagation();
-    if (!currentUser) return alert("Connectez-vous pour aimer !");
-    if (isAutoPost) { setIsLiked(prev => !prev); setLocalLikes(prev => isLiked ? prev - 1 : prev + 1); return; }
-    const wasLiked = isLiked;
-    setIsLiked(!wasLiked);
-    setLocalLikes(prev => wasLiked ? prev - 1 : prev + 1);
+    setShowHeart(true); setTimeout(() => setShowHeart(false), 800);
+    if (!localLiked) handleLike(); // eslint-disable-line
+  }, [localLiked]); // eslint-disable-line
+
+  const handleLike = useCallback(async e => {
+    e?.stopPropagation();
+    if (!currentUser) return;
+    const was = localLiked;
+    setLocalLiked(!was); setLocalLikes(p => was ? p - 1 : p + 1);
     try { await likeVideo(video._id); }
-    catch { setIsLiked(wasLiked); setLocalLikes(prev => wasLiked ? prev + 1 : prev - 1); }
-  }, [currentUser, isLiked, video._id, likeVideo, isAutoPost]);
+    catch { setLocalLiked(was); setLocalLikes(p => was ? p + 1 : p - 1); }
+  }, [currentUser, localLiked, video._id, likeVideo]);
 
-  const handleFollow = async (e) => {
-    e.stopPropagation(); e.preventDefault();
-    if (!currentUser) return alert("Connectez-vous pour suivre !");
-    if (!owner._id || isOwner || followLoading) return;
-    if (isAutoPost) { setIsFollowing(prev => !prev); return; }
-    setFollowLoading(true);
-    const wasFollowing = isFollowing;
-    setIsFollowing(!wasFollowing);
-    try {
-      const token    = await getToken();
-      if (!token) throw new Error("Token manquant");
-      const endpoint = wasFollowing
-        ? `${API_URL}/users/unfollow/${owner._id}`
-        : `${API_URL}/users/follow/${owner._id}`;
-      const res  = await fetch(endpoint, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
-    } catch (err) { setIsFollowing(wasFollowing); alert(err.message || "Impossible de suivre"); }
-    finally { setFollowLoading(false); }
-  };
-
-  const handleCommentSubmit = async () => {
-    if (!newComment.trim()) return;
-    if (!currentUser) return alert("Connectez-vous !");
-    const temp = { _id: Date.now(), user: currentUser, text: newComment, createdAt: new Date().toISOString() };
-    setLocalComments(prev => [...prev, temp]);
-    setNewComment("");
-    if (isAutoPost) return;
-    try { await commentVideo(video._id, newComment); }
-    catch { alert("Erreur envoi"); setLocalComments(prev => prev.filter(c => c._id !== temp._id)); }
-  };
-
-  const handleShare = async (e) => {
-    e.stopPropagation();
-    if (navigator.share) { try { await navigator.share({ title: "Regarde cette vidéo !", url: window.location.href }); } catch {} }
-    else { navigator.clipboard.writeText(window.location.href); alert("Lien copié !"); }
-  };
-
-  const handleToggleMute = useCallback((e) => {
+  const handleToggleMute = useCallback(e => {
     e.stopPropagation();
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
-    setShowSoundHint(false);
-    const vid      = videoRef.current;
-    const newMuted = !muted;
-    setMuted(newMuted);
-    if (!vid) return;
-    vid.muted  = newMuted;
-    vid.volume = newMuted ? 0 : 1;
-    if (!newMuted && vid.paused && isActive) {
-      vid.play().catch(() => { vid.muted = true; vid.volume = 0; setMuted(true); });
-    }
-  }, [muted, isActive]);
+    setShowSoundHint(false); setMuted(m => !m);
+  }, []);
 
-  const handleBoost = async () => {
-    if (!selectedBoost || !stripePromise) return;
-    if (isAutoPost) { alert("Fonctionnalité réservée à vos vidéos"); return; }
-    setBoostLoading(true);
+  const handleDelete = useCallback(async e => {
+    e.stopPropagation();
+    if (!window.confirm('Supprimer cette vidéo ?')) return;
+    try { await deleteVideo(video._id); setShowMenu(false); }
+    catch (err) { console.error(err); }
+  }, [video._id, deleteVideo]);
+
+  const handleCommentSubmit = useCallback(async () => {
+    if (!newComment.trim() || !currentUser) return;
+    const temp = { _id: Date.now(), user: currentUser, text: newComment, createdAt: new Date().toISOString() };
+    setLocalComments(p => [...p, temp]); setNewComment('');
     try {
       const token = await getToken();
-      const res   = await fetch(`${API_URL}/boost/create-session`, {
+      await fetch(`${API_URL}/videos/${video._id}/comment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ contentId: video._id, contentType: 'video', amount: selectedBoost.amount, planId: selectedBoost.id }),
+        body: JSON.stringify({ text: temp.text }),
       });
-      const data = await res.json();
-      if (data.url) window.location.href = data.url;
-      else { alert("Simulation: Boost activé !"); closeModal(setShowBoostModal); }
-    } catch { alert("Erreur paiement"); }
-    finally { setBoostLoading(false); }
-  };
+    } catch { setLocalComments(p => p.filter(c => c._id !== temp._id)); }
+  }, [newComment, currentUser, video._id, getToken]);
 
-  // ─── Portails ─────────────────────────────────────────────────────────────
-  const commentsPortal = createPortal(
-    <AnimatePresence>
-      {showComments && (
-        <>
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm" style={{ zIndex: 9998 }}
-            onClick={() => closeModal(setShowComments)} />
-          <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
-            className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 rounded-t-3xl flex flex-col shadow-2xl"
-            style={{ zIndex: 9999, height: "70vh" }} onClick={(e) => e.stopPropagation()}>
-            <div className="p-4 border-b border-gray-800 flex justify-between items-center">
-              <span className="font-bold text-white">{localComments.length} Commentaires</span>
-              <button onClick={() => closeModal(setShowComments)} className="text-gray-400 p-2 text-lg">✕</button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {localComments.length === 0 && <p className="text-gray-500 text-center text-sm mt-8">Sois le premier à commenter !</p>}
-              {localComments.map((comment, i) => (
-                <div key={comment._id || i} className="flex gap-3 items-start">
-                  <img src={comment.user?.profilePhoto || generateDefaultAvatar(comment.user?.fullName || comment.user?.username)}
-                    className="w-8 h-8 rounded-full bg-gray-700 object-cover" alt="user"
-                    onError={(e) => { e.target.onerror = null; e.target.src = generateDefaultAvatar(comment.user?.username); }} />
-                  <div>
-                    <p className="text-xs font-bold text-gray-400">{comment.user?.fullName || comment.user?.username || "Utilisateur"}</p>
-                    <p className="text-sm text-gray-200">{comment.text}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="p-4 bg-gray-800 flex gap-2 items-center">
-              <input value={newComment} onChange={(e) => setNewComment(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleCommentSubmit()}
-                placeholder="Votre commentaire..."
-                className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-pink-500" />
-              <button onClick={handleCommentSubmit} disabled={!newComment.trim()}
-                className="p-2 bg-pink-600 rounded-full text-white disabled:opacity-50"><IoSend /></button>
-            </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>,
-    document.body
+  const handleShare = useCallback(async e => {
+    e.stopPropagation();
+    const url = `${window.location.origin}/videos/${video._id}`;
+    if (navigator.share) try { await navigator.share({ title: video.title || 'Vidéo', url }); } catch {}
+    else navigator.clipboard?.writeText(url);
+  }, [video._id, video.title]);
+
+  const onActDown = useCallback(e => { e.stopPropagation(); lockFeed();   }, []);
+  const onActUp   = useCallback(e => { e.stopPropagation(); unlockFeed(); }, []);
+
+  const openComments  = useCallback(e => {
+    e.stopPropagation(); lockFeed(); setShowComments(true); onModalChange?.(true);
+  }, [onModalChange]);
+  const closeComments = useCallback(() => {
+    setShowComments(false); unlockFeed(); onModalChange?.(false);
+  }, [onModalChange]);
+
+  const isOwner  = currentUser && (
+    authorObj?._id?.toString()          === currentUser._id?.toString() ||
+    video.uploadedBy?._id?.toString()   === currentUser._id?.toString() ||
+    video.uploadedBy?.toString()        === currentUser._id?.toString()
   );
+  const hasAudio = video.hasAudio !== false;
 
-  const optionsPortal = createPortal(
-    <AnimatePresence>
-      {showOptions && (
-        <>
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm" style={{ zIndex: 9998 }}
-            onClick={() => closeModal(setShowOptions)} />
-          <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
-            className="fixed bottom-0 inset-x-0 bg-gray-900 rounded-t-3xl p-6 space-y-3"
-            style={{ zIndex: 9999 }} onClick={(e) => e.stopPropagation()}>
-            {isOwner && !isAutoPost && (
-              <button onClick={async () => { if (confirm("Supprimer cette vidéo ?")) { await deleteVideo(video._id); closeModal(setShowOptions); } }}
-                className="w-full py-3 bg-red-500/10 text-red-500 rounded-xl font-bold flex items-center justify-center gap-2">
-                <FaTrash /> Supprimer la vidéo
-              </button>
-            )}
-            <button onClick={() => { navigator.clipboard.writeText(window.location.href); closeModal(setShowOptions); }}
-              className="w-full py-3 bg-gray-800 text-white rounded-xl font-bold">Copier le lien</button>
-            <button onClick={() => closeModal(setShowOptions)} className="w-full py-3 bg-gray-800 text-gray-400 rounded-xl">Annuler</button>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>,
-    document.body
-  );
-
-  const boostPortal = createPortal(
-    <AnimatePresence>
-      {showBoostModal && !isAutoPost && (
-        <>
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/80 backdrop-blur-sm" style={{ zIndex: 9998 }}
-            onClick={() => closeModal(setShowBoostModal)} />
-          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
-            className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none" style={{ zIndex: 9999 }}>
-            <div className="bg-gray-900 border border-gray-700 p-6 rounded-2xl w-full max-w-sm pointer-events-auto"
-              onClick={(e) => e.stopPropagation()}>
-              <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-                <FaRocket className="text-orange-500" /> Booster cette vidéo
-              </h2>
-              <div className="space-y-3">
-                {[{ id: 1, label: '24h Flash', price: 1000 }, { id: 2, label: '3 Jours Top', price: 2500 }].map(plan => (
-                  <div key={plan.id} onClick={() => setSelectedBoost(plan)}
-                    className={`p-3 rounded-lg border cursor-pointer flex justify-between transition-colors ${
-                      selectedBoost?.id === plan.id ? 'border-orange-500 bg-orange-500/20' : 'border-gray-700 hover:border-gray-500'
-                    }`}>
-                    <span className="text-white">{plan.label}</span>
-                    <span className="text-orange-400 font-bold">{plan.price} FCFA</span>
-                  </div>
-                ))}
+  const modal = showComments ? createPortal(
+    <div
+      className="fixed inset-0 z-[9999] flex items-end"
+      onPointerDown={e => e.stopPropagation()}
+      onTouchStart={e => e.stopPropagation()}
+    >
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={closeComments}
+      />
+      <motion.div
+        initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+        className="relative w-full bg-gray-900 rounded-t-3xl h-[70vh] flex flex-col shadow-2xl z-10"
+        onPointerDown={e => e.stopPropagation()}
+        onTouchStart={e => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-gray-800 flex justify-between items-center flex-shrink-0">
+          <span className="font-bold text-white">{localComments.length} commentaire{localComments.length !== 1 ? 's' : ''}</span>
+          <button onClick={closeComments} className="text-gray-400 p-2 text-lg">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {localComments.length === 0 && <p className="text-gray-500 text-center text-sm mt-8">Sois le premier à commenter !</p>}
+          {localComments.map((c, i) => {
+            const cu = c.user || c.uploadedBy;
+            const cn = cu?.username || cu?.fullName || 'Utilisateur';
+            return (
+              <div key={c._id || i} className="flex gap-3 items-start">
+                <img src={cu?.profilePhoto || cu?.profilePicture || generateAvatar(cn)}
+                  width={32} height={32} style={{ aspectRatio:'1/1', flexShrink:0 }}
+                  className="w-8 h-8 rounded-full bg-gray-700 object-cover"
+                  onError={e => { e.target.onerror=null; e.target.src=generateAvatar(cn); }} alt={cn} />
+                <div><p className="text-xs font-bold text-gray-300">{cn}</p><p className="text-sm text-gray-200">{c.text}</p></div>
               </div>
-              <button onClick={handleBoost} disabled={!selectedBoost || boostLoading}
-                className="w-full mt-6 bg-gradient-to-r from-orange-500 to-pink-600 text-white py-3 rounded-xl font-bold disabled:opacity-50 transition-opacity">
-                {boostLoading ? 'Chargement...' : 'Payer'}
-              </button>
-            </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>,
+            );
+          })}
+        </div>
+        <div className="p-4 bg-gray-800 flex gap-2 items-center flex-shrink-0">
+          {currentUser && (
+            <img src={currentUser.profilePhoto || currentUser.profilePicture || generateAvatar(currentUser.username)}
+              width={32} height={32} style={{ aspectRatio:'1/1', flexShrink:0 }}
+              className="w-8 h-8 rounded-full object-cover"
+              onError={e => { e.target.onerror=null; e.target.src=generateAvatar(currentUser.username); }} alt="moi" />
+          )}
+          <input value={newComment} onChange={e => setNewComment(e.target.value)}
+            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') handleCommentSubmit(); }}
+            placeholder="Votre commentaire..."
+            className="flex-1 bg-gray-700 text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500" />
+          <button onClick={handleCommentSubmit} disabled={!newComment.trim()}
+            className="p-2 bg-orange-500 rounded-full text-white disabled:opacity-50"><IoSend /></button>
+        </div>
+      </motion.div>
+    </div>,
     document.body
-  );
+  ) : null;
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden select-none">
 
-      {isAutoPost && (
-        <div className="absolute top-16 left-4 z-50 bg-blue-500/90 text-white text-xs font-bold px-3 py-1 rounded-full backdrop-blur-sm">
-          📡 Trending
-        </div>
-      )}
-
-      {/*
-        🔥 FIX A+B+C :
-        - PAS de src= en prop JSX → géré via useEffect + srcRef
-        - preload="auto" fixe → jamais de changement d'attribut DOM
-        - loop natif → boucle sans onEnded
-        - poster= OK (image statique, ne reset pas la vidéo)
-      */}
-      <video
-        ref={videoRef}
-        className="w-full h-full object-cover"
-        style={{
-          position: 'absolute',
-          inset: 0,
-          width: '100%',
-          height: '100%',
-          contain: 'strict',
-          filter: video.filter && video.filter !== 'none' ? video.filter : undefined,
-        }}
-        muted={muted}
-        playsInline
-        preload="auto"
-        loop
+      {/* ✅ loop ajouté */}
+      <video ref={videoRef}
+        className="absolute inset-0 w-full h-full object-cover"
+        style={{ contain: 'strict' }}
+        playsInline preload="auto" loop
         poster={video.thumbnail || undefined}
-        onClick={togglePlay}
+        onClick={handleTogglePlay}
         onDoubleClick={handleDoubleTap}
         onTimeUpdate={handleTimeUpdate}
       />
 
-      <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/80 pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />
 
-      <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30 z-20">
-        <div className="h-full bg-gradient-to-r from-orange-500 to-pink-500 transition-all duration-100" style={{ width: `${progress}%` }} />
-      </div>
+      {/* ✅ Barre seekable */}
+      <SeekBar progress={progress} videoRef={videoRef} />
 
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-        {isPaused && <FaPlay className="text-white/50 text-6xl animate-pulse" />}
-        <AnimatePresence>
-          {showHeart && (
-            <motion.div initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1.5, opacity: 1 }} exit={{ scale: 2, opacity: 0 }} className="absolute">
-              <FaHeart className="text-red-500 text-8xl drop-shadow-2xl" />
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      {isPaused && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+          <FaPlay className="text-white/50 text-6xl animate-pulse" />
+        </div>
+      )}
 
       <AnimatePresence>
-        {showSoundHint && <SoundHint visible={showSoundHint} />}
-      </AnimatePresence>
-
-      <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
-        <div onClick={(e) => { e.stopPropagation(); if (owner._id && !isAutoPost) navigate(`/profile/${owner._id}`); }}
-          className="flex items-center gap-3 mb-3 cursor-pointer group">
-          <img
-            src={owner.photo ? (owner.photo.startsWith('http') ? owner.photo : `${API_URL}${owner.photo}`) : generateDefaultAvatar(owner.username)}
-            alt={owner.username}
-            className="w-11 h-11 rounded-full border-2 border-white shadow-md object-cover group-hover:scale-105 transition-transform bg-gray-700"
-            onError={(e) => { e.target.onerror = null; e.target.src = generateDefaultAvatar(owner.username); }}
-          />
-          <div className="flex flex-col">
-            <h3 className="font-bold text-white text-base flex items-center gap-1 shadow-black drop-shadow-md">
-              @{owner.username}
-              {owner.isVerified && <FaCheckCircle className="text-orange-500 text-xs" />}
-            </h3>
-          </div>
-          {!isOwner && currentUser && (
-            <button onClick={handleFollow} disabled={followLoading}
-              className={`text-xs font-bold px-3 py-1 rounded-full ml-2 shadow-lg transition ${
-                isFollowing ? "bg-white text-black hover:bg-gray-200" : "bg-pink-600 text-white hover:bg-pink-700"
-              } ${followLoading ? 'opacity-50 cursor-not-allowed' : ''}`}>
-              {followLoading ? '...' : (isFollowing ? "Suivi" : "Suivre")}
-            </button>
-          )}
-        </div>
-        <div className="text-white/90 text-sm mb-2 max-w-[90%] drop-shadow-md pointer-events-auto">
-          <p className="line-clamp-2">{video.description || video.title}</p>
-        </div>
-        <div className="flex items-center gap-2 text-white/80 text-xs font-medium bg-white/10 w-fit px-3 py-1 rounded-full backdrop-blur-sm pointer-events-auto">
-          <FaMusic className="animate-spin-slow" />
-          <span className="truncate max-w-[150px]">{video.musicName || "Son original"}</span>
-        </div>
-      </div>
-
-      <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe pointer-events-auto">
-        {isOwner && !isAutoPost && (
-          <motion.div whileTap={{ scale: 0.9 }} className="flex flex-col items-center">
-            <button onClick={(e) => { e.stopPropagation(); openModal(setShowBoostModal); }}
-              className="w-10 h-10 rounded-full bg-gradient-to-tr from-orange-400 to-pink-600 flex items-center justify-center text-white shadow-lg shadow-orange-500/40">
-              <FaRocket />
-            </button>
-            <span className="text-[10px] font-bold text-white mt-1 drop-shadow-md">Boost</span>
+        {showSoundHint && (
+          <motion.div initial={{ opacity:0, y:10 }} animate={{ opacity:1, y:0 }} exit={{ opacity:0 }}
+            className="absolute bottom-32 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/20 pointer-events-none">
+            <FaVolumeUp className="text-white text-sm" />
+            <span className="text-white text-xs font-semibold">Appuie pour activer le son</span>
           </motion.div>
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showHeart && (
+          <motion.div initial={{ scale:0, opacity:0 }} animate={{ scale:1.5, opacity:1 }} exit={{ scale:2, opacity:0 }}
+            className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+            <FaHeart className="text-red-500 text-8xl drop-shadow-2xl" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Infos auteur */}
+      <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
+        <div className="flex items-center gap-3 mb-3">
+          <img src={authorAvatar} alt={authorName}
+            width={40} height={40} style={{ aspectRatio:'1/1', flexShrink:0 }}
+            className="w-10 h-10 rounded-full border-2 border-white/50 object-cover bg-gray-700"
+            onError={e => { e.target.onerror=null; e.target.src=generateAvatar(authorName); }} />
+          <div style={{ minWidth:0 }}>
+            <p className="font-bold text-white drop-shadow-md" style={{ fontSize:14 }}>{authorName}</p>
+            {isAutoPost && <span className="text-xs text-orange-400 font-semibold">Recommandé</span>}
+          </div>
+          {isOwner && (
+            <div className="ml-auto relative">
+              <button onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
+                onPointerDown={onActDown} onPointerUp={onActUp} onPointerCancel={onActUp}
+                className="text-white/70 hover:text-white p-2"><FaEllipsisV /></button>
+              <AnimatePresence>
+                {showMenu && (
+                  <motion.div initial={{ opacity:0, scale:0.9 }} animate={{ opacity:1, scale:1 }} exit={{ opacity:0 }}
+                    className="absolute right-0 bottom-10 bg-gray-900 border border-gray-700 rounded-xl overflow-hidden shadow-2xl z-50 min-w-[140px]"
+                    onPointerDown={e => e.stopPropagation()}>
+                    <button onClick={handleDelete}
+                      className="flex items-center gap-2 px-4 py-3 text-red-400 hover:bg-gray-800 text-sm w-full">
+                      <FaTrash /> Supprimer
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
+        </div>
+        {video.title      && <p className="text-white/90 mb-2 drop-shadow-md font-medium line-clamp-2" style={{ fontSize:14 }}>{video.title}</p>}
+        {video.description && <p className="text-white/70 text-xs line-clamp-2 drop-shadow-md">{video.description}</p>}
+        {(video.tags || []).length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {video.tags.slice(0, 3).map((t, i) => (
+              <span key={i} className="text-xs text-white/70 bg-white/10 px-2 py-0.5 rounded-full">#{t}</span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Barre d'actions */}
+      <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe"
+        onPointerDown={onActDown} onPointerUp={onActUp} onPointerCancel={onActUp}
+        onTouchStart={e => e.stopPropagation()}>
 
         <div className="flex flex-col items-center gap-1">
-          <motion.button whileTap={{ scale: 0.8 }} onClick={handleLike}
-            className={`w-10 h-10 rounded-full flex items-center justify-center text-3xl drop-shadow-xl transition-colors ${isLiked ? 'text-red-500' : 'text-white'}`}>
-            {isLiked ? <FaHeart /> : <FaRegHeart />}
+          <motion.button whileTap={{ scale:0.8 }} onClick={handleLike}
+            className={`w-10 h-10 rounded-full flex items-center justify-center text-3xl drop-shadow-xl ${localLiked ? 'text-red-500' : 'text-white'}`}>
+            {localLiked ? <FaHeart /> : <FaRegHeart />}
           </motion.button>
           <span className="text-xs font-bold text-white drop-shadow-md">{localLikes}</span>
         </div>
 
         <div className="flex flex-col items-center gap-1">
-          <motion.button whileTap={{ scale: 0.8 }} onClick={(e) => { e.stopPropagation(); openModal(setShowComments); }}
+          <motion.button whileTap={{ scale:0.8 }} onClick={openComments}
             className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
             <FaComment />
           </motion.button>
@@ -557,33 +455,29 @@ const VideoCard = ({ video, isActive, isAutoPost, onModalChange }) => {
         </div>
 
         <div className="flex flex-col items-center gap-1">
-          <motion.button whileTap={{ scale: 0.8 }} onClick={handleShare}
+          <motion.button whileTap={{ scale:0.8 }} onClick={handleShare}
             className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
             <FaShare />
           </motion.button>
           <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
         </div>
 
-        <motion.button whileTap={{ scale: 0.9 }} onClick={handleToggleMute}
-          className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
-          {muted ? <FaVolumeMute /> : <FaVolumeUp />}
-        </motion.button>
-
-        <button onClick={(e) => { e.stopPropagation(); openModal(setShowOptions); }} className="text-white text-xl drop-shadow-lg p-2">
-          <HiDotsVertical />
-        </button>
+        {hasAudio && (
+          <motion.button whileTap={{ scale:0.9 }} onClick={handleToggleMute}
+            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
+            {muted ? <FaVolumeMute /> : <FaVolumeUp />}
+          </motion.button>
+        )}
       </div>
 
-      {commentsPortal}
-      {optionsPortal}
-      {boostPortal}
+      {modal}
     </div>
   );
 };
 
-VideoCard.displayName = "VideoCard";
+VideoCard.displayName = 'VideoCard';
 export default memo(VideoCard, (prev, next) =>
-  prev.isActive   === next.isActive   &&
-  prev.video._id  === next.video._id  &&
-  prev.isAutoPost === next.isAutoPost
+  prev.isActive      === next.isActive    &&
+  prev.video._id     === next.video._id   &&
+  prev.onModalChange === next.onModalChange
 );

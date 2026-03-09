@@ -1,12 +1,5 @@
 // src/pages/Home/PostComments.jsx
-// ✅ PLEIN ÉCRAN TOTAL — inset-0 mobile / inset-6 desktop
-// ✅ Layout 2 colonnes desktop (media | comments)
-// ✅ AJOUTER un commentaire
-// ✅ LIKER un commentaire
-// ✅ RÉPONDRE à un commentaire (threads imbriqués)
-// ✅ SUPPRIMER son commentaire / sa réponse
-// ✅ Keyboard-aware iOS/Android (visualViewport)
-// ✅ Portal → z-index propre, hors de tout contain
+// ✅ FIX CRITIQUE : BASE_URL ne doit pas inclure /api — évite le double /api/api/
 
 import React, {
   useState, useRef, useEffect, useCallback, useMemo, memo
@@ -21,7 +14,13 @@ import { HeartIcon as HeartSolid, CheckBadgeIcon } from "@heroicons/react/24/sol
 import EmojiPicker from "emoji-picker-react";
 import { useDarkMode } from "../../context/DarkModeContext";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+// ✅ FIX : VITE_API_URL vaut "http://localhost:5000/api"
+// Les endpoints ci-dessous utilisent "/api/posts/..."
+// Sans ce fix → "http://localhost:5000/api" + "/api/posts/..." = "/api/api/posts/" → 404
+const BASE_URL = (() => {
+  const url = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+  return url.replace(/\/api\/?$/, "");  // → "http://localhost:5000"
+})();
 
 // ─────────────────────────────────────────────
 // AVATAR
@@ -80,7 +79,7 @@ const timeAgo = (date) => {
 };
 
 // ─────────────────────────────────────────────
-// REPLY ROW — réponse imbriquée
+// REPLY ROW
 // ─────────────────────────────────────────────
 const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNavigate, isReacting, isDeleting }) => {
   const user = reply.user || {};
@@ -105,11 +104,9 @@ const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNav
         size={28}
         onClick={() => user._id && onNavigate?.(`/profile/${user._id}`)}
       />
-
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            {/* Nom de la personne à qui on répond (mention @) */}
             {reply.replyTo && (
               <span className="text-[13px] font-semibold text-orange-500 mr-1.5">
                 @{reply.replyTo}
@@ -125,8 +122,6 @@ const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNav
               {reply.content}
             </span>
           </div>
-
-          {/* Like */}
           {!reply.isOptimistic && (
             <button
               onClick={() => onLike(reply._id)}
@@ -145,7 +140,6 @@ const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNav
             </button>
           )}
         </div>
-
         <div className="flex items-center gap-3 mt-1">
           <span className={`text-[11px] ${isDarkMode ? "text-gray-600" : "text-gray-400"}`}>
             {reply.isOptimistic ? "Envoi..." : timeAgo(reply.createdAt)}
@@ -167,13 +161,12 @@ const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNav
 ReplyRow.displayName = "ReplyRow";
 
 // ─────────────────────────────────────────────
-// COMMENT ROW — commentaire principal
+// COMMENT ROW
 // ─────────────────────────────────────────────
 const CommentRow = memo(({
   comment, currentUser, isDarkMode,
   onLike, onDelete, onReply, onNavigate,
-  isReacting, isDeleting,
-  replyingToId, // id du commentaire sur lequel on répond en ce moment
+  isReacting, isDeleting, replyingToId,
 }) => {
   const user = comment.user || {};
   const isMe = currentUser && (user._id === currentUser._id);
@@ -189,7 +182,6 @@ const CommentRow = memo(({
 
   return (
     <div className="mb-1">
-      {/* Commentaire principal */}
       <motion.div
         layout="position"
         initial={{ opacity: 0, y: 8 }}
@@ -206,7 +198,6 @@ const CommentRow = memo(({
           size={40}
           onClick={() => user._id && onNavigate?.(`/profile/${user._id}`)}
         />
-
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-2">
             <div className="flex-1 min-w-0">
@@ -220,8 +211,6 @@ const CommentRow = memo(({
                 {comment.content}
               </span>
             </div>
-
-            {/* Like commentaire */}
             {!comment.isOptimistic && (
               <button
                 onClick={() => onLike(comment._id)}
@@ -240,14 +229,10 @@ const CommentRow = memo(({
               </button>
             )}
           </div>
-
-          {/* Actions sous le commentaire */}
           <div className="flex items-center gap-4 mt-1.5">
             <span className={`text-[12px] ${isDarkMode ? "text-gray-600" : "text-gray-400"}`}>
               {comment.isOptimistic ? "Envoi..." : timeAgo(comment.createdAt)}
             </span>
-
-            {/* Bouton Répondre */}
             {!comment.isOptimistic && (
               <button
                 onClick={() => onReply(comment._id, user.fullName)}
@@ -260,8 +245,6 @@ const CommentRow = memo(({
                 {isReplying ? "✓ En cours…" : "Répondre"}
               </button>
             )}
-
-            {/* Supprimer */}
             {isMe && !comment.isOptimistic && (
               <button
                 onClick={() => onDelete(comment._id)}
@@ -272,8 +255,6 @@ const CommentRow = memo(({
               </button>
             )}
           </div>
-
-          {/* Afficher/Masquer les réponses */}
           {replies.length > 0 && (
             <button
               onClick={() => setShowReplies(v => !v)}
@@ -290,7 +271,6 @@ const CommentRow = memo(({
         </div>
       </motion.div>
 
-      {/* Réponses imbriquées */}
       <AnimatePresence>
         {showReplies && replies.length > 0 && (
           <motion.div
@@ -384,17 +364,11 @@ const PostCommentsModal = ({
   isMockPost = false,
 }) => {
   const { isDarkMode } = useDarkMode();
-
-  // State saisie
-  const [text,         setText]         = useState("");
-  const [showEmoji,    setShowEmoji]     = useState(false);
-  const [sending,      setSending]       = useState(false);
-  const [viewportH,    setViewportH]     = useState("100dvh");
-
-  // State réponse active : { commentId, username }
+  const [text,      setText]      = useState("");
+  const [showEmoji, setShowEmoji] = useState(false);
+  const [sending,   setSending]   = useState(false);
+  const [viewportH, setViewportH] = useState("100dvh");
   const [replyTarget, setReplyTarget] = useState(null);
-
-  // Refs
   const listRef  = useRef(null);
   const inputRef = useRef(null);
 
@@ -403,7 +377,6 @@ const PostCommentsModal = ({
     [comments]
   );
 
-  // ── Body lock ──
   useEffect(() => {
     if (!isOpen) return;
     const prev = document.body.style.overflow;
@@ -411,7 +384,6 @@ const PostCommentsModal = ({
     return () => { document.body.style.overflow = prev; };
   }, [isOpen]);
 
-  // ── Keyboard-aware (iOS) ──
   useEffect(() => {
     if (!isOpen) return;
     const vv = window.visualViewport;
@@ -423,14 +395,10 @@ const PostCommentsModal = ({
     return () => { vv.removeEventListener("resize", update); vv.removeEventListener("scroll", update); };
   }, [isOpen]);
 
-  // ── Focus input quand on active une réponse ──
   useEffect(() => {
-    if (replyTarget) {
-      setTimeout(() => inputRef.current?.focus(), 80);
-    }
+    if (replyTarget) setTimeout(() => inputRef.current?.focus(), 80);
   }, [replyTarget]);
 
-  // ── Scroll bas après nouveau commentaire ──
   useEffect(() => {
     if (!isOpen || !listRef.current) return;
     const t = setTimeout(() =>
@@ -438,9 +406,7 @@ const PostCommentsModal = ({
     return () => clearTimeout(t);
   }, [safeComments.length, isOpen]);
 
-  // ─────────────────────────────────────────────
-  // ENVOYER (commentaire ou réponse)
-  // ─────────────────────────────────────────────
+  // ── ENVOYER ──
   const handleSend = useCallback(async () => {
     if (!currentUser) return showToast?.("Connectez-vous pour commenter", "error");
     const content = text.trim();
@@ -448,44 +414,29 @@ const PostCommentsModal = ({
 
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const optimistic = {
-      _id: tempId,
-      content,
-      user: {
-        _id: currentUser._id,
-        fullName: currentUser.fullName || "Moi",
-        profilePhoto: currentUser.profilePhoto,
-      },
+      _id: tempId, content,
+      user: { _id: currentUser._id, fullName: currentUser.fullName || "Moi", profilePhoto: currentUser.profilePhoto },
       createdAt: new Date().toISOString(),
       isOptimistic: !isMockPost,
-      likes: [],
-      replies: [],
+      likes: [], replies: [],
     };
 
-    const currentReplyTarget = replyTarget; // capture avant reset
+    const currentReplyTarget = replyTarget;
 
     if (currentReplyTarget) {
-      // C'est une réponse → on l'insère dans les replies du commentaire parent
-      const replyOptimistic = {
-        ...optimistic,
-        replyTo: currentReplyTarget.username,
-      };
       setComments(prev => prev.map(c =>
         c._id === currentReplyTarget.commentId
-          ? { ...c, replies: [...(c.replies || []), replyOptimistic] }
+          ? { ...c, replies: [...(c.replies || []), { ...optimistic, replyTo: currentReplyTarget.username }] }
           : c
       ));
     } else {
-      // Commentaire principal
       setComments(prev => [...prev, optimistic]);
     }
 
     setText("");
     setReplyTarget(null);
     setShowEmoji(false);
-    if (inputRef.current) {
-      inputRef.current.style.height = "auto";
-      inputRef.current.blur();
-    }
+    if (inputRef.current) { inputRef.current.style.height = "auto"; inputRef.current.blur(); }
 
     if (isMockPost) { showToast?.("Commentaire ajouté !", "success"); return; }
 
@@ -494,7 +445,8 @@ const PostCommentsModal = ({
       const token = await getToken();
       if (!token) throw new Error("Non authentifié");
 
-      // Endpoint : réponse ou commentaire principal
+      // ✅ BASE_URL = "http://localhost:5000" (sans /api)
+      // endpoint = "/api/posts/..." → résultat correct : "http://localhost:5000/api/posts/..."
       const endpoint = currentReplyTarget
         ? `${BASE_URL}/api/posts/${postId}/comment/${currentReplyTarget.commentId}/reply`
         : `${BASE_URL}/api/posts/${postId}/comment`;
@@ -505,7 +457,7 @@ const PostCommentsModal = ({
         body: JSON.stringify({ content }),
       });
 
-      if (!res.ok) throw new Error("Erreur serveur");
+      if (!res.ok) throw new Error(`Erreur serveur ${res.status}`);
       const data = await res.json();
       const saved = data.data || data;
 
@@ -518,7 +470,7 @@ const PostCommentsModal = ({
       } else {
         setComments(prev => prev.map(c => c._id === tempId ? saved : c));
       }
-    } catch {
+    } catch (err) {
       // Rollback
       if (currentReplyTarget) {
         setComments(prev => prev.map(c =>
@@ -536,17 +488,12 @@ const PostCommentsModal = ({
     }
   }, [currentUser, text, postId, isMockPost, getToken, setComments, showToast, replyTarget]);
 
-  // ─────────────────────────────────────────────
-  // SUPPRIMER (commentaire ou réponse)
-  // commentId optionnel → si fourni, c'est une réponse
-  // ─────────────────────────────────────────────
+  // ── SUPPRIMER ──
   const handleDelete = useCallback(async (id, parentCommentId = null) => {
     if (!window.confirm("Supprimer ce commentaire ?")) return;
-
     const prevComments = [...comments];
 
     if (parentCommentId) {
-      // Supprimer une réponse
       setComments(prev => prev.map(c =>
         c._id === parentCommentId
           ? { ...c, replies: (c.replies || []).filter(r => r._id !== id) }
@@ -564,9 +511,7 @@ const PostCommentsModal = ({
         ? `${BASE_URL}/api/posts/${postId}/comment/${parentCommentId}/reply/${id}`
         : `${BASE_URL}/api/posts/${postId}/comment/${id}`;
 
-      const res = await fetch(endpoint, {
-        method: "DELETE", headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(endpoint, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error();
       showToast?.("Supprimé", "success");
     } catch {
@@ -575,9 +520,7 @@ const PostCommentsModal = ({
     }
   }, [comments, postId, isMockPost, getToken, setComments, showToast]);
 
-  // ─────────────────────────────────────────────
-  // LIKER (commentaire ou réponse)
-  // ─────────────────────────────────────────────
+  // ── LIKER ──
   const handleLike = useCallback(async (id, parentCommentId = null) => {
     if (!currentUser) return showToast?.("Connectez-vous", "info");
 
@@ -632,13 +575,8 @@ const PostCommentsModal = ({
     }
   }, [currentUser, postId, isMockPost, getToken, setComments, showToast]);
 
-  // ─────────────────────────────────────────────
-  // Activer le mode "répondre"
-  // ─────────────────────────────────────────────
   const handleStartReply = useCallback((commentId, username) => {
-    setReplyTarget(prev =>
-      prev?.commentId === commentId ? null : { commentId, username }
-    );
+    setReplyTarget(prev => prev?.commentId === commentId ? null : { commentId, username });
   }, []);
 
   const handleKeyDown = (e) => {
@@ -647,16 +585,12 @@ const PostCommentsModal = ({
   };
 
   const hasMedia = !!postMediaUrl;
-  const placeholder = replyTarget
-    ? `Répondre à @${replyTarget.username}…`
-    : "Ajouter un commentaire…";
+  const placeholder = replyTarget ? `Répondre à @${replyTarget.username}…` : "Ajouter un commentaire…";
 
-  // ─────────────────────────────────────────────
   const content = (
     <AnimatePresence>
       {isOpen && (
         <>
-          {/* Backdrop */}
           <motion.div
             key="bd"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -664,23 +598,17 @@ const PostCommentsModal = ({
             className="fixed inset-0 z-[400] bg-black/85"
             onClick={onClose}
           />
-
-          {/* Modal */}
           <motion.div
             key="modal"
             initial={{ opacity: 0, y: "3%" }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: "3%" }}
             transition={{ type: "spring", damping: 28, stiffness: 300 }}
-            className={`fixed z-[401] flex overflow-hidden
-              inset-0
-              sm:inset-6 sm:rounded-2xl
-              ${isDarkMode ? "bg-[#0a0a0a]" : "bg-white"}
-            `}
+            className={`fixed z-[401] flex overflow-hidden inset-0 sm:inset-6 sm:rounded-2xl
+              ${isDarkMode ? "bg-[#0a0a0a]" : "bg-white"}`}
             style={{ height: viewportH, maxHeight: "100%" }}
             onClick={e => e.stopPropagation()}
           >
-            {/* ── Colonne gauche : media (desktop) ── */}
             {hasMedia && (
               <div className={`hidden sm:flex flex-col border-r flex-shrink-0 sm:w-[42%] lg:w-[50%]
                 ${isDarkMode ? "border-gray-800" : "border-gray-100"}`}>
@@ -692,9 +620,7 @@ const PostCommentsModal = ({
               </div>
             )}
 
-            {/* ── Colonne droite : commentaires ── */}
             <div className="flex flex-col flex-1 min-w-0 min-h-0">
-
               {/* Header */}
               <div className={`flex-shrink-0 flex items-center gap-3 px-4 py-3.5 border-b
                 ${isDarkMode ? "border-gray-800" : "border-gray-100"}`}>
@@ -714,7 +640,7 @@ const PostCommentsModal = ({
                 </h2>
               </div>
 
-              {/* Résumé post — mobile uniquement */}
+              {/* Résumé post — mobile */}
               {(hasMedia || postContent) && (
                 <div className={`sm:hidden flex-shrink-0 flex items-center gap-3 px-4 py-3 border-b
                   ${isDarkMode ? "border-gray-800 bg-black/40" : "border-gray-100 bg-gray-50/80"}`}>
@@ -744,7 +670,7 @@ const PostCommentsModal = ({
                 </div>
               )}
 
-              {/* ── Liste commentaires ── */}
+              {/* Liste commentaires */}
               <div ref={listRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain py-2"
                 style={{ WebkitOverflowScrolling: "touch" }}>
                 {safeComments.length === 0 ? (
@@ -781,7 +707,7 @@ const PostCommentsModal = ({
                 )}
               </div>
 
-              {/* ── Emoji Picker ── */}
+              {/* Emoji Picker */}
               <AnimatePresence>
                 {showEmoji && (
                   <motion.div
@@ -791,11 +717,7 @@ const PostCommentsModal = ({
                     className={`flex-shrink-0 border-t ${isDarkMode ? "border-gray-800" : "border-gray-100"}`}
                   >
                     <EmojiPicker
-                      onEmojiClick={(e) => {
-                        setText(prev => prev + e.emoji);
-                        setShowEmoji(false);
-                        inputRef.current?.focus();
-                      }}
+                      onEmojiClick={(e) => { setText(prev => prev + e.emoji); setShowEmoji(false); inputRef.current?.focus(); }}
                       theme={isDarkMode ? "dark" : "light"}
                       width="100%" height={280}
                       searchDisabled={false}
@@ -806,7 +728,7 @@ const PostCommentsModal = ({
                 )}
               </AnimatePresence>
 
-              {/* ── Bandeau "Répondre à @X" ── */}
+              {/* Bandeau répondre */}
               <AnimatePresence>
                 {replyTarget && (
                   <motion.div
@@ -829,13 +751,12 @@ const PostCommentsModal = ({
                 )}
               </AnimatePresence>
 
-              {/* ── Zone de saisie ── */}
+              {/* Zone de saisie */}
               <div
                 className={`flex-shrink-0 px-3 py-3 border-t flex items-end gap-2
                   ${isDarkMode ? "border-gray-800 bg-[#0a0a0a]" : "border-gray-100 bg-white"}`}
                 style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
               >
-                {/* Avatar */}
                 {currentUser && (
                   <div className="flex-shrink-0 mb-1">
                     <Avatar
@@ -846,7 +767,6 @@ const PostCommentsModal = ({
                   </div>
                 )}
 
-                {/* Textarea */}
                 <div className={`flex-1 flex items-end gap-2 rounded-2xl px-4 py-2.5 transition-all duration-150
                   ${isDarkMode
                     ? "bg-gray-900 border border-gray-800 focus-within:border-orange-500/40"
@@ -878,7 +798,6 @@ const PostCommentsModal = ({
                   </button>
                 </div>
 
-                {/* Envoyer */}
                 <motion.button
                   whileTap={{ scale: 0.85 }}
                   onClick={handleSend}
@@ -895,7 +814,6 @@ const PostCommentsModal = ({
                   }
                 </motion.button>
               </div>
-
             </div>
           </motion.div>
         </>

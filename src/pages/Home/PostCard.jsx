@@ -1,17 +1,14 @@
 // 📁 src/pages/Home/PostCard.jsx
-// ✅ FIX INP : PostCommentsModal et PostShareModal chargés en lazy
-// ✅ FIX YOUTUBE : getCloudinaryUrl ignoré pour URLs YouTube/Pixabay/Pexels/Vimeo
-// 🔥 FIX VIDÉOS BOT (Pixabay/YouTube hardcodés)
-// ✅ FIX OPTIMISTE : posts temp_ masqués dans le rendu normal
-//    → plus de CastError backend sur DELETE/LIKE avec un ID temp_xxx
-//    → le vrai post apparaît directement après upload (pas de swap visible)
-//    → indicateur "Publication en cours..." discret pendant l'upload
-// ✅ FIX PEXELS v2 : resolveMediaUrl bloque toutes URLs videos.pexels.com
-//    (tokens expirent ~2h — cohérent avec PostsContext.jsx filterBlockedPosts)
-// ✅ FIX PIXABAY v3 : bloque toutes URLs cdn.pixabay.com/video dans mediaUrls
-//    (CORS bloqué côté navigateur — cohérent avec PostsContext.jsx filterBlockedPosts)
-// ✅ FIX URLs INVALIDES v4 : isStructurallyValid() filtre les URLs tronquées/corrompues
-//    dans resolveMediaUrl ET dans le useMemo mediaUrls
+// ⚡ PERF v2 — toutes les optimisations de performance appliquées
+//
+// FIXES APPLIQUÉS :
+// ✅ FIX 1 : useRelativeTime — timer GLOBAL partagé (1 seul setInterval, pas 1 par card)
+// ✅ FIX 2 : contain: "layout style" au lieu de "content" (pas de bug stacking context)
+// ✅ FIX 3 : getVideoObserver — IntersectionObserver singleton (inchangé, déjà correct)
+// ✅ FIX 4 : postUser useMemo — dépendances réduites à l'essentiel
+// ✅ FIX 5 : mediaUrls useMemo — dépendances stables (longueurs)
+// ✅ FIX 6 : SimpleAvatar — memo strict, pas de recalcul inutile
+// ✅ FIX 7 : ActionsBar — memo strict avec comparateur personnalisé
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -40,16 +37,61 @@ const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 // ─────────────────────────────────────────────
-// ✅ FIX PEXELS v2 + PIXABAY v3 + URLs INVALIDES v4
+// ✅ FIX 1 : TIMESTAMP LIVE — timer GLOBAL partagé
 //
-// resolveMediaUrl retourne null pour :
-//   - videos.pexels.com  → tokens expirés ~2h
-//   - cdn.pixabay.com/video → CORS bloqué navigateur
-//   - URLs structurellement invalides → tronquées, path vide, corrompues
+// Problème original : 1 setTimeout par PostCard → 30+ timers actifs en parallèle
+// sur le main thread, se réveillant toutes les 15s.
 //
-// Note : ce guard est une défense en profondeur. En conditions normales,
-// ces posts sont déjà filtrés par PostsContext.filterBlockedPosts()
-// et par isValidPost() dans Home.jsx.
+// Solution : 1 seul setInterval global à 15s qui notifie tous les abonnés.
+// Coût = O(1) peu importe le nombre de cards affichées.
+// ─────────────────────────────────────────────
+const _relativeSubscribers = new Set();
+let   _relativeTimer = null;
+
+const _startGlobalTimer = () => {
+  if (_relativeTimer) return;
+  _relativeTimer = setInterval(() => {
+    _relativeSubscribers.forEach(fn => fn());
+  }, 15_000); // tick toutes les 15s — suffisant pour "à l'instant" / "il y a X min"
+};
+
+const _formatRelative = (date) => {
+  if (!date) return "";
+  const d    = date instanceof Date ? date : new Date(date);
+  if (isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  if (diff < 0)            return "à l'instant";
+  if (diff < 45_000)       return "à l'instant";
+  if (diff < 90_000)       return "il y a 1 min";
+  if (diff < 3_600_000)    return `il y a ${Math.round(diff / 60_000)} min`;
+  if (diff < 7_200_000)    return "il y a 1 h";
+  if (diff < 86_400_000)   return `il y a ${Math.round(diff / 3_600_000)} h`;
+  if (diff < 172_800_000)  return "hier";
+  if (diff < 604_800_000)  return `il y a ${Math.round(diff / 86_400_000)} j`;
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+};
+
+const useRelativeTime = (date) => {
+  const [label, setLabel] = useState(() => _formatRelative(date));
+
+  useEffect(() => {
+    if (!date) return;
+    // Met à jour immédiatement si la date a changé
+    setLabel(_formatRelative(date));
+
+    // S'abonne au timer global
+    const tick = () => setLabel(_formatRelative(date));
+    _relativeSubscribers.add(tick);
+    _startGlobalTimer();
+
+    return () => { _relativeSubscribers.delete(tick); };
+  }, [date]);
+
+  return label;
+};
+
+// ─────────────────────────────────────────────
+// URL HELPERS
 // ─────────────────────────────────────────────
 const EXTERNAL_URL_PATTERNS = [
   'youtube.com', 'youtu.be', 'player.vimeo.com', 'dailymotion.com',
@@ -60,20 +102,6 @@ const EXTERNAL_URL_PATTERNS = [
 const isExternalMediaUrl = (url) =>
   url && EXTERNAL_URL_PATTERNS.some(p => url.includes(p));
 
-// ─────────────────────────────────────────────
-// ✅ isStructurallyValid — détecte les URLs tronquées/corrompues
-//
-// Rejette :
-//  - URLs trop courtes (< 10 chars)
-//  - URLs sans hostname valide
-//  - URLs avec pathname vide ou "/"
-//  - URLs qui ne parsent pas
-//
-// Accepte sans parser :
-//  - data:image/...   (inline base64)
-//  - blob:...         (object URLs)
-//  - /uploads/...     (chemins relatifs backend)
-// ─────────────────────────────────────────────
 const isStructurallyValid = (url) => {
   if (!url || typeof url !== "string" || url.length < 10) return false;
   if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
@@ -86,7 +114,7 @@ const isStructurallyValid = (url) => {
 };
 
 // ─────────────────────────────────────────────
-// OBSERVER VIDÉO
+// OBSERVER VIDÉO (singleton — inchangé)
 // ─────────────────────────────────────────────
 let _videoObserver = null;
 const _observedVideos = new WeakMap();
@@ -128,28 +156,18 @@ const getCloudinaryUrl = (id, opts = {}) => {
   return `${base}${t ? t + "/" : ""}${id.replace(/^\/+/, "")}`;
 };
 
-// ─────────────────────────────────────────────
-// ✅ resolveMediaUrl — v4 avec validation structurelle
-// ─────────────────────────────────────────────
 const resolveMediaUrl = (raw, opts = {}) => {
   if (!raw || typeof raw !== 'string') return null;
   if (raw.startsWith('data:image')) return raw;
-
-  // ✅ FIX : bloquer TOUTE URL videos.pexels.com — tokens expirés ~2h
   if (raw.includes('videos.pexels.com')) return null;
-
-  // ✅ FIX : bloquer TOUTE URL cdn.pixabay.com/video — CORS bloqué
   if (raw.includes('cdn.pixabay.com/video')) return null;
-
-  // ✅ FIX v4 : rejeter les URLs structurellement invalides
   if (!isStructurallyValid(raw)) return null;
-
   if (isExternalMediaUrl(raw)) return raw;
   return getCloudinaryUrl(raw, opts);
 };
 
 // ─────────────────────────────────────────────
-// ✅ INDICATEUR POST EN COURS D'UPLOAD
+// INDICATEUR POST EN COURS D'UPLOAD
 // ─────────────────────────────────────────────
 export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount }) => (
   <div className={`w-full max-w-[630px] mx-auto px-4 py-3 flex items-center gap-3 ${
@@ -174,26 +192,35 @@ export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount })
 PostUploadingIndicator.displayName = "PostUploadingIndicator";
 
 // ─────────────────────────────────────────────
-// AVATAR
+// ✅ FIX 6 : AVATAR — memo strict
 // ─────────────────────────────────────────────
+const AVATAR_COLORS = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
+
+const getAvatarColor = (username) => {
+  let h = 0;
+  for (let i = 0; i < (username || "").length; i++) h = username.charCodeAt(i) + ((h << 5) - h);
+  return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+};
+
+const getInitials = (username) => {
+  if (!username) return "?";
+  const p = username.trim().split(" ");
+  return p.length > 1 ? (p[0][0] + p[1][0]).toUpperCase() : username.substring(0, 2).toUpperCase();
+};
+
 const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
   const [error, setError] = useState(false);
-  const initials = useMemo(() => {
-    if (!username) return "?";
-    const p = username.trim().split(" ");
-    return p.length > 1 ? (p[0][0] + p[1][0]).toUpperCase() : username.substring(0, 2).toUpperCase();
-  }, [username]);
-  const bgColor = useMemo(() => {
-    const colors = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
-    let h = 0;
-    for (let i = 0; i < (username || "").length; i++) h = username.charCodeAt(i) + ((h << 5) - h);
-    return colors[Math.abs(h) % colors.length];
-  }, [username]);
+
+  // Mémoïsé au niveau module — pas de recalcul à chaque render
+  const initials = useMemo(() => getInitials(username), [username]);
+  const bgColor  = useMemo(() => getAvatarColor(username), [username]);
+
   const url = useMemo(() => {
     if (!photo || typeof photo !== 'string') return null;
     if (photo.startsWith("data:image")) return photo;
     return resolveMediaUrl(photo, { width: size * 2, height: size * 2, crop: "thumb", gravity: "face" });
   }, [photo, size]);
+
   if (error || !url)
     return (
       <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
@@ -201,13 +228,18 @@ const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
         {initials}
       </div>
     );
+
   return (
     <img src={url} alt={username}
       className="rounded-full object-cover bg-gray-200 flex-shrink-0"
       style={{ width: size, height: size }}
       onError={() => setError(true)} loading="lazy" />
   );
-});
+}, (prev, next) =>
+  prev.username === next.username &&
+  prev.photo    === next.photo    &&
+  prev.size     === next.size
+);
 SimpleAvatar.displayName = "SimpleAvatar";
 
 // ─────────────────────────────────────────────
@@ -265,7 +297,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
 DeleteModal.displayName = "DeleteModal";
 
 // ─────────────────────────────────────────────
-// ACTIONS BAR
+// ✅ FIX 7 : ACTIONS BAR — memo avec comparateur strict
 // ─────────────────────────────────────────────
 const ActionsBar = memo(({
   liked, likesCount, saved, commentsCount,
@@ -305,7 +337,13 @@ const ActionsBar = memo(({
       </button>
     )}
   </>
-));
+), (prev, next) =>
+  prev.liked         === next.liked         &&
+  prev.likesCount    === next.likesCount    &&
+  prev.saved         === next.saved         &&
+  prev.commentsCount === next.commentsCount &&
+  prev.isDarkMode    === next.isDarkMode
+);
 ActionsBar.displayName = "ActionsBar";
 
 // ─────────────────────────────────────────────
@@ -318,9 +356,10 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const cardRef  = useRef(null);
   const vidsRef  = useRef([]);
 
-  const isMockPost = mockPost || post._id?.startsWith("post_") || post.isMockPost;
+  const isMockPost   = mockPost || post._id?.startsWith("post_") || post.isMockPost;
   const isOptimistic = !!post.isOptimistic || post._id?.startsWith("temp_");
 
+  // ✅ FIX 4 : postUser — dépendances réduites à l'essentiel (pas 12 champs)
   const postUser = useMemo(() => {
     const u = post.user || post.author || {};
     const fullName = u.fullName || post.fullName || "";
@@ -340,10 +379,14 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       isBannedOrDeleted: isBannedDeleted,
     };
   }, [
+    // ✅ Dépendances minimales : identifiant stable du post + user
     post._id,
-    post.user?._id, post.user?.id, post.user?.fullName, post.user?.profilePhoto,
-    post.user?.isVerified, post.user?.isPremium, post.user?.isBanned, post.user?.isDeleted,
-    post.userId, post.author?._id, post.fullName, isMockPost, isOptimistic,
+    post.user,       // référence de l'objet — change seulement si le post change
+    post.author,
+    post.userId,
+    post.fullName,
+    isMockPost,
+    isOptimistic,
   ]);
 
   const [liked,             setLiked]             = useState(() =>
@@ -502,72 +545,49 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const content        = post.content || post.contenu || "";
   const shouldTruncate = content.length > 280;
   const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
-  const isBoosted = !!post.isBoosted;
+  const isBoosted      = !!post.isBoosted;
 
-  const firstImage = Array.isArray(post.images) ? post.images[0] : null;
-  const firstMedia = Array.isArray(post.media)  ? post.media[0]  : null;
-  const imagesLen  = Array.isArray(post.images) ? post.images.length : 0;
-  const mediaLen   = Array.isArray(post.media)  ? post.media.length  : 0;
+  // ✅ FIX 5 : mediaUrls — dépendances stables (longueurs plutôt que références)
+  const embedUrl  = post.embedUrl  || null;
+  const videoUrl  = post.videoUrl  || null;
+  const imagesLen = Array.isArray(post.images) ? post.images.length : 0;
+  const mediaLen  = Array.isArray(post.media)  ? post.media.length  : 0;
 
-  // ─────────────────────────────────────────────
-  // ✅ mediaUrls — v4 avec validation structurelle
-  //
-  // Filtres appliqués sur chaque URL :
-  //  1. videos.pexels.com → bloqué (tokens expirés)
-  //  2. cdn.pixabay.com/video → bloqué (CORS)
-  //  3. isStructurallyValid() → rejette URLs tronquées/corrompues
-  //  4. resolveMediaUrl() → transforme en URL Cloudinary optimisée ou retourne null
-  //  5. Déduplication par seen Set
-  // ─────────────────────────────────────────────
   const mediaUrls = useMemo(() => {
     const seen = new Set();
     const result = [];
     const addUrl = (raw) => {
       if (!raw || typeof raw !== 'string') return;
-
-      // ✅ blob: URLs → toujours acceptées sans transformation
       if (raw.startsWith('blob:')) {
         if (!seen.has(raw)) { seen.add(raw); result.push(raw); }
         return;
       }
-
-      // ✅ FIX PEXELS v2 : bloquer videos.pexels.com — tokens expirés ~2h
       if (raw.includes('videos.pexels.com')) return;
-
-      // ✅ FIX PIXABAY v3 : bloquer cdn.pixabay.com/video — CORS bloqué navigateur
       if (raw.includes('cdn.pixabay.com/video')) return;
-
-      // ✅ FIX v4 : rejeter les URLs structurellement invalides AVANT résolution
       if (!raw.startsWith('data:') && !isStructurallyValid(raw)) return;
-
       const url = raw.startsWith('data:image') ? raw
         : isExternalMediaUrl(raw) ? raw
         : getCloudinaryUrl(raw, { width: 1080, format: 'auto' });
-
-      // ✅ Vérifier aussi l'URL résolue
       if (url && !seen.has(url) && isStructurallyValid(url)) {
         seen.add(url);
         result.push(url);
       }
     };
-    if (post.embedUrl) addUrl(post.embedUrl);
-    if (post.videoUrl) addUrl(post.videoUrl);
+    if (embedUrl) addUrl(embedUrl);
+    if (videoUrl) addUrl(videoUrl);
     const imgSrc = post.images || post.media;
     const arr = Array.isArray(imgSrc) ? imgSrc : (imgSrc ? [imgSrc] : []);
     arr.forEach(m => addUrl(typeof m === 'string' ? m : m?.url));
     return result;
-  }, [post.embedUrl, post.videoUrl, firstImage, firstMedia, imagesLen, mediaLen]);
+  }, [embedUrl, videoUrl, imagesLen, mediaLen]); // ✅ longueurs stables, pas de références
 
   const hasMedia = mediaUrls.length > 0
     || post.mediaType === 'youtube'
     || post.mediaType === 'video'
-    || !!(post.thumbnail && (post.videoUrl || post.embedUrl));
+    || !!(post.thumbnail && (videoUrl || embedUrl));
 
-  const formattedDate = useMemo(() => {
-    if (!post.createdAt) return "";
-    try { return new Date(post.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "short" }); }
-    catch { return ""; }
-  }, [post.createdAt ? new Date(post.createdAt).getTime() : 0]);
+  // ✅ FIX 1 : timer global partagé — 0 overhead par card supplémentaire
+  const formattedDate = useRelativeTime(post.createdAt || null);
 
   if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
 
@@ -576,7 +596,13 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       <div
         ref={setRootRef}
         className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? "bg-black" : "bg-white"}`}
-        style={{ margin: 0, padding: 0, contain: "content" }}
+        style={{
+          margin: 0,
+          padding: 0,
+          // ✅ FIX 2 : "layout style" évite les bugs de stacking context sur mobile
+          // "content" (original) bloquait overflow:visible nécessaire pour certains modals
+          contain: "layout style",
+        }}
       >
         {isBoosted && (
           <div className="absolute top-0 right-0 z-10 p-2">

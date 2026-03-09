@@ -4,8 +4,8 @@
 // ✅ Fix posts non affichés au premier rendu
 // ✅ Profil BOT consultable — traité exactement comme un vrai utilisateur
 // ✅ FIX HTTP 400 : garde ObjectId — attend un vrai _id MongoDB avant tout fetch
-//    Les comptes auto (bots) ont de vrais ObjectIds → fonctionnent normalement
-//    L'ID temporaire client (user_6_xxx) est ignoré jusqu'au vrai ID serveur
+// ✅ FALLBACK HOME : expose les posts chargés via window.__profilePostsCache__
+//    Home.jsx peut les consommer si son propre feed est vide
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -34,11 +34,79 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 // ─────────────────────────────────────────────
 // GUARD ObjectId — 24 caractères hexadécimaux
-// Les bots ont de vrais ObjectIds MongoDB (ex: 6651f3a2e4b0c12345678901)
-// Les IDs temporaires clients (ex: user_6_1772309482858_41942) sont rejetés
 // ─────────────────────────────────────────────
 const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
 
+// ─────────────────────────────────────────────
+// CACHE GLOBAL DE POSTS DE PROFILS
+// Permet à Home.jsx de consommer des posts depuis les profils visités
+// sans déclencher de requêtes réseau supplémentaires.
+//
+// Structure : window.__profilePostsCache__ = Map<userId, { posts, ts }>
+// TTL : 5 minutes — après quoi Home ignorera les entrées périmées
+// ─────────────────────────────────────────────
+const PROFILE_CACHE_TTL = 5 * 60 * 1000;
+
+const getProfilePostsCache = () => {
+  if (!window.__profilePostsCache__) {
+    window.__profilePostsCache__ = new Map();
+  }
+  return window.__profilePostsCache__;
+};
+
+/**
+ * Stocke les posts d'un profil dans le cache global partagé.
+ * Appelé chaque fois que ProfilePage charge des posts avec succès.
+ */
+const storeProfilePostsInCache = (userId, posts) => {
+  if (!userId || !Array.isArray(posts) || posts.length === 0) return;
+  try {
+    const cache = getProfilePostsCache();
+    cache.set(userId, { posts, ts: Date.now() });
+    // Garder max 20 entrées pour éviter une fuite mémoire
+    if (cache.size > 20) {
+      const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+      if (oldest) cache.delete(oldest[0]);
+    }
+    // Émettre un événement custom pour que Home puisse réagir immédiatement
+    window.dispatchEvent(new CustomEvent("profilePostsCached", {
+      detail: { userId, count: posts.length }
+    }));
+  } catch {
+    // Silencieux — le cache est best-effort
+  }
+};
+
+/**
+ * Lit tous les posts du cache global (tous profils confondus), dédupliqués.
+ * Utilisé par Home.jsx comme source de fallback.
+ * @param {number} maxAge - Ignore les entrées plus vieilles que maxAge ms (défaut: TTL)
+ */
+export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
+  try {
+    const cache = getProfilePostsCache();
+    const now = Date.now();
+    const seen = new Set();
+    const result = [];
+    // Trier par fraîcheur — les plus récents en premier
+    const sorted = [...cache.entries()].sort((a, b) => b[1].ts - a[1].ts);
+    for (const [, { posts, ts }] of sorted) {
+      if (now - ts > maxAge) continue;
+      for (const p of posts) {
+        if (!p?._id || seen.has(p._id)) continue;
+        seen.add(p._id);
+        result.push({ ...p, _fromProfileCache: true });
+      }
+    }
+    return result;
+  } catch {
+    return [];
+  }
+};
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
 const normalizePost = (p) => ({
   _id: p._id || p.id,
   content: p.content || "",
@@ -89,9 +157,6 @@ const extractUserFromResponse = (data) => {
   return null;
 };
 
-// Reconstruit un profil minimal depuis le premier post d'un compte
-// quand l'API /users/:id est indisponible ou retourne 404
-// Fonctionne pour les bots ET les vrais utilisateurs
 const buildUserFromPost = (post) => {
   if (!post) return null;
   const u = post.user || {};
@@ -191,9 +256,7 @@ export default function ProfilePage({
   const [page,           setPage]           = useState(1);
   const [hasMore,        setHasMore]        = useState(true);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
-  // isBot : utilisé uniquement pour masquer Settings/CreatePost, PAS pour l'affichage
   const [isBot,          setIsBot]          = useState(false);
-
   const [isLoadingUser,  setIsLoadingUser]  = useState(!initialUser && !(isOwner && authUser));
   const [authToken,      setAuthToken]      = useState(null);
 
@@ -212,7 +275,6 @@ export default function ProfilePage({
 
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
-    // ✅ Ne requête pas le serveur avec un ID temporaire client
     if (!isValidObjectId(uid)) return null;
     const cached = requestCache.current.get(uid);
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
@@ -233,8 +295,6 @@ export default function ProfilePage({
     }
   }, []);
 
-  // Fallback : reconstruit le profil depuis les posts publiés
-  // Fonctionne pour les bots (qui ont de vrais ObjectIds) ET les vrais users
   const tryBuildProfileFromPosts = useCallback(async (uid) => {
     if (!isValidObjectId(uid)) return null;
     try {
@@ -299,7 +359,6 @@ export default function ProfilePage({
 
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
     if (!targetId || loadingRef.current) return;
-    // ✅ Garde ObjectId — ne lance aucun fetch avec un ID temporaire
     if (!isValidObjectId(targetId)) {
       console.warn(`[Profile] loadProfilePosts ignoré — ID non-MongoDB: ${targetId}`);
       return;
@@ -318,6 +377,8 @@ export default function ProfilePage({
       if (isMockProfile && initialPosts && !append) {
         postsArray = initialPosts;
         startTransition(() => setProfilePosts(initialPosts));
+        // ✅ Stocker les posts mock dans le cache global aussi
+        storeProfilePostsInCache(targetId, initialPosts);
         return;
       }
 
@@ -327,6 +388,8 @@ export default function ProfilePage({
           if (Array.isArray(cached) && cached.length > 0) {
             postsArray = cached;
             startTransition(() => setProfilePosts(cached));
+            // ✅ Les posts du cache IDB alimentent aussi le cache global
+            storeProfilePostsInCache(targetId, cached);
           }
         } catch (e) {
           console.warn("IDB cache read error:", e);
@@ -355,6 +418,11 @@ export default function ProfilePage({
             .filter(p => { if (seen.has(p._id)) return false; seen.add(p._id); return true; })
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           if (!isMockProfile) savePosts(targetId, uniquePosts);
+
+          // ✅ Stocker dans le cache global partagé avec Home
+          // On stocke même en mode append pour garder le cache à jour
+          storeProfilePostsInCache(targetId, uniquePosts);
+
           return uniquePosts;
         });
       });
@@ -366,6 +434,13 @@ export default function ProfilePage({
       setIsLoadingPosts(false);
     }
   }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts]);
+
+  // ✅ Stocker également quand profilePosts change depuis l'extérieur (ex: socket)
+  useEffect(() => {
+    if (profilePosts.length > 0 && profileUser?._id) {
+      storeProfilePostsInCache(profileUser._id, profilePosts);
+    }
+  }, [profilePosts, profileUser?._id]);
 
   const lastPostRef = useCallback((node) => {
     if (loadingRef.current) return;
@@ -443,11 +518,7 @@ export default function ProfilePage({
   }, [profileUser?._id, loadProfilePosts]);
 
   // ─────────────────────────────────────────────
-  // useEffect principal
-  // ✅ FIX : si l'ID propriétaire n'est pas encore un ObjectId valide (ID temporaire),
-  //    on attend silencieusement sans lancer de fetch — React re-run quand authUser
-  //    se met à jour avec le vrai _id serveur.
-  //    Les bots ont toujours un vrai ObjectId → chargement normal immédiat.
+  // useEffect principal — chargement profil
   // ─────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return;
@@ -468,15 +539,11 @@ export default function ProfilePage({
       return;
     }
 
-    // ✅ Si on consulte son propre profil et que l'ID est encore temporaire,
-    //    on attend que authUser soit mis à jour avec le vrai ObjectId MongoDB.
-    //    Pendant ce temps on affiche le profil depuis authUser (sans fetch réseau).
     if (isOwner && !isValidObjectId(targetUserId)) {
-      console.warn(`[Profile] ID propriétaire temporaire détecté (${targetUserId}) — attente du vrai ObjectId...`);
+      console.warn(`[Profile] ID propriétaire temporaire (${targetUserId}) — attente ObjectId...`);
       setProfileUser(authUser);
       setIsBot(false);
       setIsLoadingUser(false);
-      // Pas de loadProfilePosts ici — on attend le re-render avec le bon ID
       return;
     }
 
@@ -486,7 +553,6 @@ export default function ProfilePage({
         await idbClearOtherKeys(`profilePosts_${targetUserId}`);
 
         if (isOwner) {
-          // Propriétaire avec un vrai ObjectId
           setProfileUser(authUser);
           setIsBot(false);
           saveUser(authUser);
@@ -496,7 +562,6 @@ export default function ProfilePage({
             }).catch(() => {});
           }
         } else {
-          // Profil tiers (autre user ou bot)
           const cachedUser = await idbGetUser(targetUserId);
           if (cachedUser) {
             setProfileUser(cachedUser);
@@ -511,8 +576,6 @@ export default function ProfilePage({
               setIsBot(!!fetchedUser.isBot);
               saveUser(fetchedUser);
             } else if (!cachedUser) {
-              // Fallback : reconstruit depuis les posts
-              // Fonctionne pour tous les comptes : bots ET vrais utilisateurs
               const fallback = await tryBuildProfileFromPosts(targetUserId);
               if (fallback) {
                 setProfileUser(fallback.user);
@@ -545,7 +608,7 @@ export default function ProfilePage({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, authUser?._id, targetUserId, isOwner]);
 
-  // Socket temps réel (désactivé pour les bots — pas de nouveaux posts en direct)
+  // Socket temps réel
   useEffect(() => {
     if (!socket || !profileUser || isMockProfile || isBot) return;
     const handleNewPost = (post) => {
@@ -556,6 +619,7 @@ export default function ProfilePage({
           if (prev.find(p => p._id === post._id)) return prev;
           const updated = [normalizePost(post), ...prev];
           savePosts(profileUser._id, updated);
+          storeProfilePostsInCache(profileUser._id, updated); // ✅ sync cache global
           return updated;
         });
       });
@@ -565,6 +629,7 @@ export default function ProfilePage({
         setProfilePosts(prev => {
           const updated = prev.filter(p => p._id !== postId);
           savePosts(profileUser._id, updated);
+          storeProfilePostsInCache(profileUser._id, updated); // ✅ sync cache global
           return updated;
         });
       });
@@ -574,6 +639,7 @@ export default function ProfilePage({
         setProfilePosts(prev => {
           const updated = prev.map(p => p._id === post._id ? normalizePost(post) : p);
           savePosts(profileUser._id, updated);
+          storeProfilePostsInCache(profileUser._id, updated); // ✅ sync cache global
           return updated;
         });
       });
@@ -650,7 +716,6 @@ export default function ProfilePage({
             showToast={showLocalToast}
           />
 
-          {/* S'abonner visible pour tous les profils tiers, bots inclus */}
           {!isOwner && (
             <div className="text-center">
               <FollowButton
@@ -683,7 +748,6 @@ export default function ProfilePage({
 
           {selectedTab === "posts" && (
             <div>
-              {/* CreatePost uniquement pour les vrais propriétaires non-bots */}
               {isOwner && !isMockProfile && !isBot && (
                 <div className="mb-4">
                   <CreatePost
@@ -739,7 +803,6 @@ export default function ProfilePage({
             </div>
           )}
 
-          {/* Settings uniquement pour les vrais propriétaires */}
           {selectedTab === "settings" && isOwner && !isBot && (
             <SettingsSection user={authUser} showToast={showLocalToast} />
           )}

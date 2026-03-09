@@ -1,9 +1,7 @@
 // ==========================================
 // 📁 src/components/Header.jsx
-// ✅ Barre de recherche → résultats dans un modal portal (comme PostCommentsModal)
-// ✅ Backdrop séparé avec AnimatePresence + body scroll lock
-// ✅ Fermeture via backdrop click, bouton X, ou touche Escape
-// ✅ Tout le reste inchangé (notifications, dropdown profil, etc.)
+// ✅ Structure originale 100% conservée
+// 🎨 Design Instagram : boutons pill/cercle, gradients, backdrop blur
 // ==========================================
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { createPortal } from "react-dom";
@@ -26,18 +24,25 @@ const UserAvatar = memo(({ user, avatarUrl }) => {
   const [imgError, setImgError] = useState(false);
 
   return (
-    <div className="relative w-10 h-10 rounded-full overflow-hidden ring-2 ring-orange-500/50 shadow-md transition-transform hover:scale-105 active:scale-95">
+    <div
+      className="relative w-10 h-10 rounded-full overflow-hidden transition-transform hover:scale-105 active:scale-95"
+      style={{ boxShadow: "0 0 0 2px #f97316, 0 0 0 4px rgba(249,115,22,0.18)" }}
+    >
       {avatarUrl && !imgError ? (
         <img src={avatarUrl} alt="Profil" className="w-full h-full object-cover"
           onError={() => setImgError(true)} loading="lazy" />
       ) : (
-        <div className="w-full h-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-white font-bold text-lg select-none">
+        <div
+          className="w-full h-full flex items-center justify-center text-white font-bold text-lg select-none"
+          style={{ background: "linear-gradient(135deg, #f97316, #ec4899)" }}
+        >
           {firstLetter}
         </div>
       )}
     </div>
   );
 });
+UserAvatar.displayName = "UserAvatar";
 
 // ─────────────────────────────────────────────
 // RÉSULTAT DE RECHERCHE (ligne individuelle)
@@ -56,12 +61,18 @@ const SearchResultItem = memo(({ profile, onClick, isDarkMode }) => {
         isDarkMode ? "hover:bg-white/[0.04]" : "hover:bg-gray-50"
       }`}
     >
-      <div className="w-12 h-12 rounded-full overflow-hidden flex-shrink-0 border-2 border-gray-200 dark:border-gray-700">
+      <div
+        className="w-12 h-12 rounded-full overflow-hidden flex-shrink-0"
+        style={{ boxShadow: "0 0 0 1.5px rgba(249,115,22,0.35)" }}
+      >
         {profileAvatar && !imgError ? (
           <img src={profileAvatar} alt={profile.fullName || profile.username}
             className="w-full h-full object-cover" onError={() => setImgError(true)} />
         ) : (
-          <div className="w-full h-full bg-gradient-to-br from-orange-400 to-pink-500 flex items-center justify-center text-white font-bold">
+          <div
+            className="w-full h-full flex items-center justify-center text-white font-bold"
+            style={{ background: "linear-gradient(135deg, #f97316, #ec4899)" }}
+          >
             {(profile.fullName?.[0] || profile.username?.[0] || "U").toUpperCase()}
           </div>
         )}
@@ -79,17 +90,19 @@ const SearchResultItem = memo(({ profile, onClick, isDarkMode }) => {
         )}
       </div>
 
-      <div className={`text-xs font-medium px-2.5 py-1 rounded-full flex-shrink-0 ${
-        isDarkMode ? "bg-gray-700 text-gray-300" : "bg-gray-100 text-gray-500"
-      }`}>
+      <div
+        className="text-xs font-semibold px-3 py-1.5 rounded-full flex-shrink-0 text-white"
+        style={{ background: "linear-gradient(135deg, #f97316, #ec4899)" }}
+      >
         Voir →
       </div>
     </motion.div>
   );
 });
+SearchResultItem.displayName = "SearchResultItem";
 
 // ─────────────────────────────────────────────
-// ✅ SEARCH MODAL — portal plein écran (comme PostCommentsModal)
+// SEARCH MODAL — portal plein écran
 // ─────────────────────────────────────────────
 const SearchModal = memo(({ isOpen, onClose, isDarkMode, initialQuery = "", onNavigate }) => {
   const { user, activeUserId, getToken } = useAuth();
@@ -97,10 +110,9 @@ const SearchModal = memo(({ isOpen, onClose, isDarkMode, initialQuery = "", onNa
   const [results,     setResults]     = useState([]);
   const [loading,     setLoading]     = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
-  const inputRef     = useRef(null);
-  const timeoutRef   = useRef(null);
+  const inputRef   = useRef(null);
+  const timeoutRef = useRef(null);
 
-  // Sync query depuis l'extérieur à l'ouverture
   useEffect(() => {
     if (isOpen) {
       setQuery(initialQuery);
@@ -110,7 +122,6 @@ const SearchModal = memo(({ isOpen, onClose, isDarkMode, initialQuery = "", onNa
     }
   }, [isOpen, initialQuery]);
 
-  // Body lock
   useEffect(() => {
     if (!isOpen) return;
     const prev = document.body.style.overflow;
@@ -118,7 +129,6 @@ const SearchModal = memo(({ isOpen, onClose, isDarkMode, initialQuery = "", onNa
     return () => { document.body.style.overflow = prev; };
   }, [isOpen]);
 
-  // Escape key
   useEffect(() => {
     if (!isOpen) return;
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -186,11 +196,12 @@ const SearchModal = memo(({ isOpen, onClose, isDarkMode, initialQuery = "", onNa
               right: 12,
               zIndex: 401,
             }}
-            className={`overflow-hidden rounded-2xl shadow-2xl mx-auto max-w-lg
-              ${isDarkMode ? "bg-[#0f0f0f] border border-gray-800" : "bg-white border border-gray-200"}`}
+            className={`overflow-hidden rounded-2xl shadow-2xl mx-auto max-w-lg ${
+              isDarkMode ? "bg-[#0f0f0f] border border-gray-800" : "bg-white border border-gray-200"
+            }`}
             onClick={e => e.stopPropagation()}
           >
-            {/* Barre de recherche dans le modal */}
+            {/* Input */}
             <div className={`flex items-center gap-3 px-4 py-3.5 border-b ${
               isDarkMode ? "border-gray-800" : "border-gray-100"
             }`}>
@@ -210,11 +221,13 @@ const SearchModal = memo(({ isOpen, onClose, isDarkMode, initialQuery = "", onNa
               />
               <button
                 onClick={onClose}
-                className={`p-1.5 rounded-lg transition-colors flex-shrink-0 ${
-                  isDarkMode ? "text-gray-500 hover:bg-gray-800 hover:text-gray-300" : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                className={`w-7 h-7 flex items-center justify-center rounded-full flex-shrink-0 transition-colors ${
+                  isDarkMode
+                    ? "bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white"
+                    : "bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
                 }`}
               >
-                <X size={18} />
+                <X size={15} />
               </button>
             </div>
 
@@ -285,10 +298,8 @@ const Header = memo(function Header() {
   const [notifications,     setNotifications]     = useState([]);
   const [unreadCount,       setUnreadCount]       = useState(0);
   const [loadingNotifs,     setLoadingNotifs]     = useState(false);
-
-  // ✅ Modal de recherche
-  const [showSearchModal, setShowSearchModal] = useState(false);
-  const [searchBarQuery,  setSearchBarQuery]  = useState(""); // valeur de la mini barre du header
+  const [showSearchModal,   setShowSearchModal]   = useState(false);
+  const [searchBarQuery,    setSearchBarQuery]    = useState("");
 
   const notifRef   = useRef(null);
   const profileRef = useRef(null);
@@ -302,7 +313,6 @@ const Header = memo(function Header() {
     return avatar.startsWith("http") ? avatar : `${API_URL}${avatar}`;
   }, [user]);
 
-  // Fermeture dropdowns au clic extérieur
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (notifRef.current   && !notifRef.current.contains(event.target))   setShowNotifications(false);
@@ -312,7 +322,6 @@ const Header = memo(function Header() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // ── Notifications ──
   const fetchNotifications = useCallback(async () => {
     if (!user?._id) return;
     try {
@@ -364,9 +373,9 @@ const Header = memo(function Header() {
       setUnreadCount(prev => Math.max(0, prev - 1));
     }
     setShowNotifications(false);
-    if (notif.postId)                  navigate(`/post/${notif.postId}`);
+    if (notif.postId)                       navigate(`/post/${notif.postId}`);
     else if (notif.userId || notif.senderId) navigate(`/profile/${notif.userId || notif.senderId}`);
-    else if (notif.link)               navigate(notif.link);
+    else if (notif.link)                    navigate(notif.link);
   };
 
   const handleLogout = () => {
@@ -375,17 +384,11 @@ const Header = memo(function Header() {
     navigate("/auth");
   };
 
-  // ── Ouvrir le modal de recherche en cliquant sur la barre ──
-  const handleSearchBarClick = () => {
-    setShowSearchModal(true);
-  };
-
-  // ── Quand on tape dans la barre du header → ouvre aussi le modal ──
+  const handleSearchBarClick  = () => setShowSearchModal(true);
   const handleSearchBarChange = (e) => {
     setSearchBarQuery(e.target.value);
     if (!showSearchModal) setShowSearchModal(true);
   };
-
   const handleSearchModalClose = () => {
     setShowSearchModal(false);
     setSearchBarQuery("");
@@ -401,37 +404,44 @@ const Header = memo(function Header() {
       >
         <div className="max-w-7xl mx-auto px-4 h-[72px] flex items-center justify-between gap-4">
 
-          {/* LOGO */}
+          {/* ── LOGO ── */}
           <Link to="/" className="flex items-center gap-2 group select-none flex-shrink-0">
             <motion.div
-              whileHover={{ rotate: 10 }}
-              className="w-10 h-10 bg-gradient-to-br from-orange-500 to-pink-500 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg"
+              whileHover={{ rotate: 10, scale: 1.05 }}
+              whileTap={{ scale: 0.92 }}
+              className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg flex-shrink-0"
+              style={{ background: "linear-gradient(135deg, #f97316, #ec4899)" }}
             >
               C
             </motion.div>
-            <span className="text-xl font-bold bg-gradient-to-r from-orange-600 to-pink-600 bg-clip-text text-transparent hidden sm:block">
+            <span
+              className="text-xl font-bold hidden sm:block bg-clip-text text-transparent"
+              style={{ background: "linear-gradient(135deg, #f97316, #ec4899)", WebkitBackgroundClip: "text" }}
+            >
               Chantilink
             </span>
           </Link>
 
-          {/* ✅ BARRE DE RECHERCHE — déclenche le modal au clic/frappe */}
+          {/* ── BARRE DE RECHERCHE ── */}
           {user && (
             <div className="flex-1 max-w-md mx-4">
               <div
                 onClick={handleSearchBarClick}
-                className={`relative flex items-center rounded-xl cursor-text transition-all ${
-                  isDarkMode ? "bg-gray-800 hover:bg-gray-700" : "bg-gray-100 hover:bg-gray-200"
+                className={`relative flex items-center rounded-full cursor-text transition-all border ${
+                  isDarkMode
+                    ? "bg-gray-800 border-gray-700/50 hover:border-gray-600"
+                    : "bg-gray-100 border-transparent hover:border-gray-300"
                 }`}
               >
-                <Search className="absolute left-3 text-gray-400 pointer-events-none" size={18} />
+                <Search className="absolute left-3.5 text-gray-400 pointer-events-none" size={16} />
                 <input
                   type="text"
                   value={searchBarQuery}
                   onChange={handleSearchBarChange}
                   onClick={handleSearchBarClick}
                   placeholder="Rechercher des utilisateurs..."
-                  readOnly={showSearchModal} // modal gère la saisie réelle
-                  className={`w-full pl-10 pr-4 py-2.5 rounded-xl outline-none cursor-pointer bg-transparent ${
+                  readOnly={showSearchModal}
+                  className={`w-full pl-10 pr-4 py-2.5 rounded-full outline-none cursor-pointer bg-transparent text-sm ${
                     isDarkMode
                       ? "text-white placeholder-gray-500"
                       : "text-gray-900 placeholder-gray-400"
@@ -441,30 +451,45 @@ const Header = memo(function Header() {
             </div>
           )}
 
+          {/* ── ACTIONS DROITE ── */}
           {user && (
-            <div className="flex items-center gap-2 sm:gap-3">
+            <div className="flex items-center gap-2 sm:gap-2.5">
 
               {/* TOGGLE THEME */}
               <button
                 onClick={toggleDarkMode}
-                className={`p-2.5 rounded-xl transition-colors active:scale-95 ${
-                  isDarkMode ? "bg-gray-800 text-yellow-400 hover:bg-gray-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                className={`w-9 h-9 flex items-center justify-center rounded-full transition-all active:scale-90 ${
+                  isDarkMode
+                    ? "bg-gray-800 text-yellow-400 hover:bg-gray-700"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                 }`}
+                style={{ WebkitTapHighlightColor: "transparent" }}
               >
-                {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+                {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
               </button>
 
               {/* NOTIFICATIONS */}
               <div className="relative" ref={notifRef}>
                 <button
                   onClick={() => { setShowNotifications(!showNotifications); if (!showNotifications) fetchNotifications(); }}
-                  className={`p-2.5 rounded-xl relative transition-colors active:scale-95 ${
-                    isDarkMode ? "bg-gray-800 text-gray-200 hover:bg-gray-700" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  className={`w-9 h-9 flex items-center justify-center rounded-full relative transition-all active:scale-90 ${
+                    showNotifications
+                      ? isDarkMode ? "bg-orange-500/20 text-orange-400" : "bg-orange-50 text-orange-500"
+                      : isDarkMode ? "bg-gray-800 text-gray-300 hover:bg-gray-700 hover:text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                   }`}
+                  style={{ WebkitTapHighlightColor: "transparent" }}
                 >
-                  <Bell size={20} />
+                  <Bell size={18} />
                   {unreadCount > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] rounded-full w-5 h-5 flex items-center justify-center font-bold shadow-sm border-2 border-white dark:border-gray-900">
+                    <span
+                      className="absolute -top-0.5 -right-0.5 flex items-center justify-center rounded-full text-white font-black border-2 text-[10px]"
+                      style={{
+                        minWidth: 17, height: 17,
+                        background: "linear-gradient(135deg, #f43f5e, #fb923c)",
+                        borderColor: isDarkMode ? "#111827" : "#fff",
+                        padding: "0 3px", lineHeight: 1,
+                      }}
+                    >
                       {unreadCount > 9 ? "9+" : unreadCount}
                     </span>
                   )}
@@ -485,18 +510,26 @@ const Header = memo(function Header() {
                         exit={{ opacity: 0, y: 10, scale: 0.95 }}
                         transition={{ duration: 0.2 }}
                         className={`absolute right-0 mt-4 w-80 sm:w-96 rounded-2xl shadow-2xl overflow-hidden border ring-1 ring-black/5 z-40 ${
-                          isDarkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-100"
+                          isDarkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-100"
                         }`}
                       >
-                        <div className="p-4 flex justify-between items-center bg-gradient-to-r from-orange-500 to-pink-600">
+                        {/* Header dégradé Instagram */}
+                        <div
+                          className="p-4 flex justify-between items-center"
+                          style={{ background: "linear-gradient(135deg, #f97316, #ec4899)" }}
+                        >
                           <h3 className="text-white font-bold text-sm">Notifications</h3>
                           {unreadCount > 0 && (
-                            <button onClick={markAllAsRead} disabled={loadingNotifs}
-                              className="text-xs bg-white/20 hover:bg-white/30 text-white px-3 py-1.5 rounded-full transition disabled:opacity-50 backdrop-blur-sm">
+                            <button
+                              onClick={markAllAsRead}
+                              disabled={loadingNotifs}
+                              className="text-xs bg-white/20 hover:bg-white/30 text-white px-3 py-1.5 rounded-full transition disabled:opacity-50 backdrop-blur-sm font-medium"
+                            >
                               {loadingNotifs ? "..." : "Tout marquer lu"}
                             </button>
                           )}
                         </div>
+
                         <div className="max-h-[60vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600">
                           {notifications.length === 0 ? (
                             <div className="p-8 text-center opacity-50">
@@ -505,27 +538,47 @@ const Header = memo(function Header() {
                             </div>
                           ) : (
                             notifications.map(notif => (
-                              <div key={notif._id} onClick={() => handleNotificationClick(notif)}
-                                className={`p-4 border-b border-gray-100/10 hover:bg-gray-50/5 relative group transition-colors flex gap-3 cursor-pointer ${
-                                  !notif.read ? (isDarkMode ? "bg-gray-700/30" : "bg-blue-50/50") : ""
-                                }`}>
+                              <div
+                                key={notif._id}
+                                onClick={() => handleNotificationClick(notif)}
+                                className={`p-4 border-b relative group transition-colors flex gap-3 cursor-pointer ${
+                                  isDarkMode
+                                    ? "border-gray-800/60 hover:bg-white/[0.03]"
+                                    : "border-gray-50 hover:bg-gray-50"
+                                } ${
+                                  !notif.read
+                                    ? isDarkMode ? "bg-orange-500/[0.06]" : "bg-orange-50/50"
+                                    : ""
+                                }`}
+                              >
+                                {/* Dot non-lu */}
+                                {!notif.read && (
+                                  <span
+                                    className="absolute left-1.5 top-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full flex-shrink-0"
+                                    style={{ background: "linear-gradient(135deg, #f97316, #ec4899)" }}
+                                  />
+                                )}
                                 <div className="mt-1 text-xl shrink-0">
-                                  {notif.type === "like" && "❤️"}
+                                  {notif.type === "like"    && "❤️"}
                                   {notif.type === "comment" && "💬"}
-                                  {notif.type === "follow" && "👤"}
-                                  {notif.type === "system" && "⚙️"}
+                                  {notif.type === "follow"  && "👤"}
+                                  {notif.type === "system"  && "⚙️"}
                                   {!["like","comment","follow","system"].includes(notif.type) && "🔔"}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>{notif.message}</p>
+                                  <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>
+                                    {notif.message}
+                                  </p>
                                   <p className="text-xs opacity-50 mt-1">
                                     {new Date(notif.createdAt).toLocaleDateString(undefined, {
                                       day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
                                     })}
                                   </p>
                                 </div>
-                                <button onClick={(e) => deleteNotification(e, notif._id)}
-                                  className="self-start opacity-0 group-hover:opacity-100 p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition">
+                                <button
+                                  onClick={(e) => deleteNotification(e, notif._id)}
+                                  className="self-start opacity-0 group-hover:opacity-100 p-1.5 text-red-400 hover:bg-red-500/10 rounded-lg transition"
+                                >
                                   <Trash2 size={14} />
                                 </button>
                               </div>
@@ -540,8 +593,12 @@ const Header = memo(function Header() {
 
               {/* USER DROPDOWN */}
               <div className="relative" ref={profileRef}>
-                <button onClick={() => setShowDropdown(!showDropdown)}
-                  className="focus:outline-none" aria-label="Menu profil">
+                <button
+                  onClick={() => setShowDropdown(!showDropdown)}
+                  className="focus:outline-none transition-transform active:scale-90"
+                  aria-label="Menu profil"
+                  style={{ WebkitTapHighlightColor: "transparent" }}
+                >
                   <UserAvatar user={user} avatarUrl={avatarUrl} />
                 </button>
 
@@ -560,34 +617,49 @@ const Header = memo(function Header() {
                         exit={{ opacity: 0, scale: 0.95, y: 10 }}
                         transition={{ duration: 0.15 }}
                         className={`absolute right-0 mt-4 w-60 rounded-2xl shadow-xl border overflow-hidden ring-1 ring-black/5 z-40 ${
-                          isDarkMode ? "bg-gray-800 border-gray-700 text-gray-200" : "bg-white border-gray-100 text-gray-700"
+                          isDarkMode ? "bg-gray-900 border-gray-800 text-gray-200" : "bg-white border-gray-100 text-gray-700"
                         }`}
                       >
-                        <div className="p-4 border-b border-gray-200/10 bg-gray-50/5">
-                          <p className="font-bold truncate">{user.fullName}</p>
-                          <p className="text-xs opacity-60 truncate font-mono">{user.email}</p>
+                        {/* Mini profil en haut */}
+                        <div className={`flex items-center gap-3 p-4 border-b ${
+                          isDarkMode ? "border-gray-800" : "border-gray-100"
+                        }`}>
+                          <UserAvatar user={user} avatarUrl={avatarUrl} />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-sm truncate">{user.fullName}</p>
+                            <p className="text-xs opacity-50 truncate">{user.email}</p>
+                          </div>
                         </div>
-                        <div className="p-2 space-y-1">
-                          <Link to={`/profile/${user._id}`} onClick={() => setShowDropdown(false)}
+
+                        <div className="p-2 space-y-0.5">
+                          <Link
+                            to={`/profile/${user._id}`}
+                            onClick={() => setShowDropdown(false)}
                             className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors text-sm font-medium ${
-                              isDarkMode ? "hover:bg-gray-700" : "hover:bg-gray-100"
-                            }`}>
-                            <User size={18} /> Mon Profil
+                              isDarkMode ? "hover:bg-white/[0.05] hover:text-white" : "hover:bg-gray-50 hover:text-gray-900"
+                            }`}
+                          >
+                            <User size={17} /> Mon Profil
                           </Link>
                           {isAdminUser && (
-                            <Link to="/admin" onClick={() => setShowDropdown(false)}
+                            <Link
+                              to="/admin"
+                              onClick={() => setShowDropdown(false)}
                               className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors text-sm font-medium ${
-                                isDarkMode ? "hover:bg-gray-700" : "hover:bg-gray-100"
-                              }`}>
-                              <Shield size={18} className="text-blue-500" /> Administration
+                                isDarkMode ? "hover:bg-white/[0.05] hover:text-white" : "hover:bg-gray-50 hover:text-gray-900"
+                              }`}
+                            >
+                              <Shield size={17} className="text-blue-500" /> Administration
                             </Link>
                           )}
-                          <div className={`h-px my-1 ${isDarkMode ? "bg-gray-700" : "bg-gray-200"}`} />
-                          <button onClick={handleLogout}
+                          <div className={`h-px my-1 ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+                          <button
+                            onClick={handleLogout}
                             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-red-500 text-sm font-medium transition-colors ${
-                              isDarkMode ? "hover:bg-red-900/20" : "hover:bg-red-50"
-                            }`}>
-                            <LogOut size={18} /> Se déconnecter
+                              isDarkMode ? "hover:bg-red-500/10" : "hover:bg-red-50"
+                            }`}
+                          >
+                            <LogOut size={17} /> Se déconnecter
                           </button>
                         </div>
                       </motion.div>
@@ -601,7 +673,7 @@ const Header = memo(function Header() {
         </div>
       </header>
 
-      {/* ✅ SEARCH MODAL — portal hors du header, z-index propre */}
+      {/* SEARCH MODAL — portal hors du header */}
       {user && (
         <SearchModal
           isOpen={showSearchModal}
