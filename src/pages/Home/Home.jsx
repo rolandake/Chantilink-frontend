@@ -39,7 +39,7 @@ import {
   MOCK_CONFIG as DEFAULT_MOCK_CONFIG,
   AD_CONFIG   as DEFAULT_AD_CONFIG,
 } from "../../data/mockConfig";
-import { readAllCachedProfilePosts } from "../profile/ProfilePage";
+import { readAllCachedProfilePosts } from "../Profile/ProfilePage";
 
 const StoryCreator             = lazy(() => import("./StoryCreator"));
 const StoryViewer              = lazy(() => import("./StoryViewer"));
