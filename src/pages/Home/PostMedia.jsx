@@ -1,30 +1,35 @@
 // 📁 src/pages/Home/PostMedia.jsx
 //
-// ✅ FIX SLIDES NOIRES v14
-//    - Root cause : le wrapper flex utilisait width:${total*100}% et transform:translateX(-${index*(100/total)}%)
-//      Mais chaque slide avait width:slotH (px fixe). Mélange % et px = décalage incorrect
-//      sur Safari iOS / Samsung Internet avec contain:layout dans le parent.
-//    - Fix : wrapper et translateX passés en px absolus → width:${total*slotH}px
-//      et transform:translateX(-${index*slotH}px). Plus aucune ambiguïté CSS.
+// ✅ GRID LAYOUT v19 — anti-flash médias défaillants
 //
-// ✅ FIX SLIDES NOIRES v13 (conservé)
-// ✅ FIX SLIDES NOIRES v12 (conservé)
-// ✅ FIX CORS PEXELS v11
-// ✅ FIX YOUTUBE v7
-// 🔥 PREBUFFER VIDÉO (style TikTok)
-// 🎯 VIDEO MANAGER GLOBAL (style TikTok)
-// 🔥 FIX SWIPE v8
-// ✅ FIX URLs INVALIDES v4
+//  STRATÉGIE ANTI-RE-RENDER :
+//  1. isMutedMap → ref pure (isMutedRef) + manipulation DOM directe sur <video>
+//     → setIsMutedMap supprimé → mute/unmute ne re-render PLUS rien
+//  2. Lightbox → état dans un ref + createPortal monté une seule fois
+//     → ouverture/fermeture via CSS visibility/opacity, pas via setState dans PostMedia
+//  3. toggleMuteRef.current → useCallback stable avec refs internes
+//  4. cell() → props calculées une seule fois par useMemo stable
+//  5. onCellClick → ref stable, jamais recréé
+//
+//  ✅ FIX v19 : useMediaValidation commence à null (pas optimiste)
+//     → placeholder gris pendant la validation (~100-300ms)
+//     → les médias apparaissent proprement, sans flash de retrait visible
+//     → safetyTimer 300ms garantit qu'on ne bloque jamais trop longtemps
+//
+// ✅ Conserve : VideoManager global, Prebuffer, CORS Pexels, YouTube embed, Lightbox plein écran
 
-import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { FaVolumeUp, FaVolumeMute, FaExternalLinkAlt } from "react-icons/fa";
+import React, {
+  useState, useRef, useEffect, useCallback, useMemo
+} from "react";
+import { createPortal } from "react-dom";
+import { FaVolumeUp, FaVolumeMute, FaTimes, FaChevronLeft, FaChevronRight } from "react-icons/fa";
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 // ─────────────────────────────────────────────
-// 🎯 VIDEO MANAGER GLOBAL
+// VIDEO MANAGER GLOBAL
 // ─────────────────────────────────────────────
 let currentPlayingVideo = null;
 const registerPlayingVideo = (video) => {
@@ -36,7 +41,7 @@ const registerPlayingVideo = (video) => {
 };
 
 // ─────────────────────────────────────────────
-// 🔥 PREBUFFER VIDÉO GLOBAL
+// PREBUFFER VIDÉO GLOBAL
 // ─────────────────────────────────────────────
 const preloadedVideos = new Set();
 const preloadVideo = (src) => {
@@ -57,12 +62,12 @@ const isStructurallyValid = (url) => {
   catch { return false; }
 };
 
-const isVideoUrl     = url => url && /\.(mp4|webm|mov|avi)$/i.test(url.split('?')[0]);
-const isHLSUrl       = url => url && /\.m3u8/i.test(url);
-const isPexelsVideo  = url => url && url.includes('videos.pexels.com');
-const isPixabayVideo = url => url && url.includes('cdn.pixabay.com/video');
-const isExternalVideo= url => isPexelsVideo(url) || isPixabayVideo(url);
-const isYouTubeUrl   = url => url && (url.includes('youtube.com') || url.includes('youtu.be'));
+const isVideoUrl       = url => url && /\.(mp4|webm|mov|avi)$/i.test(url.split('?')[0]);
+const isHLSUrl         = url => url && /\.m3u8/i.test(url);
+const isPexelsVideo    = url => url && url.includes('videos.pexels.com');
+const isPixabayVideo   = url => url && url.includes('cdn.pixabay.com/video');
+const isExternalVideo  = url => isPexelsVideo(url) || isPixabayVideo(url);
+const isYouTubeUrl     = url => url && (url.includes('youtube.com') || url.includes('youtu.be'));
 const needsCrossOrigin = url => url && url.includes('res.cloudinary.com');
 
 const isEmbedUrl = url => url && (
@@ -83,7 +88,7 @@ const toEmbedUrl = (url) => {
 
 const getYouTubeId = (url) => {
   if (!url) return null;
-  const s = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);      if (s) return s[1];
+  const s = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);           if (s) return s[1];
   const e = url.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/); if (e) return e[1];
   const w = url.match(/youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/); if (w) return w[1];
   return null;
@@ -105,8 +110,7 @@ const getVideoPosterUrl = (videoUrl, postData = null) => {
     if (videoUrl.includes('res.cloudinary.com')) {
       const idx = videoUrl.indexOf('/upload/'); if (idx === -1) return null;
       const after = videoUrl.substring(idx + 8);
-      const segs  = after.split('/');
-      const parts = [];
+      const segs = after.split('/'); const parts = [];
       for (const s of segs) {
         const isTx = s.includes(',') || (/^[a-z]+_[a-z]/.test(s) && !s.includes('.'));
         if (!isTx) parts.push(s);
@@ -119,7 +123,10 @@ const getVideoPosterUrl = (videoUrl, postData = null) => {
       return m ? `https://images.pexels.com/videos/${m[1]}/pictures/preview-0.jpg` : null;
     }
     if (isPixabayVideo(videoUrl)) {
-      const t = videoUrl.replace('_large.mp4','_tiny.jpg').replace('_medium.mp4','_tiny.jpg').replace('_small.mp4','_tiny.jpg');
+      const t = videoUrl
+        .replace('_large.mp4', '_tiny.jpg')
+        .replace('_medium.mp4', '_tiny.jpg')
+        .replace('_small.mp4', '_tiny.jpg');
       return t !== videoUrl ? t : null;
     }
     return null;
@@ -144,16 +151,16 @@ const getOptimizedUrl = (url, isLCP = false) => {
       if (idx !== -1) {
         const after = url.substring(idx + 8);
         const first = after.split('/')[0];
-        const pub   = (first.includes(',') || /^[a-z]_/.test(first)) ? after.substring(first.length + 1) : after;
-        const vid   = isVideoUrl(pub);
-        const base  = vid ? VID_BASE : IMG_BASE;
+        const pub = (first.includes(',') || /^[a-z]_/.test(first)) ? after.substring(first.length + 1) : after;
+        const vid = isVideoUrl(pub);
+        const base = vid ? VID_BASE : IMG_BASE;
         if (vid)   return `${base}q_auto:good,f_auto,w_1080,c_limit/${pub}`;
         if (isLCP) return `${base}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${pub}`;
         return `${base}q_auto,f_auto,fl_progressive:steep,w_1080,c_limit/${pub}`;
       }
     } catch { return url; }
   }
-  const id  = url.replace(/^\/+/, '');
+  const id = url.replace(/^\/+/, '');
   const vid = isVideoUrl(id);
   if (vid)   return `${VID_BASE}q_auto:good,f_auto,w_1080,c_limit/${id}`;
   if (isLCP) return `${IMG_BASE}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${id}`;
@@ -172,7 +179,7 @@ const resolveSlotType = (url, postMediaType = null) => {
 // ─────────────────────────────────────────────
 // BADGE SOURCE
 // ─────────────────────────────────────────────
-const VideoSourceBadge = ({ url }) => {
+const VideoSourceBadge = React.memo(({ url }) => {
   const info = useMemo(() => {
     if (isPexelsVideo(url))  return { label: 'Pexels',  bg: '#05A081' };
     if (isPixabayVideo(url)) return { label: 'Pixabay', bg: '#2EC66A' };
@@ -181,23 +188,33 @@ const VideoSourceBadge = ({ url }) => {
   }, [url]);
   if (!info) return null;
   return (
-    <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-white text-[11px] font-bold pointer-events-none"
-      style={{ background: info.bg, backdropFilter: 'blur(4px)', boxShadow: '0 1px 6px rgba(0,0,0,0.3)' }}>
-      <svg viewBox="0 0 10 10" className="w-2.5 h-2.5" fill="white"><polygon points="2,1 9,5 2,9" /></svg>
+    <div style={{
+      position: 'absolute', top: 8, left: 8, zIndex: 20,
+      display: 'flex', alignItems: 'center', gap: 4,
+      padding: '2px 8px', borderRadius: 9999,
+      background: info.bg, color: 'white', fontSize: 10, fontWeight: 700,
+      pointerEvents: 'none', boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+    }}>
+      <svg viewBox="0 0 10 10" style={{ width: 8, height: 8 }} fill="white">
+        <polygon points="2,1 9,5 2,9" />
+      </svg>
       {info.label}
     </div>
   );
-};
+});
+VideoSourceBadge.displayName = 'VideoSourceBadge';
 
 // ─────────────────────────────────────────────
 // EMBED ITEM
 // ─────────────────────────────────────────────
-const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true, slotH }) => {
+const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
   const [showEmbed,    setShowEmbed]    = useState(false);
   const [thumbError,   setThumbError]   = useState(false);
   const [thumbLoaded,  setThumbLoaded]  = useState(false);
   const [thumbQuality, setThumbQuality] = useState('hq');
+
   const normalizedUrl = useMemo(() => toEmbedUrl(url), [url]);
+
   const resolvedThumb = useMemo(() => {
     if (thumbnail) return thumbnail;
     const id = getYouTubeId(url); if (!id) return null;
@@ -206,21 +223,24 @@ const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true, slotH }
     if (thumbQuality === 'sd') return `https://img.youtube.com/vi/${id}/sddefault.jpg`;
     return null;
   }, [url, thumbnail, thumbQuality]);
+
   const handleThumbError = useCallback(() => {
     if (thumbQuality === 'hq') setThumbQuality('mq');
     else if (thumbQuality === 'mq') setThumbQuality('sd');
     else { setThumbQuality('error'); setThumbError(true); }
   }, [thumbQuality]);
+
   const embedSrc = useMemo(() => {
     if (!showEmbed) return '';
     if (url.includes('player.vimeo.com')) return `${url.split('?')[0]}?autoplay=1&muted=0`;
     if (isYouTubeUrl(url)) return `${normalizedUrl}?autoplay=1&rel=0&modestbranding=1`;
     return url;
   }, [showEmbed, url, normalizedUrl]);
+
   const hasThumbnail = resolvedThumb && !thumbError;
 
   return (
-    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
       {showEmbed ? (
         <iframe src={embedSrc} style={{ width: '100%', height: '100%' }} frameBorder="0"
           allow="autoplay; picture-in-picture" allowFullScreen title={title || 'Vidéo'}
@@ -229,24 +249,36 @@ const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true, slotH }
         <>
           {hasThumbnail ? (
             <>
-              {!thumbLoaded && <div style={{ position: 'absolute', inset: 0, background: '#111', animation: 'pulse 1.5s ease-in-out infinite' }} />}
+              {!thumbLoaded && <div style={{ position: 'absolute', inset: 0, background: '#111' }} />}
               <img src={resolvedThumb} alt={title || 'Vidéo'}
-                style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.25s' }}
-                loading="lazy" decoding="async" onLoad={() => setThumbLoaded(true)} onError={handleThumbError} referrerPolicy="no-referrer" />
+                style={{ width: '100%', height: '100%', objectFit: 'cover',
+                  opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.25s' }}
+                loading="lazy" decoding="async"
+                onLoad={() => setThumbLoaded(true)} onError={handleThumbError}
+                referrerPolicy="no-referrer" />
             </>
           ) : (
-            <div style={{ width: '100%', height: '100%', background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ color: '#555', fontSize: 48 }}>▶</div>
+            <div style={{ width: '100%', height: '100%', background: '#111',
+              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <span style={{ color: '#555', fontSize: 36 }}>▶</span>
             </div>
           )}
           {hasThumbnail && thumbLoaded && (
-            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.6), rgba(0,0,0,0.1), transparent)', pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', inset: 0,
+              background: 'linear-gradient(to top, rgba(0,0,0,0.5), transparent)',
+              pointerEvents: 'none' }} />
           )}
           <button onClick={() => setShowEmbed(true)}
-            style={{ position: 'absolute', inset: 0, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            aria-label="Lire la vidéo">
-            <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 24px rgba(0,0,0,0.4)' }}>
-              <div style={{ width: 0, height: 0, marginLeft: 6, borderTop: '13px solid transparent', borderBottom: '13px solid transparent', borderLeft: '22px solid #111' }} />
+            style={{ position: 'absolute', inset: 0, background: 'transparent',
+              border: 'none', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%',
+              background: 'rgba(255,255,255,0.92)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
+              <div style={{ width: 0, height: 0, marginLeft: 4,
+                borderTop: '10px solid transparent', borderBottom: '10px solid transparent',
+                borderLeft: '17px solid #111' }} />
             </div>
           </button>
         </>
@@ -264,31 +296,37 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
   const [imgError, setImgError] = useState(false);
   const hasThumbnail = thumbnail && !imgError;
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+    <div style={{ position: 'absolute', inset: 0, background: '#111',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
       {hasThumbnail ? (
         <img src={thumbnail} alt={title || ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           loading="lazy" decoding="async" onError={() => setImgError(true)} />
       ) : (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: 'linear-gradient(135deg, #1a1a2e, #16213e, #0f3460)' }}>
-          <div style={{ width: 80, height: 80, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,69,0,0.15)', border: '2px solid rgba(255,69,0,0.4)' }}>
-            <svg viewBox="0 0 24 24" style={{ width: 40, height: 40 }} fill="rgba(255,69,0,0.9)"><path d="M8 5v14l11-7z"/></svg>
-          </div>
-          {title && <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, textAlign: 'center', padding: '0 24px', maxWidth: 200 }}>{title}</p>}
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
+          justifyContent: 'center', background: 'linear-gradient(135deg, #1a1a2e, #0f3460)' }}>
+          <svg viewBox="0 0 24 24" style={{ width: 32, height: 32 }} fill="rgba(255,69,0,0.9)">
+            <path d="M8 5v14l11-7z"/>
+          </svg>
         </div>
       )}
-      {hasThumbnail && <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.2)' }} />}
       {externalUrl && (
         <a href={externalUrl} target="_blank" rel="noopener noreferrer"
           style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={e => e.stopPropagation()}>
           {hasThumbnail && (
-            <div style={{ width: 64, height: 64, borderRadius: '50%', background: 'rgba(255,69,0,0.85)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
-              <svg viewBox="0 0 24 24" style={{ width: 32, height: 32, marginLeft: 4 }} fill="white"><path d="M8 5v14l11-7z"/></svg>
+            <div style={{ width: 48, height: 48, borderRadius: '50%',
+              background: 'rgba(255,69,0,0.85)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.4)' }}>
+              <svg viewBox="0 0 24 24" style={{ width: 24, height: 24, marginLeft: 3 }} fill="white">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
             </div>
           )}
         </a>
       )}
-      <div style={{ position: 'absolute', top: 12, left: 12, display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 9999, background: 'rgba(255,69,0,0.85)', backdropFilter: 'blur(4px)', color: 'white', fontSize: 11, fontWeight: 700 }}>
+      <div style={{ position: 'absolute', top: 8, left: 8, padding: '2px 8px', borderRadius: 9999,
+        background: 'rgba(255,69,0,0.85)', color: 'white', fontSize: 10, fontWeight: 700 }}>
         Reddit
       </div>
     </div>
@@ -298,43 +336,50 @@ HLSItem.displayName = 'HLSItem';
 
 // ─────────────────────────────────────────────
 // VIDEO ITEM
+// ✅ Mute/unmute → DOM direct + innerHTML sur le bouton → ZÉRO setState, ZÉRO re-render
 // ─────────────────────────────────────────────
-const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, toggleMuteRef, slotIndex, videoRefCallback, showBadge = true }) => {
-  const videoRef  = useRef(null);
-  const videoUrls = useMemo(() => getVideoUrls(url), [url]);
+const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
+const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
+
+const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, initialMuted = true,
+  onRegisterVideoEl, slotIndex, showBadge = true }) => {
+
+  const videoRef      = useRef(null);
+  const muteButtonRef = useRef(null);
+  const videoUrls     = useMemo(() => getVideoUrls(url), [url]);
 
   const [currentSrc,    setCurrentSrc]    = useState(() => videoUrls.proxy || videoUrls.direct);
   const [videoError,    setVideoError]    = useState(false);
-  const [isPlaying,     setIsPlaying]     = useState(false);
   const [posterVisible, setPosterVisible] = useState(true);
-  const [hasInteracted, setHasInteracted] = useState(false);
 
+  const isMutedLocal  = useRef(initialMuted);
   const playAttempted = useRef(false);
   const fallbackTimer = useRef(null);
-  const useCrossOrigin  = useMemo(() => needsCrossOrigin(url), [url]);
-  const preloadStrategy = useMemo(() => { if (isLCP || isExternalVideo(url)) return 'auto'; return 'metadata'; }, [isLCP, url]);
+  const useCrossOrigin = useMemo(() => needsCrossOrigin(url), [url]);
+  const preloadStrat   = useMemo(() => (isLCP || isExternalVideo(url)) ? 'auto' : 'metadata', [isLCP, url]);
 
   useEffect(() => () => clearTimeout(fallbackTimer.current), []);
 
-  const setVideoRef = useCallback((el) => { videoRef.current = el; videoRefCallback?.(el); }, [videoRefCallback]);
-
-  useEffect(() => {
-    const vid = videoRef.current; if (!vid || hasInteracted) return;
-    vid.muted = isMuted; vid.volume = isMuted ? 0 : 1;
-  }, [isMuted, hasInteracted]);
+  const setVideoRef = useCallback((el) => {
+    videoRef.current = el;
+    onRegisterVideoEl?.(slotIndex, el);
+  }, [onRegisterVideoEl, slotIndex]);
 
   useEffect(() => {
     const vid = videoRef.current; if (!vid) return;
     if (isActive) {
-      vid.muted = true; vid.volume = 0;
-      setHasInteracted(false); setVideoError(false);
+      vid.muted = true; vid.volume = 0; isMutedLocal.current = true;
+      if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
+      setVideoError(false);
       if (!playAttempted.current) { playAttempted.current = true; vid.play().catch(() => {}); }
-      fallbackTimer.current = setTimeout(() => { if (vid?.paused) { vid.muted = true; vid.volume = 0; vid.play().catch(() => {}); } }, 1500);
+      fallbackTimer.current = setTimeout(() => {
+        if (vid?.paused) { vid.muted = true; vid.play().catch(() => {}); }
+      }, 1500);
     } else {
       clearTimeout(fallbackTimer.current);
-      playAttempted.current = false; setHasInteracted(false);
+      playAttempted.current = false;
       vid.pause(); vid.currentTime = 0;
-      setIsPlaying(false); setPosterVisible(true);
+      setPosterVisible(true);
     }
     return () => clearTimeout(fallbackTimer.current);
   }, [isActive]); // eslint-disable-line
@@ -342,75 +387,86 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, isMuted, toggle
   useEffect(() => {
     const vid = videoRef.current; if (!vid || !isActive) return;
     const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting && e.intersectionRatio >= 0.1) { playAttempted.current = false; vid.muted = true; vid.volume = 0; vid.play().catch(() => {}); }
-      else vid.pause();
+      if (e.isIntersecting && e.intersectionRatio >= 0.1) {
+        playAttempted.current = false; vid.muted = true; vid.play().catch(() => {});
+      } else vid.pause();
     }, { threshold: [0.1, 0.5] });
     obs.observe(vid);
     return () => obs.disconnect();
   }, [isActive]);
 
-  const handlePlay  = useCallback(() => { registerPlayingVideo(videoRef.current); setIsPlaying(true); setPosterVisible(false); }, []);
-  const handlePause = useCallback(() => setIsPlaying(false), []);
-  const handleError = useCallback(() => {
-    const { proxy, direct } = videoUrls;
-    if (currentSrc === proxy && direct) { setCurrentSrc(direct); const v = videoRef.current; if (v) { v.load(); if (isActive) v.play().catch(() => {}); } return; }
-    setVideoError(true); setPosterVisible(false);
-  }, [videoUrls, currentSrc, isActive]);
-
+  // ✅ Mute toggle : ZERO setState — innerHTML direct sur le bouton DOM
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
     const vid = videoRef.current; if (!vid) return;
-    const newMuted = !vid.muted; vid.muted = newMuted; vid.volume = newMuted ? 0 : 1;
-    setHasInteracted(true);
-    if (!newMuted && vid.paused) {
-      vid.play().then(() => toggleMuteRef?.current?.(slotIndex, false)).catch(() => { vid.muted = true; vid.volume = 0; toggleMuteRef?.current?.(slotIndex, true); });
+    const newMuted = !vid.muted;
+    vid.muted = newMuted; vid.volume = newMuted ? 0 : 1;
+    isMutedLocal.current = newMuted;
+    if (muteButtonRef.current)
+      muteButtonRef.current.innerHTML = newMuted ? ICON_MUTED : ICON_UNMUTED;
+    if (!newMuted && vid.paused)
+      vid.play().catch(() => {
+        vid.muted = true; vid.volume = 0; isMutedLocal.current = true;
+        if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
+      });
+  }, []);
+
+  const handlePlay  = useCallback(() => { registerPlayingVideo(videoRef.current); setPosterVisible(false); }, []);
+  const handlePause = useCallback(() => {}, []);
+
+  const handleError = useCallback(() => {
+    const { proxy, direct } = videoUrls;
+    if (currentSrc === proxy && direct) {
+      setCurrentSrc(direct);
+      const v = videoRef.current;
+      if (v) { v.load(); if (isActive) v.play().catch(() => {}); }
       return;
     }
-    toggleMuteRef?.current?.(slotIndex, newMuted);
-  }, [toggleMuteRef, slotIndex]);
-
-  const showSoundBadge = isActive && isPlaying && isMuted && !hasInteracted;
+    setVideoError(true); setPosterVisible(false);
+  }, [videoUrls, currentSrc, isActive]);
 
   if (videoError) return (
-    <div style={{ position: 'absolute', inset: 0, background: '#111', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+    <div style={{ position: 'absolute', inset: 0, background: '#111',
+      display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {posterUrl && <img src={posterUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3 }} />}
-      <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-        <div style={{ fontSize: 40 }}>📹</div>
-        <p style={{ color: '#666', fontSize: 12 }}>Vidéo indisponible</p>
+      <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: 32 }}>📹</span>
+        <span style={{ color: '#666', fontSize: 11 }}>Vidéo indisponible</span>
       </div>
     </div>
   );
 
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
       <video ref={setVideoRef} src={currentSrc}
-        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }}
-        preload={preloadStrategy} playsInline loop
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        preload={preloadStrat} playsInline loop
         crossOrigin={useCrossOrigin ? 'anonymous' : undefined}
         onPlay={handlePlay} onPause={handlePause} onError={handleError} />
 
       {posterUrl && (
         <img src={posterUrl} alt=""
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none',
-            zIndex: posterVisible ? 2 : -1, opacity: isLCP ? 1 : (posterVisible ? 1 : 0), transition: isLCP ? 'none' : 'opacity 0.3s ease' }}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
+            pointerEvents: 'none', zIndex: posterVisible ? 2 : -1,
+            opacity: posterVisible ? 1 : 0, transition: isLCP ? 'none' : 'opacity 0.3s ease' }}
           loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'} draggable="false" />
       )}
 
       {showBadge && <VideoSourceBadge url={url} />}
 
       {isActive && (
-        <button onClick={handleMuteClick}
-          style={{ position: 'absolute', bottom: 12, right: 12, zIndex: 20, width: 36, height: 36, borderRadius: '50%', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.2)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
-          aria-label={isMuted ? 'Activer le son' : 'Couper le son'}>
-          {isMuted ? <FaVolumeMute style={{ fontSize: 14 }} /> : <FaVolumeUp style={{ fontSize: 14 }} />}
-        </button>
-      )}
-
-      {showSoundBadge && (
-        <button onClick={handleMuteClick}
-          style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 20, display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 9999, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.2)', color: 'white', fontSize: 12, fontWeight: 600, cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}>
-          <FaVolumeUp style={{ fontSize: 12 }} /> Appuyer pour le son
-        </button>
+        <button
+          ref={muteButtonRef}
+          onClick={handleMuteClick}
+          style={{
+            position: 'absolute', bottom: 8, right: 8, zIndex: 20,
+            width: 30, height: 30, borderRadius: '50%',
+            background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)',
+            color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent',
+          }}
+          dangerouslySetInnerHTML={{ __html: ICON_MUTED }}
+        />
       )}
     </div>
   );
@@ -423,11 +479,11 @@ VideoItem.displayName = 'VideoItem';
 const ImageItem = React.memo(({ url, isLCP }) => {
   const [loaded, setLoaded] = useState(isLCP);
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      {!loaded && !isLCP && <div style={{ position: 'absolute', inset: 0, background: '#111' }} />}
+    <div style={{ position: 'absolute', inset: 0, background: '#111' }}>
       <img src={url} alt=""
-        style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', userSelect: 'none',
-          opacity: isLCP ? 1 : (loaded ? 1 : 0), transition: isLCP ? 'none' : 'opacity 0.2s ease' }}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block',
+          userSelect: 'none', opacity: isLCP ? 1 : (loaded ? 1 : 0),
+          transition: isLCP ? 'none' : 'opacity 0.2s ease' }}
         loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'}
         onLoad={() => setLoaded(true)} onError={() => setLoaded(true)} draggable="false" />
     </div>
@@ -436,35 +492,427 @@ const ImageItem = React.memo(({ url, isLCP }) => {
 ImageItem.displayName = 'ImageItem';
 
 // ─────────────────────────────────────────────
-// POST MEDIA
-//
-// ✅ FIX v14 — Architecture définitive carousel :
-//
-//   PROBLÈME v13 :
-//     Le wrapper flex utilisait width:${total*100}% mais les slides avaient width:slotH (px).
-//     Mélange de % et px → le translateX(-${index*(100/total)}%) est calculé en %
-//     du wrapper (qui est en %), mais les slides ont des largeurs en px.
-//     Sur Safari iOS / Samsung Internet avec contain:layout dans PostCardInner,
-//     ce mélange produit des slides noires car le navigateur ne peut pas résoudre
-//     correctement les dimensions des éléments hors-viewport.
-//
-//   SOLUTION v14 :
-//     Tout en px absolus :
-//       - wrapper : width = total * slotH (px)
-//       - transform : translateX(-${index * slotH}px)
-//       - chaque slide : width = slotH, height = slotH (px)
-//     → Zéro dépendance sur la cascade CSS parent, zéro ambiguïté avec contain:layout.
+// LIGHTBOX
+// ✅ createPortal sur document.body
+// ✅ Contrôlé via controlRef.current.open(i) / .close()
+//    → PostMedia ne fait JAMAIS de setState pour ouvrir/fermer
 // ─────────────────────────────────────────────
-const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
-  const autoGenerated = !!post?.autoGenerated;
-  const showBadge     = !autoGenerated;
+const Lightbox = React.memo(({ urls, slotTypes, posterUrls, post, controlRef }) => {
+  const [index,   setIndex]   = useState(0);
+  const [visible, setVisible] = useState(false);
+  const total = urls.length;
 
+  useEffect(() => {
+    controlRef.current = {
+      open:  (i) => { setIndex(i); setVisible(true);  document.body.style.overflow = 'hidden'; },
+      close: ()  => { setVisible(false);               document.body.style.overflow = ''; },
+    };
+    return () => { document.body.style.overflow = ''; };
+  }, [controlRef]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape')     controlRef.current?.close();
+      if (e.key === 'ArrowLeft')  setIndex(i => (i - 1 + total) % total);
+      if (e.key === 'ArrowRight') setIndex(i => (i + 1) % total);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [visible, total, controlRef]);
+
+  if (!visible) return null;
+
+  const url      = urls[index];
+  const slotType = slotTypes[index];
+  const poster   = posterUrls[index];
+  const embedThumbnail = post?.thumbnail || getYouTubeThumbnail(url);
+
+  return createPortal(
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: 'rgba(0,0,0,0.96)',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        animation: 'lbFadeIn 0.18s ease',
+      }}
+      onClick={() => controlRef.current?.close()}
+    >
+      <style>{`@keyframes lbFadeIn{from{opacity:0;transform:scale(0.97)}to{opacity:1;transform:scale(1)}}`}</style>
+
+      {/* Fermer */}
+      <button onClick={(e) => { e.stopPropagation(); controlRef.current?.close(); }} style={{
+        position: 'absolute', top: 16, right: 16, zIndex: 10,
+        width: 40, height: 40, borderRadius: '50%',
+        background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)',
+        color: 'white', fontSize: 16, cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <FaTimes />
+      </button>
+
+      {/* Compteur */}
+      {total > 1 && (
+        <div style={{
+          position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)',
+          color: 'rgba(255,255,255,0.65)', fontSize: 13, fontWeight: 600,
+          background: 'rgba(0,0,0,0.45)', padding: '3px 12px', borderRadius: 20,
+          pointerEvents: 'none',
+        }}>
+          {index + 1} / {total}
+        </div>
+      )}
+
+      {/* Média */}
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: '100vw',
+          height: 'calc(100vh - 60px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          padding: '0 56px',
+          boxSizing: 'border-box',
+        }}
+      >
+        {slotType === 'image' && (
+          <img src={url} alt=""
+            style={{
+              display: 'block',
+              width: '100%',
+              height: 'calc(100vh - 60px)',
+              objectFit: 'contain',
+              borderRadius: 8,
+            }}
+            draggable="false"
+          />
+        )}
+
+        {slotType !== 'image' && (
+          <div style={{
+            width: '100%', height: '100%',
+            position: 'relative',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{
+              width: '100%',
+              maxWidth: 'min(100%, calc((100vh - 60px) * 16 / 9))',
+              aspectRatio: '16/9',
+              position: 'relative',
+              borderRadius: 10, overflow: 'hidden',
+            }}>
+              {slotType === 'embed' && (
+                <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge />
+              )}
+              {slotType === 'hls' && (
+                <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
+              )}
+              {slotType === 'video' && (
+                <VideoItem url={url} posterUrl={poster} isLCP={false} isActive={true}
+                  initialMuted={true} onRegisterVideoEl={null} slotIndex={-1} showBadge />
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Flèches */}
+      {total > 1 && (
+        <>
+          <button onClick={e => { e.stopPropagation(); setIndex(i => (i - 1 + total) % total); }}
+            style={{
+              position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)',
+              width: 44, height: 44, borderRadius: '50%',
+              background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)',
+              color: 'white', fontSize: 18, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+            <FaChevronLeft />
+          </button>
+          <button onClick={e => { e.stopPropagation(); setIndex(i => (i + 1) % total); }}
+            style={{
+              position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
+              width: 44, height: 44, borderRadius: '50%',
+              background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)',
+              color: 'white', fontSize: 18, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+            <FaChevronRight />
+          </button>
+
+          {/* Points */}
+          <div style={{ position: 'absolute', bottom: 16, display: 'flex', gap: 6, alignItems: 'center' }}>
+            {urls.map((_, i) => (
+              <button key={i} onClick={e => { e.stopPropagation(); setIndex(i); }}
+                style={{
+                  width: i === index ? 10 : 7, height: i === index ? 10 : 7,
+                  borderRadius: '50%',
+                  background: i === index ? 'white' : 'rgba(255,255,255,0.35)',
+                  border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.2s',
+                }} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>,
+    document.body
+  );
+});
+Lightbox.displayName = 'Lightbox';
+
+// ─────────────────────────────────────────────
+// MEDIA CELL
+// ✅ onCellClick stable (jamais recréé) → React.memo efficace
+// ─────────────────────────────────────────────
+const MediaCell = React.memo(({
+  url, slotType, posterUrl, isLCP,
+  onRegisterVideoEl, slotIndex,
+  showBadge, post,
+  paddingBottom = '75%',
+  overlay = null,
+  wrapperStyle = {},
+  onCellClick,
+}) => {
+  const embedThumbnail = useMemo(
+    () => post?.thumbnail || getYouTubeThumbnail(url),
+    [post?.thumbnail, url]
+  );
+
+  const handleClick = useCallback(() => {
+    onCellClick?.(slotIndex);
+  }, [onCellClick, slotIndex]);
+
+  return (
+    <div
+      style={{ position: 'relative', paddingBottom, overflow: 'hidden', background: '#111', cursor: 'pointer', ...wrapperStyle }}
+      onClick={handleClick}
+    >
+      <div style={{ position: 'absolute', inset: 0 }}>
+        {slotType === 'embed' ? (
+          <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge={showBadge} />
+        ) : slotType === 'hls' ? (
+          <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
+        ) : slotType === 'video' ? (
+          <VideoItem
+            url={url} posterUrl={posterUrl} isLCP={isLCP} isActive={true} initialMuted={true}
+            onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge}
+          />
+        ) : (
+          <ImageItem url={url} isLCP={isLCP} />
+        )}
+
+        {overlay && (
+          <div style={{
+            position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10,
+          }}>
+            <span style={{ color: 'white', fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>
+              {overlay}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+MediaCell.displayName = 'MediaCell';
+
+// ─────────────────────────────────────────────
+// HOOK — ratio naturel image/vidéo
+// ─────────────────────────────────────────────
+const MAX_PB = 177;
+
+const useNaturalRatio = (url, slotType, fallbackPb) => {
+  const [pb, setPb] = useState(null);
+
+  useEffect(() => {
+    if (!url || slotType === 'embed' || slotType === 'hls') {
+      setPb(fallbackPb); return;
+    }
+    if (slotType === 'image') {
+      const img = new Image();
+      img.onload = () => {
+        const r = img.naturalWidth && img.naturalHeight
+          ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB)
+          : parseFloat(fallbackPb);
+        setPb(`${r}%`);
+      };
+      img.onerror = () => setPb(fallbackPb);
+      img.src = url;
+      return;
+    }
+    if (slotType === 'video') {
+      const vid = document.createElement('video');
+      vid.muted = true; vid.preload = 'metadata';
+      const cleanup = () => { vid.onloadedmetadata = null; vid.onerror = null; vid.src = ''; };
+      vid.onloadedmetadata = () => {
+        const r = vid.videoWidth && vid.videoHeight
+          ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB)
+          : parseFloat(fallbackPb);
+        setPb(`${r}%`); cleanup();
+      };
+      vid.onerror = () => { setPb(fallbackPb); cleanup(); };
+      vid.src = url;
+    }
+  }, [url, slotType]); // eslint-disable-line
+
+  return pb ?? fallbackPb;
+};
+
+// ─────────────────────────────────────────────
+// MEDIA CELL AUTO
+// ─────────────────────────────────────────────
+const MediaCellAuto = React.memo((props) => {
+  const { url, slotType } = props;
+  const isVid = slotType === 'video' || slotType === 'embed' || slotType === 'hls';
+  const fallback = isVid ? '56.25%' : '100%';
+  const paddingBottom = useNaturalRatio(url, slotType, fallback);
+  return <MediaCell {...props} paddingBottom={paddingBottom} />;
+});
+MediaCellAuto.displayName = 'MediaCellAuto';
+
+// ─────────────────────────────────────────────
+// HOOK — validation des URLs media
+//
+// ✅ FIX v19 : STRATÉGIE "cacher puis montrer" (au lieu de "montrer puis cacher")
+//
+// - Commence à null → PostMedia affiche un placeholder gris
+// - Valide chaque média en arrière-plan
+// - Une fois tous les checks terminés → retourne les indices valides → grille s'affiche proprement
+// - safetyTimer 300ms : si les checks traînent, on affiche tout quand même (évite le blocage)
+// - Timeouts réduits (3s image, 4s vidéo) car on préfère afficher vite
+//
+// Résultat : l'utilisateur voit un rectangle gris ~100-300ms,
+// puis le(s) média(s) apparaissent sans aucun flash de retrait.
+// ─────────────────────────────────────────────
+const useMediaValidation = (urls, slotTypes) => {
+  // null = validation en cours | [] = aucun valide | [0,1,...] = indices valides
+  const [validIndices, setValidIndices] = useState(null);
+
+  useEffect(() => {
+    if (!urls.length) { setValidIndices([]); return; }
+
+    let cancelled = false;
+
+    // Reset à null → placeholder visible pendant la validation
+    setValidIndices(null);
+
+    // ✅ Safety timer : si les checks durent trop longtemps, on affiche tout
+    const safetyTimer = setTimeout(() => {
+      if (!cancelled) setValidIndices(urls.map((_, i) => i));
+    }, 300);
+
+    const checks = urls.map((url, i) => {
+      const type = slotTypes[i];
+
+      // Embeds (YouTube, Vimeo) et HLS → on fait confiance, pas de probe réseau
+      if (type === 'embed' || type === 'hls') return Promise.resolve({ i, ok: true });
+
+      // blob: / data: → toujours valide
+      if (!url || url.startsWith('blob:') || url.startsWith('data:')) return Promise.resolve({ i, ok: !!url });
+
+      if (type === 'image') {
+        return new Promise((resolve) => {
+          const img = new Image();
+          const timer = setTimeout(() => resolve({ i, ok: true }), 3000); // timeout réduit vs v18
+          img.onload  = () => { clearTimeout(timer); resolve({ i, ok: true }); };
+          img.onerror = () => { clearTimeout(timer); resolve({ i, ok: false }); };
+          img.src = url;
+        });
+      }
+
+      if (type === 'video') {
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({ i, ok: true }), 4000); // timeout réduit vs v18
+          const vid = document.createElement('video');
+          vid.muted = true; vid.preload = 'metadata';
+          vid.onloadedmetadata = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: true }); };
+          vid.onerror           = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: false }); };
+          vid.src = url;
+        });
+      }
+
+      return Promise.resolve({ i, ok: true });
+    });
+
+    Promise.all(checks).then((results) => {
+      if (cancelled) return;
+      clearTimeout(safetyTimer);
+      const valid = results.filter(r => r.ok).map(r => r.i);
+      setValidIndices(valid);
+    });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(safetyTimer);
+    };
+  }, [urls.join(','), slotTypes.join(',')]); // eslint-disable-line
+
+  return validIndices; // null pendant la validation, tableau une fois prêt
+};
+
+// ─────────────────────────────────────────────
+// MEDIA PLACEHOLDER
+// Affiché pendant la validation des médias (~100-300ms)
+// Rectangle gris neutre — pas de CLS car même hauteur que le futur contenu
+// ─────────────────────────────────────────────
+const MediaPlaceholder = React.memo(({ total }) => {
+  // Reproduit la hauteur approximative de la grille finale pour éviter le CLS
+  const pb = total === 1 ? '75%' : total === 2 ? '50%' : '66%';
+  return (
+    <div style={{
+      width: '100%',
+      paddingBottom: pb,
+      background: 'linear-gradient(135deg, #1a1a1a 0%, #222 100%)',
+      borderRadius: 4,
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+      {/* Shimmer subtil */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%)',
+        backgroundSize: '200% 100%',
+        animation: 'mediaShimmer 1.4s ease-in-out infinite',
+      }} />
+      <style>{`@keyframes mediaShimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}`}</style>
+    </div>
+  );
+});
+MediaPlaceholder.displayName = 'MediaPlaceholder';
+
+// ─────────────────────────────────────────────
+// POST MEDIA — composant principal
+// ✅ AUCUN setState déclenché par le mute ou le lightbox
+// ✅ v19 : placeholder gris pendant validation → apparition propre, zéro flash
+// ─────────────────────────────────────────────
+const GAP = 2;
+
+const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
+  const autoGenerated  = !!post?.autoGenerated;
+  const showBadge      = !autoGenerated;
+
+  // ✅ Lightbox contrôlé via ref pure → jamais de re-render de PostMedia
+  const lightboxControl = useRef({});
+
+  // ✅ handleCellClick stable : useCallback avec deps vides + closure sur ref
+  const handleCellClick = useCallback((i) => {
+    lightboxControl.current.open?.(i);
+  }, []);
+
+  // ✅ Enregistrement vidéos via ref pure
+  const videoRefsMap = useRef({});
+  const onRegisterVideoEl = useCallback((i, el) => {
+    if (el) videoRefsMap.current[i] = el;
+    else    delete videoRefsMap.current[i];
+  }, []);
+
+  // ── URLs ─────────────────────────────────────────────────────────────────
   const safeMediaUrls = useMemo(() => {
     const seen = new Set(); const result = [];
     const add = (url) => {
       if (!url || typeof url !== 'string') return;
       if (url.startsWith('blob:')) { if (!seen.has(url)) { seen.add(url); result.push(url); } return; }
-      if (url.includes('videos.pexels.com') || url.includes('cdn.pixabay.com/video')) return;
       if (!url.startsWith('data:') && !isStructurallyValid(url)) return;
       if (!seen.has(url)) { seen.add(url); result.push(url); }
     };
@@ -474,20 +922,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     if (post?.sourceUrl) add(post.sourceUrl);
     return result;
   }, [mediaUrls, post?.embedUrl, post?.videoUrl, post?.sourceUrl]);
-
-  if (!safeMediaUrls.length) return null;
-
-  const [index,      setIndex]      = useState(0);
-  const [isMutedMap, setIsMutedMap] = useState({});
-
-  const toggleMuteRef = useRef(null);
-  const isMutedMapRef = useRef({});
-  const videoRefsMap  = useRef({});
-  const containerRef  = useRef(null);
-  const touch         = useRef({ x: 0, y: 0, time: 0 });
-  const dirRef        = useRef(null);
-  const isDragging    = useRef(false);
-  const preloadImgRef = useRef(null);
 
   const isLCPSlot = isFirstPost || priority;
 
@@ -508,199 +942,104 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   const total = urls.length;
 
-  useEffect(() => {
-    const initial = {};
-    urls.forEach((_, i) => { if (slotTypes[i] === 'video') initial[i] = true; });
-    isMutedMapRef.current = initial; setIsMutedMap(initial);
-  }, [urls.length]); // eslint-disable-line
+  // ✅ v19 : retourne null pendant la validation (placeholder affiché ci-dessous)
+  const validIndices = useMediaValidation(urls, slotTypes);
 
-  useEffect(() => {
-    toggleMuteRef.current = (i, newMuted) => {
-      const vid = videoRefsMap.current[i];
-      if (vid) {
-        vid.muted = newMuted; vid.volume = newMuted ? 0 : 1;
-        if (!newMuted && vid.paused) {
-          vid.play().catch(() => { vid.muted = true; vid.volume = 0; isMutedMapRef.current = {...isMutedMapRef.current,[i]:true}; setIsMutedMap(p=>({...p,[i]:true})); return; });
-        }
-      }
-      isMutedMapRef.current = {...isMutedMapRef.current,[i]:newMuted};
-      setIsMutedMap(p=>({...p,[i]:newMuted}));
-    };
-  });
+  // URLs/slotTypes/posterUrls filtrés — uniquement les médias valides
+  const validUrls      = validIndices ? validIndices.map(i => urls[i])      : [];
+  const validSlotTypes = validIndices ? validIndices.map(i => slotTypes[i]) : [];
+  const validPosters   = validIndices ? validIndices.map(i => posterUrls[i]): [];
+  const validTotal     = validUrls.length;
 
-  useEffect(() => {
-    const next = urls[index + 1];
-    if (next && slotTypes[index + 1] === 'video') preloadVideo(next);
-    if (total > 1) {
-      const nu = urls[(index + 1) % total];
-      if (slotTypes[(index + 1) % total] === 'image' && nu && !nu.startsWith('data:')) {
-        if (preloadImgRef.current) { preloadImgRef.current.src = ''; preloadImgRef.current = null; }
-        const img = new Image(); img.src = nu; preloadImgRef.current = img;
-      }
-    }
-    return () => { if (preloadImgRef.current) { preloadImgRef.current.src = ''; preloadImgRef.current = null; } };
-  }, [index, urls, slotTypes, total]);
+  // ✅ Props stables par cellule — AVANT tout return conditionnel (règle des hooks)
+  const cellProps = useCallback((i, extra = {}) => ({
+    url:              validUrls[i],
+    slotType:         validSlotTypes[i],
+    posterUrl:        validPosters[i],
+    isLCP:            isLCPSlot && i === 0,
+    onRegisterVideoEl,
+    slotIndex:        i,
+    showBadge,
+    post,
+    onCellClick:      handleCellClick,
+    ...extra,
+  }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, handleCellClick]); // eslint-disable-line
 
-  const registerVideoRef = useCallback((i) => (el) => {
-    if (el) videoRefsMap.current[i] = el; else delete videoRefsMap.current[i];
-  }, []);
+  // ── Returns conditionnels APRÈS tous les hooks ────────────────────────────
 
-  // ✅ Swipe
-  useEffect(() => {
-    if (total <= 1) return;
-    const el = containerRef.current; if (!el) return;
-    const SWIPE_THRESHOLD = 40, TIME_THRESHOLD = 500, DIR_THRESHOLD = 8;
-    let lastMoveY = 0;
-    const onStart = e => { const t=e.touches?.[0]||e; touch.current={x:t.clientX,y:t.clientY,time:Date.now()}; lastMoveY=t.clientY; dirRef.current=null; isDragging.current=true; };
-    const onMove  = e => {
-      if (!isDragging.current||!touch.current.x) return;
-      const t=e.touches?.[0]||e, dx=t.clientX-touch.current.x, dy=t.clientY-touch.current.y;
-      if (dirRef.current===null&&(Math.abs(dx)>DIR_THRESHOLD||Math.abs(dy)>DIR_THRESHOLD)) dirRef.current=Math.abs(dx)>Math.abs(dy)?'h':'v';
-      if (dirRef.current==='h') { if(e.cancelable) try{e.preventDefault()}catch{} }
-      else if (dirRef.current==='v') { window.scrollBy({top:lastMoveY-t.clientY,behavior:'instant'}); lastMoveY=t.clientY; }
-    };
-    const onEnd = e => {
-      if (!isDragging.current||!touch.current.x) return;
-      const t=e.changedTouches?.[0]||e, dx=touch.current.x-t.clientX, elapsed=Date.now()-touch.current.time;
-      if (dirRef.current==='h'&&Math.abs(dx)>SWIPE_THRESHOLD&&elapsed<TIME_THRESHOLD) setIndex(p=>dx>0?(p+1)%total:(p-1+total)%total);
-      touch.current={x:0,y:0,time:0}; dirRef.current=null; isDragging.current=false; lastMoveY=0;
-    };
-    el.addEventListener('touchstart',onStart,{passive:true}); el.addEventListener('touchmove',onMove,{passive:false}); el.addEventListener('touchend',onEnd,{passive:true});
-    el.addEventListener('mousedown',onStart); el.addEventListener('mousemove',onMove); el.addEventListener('mouseup',onEnd); el.addEventListener('mouseleave',onEnd);
-    return () => { el.removeEventListener('touchstart',onStart); el.removeEventListener('touchmove',onMove); el.removeEventListener('touchend',onEnd); el.removeEventListener('mousedown',onStart); el.removeEventListener('mousemove',onMove); el.removeEventListener('mouseup',onEnd); el.removeEventListener('mouseleave',onEnd); };
-  }, [total]);
+  // Pas d'URLs du tout → rien à afficher
+  if (!total) return null;
 
-  const goPrev = useCallback(() => setIndex(i=>(i-1+total)%total), [total]);
-  const goNext = useCallback(() => setIndex(i=>(i+1)%total),       [total]);
-
-  // ✅ FIX v13 : slotH en px — mesure la VRAIE largeur du container
-  const [slotH, setSlotH] = useState(0);
-  useEffect(() => {
-    const el = containerRef.current; if (!el) return;
-    const update = () => {
-      const rect = el.getBoundingClientRect();
-      const w = rect.width || el.offsetWidth || el.clientWidth;
-      if (w > 0) setSlotH(w);
-    };
-    update();
-    const ro = new ResizeObserver(() => update());
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // Placeholder pendant le calcul de la hauteur
-  if (slotH === 0) {
-    return (
-      <div ref={containerRef} style={{ width: '100%', aspectRatio: '1/1', background: '#000' }} />
-    );
+  // ✅ v19 : validation en cours → placeholder gris (évite le flash de retrait)
+  if (validIndices === null) {
+    return <MediaPlaceholder total={total} />;
   }
 
-  return (
-    <div
-      ref={containerRef}
-      style={{
-        position:   'relative',
-        width:      '100%',
-        // Hauteur px explicite — indépendante de contain:layout du parent
-        height:     slotH,
-        background: '#000',
-        overflow:   'hidden',
-        userSelect: 'none',
-        cursor:     total > 1 ? 'grab' : 'default',
-        touchAction: total > 1 ? 'none' : 'pan-y pinch-zoom',
-      }}
-    >
-      {/*
-        ✅ FIX v14 — wrapper flex entièrement en px :
-          width     = total * slotH  (px)   ← était total * 100% → mélange % + px enfants
-          height    = slotH          (px)
-          transform = translateX(-${index * slotH}px)  ← était -(index * 100/total)%
+  // Tous les médias sont invalides → rien à afficher
+  if (validTotal === 0) return null;
 
-        Chaque slide = slotH × slotH px → dimensions absolues garanties.
-        Plus aucune dépendance sur la cascade CSS du parent contain:layout.
-      */}
-      <div
-        style={{
-          position:      'absolute',
-          top:           0,
-          left:          0,
-          display:       'flex',
-          flexDirection: 'row',
-          // ✅ FIX CLÉ v14 : px absolus au lieu de pourcentages
-          width:         `${total * slotH}px`,
-          height:        slotH,
-          transform:     `translateX(-${index * slotH}px)`,
-          transition:    'transform 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
-          willChange:    total > 1 ? 'transform' : 'auto',
-        }}
-      >
-        {urls.map((url, i) => {
-          const slotType       = slotTypes[i];
-          const isLCP          = isLCPSlot && i === 0;
-          const isMuted        = isMutedMap[i] !== false;
-          const embedThumbnail = post?.thumbnail || getYouTubeThumbnail(url);
-
-          return (
-            <div
-              key={i}
-              style={{
-                // ✅ FIX CLÉ v14 : width et height en px absolus
-                // Garantit que position:absolute inset:0 des enfants
-                // se résout correctement même avec contain:layout dans le parent.
-                position:   'relative',
-                flexShrink: 0,
-                width:      slotH,
-                height:     slotH,
-                background: '#000',
-                overflow:   'hidden',
-              }}
-            >
-              {slotType === 'embed' ? (
-                <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge={showBadge} slotH={slotH} />
-              ) : slotType === 'hls' ? (
-                <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
-              ) : slotType === 'video' ? (
-                <VideoItem url={url} posterUrl={posterUrls[i]} isLCP={isLCP} isActive={i === index} isMuted={isMuted}
-                  toggleMuteRef={toggleMuteRef} slotIndex={i} videoRefCallback={registerVideoRef(i)} showBadge={showBadge} />
-              ) : (
-                <ImageItem url={url} isLCP={isLCP} />
-              )}
-            </div>
-          );
-        })}
+  const renderGrid = () => {
+    if (validTotal === 1) {
+      return <MediaCellAuto key="c0" {...cellProps(0)} />;
+    }
+    if (validTotal === 2) return (
+      <div style={{ display: 'flex', gap: GAP }}>
+        <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+        <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
       </div>
-
-      {/* NAVIGATION */}
-      {total > 1 && (
-        <>
-          <div style={{ position: 'absolute', top: 0, bottom: 0, left: 0, width: 64 }} className="sm:hidden" onClick={goPrev} />
-          <div style={{ position: 'absolute', top: 0, bottom: 0, right: 0, width: 64 }} className="sm:hidden" onClick={goNext} />
-
-          <button onClick={goPrev} className="hidden sm:flex"
-            style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.5)', color: 'white', border: 'none', borderRadius: '50%', width: 44, height: 44, cursor: 'pointer', display: 'none', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}
-            aria-label="Précédent">
-            <svg style={{ width: 24, height: 24 }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-          </button>
-          <button onClick={goNext} className="hidden sm:flex"
-            style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'rgba(0,0,0,0.5)', color: 'white', border: 'none', borderRadius: '50%', width: 44, height: 44, cursor: 'pointer', display: 'none', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}
-            aria-label="Suivant">
-            <svg style={{ width: 24, height: 24 }} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-          </button>
-
-          <div style={{ position: 'absolute', bottom: 12, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 6, zIndex: 10 }}>
-            {urls.map((_, i) => (
-              <button key={i} onClick={() => setIndex(i)}
-                style={{ width: i === index ? 20 : 8, height: 8, borderRadius: 4, background: i === index ? 'white' : 'rgba(255,255,255,0.5)', border: 'none', padding: 0, cursor: 'pointer', touchAction: 'manipulation', transition: 'width 0.2s ease, background-color 0.2s ease' }}
-                aria-label={`Aller à l'image ${i + 1}`} />
-            ))}
+    );
+    if (validTotal === 3) return (
+      <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
+        <MediaCell key="c0" {...cellProps(0)} paddingBottom="133%" wrapperStyle={{ flex: 2 }} />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
+          <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" />
+          <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" />
+        </div>
+      </div>
+    );
+    if (validTotal === 4) return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+        <div style={{ display: 'flex', gap: GAP }}>
+          <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+          <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+        </div>
+        <div style={{ display: 'flex', gap: GAP }}>
+          <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+          <MediaCell key="c3" {...cellProps(3)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+        </div>
+      </div>
+    );
+    const hidden  = validTotal - 5;
+    const overlay = hidden > 0 ? `+${hidden}` : null;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+        <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
+          <MediaCell key="c0" {...cellProps(0)} paddingBottom="75%" wrapperStyle={{ flex: 2 }} />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
+            <MediaCell key="c1" {...cellProps(1)} paddingBottom="75%" />
+            <MediaCell key="c2" {...cellProps(2)} paddingBottom="75%" />
           </div>
+        </div>
+        <div style={{ display: 'flex', gap: GAP }}>
+          <MediaCell key="c3" {...cellProps(3)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} />
+          <MediaCell key="c4" {...cellProps(4)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} overlay={overlay} />
+        </div>
+      </div>
+    );
+  };
 
-          <div style={{ position: 'absolute', top: 12, right: 12, background: 'rgba(0,0,0,0.6)', color: 'white', padding: '4px 10px', borderRadius: 9999, fontSize: 12, fontWeight: 600, zIndex: 10 }}>
-            {index + 1}/{total}
-          </div>
-        </>
-      )}
-    </div>
+  return (
+    <>
+      {renderGrid()}
+      {/* ✅ Lightbox avec uniquement les médias valides */}
+      <Lightbox
+        urls={validUrls}
+        slotTypes={validSlotTypes}
+        posterUrls={validPosters}
+        post={post}
+        controlRef={lightboxControl}
+      />
+    </>
   );
 });
 

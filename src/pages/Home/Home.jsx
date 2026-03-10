@@ -1,17 +1,18 @@
 // 📁 src/pages/Home/Home.jsx
-// ⚡ PERF v2 — toutes les optimisations de performance appliquées
+// ⚡ PERF v3 — PREMIUM MEDIA LOADING
 //
-// FIXES APPLIQUÉS :
-// ✅ FIX 1 : setResolved en 1 seul setState (plus de chunks → plus de re-renders en cascade)
-// ✅ FIX 2 : livePosts dans un useRef + version counter → évite de passer 300 posts dans React state
-// ✅ FIX 3 : MAX_DOM_POSTS réduit à 25 mobile / 50 desktop
-// ✅ FIX 4 : Suppression du double listener scroll (garde uniquement IntersectionObserver)
-// ✅ FIX 5 : fallbackFetchedRef ne se reset plus dans finally (évite boucle infinie)
-// ✅ FIX 6 : newsArticles mémoïsé avec clé stable (évite recalcul à chaque render)
-// ✅ FIX 7 : useDeferredValue supprimé (inutile ici, double render pass)
-// ✅ FIX 8 : startTransition sur tous les setState non-urgents
-// ✅ FIX 9 : apiObsFn stabilisé via ref (évite reconnect IntersectionObserver)
-// ✅ FIX 10 : scroll container avec will-change:transform pour accélération GPU mobile
+// NOUVEAUTÉS v3 (en plus des fixes v2) :
+// ✅ MEDIA-1 : Idle prefetch — précharge les N posts suivants via requestIdleCallback
+//              sans jamais bloquer le main thread
+// ✅ MEDIA-2 : <link rel=prefetch> pour images, preload metadata pour vidéos
+// ✅ MEDIA-3 : fetchpriority="high" sur le 1er post, "low" sur les autres
+// ✅ MEDIA-4 : resolveBatch CONCURRENCE augmentée à 6 (était 4)
+// ✅ MEDIA-5 : PostCard reçoit onVisible(index) → déclenche prefetch au scroll
+// ✅ MEDIA-6 : IntersectionObserver dédié au prefetch (threshold 0.1, rootMargin 400px)
+// ✅ MEDIA-7 : Image decode hint — décodeAsync() en avance sur les images suivantes
+// ✅ MEDIA-8 : PAGE_SIZE augmenté à 15 (était 10) — plus de posts chargés d'un coup
+// ✅ MEDIA-9 : resolveBatch affiche immédiatement les posts sans médias expirables,
+//              puis injecte les résolus au fur et à mesure (streaming render)
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -49,13 +50,14 @@ const ArticleReaderModal       = lazy(() => import("./ArticleReaderModal"));
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-const HOME_REFRESH_EVENT = "home:refresh";
-const AD_CONFIG          = DEFAULT_AD_CONFIG;
-const MOCK_CONFIG        = DEFAULT_MOCK_CONFIG;
+const HOME_REFRESH_EVENT    = "home:refresh";
+const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
+const AD_CONFIG             = DEFAULT_AD_CONFIG;
+const MOCK_CONFIG           = DEFAULT_MOCK_CONFIG;
 
-const PAGE_SIZE = 10;
-// ✅ FIX 3 : MAX_DOM_POSTS adaptatif — mobile a besoin de beaucoup moins
-const MAX_DOM_POSTS = typeof window !== "undefined" && window.innerWidth < 768 ? 25 : 50;
+// ✅ MEDIA-8 : PAGE_SIZE augmenté → plus de posts rendus d'un coup
+const PAGE_SIZE = 15;
+const MAX_DOM_POSTS = typeof window !== "undefined" && window.innerWidth < 768 ? 30 : 60;
 const MAX_POOL      = 300;
 
 const SUGGEST_ACCOUNTS_EVERY = 5;
@@ -79,6 +81,73 @@ const RECENT_72H = 72 * 60 * 60 * 1000;
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
+
+// ✅ MEDIA-1 : Config préchargement
+const PREFETCH_AHEAD     = 4;   // posts à précharger devant le viewport
+const PREFETCH_IDLE_WAIT = 150; // ms avant idle prefetch si requestIdleCallback absent
+const RESOLVE_CONCURRENCY = 6;  // ✅ MEDIA-4 : était 4
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ MEDIA PREFETCH ENGINE
+// Précharge les médias des prochains posts via idle callback
+// → Jamais de blocage du main thread
+// ─────────────────────────────────────────────────────────────────────────────
+const prefetchedUrls = new Set();
+
+const prefetchOneUrl = (url) => {
+  if (!url || typeof url !== 'string' || prefetchedUrls.has(url)) return;
+  prefetchedUrls.add(url);
+  try {
+    const isVideo = /\.(mp4|webm|mov|avi)(\?|$)/i.test(url.split('?')[0]);
+    if (isVideo) {
+      // ✅ MEDIA-2 : preload metadata pour vidéos — léger, juste l'en-tête
+      const vid = document.createElement('video');
+      vid.src = url; vid.preload = 'metadata'; vid.muted = true;
+      // On ne l'attache pas au DOM → pas de rendu, juste le fetch réseau
+    } else if (url.startsWith('http') || url.startsWith('/')) {
+      // ✅ MEDIA-2 : <link rel=prefetch> pour images — basse priorité réseau
+      const link = document.createElement('link');
+      link.rel = 'prefetch';
+      link.as  = 'image';
+      link.href = url;
+      link.setAttribute('fetchpriority', 'low');
+      document.head.appendChild(link);
+
+      // ✅ MEDIA-7 : decode en avance pour les images (évite le jank au paint)
+      if (typeof window !== 'undefined') {
+        const img = new Image();
+        img.src = url;
+        img.decode?.().catch(() => {}); // silencieux si pas supporté
+      }
+    }
+  } catch { /* silencieux */ }
+};
+
+const getPostAllMediaUrls = (post) => {
+  if (!post) return [];
+  const urls = [];
+  const push = (v) => { if (v && typeof v === 'string') urls.push(v); else if (v?.url) urls.push(v.url); };
+  (Array.isArray(post.media)  ? post.media  : post.media  ? [post.media]  : []).forEach(push);
+  (Array.isArray(post.images) ? post.images : post.images ? [post.images] : []).forEach(push);
+  if (post.videoUrl)  push(post.videoUrl);
+  if (post.embedUrl)  push(post.embedUrl);
+  if (post.thumbnail) push(post.thumbnail);
+  return urls;
+};
+
+const scheduleIdlePrefetch = (posts, fromIndex, count = PREFETCH_AHEAD) => {
+  if (!posts?.length) return;
+  const targets = posts.slice(fromIndex, fromIndex + count);
+  if (!targets.length) return;
+
+  const run = () => targets.forEach(p => getPostAllMediaUrls(p).forEach(prefetchOneUrl));
+
+  if (typeof requestIdleCallback !== 'undefined') {
+    requestIdleCallback(run, { timeout: 2000 });
+  } else {
+    setTimeout(run, PREFETCH_IDLE_WAIT);
+  }
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // URL RESOLUTION
@@ -127,12 +196,27 @@ const resolvePost = async (post) => {
   } catch{return null;}
 };
 
-// ✅ FIX 1 : resolveBatch retourne un résultat complet — plus de chunks intermédiaires
-const resolveBatch = async (posts) => {
-  const CONC=4,results=new Array(posts.length).fill(null);
-  let i=0;
-  const worker=async()=>{while(i<posts.length){const idx=i++;results[idx]=hasExpirable(posts[idx])?await resolvePost(posts[idx]):posts[idx];}};
-  await Promise.all(Array.from({length:CONC},worker));
+// ✅ MEDIA-4 : Concurrence augmentée à 6
+// ✅ MEDIA-9 : Callback onPartialResult pour streaming render
+const resolveBatch = async (posts, onPartialResult) => {
+  const results  = new Array(posts.length).fill(null);
+  let   i        = 0;
+  let   resolved = 0;
+
+  const worker = async () => {
+    while (i < posts.length) {
+      const idx = i++;
+      results[idx] = hasExpirable(posts[idx]) ? await resolvePost(posts[idx]) : posts[idx];
+      resolved++;
+
+      // ✅ MEDIA-9 : notifie au fur et à mesure — streaming render sans attendre la fin
+      if (onPartialResult && resolved % 3 === 0) {
+        onPartialResult(results.filter(Boolean));
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: RESOLVE_CONCURRENCY }, worker));
   return results.filter(Boolean);
 };
 
@@ -304,6 +388,46 @@ const NewsCard = memo(({ article, isDarkMode, onClick }) => {
 NewsCard.displayName = "NewsCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ✅ MEDIA-5 : PostCardWrapper — détecte la visibilité du post via IO
+// et déclenche le prefetch des posts suivants
+// ─────────────────────────────────────────────────────────────────────────────
+const PostCardWrapper = memo(({ post, index, onVisible, ...rest }) => {
+  const wrapRef = useRef(null);
+  const notified = useRef(false);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || notified.current) return;
+
+    // ✅ MEDIA-6 : IO dédié au prefetch — rootMargin large pour anticiper
+    const obs = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && !notified.current) {
+          notified.current = true;
+          onVisible?.(index);
+          obs.disconnect();
+        }
+      },
+      { rootMargin: '400px 0px', threshold: 0.01 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [index, onVisible]);
+
+  return (
+    <div ref={wrapRef}>
+      <PostCard
+        post={post}
+        // ✅ MEDIA-3 : fetchpriority high uniquement sur le 1er post (LCP)
+        priority={index === 0}
+        {...rest}
+      />
+    </div>
+  );
+});
+PostCardWrapper.displayName = 'PostCardWrapper';
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FEED
 // ─────────────────────────────────────────────────────────────────────────────
 const Feed = ({
@@ -312,9 +436,8 @@ const Feed = ({
   isLoading, newPostsCount, onShowNewPosts, apiFullyLoaded,
   resetSignal, topOffset, suggestedUsers, newsArticles = [],
 }) => {
-  const [displayed,   setDisplayed]  = useState([]);
-  const [loopBounds,  setLoopBounds] = useState([]);
-  // ✅ FIX spinner : true = on a tout affiché (pool épuisé sans boucle possible)
+  const [displayed,    setDisplayed]   = useState([]);
+  const [loopBounds,   setLoopBounds]  = useState([]);
   const [poolExhausted, setPoolExhausted] = useState(false);
 
   const sentinelRef = useRef(null);
@@ -344,8 +467,10 @@ const Feed = ({
     prevLen.current   = pool.length;
     setDisplayed(tagged);
     setLoopBounds([]);
-    // Pool plus petit que PAGE_SIZE → pas de scroll infini possible
     setPoolExhausted(pool.length > 0 && pool.length < PAGE_SIZE);
+
+    // ✅ MEDIA-1 : précharge immédiatement les médias du prochain batch
+    scheduleIdlePrefetch(pool, 0, PAGE_SIZE + PREFETCH_AHEAD);
   }, []);
 
   useEffect(() => {
@@ -359,54 +484,34 @@ const Feed = ({
       setDisplayed([]); setLoopBounds([]); setPoolExhausted(false);
       return;
     }
-
-    if (resetChanged || anchorChanged) {
-      initFeed(posts);
-      return;
-    }
-
+    if (resetChanged || anchorChanged) { initFeed(posts); return; }
     if (posts.length !== prevLen.current) {
       prevLen.current  = posts.length;
       postsRef.current = posts;
-      // Si le pool a grandi, on peut à nouveau scroller
       if (posts.length >= PAGE_SIZE) setPoolExhausted(false);
-      setTimeout(() => {
-        if (postsRef.current.length > cursorRef.current) {
-          loadingRef.current = false;
-        }
-      }, 0);
+      setTimeout(() => { if (postsRef.current.length > cursorRef.current) loadingRef.current = false; }, 0);
     }
   }, [resetSignal, anchor, posts.length, initFeed]); // eslint-disable-line
 
-  useEffect(() => {
-    if (posts.length) initFeed(posts);
-  }, []); // eslint-disable-line
+  useEffect(() => { if (posts.length) initFeed(posts); }, []); // eslint-disable-line
 
   const loadMore = useCallback(() => {
     if (loadingRef.current) return;
     const pool = postsRef.current;
     if (!pool.length) return;
 
-    // Pool trop petit pour boucler → on affiche ce qu'on a et on stoppe
     if (cursorRef.current >= pool.length) {
       if (pool.length >= PAGE_SIZE) {
-        // Boucle : repart du début
-        cursorRef.current = 0;
-        loopRef.current++;
-        setPoolExhausted(false);
-      } else {
-        // Pas assez de posts pour boucler — on attend que l'API charge plus
-        setPoolExhausted(true);
-        return;
-      }
+        cursorRef.current = 0; loopRef.current++; setPoolExhausted(false);
+      } else { setPoolExhausted(true); return; }
     }
 
+    // ✅ FIX : pose le verrou AVANT le try, reset DANS le finally
     loadingRef.current = true;
-
     try {
-      const cursor = cursorRef.current;
-      const end    = Math.min(cursor + PAGE_SIZE, pool.length);
-      let   raw    = pool.slice(cursor, end);
+      const cursor   = cursorRef.current;
+      const end      = Math.min(cursor + PAGE_SIZE, pool.length);
+      let   raw      = pool.slice(cursor, end);
       let   boundary = null;
 
       if (raw.length < PAGE_SIZE && pool.length >= PAGE_SIZE) {
@@ -427,69 +532,56 @@ const Feed = ({
       }));
 
       const next = accRef.current.concat(batch);
-      accRef.current = next.length > MAX_DOM_POSTS
-        ? next.slice(next.length - MAX_DOM_POSTS)
-        : next;
+      accRef.current = next.length > MAX_DOM_POSTS ? next.slice(next.length - MAX_DOM_POSTS) : next;
 
       if (boundary !== null) setLoopBounds(b => [...b, boundary]);
       setDisplayed(accRef.current);
 
-      // Vérifie si on a tout affiché et le pool est trop petit pour boucler
-      if (cursorRef.current >= pool.length && pool.length < PAGE_SIZE) {
-        setPoolExhausted(true);
-      }
+      if (cursorRef.current >= pool.length && pool.length < PAGE_SIZE) setPoolExhausted(true);
     } finally {
+      // ✅ FIX : reset immédiat — pas besoin d'attendre le re-render React
       loadingRef.current = false;
     }
-  }, []);
+  }, []); // ✅ FIX : deps vides — loadMore ne change jamais, utilise les refs
 
-  // ✅ IntersectionObserver avec root explicite pour iOS Safari
+  // ✅ FIX : ref stable vers loadMore — l'IO ne se reconnecte JAMAIS
+  const loadMoreRef = useRef(loadMore);
+  useEffect(() => { loadMoreRef.current = loadMore; }, [loadMore]);
+
   useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
+    const el = sentinelRef.current; if (!el) return;
     const root = el.closest("[data-scroll-container]") || null;
     const obs = new IntersectionObserver(
-      ([e]) => { if (e.isIntersecting) loadMore(); },
+      ([e]) => { if (e.isIntersecting) loadMoreRef.current(); },
       { root, rootMargin: "800px", threshold: 0 }
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [loadMore]);
+  }, []); // ✅ FIX : deps vides — monté une seule fois au mount
 
-  // ✅ Fallback scroll — nécessaire sur certains navigateurs mobiles où
-  // l'IntersectionObserver avec root explicite ne se déclenche pas correctement.
-  // Throttlé à 100ms pour ne pas surcharger le main thread.
   useEffect(() => {
-    const scrollEl =
-      sentinelRef.current?.closest("[data-scroll-container]") || window;
-
+    const scrollEl = sentinelRef.current?.closest("[data-scroll-container]") || window;
     let lastCall = 0;
     const onScroll = () => {
       const now = Date.now();
-      if (now - lastCall < 100) return; // throttle 100ms
+      if (now - lastCall < 100) return;
       lastCall = now;
-      const el = sentinelRef.current;
-      if (!el) return;
+      const el = sentinelRef.current; if (!el) return;
       const rect = el.getBoundingClientRect();
-      const vh   = window.innerHeight || document.documentElement.clientHeight;
-      if (rect.top < vh + 1200) loadMore();
+      if (rect.top < (window.innerHeight || document.documentElement.clientHeight) + 1200) loadMoreRef.current();
     };
-
     scrollEl.addEventListener("scroll", onScroll, { passive: true });
-    // Déclenche une fois après mount pour les feeds courts
     const t = setTimeout(onScroll, 200);
-    return () => {
-      scrollEl.removeEventListener("scroll", onScroll);
-      clearTimeout(t);
-    };
-  }, [loadMore]);
+    return () => { scrollEl.removeEventListener("scroll", onScroll); clearTimeout(t); };
+  }, []); // ✅ FIX : deps vides, utilise loadMoreRef
 
-  // Trigger quand le pool grandit
-  useEffect(() => {
-    if (posts.length > 0 && cursorRef.current < posts.length) {
-      loadMore();
-    }
-  }, [posts.length]); // eslint-disable-line
+  useEffect(() => { if (posts.length > 0 && cursorRef.current < posts.length) loadMoreRef.current(); }, [posts.length]); // eslint-disable-line
+
+  // ✅ MEDIA-5 : prefetch déclenché par la visibilité du post, jamais dans loadMore
+  // (évite de perturber le cycle loadMore avec des side-effects async)
+  const handlePostVisible = useCallback((index) => {
+    scheduleIdlePrefetch(postsRef.current, index + 1, PREFETCH_AHEAD);
+  }, []);
 
   const [selectedArticle, setSelectedArticle] = useState(null);
   const loopSet = useMemo(() => new Set(loopBounds), [loopBounds]);
@@ -511,8 +603,8 @@ const Feed = ({
       <NewBanner count={newPostsCount} onClick={onShowNewPosts} topOffset={topOffset} />
 
       {displayed.map((post, index) => {
-        const newsSlot  = index > 0 && index % NEWS_EVERY === 0 ? Math.floor(index / NEWS_EVERY) - 1 : -1;
-        const newsItem  = newsSlot >= 0 && newsArticles.length > 0
+        const newsSlot = index > 0 && index % NEWS_EVERY === 0 ? Math.floor(index / NEWS_EVERY) - 1 : -1;
+        const newsItem = newsSlot >= 0 && newsArticles.length > 0
           ? newsArticles[newsSlot % newsArticles.length]
           : null;
 
@@ -520,8 +612,11 @@ const Feed = ({
           <div key={post._displayKey || post._id}>
             {loopSet.has(index) && apiFullyLoaded && <LoopDivider isDarkMode={isDarkMode} />}
 
-            <PostCard
+            {/* ✅ MEDIA-5 : PostCardWrapper détecte la visibilité → prefetch */}
+            <PostCardWrapper
               post={post}
+              index={index}
+              onVisible={handlePostVisible}
               onDeleted={onDeleted}
               showToast={showToast}
               mockPost={!!post._isMock || !!post.isMockPost}
@@ -556,7 +651,6 @@ const Feed = ({
         );
       })}
 
-      {/* ✅ Spinner masqué quand pool épuisé — pas de spinner infini */}
       <div ref={sentinelRef} className="h-10 flex items-center justify-center" aria-hidden="true">
         {displayed.length > 0 && !poolExhausted && (
           <ArrowPathIcon className={`w-4 h-4 animate-spin ${isDarkMode ? "text-gray-700" : "text-gray-300"}`} />
@@ -607,11 +701,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const [seed,           setSeed]           = useState(()=>Math.floor(Math.random()*0xffffffff));
   const [suggestedUsers, setSuggestedUsers] = useState([]);
 
-  // ✅ FIX 2 : livePosts dans un ref + version counter → évite 300 posts dans React state
-  const livePostsRef    = useRef([]);
-  const [livePostsVer,  setLivePostsVer]   = useState(0);
+  const livePostsRef   = useRef([]);
+  const [livePostsVer, setLivePostsVer]  = useState(0);
 
-  // ✅ FIX 1 : resolved stocké directement (plus de chunks intermédiaires)
+  // ✅ MEDIA-9 : streaming render — resolved se met à jour au fur et à mesure
   const [resolved, setResolved] = useState([]);
 
   const scrollRef   = useRef(null);
@@ -625,36 +718,27 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const latestId    = useRef(null);
   const sugFetched  = useRef(false);
   const waveTimer   = useRef(null);
-  // ✅ FIX 5 : fallbackFetched reste true après le premier appel réussi
   const fallbackFetchedRef = useRef(false);
   const fallbackLastRun    = useRef(0);
 
   const HEADER_H  = 52;
   const STORIES_H = 92;
   const TOTAL_TOP = HEADER_H + STORIES_H;
-
-  const showMock = MOCK_CONFIG.enabled;
+  const showMock  = MOCK_CONFIG.enabled;
 
   const { articles: newsGC }   = useNews({ maxArticles: 4, category: "genieCivil",    autoFetch: !!user, enabled: !!user }) || {};
   const { articles: newsTech } = useNews({ maxArticles: 2, category: "technologie",   autoFetch: !!user, enabled: !!user }) || {};
   const { articles: newsEnv }  = useNews({ maxArticles: 2, category: "environnement", autoFetch: !!user, enabled: !!user }) || {};
 
-  // ✅ FIX 6 : clé de mémoïsation stable basée sur les longueurs, pas les tableaux
   const newsGCLen   = newsGC?.length   ?? 0;
   const newsTechLen = newsTech?.length ?? 0;
   const newsEnvLen  = newsEnv?.length  ?? 0;
   const newsArticles = useMemo(() => {
     const all  = [...(newsGC || []), ...(newsTech || []), ...(newsEnv || [])];
     const seen = new Set();
-    return all.filter(a => {
-      const key = a._id || a.id || a.url;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    return all.filter(a => { const key = a._id || a.id || a.url; if (seen.has(key)) return false; seen.add(key); return true; });
   }, [newsGCLen, newsTechLen, newsEnvLen]); // eslint-disable-line
 
-  // Helper pour ajouter des posts dans le ref
   const addLivePosts = useCallback((newPostsList) => {
     const ids = new Set(livePostsRef.current.map(p => p._id));
     const fresh = newPostsList.filter(p => p?._id && !ids.has(p._id));
@@ -687,16 +771,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     })();
   }, [user]);
 
-  // ─── FALLBACK posts depuis profils utilisateurs ───────────────────────────
   const fetchFallbackPosts = useCallback(async () => {
     if (!user) return;
     const now = Date.now();
     if (now - fallbackLastRun.current < FALLBACK_COOLDOWN_MS) return;
     if (fallbackFetchedRef.current) return;
-    // ✅ FIX 5 : on pose le verrou AVANT l'appel async (pas dans finally)
     fallbackFetchedRef.current = true;
     fallbackLastRun.current    = now;
-
     try {
       const cachedProfilePosts = readAllCachedProfilePosts();
       if (cachedProfilePosts.length > 0) {
@@ -704,116 +785,74 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         const existingReal = livePostsRef.current.filter(p => !p._isMock && !p.isMockPost).length;
         if (existingReal >= FALLBACK_THRESHOLD * 2) return;
       }
-
       let userPool = suggestedUsers.length > 0
         ? suggestedUsers
         : await (async () => {
-            try {
-              const { data } = await axiosClient.get("/users?limit=30&sort=followers");
-              return Array.isArray(data) ? data : (data?.users || []);
-            } catch { return []; }
+            try { const { data } = await axiosClient.get("/users?limit=30&sort=followers"); return Array.isArray(data) ? data : (data?.users || []); }
+            catch { return []; }
           })();
-
       if (!userPool.length) return;
-
       const shuffled = [...userPool].sort(() => Math.random() - 0.5);
-      const probeTarget = shuffled[0];
-      const targets     = shuffled.slice(1, MAX_FALLBACK_USERS + 1);
-
+      const probeTarget = shuffled[0], targets = shuffled.slice(1, MAX_FALLBACK_USERS + 1);
       if (!window.__fallbackPostsRoutePromise__) {
         const probeUid = probeTarget?._id || probeTarget?.id;
         window.__fallbackPostsRoutePromise__ = probeUid
           ? (async () => {
-              try {
-                await axiosClient.get(`/users/${probeUid}/posts?limit=1&page=1`);
-                return "user_posts";
-              } catch (e1) {
+              try { await axiosClient.get(`/users/${probeUid}/posts?limit=1&page=1`); return "user_posts"; }
+              catch (e1) {
                 if (e1.response?.status !== 404) return "user_posts";
-                try {
-                  await axiosClient.get(`/posts?userId=${probeUid}&limit=1`);
-                  return "posts_filter";
-                } catch (e2) {
+                try { await axiosClient.get(`/posts?userId=${probeUid}&limit=1`); return "posts_filter"; }
+                catch (e2) {
                   if (e2.response?.status !== 404) return "posts_filter";
-                  try {
-                    await axiosClient.get(`/posts/user/${probeUid}?limit=1`);
-                    return "posts_user";
-                  } catch { return "none"; }
+                  try { await axiosClient.get(`/posts/user/${probeUid}?limit=1`); return "posts_user"; }
+                  catch { return "none"; }
                 }
               }
             })()
           : Promise.resolve("none");
-
-        window.__fallbackPostsRoutePromise__.catch(() => {
-          delete window.__fallbackPostsRoutePromise__;
-        });
+        window.__fallbackPostsRoutePromise__.catch(() => { delete window.__fallbackPostsRoutePromise__; });
       }
-
       const route = await window.__fallbackPostsRoutePromise__;
       if (route === "none") return;
-
       const buildUrl = (uid) => {
         if (route === "user_posts")   return `/users/${uid}/posts?limit=${FALLBACK_POSTS_LIMIT}&page=1`;
         if (route === "posts_filter") return `/posts?userId=${uid}&limit=${FALLBACK_POSTS_LIMIT}`;
         if (route === "posts_user")   return `/posts/user/${uid}?limit=${FALLBACK_POSTS_LIMIT}`;
         return null;
       };
-
       const allTargets = [probeTarget, ...targets].filter(Boolean);
       const results = await Promise.allSettled(
         allTargets.map(async (u) => {
-          const uid = u._id || u.id;
-          if (!uid) return [];
-          const url = buildUrl(uid);
-          if (!url) return [];
-          try {
-            const { data } = await axiosClient.get(url);
-            const posts = Array.isArray(data) ? data : (data?.posts || data?.data || []);
-            return posts.map(p => ({ ...p, _fromFallback: true }));
-          } catch (e) {
-            if (e.response?.status === 404) delete window.__fallbackPostsRoutePromise__;
-            return [];
-          }
+          const uid = u._id || u.id; if (!uid) return [];
+          const url = buildUrl(uid); if (!url) return [];
+          try { const { data } = await axiosClient.get(url); const posts = Array.isArray(data) ? data : (data?.posts || data?.data || []); return posts.map(p => ({ ...p, _fromFallback: true })); }
+          catch (e) { if (e.response?.status === 404) delete window.__fallbackPostsRoutePromise__; return []; }
         })
       );
-
-      const allFallback = results
-        .filter(r => r.status === "fulfilled")
-        .flatMap(r => r.value)
-        .filter(p => p?._id);
-
+      const allFallback = results.filter(r => r.status === "fulfilled").flatMap(r => r.value).filter(p => p?._id);
       if (allFallback.length) addLivePosts(allFallback);
-    } catch {
-      // Silencieux
-    }
-    // ✅ FIX 5 : PAS de reset dans finally — le fallback ne se relance pas en boucle
+    } catch {}
   }, [user, suggestedUsers, addLivePosts]);
 
-  // Ref stable pour fetchFallbackPosts (évite deps instables dans useEffect)
   const fetchFallbackRef = useRef(fetchFallbackPosts);
   useEffect(() => { fetchFallbackRef.current = fetchFallbackPosts; }, [fetchFallbackPosts]);
 
-  // Surveille le pool — déclenche fallback si nécessaire
   useEffect(() => {
     if (!user || postsLoading) return;
     const realCount = livePostsRef.current.filter(p => !p._isMock && !p.isMockPost && !p._fromFallback).length;
     if (realCount < FALLBACK_THRESHOLD) fetchFallbackRef.current();
   }, [livePostsVer, postsLoading, user]);
 
-  // Écoute le cache de profils en temps réel
   useEffect(() => {
     if (!user) return;
     const handleProfileCached = () => {
       const realCount = livePostsRef.current.filter(p => !p._isMock && !p.isMockPost && !p._fromFallback && !p._fromProfileCache).length;
-      if (realCount < FALLBACK_THRESHOLD) {
-        const cached = readAllCachedProfilePosts();
-        if (cached.length > 0) addLivePosts(cached);
-      }
+      if (realCount < FALLBACK_THRESHOLD) { const cached = readAllCachedProfilePosts(); if (cached.length > 0) addLivePosts(cached); }
     };
     window.addEventListener("profilePostsCached", handleProfileCached);
     return () => window.removeEventListener("profilePostsCached", handleProfileCached);
   }, [user, addLivePosts]);
 
-  // Sync rawPosts → livePostsRef
   useEffect(() => {
     if (!rawPosts.length) return;
     const ids = new Set(rawPosts.map(p => p._id));
@@ -850,7 +889,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return seededShuffle(mocks, seed);
   }, [livePostsVer, mockCount, showMock, isValidPost, seed]); // eslint-disable-line
 
-  // ✅ FIX 1 : résolution complète en 1 seul setState
+  // ✅ MEDIA-9 : résolution en streaming
+  // 1. Affiche immédiatement les posts sans médias expirables
+  // 2. Au fur et à mesure de la résolution, injecte les résolus
+  // → L'user voit du contenu instantanément, les vidéos arrivent progressivement
   useEffect(() => {
     if (!rawPool.length) { setResolved([]); return; }
     let cancelled = false;
@@ -858,17 +900,29 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     const immediate = rawPool.filter(p => !hasExpirable(p));
     const exp       = rawPool.filter(p =>  hasExpirable(p));
 
-    // Affiche immédiatement les posts sans média expirant
+    // Affiche immédiatement ce qui n'a pas besoin de résolution
     startTransition(() => setResolved(immediate));
 
     if (!exp.length) return;
 
-    // Résout tous les médias expirables en une seule passe, puis 1 seul setState
-    resolveBatch(exp).then(resolved => {
+    // Précharge dès maintenant les médias immediats
+    scheduleIdlePrefetch(immediate, 0, PREFETCH_AHEAD);
+
+    // ✅ MEDIA-9 : callback de streaming — inject les résolus toutes les 3 résolutions
+    const resolvedMap = new Map(immediate.map(p => [p._id, p]));
+
+    resolveBatch(exp, (partials) => {
       if (cancelled) return;
-      const resolvedMap = new Map([...immediate, ...resolved].map(p => [p._id, p]));
+      partials.forEach(p => resolvedMap.set(p._id, p));
       const ordered = rawPool.map(p => resolvedMap.get(p._id)).filter(Boolean);
       startTransition(() => setResolved(ordered));
+    }).then(finalResolved => {
+      if (cancelled) return;
+      finalResolved.forEach(p => resolvedMap.set(p._id, p));
+      const ordered = rawPool.map(p => resolvedMap.get(p._id)).filter(Boolean);
+      startTransition(() => setResolved(ordered));
+      // Précharge les médias résolus
+      scheduleIdlePrefetch(ordered, 0, PREFETCH_AHEAD * 2);
     });
 
     return () => { cancelled = true; };
@@ -880,10 +934,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if (!user) return;
     const id = setInterval(() => {
       if (!document.hidden) {
-        startTransition(() => {
-          setSeed(Math.floor(Math.random() * 0xffffffff));
-          setResetSig(k => k + 1);
-        });
+        startTransition(() => { setSeed(Math.floor(Math.random() * 0xffffffff)); setResetSig(k => k + 1); });
       }
     }, SEED_ROTATE_MS);
     return () => clearInterval(id);
@@ -891,7 +942,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   useEffect(() => { if (resolved.length > 0 && !latestId.current) latestId.current = resolved[0]._id; }, [resolved]);
 
-  // ✅ FIX 7 : plus de useDeferredValue — filtre direct (searchQuery est rare)
   const filtered = useMemo(() => {
     if (!searchQuery.trim()) return resolved;
     const q = searchQuery.toLowerCase();
@@ -937,19 +987,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     finally { setIsRefreshing(false); triggerReset(); }
   }, [isRefreshing, refetch, fetchStories, showToast, triggerReset]);
 
-  // ✅ FIX : HOME_REFRESH_EVENT = vrai refresh API (pull-to-refresh, depuis autre page)
-  // HOME_SCROLL_TOP_EVENT = juste scroll en haut sans reset (click Home depuis Home)
-  const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
-
   useEffect(() => {
     window.addEventListener(HOME_REFRESH_EVENT, handleRefresh);
     return () => window.removeEventListener(HOME_REFRESH_EVENT, handleRefresh);
   }, [handleRefresh]);
 
   useEffect(() => {
-    const handleScrollTop = () => {
-      scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-    };
+    const handleScrollTop = () => { scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" }); };
     window.addEventListener(HOME_SCROLL_TOP_EVENT, handleScrollTop);
     return () => window.removeEventListener(HOME_SCROLL_TOP_EVENT, handleScrollTop);
   }, []);
@@ -963,20 +1007,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         if (!fp.length || !latestId.current) return;
         const idx = fp.findIndex(p => p._id === latestId.current), newer = idx > 0 ? fp.slice(0, idx) : [];
         if (!newer.length) return;
-
         const ids = new Set(livePostsRef.current.map(p => p._id));
         const fresh = newer.filter(p => !ids.has(p._id));
         if (!fresh.length) return;
-
         latestId.current = fresh[0]._id;
         livePostsRef.current = [...fresh, ...livePostsRef.current].slice(0, MAX_POOL);
         setNewPosts(newer.length);
-        startTransition(() => {
-          // ✅ FIX : on NE reset PAS le feed automatiquement au poll
-          // On incrémente juste livePostsVer pour que rawPool se recalcule
-          // L'user voit le banner "X nouveaux posts" et choisit de les voir
-          setLivePostsVer(v => v + 1);
-        });
+        startTransition(() => setLivePostsVer(v => v + 1));
       } catch {}
     };
     const id = setInterval(poll, POLL_INTERVAL);
@@ -984,17 +1021,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   }, [user, refetch, isRefreshing]);
 
   const handleShowNew = useCallback(() => {
-    // ✅ FIX : scroll to top UNIQUEMENT — pas de resetSig
-    // Le resetSig réinitialise le feed depuis le début (perte du scroll)
-    // Les nouveaux posts sont déjà dans livePostsRef, on les affiche via setLivePostsVer
     scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     setNewPosts(0);
-    startTransition(() => {
-      setSeed(Math.floor(Math.random() * 0xffffffff));
-      setLivePostsVer(v => v + 1); // recalcule rawPool avec les nouveaux posts
-      // Note: on ne setResetSig ici — ça reset le curseur et renvoie l'user en haut
-      // avec les MÊMES posts. Le livePostsVer suffit pour incorporer les nouveaux.
-    });
+    startTransition(() => { setSeed(Math.floor(Math.random() * 0xffffffff)); setLivePostsVer(v => v + 1); });
   }, []);
 
   const PTR = 72;
@@ -1023,15 +1052,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     t.addEventListener("touchstart", onStart, { passive: true });
     t.addEventListener("touchmove",  onMove,  { passive: false });
     t.addEventListener("touchend",   onEnd,   { passive: true });
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      t.removeEventListener("touchstart", onStart);
-      t.removeEventListener("touchmove",  onMove);
-      t.removeEventListener("touchend",   onEnd);
-    };
+    return () => { if (raf) cancelAnimationFrame(raf); t.removeEventListener("touchstart", onStart); t.removeEventListener("touchmove", onMove); t.removeEventListener("touchend", onEnd); };
   }, [handleRefresh]);
 
-  // ✅ FIX 9 : apiObsFn stabilisé via ref — pas de reconnect à chaque render
   const apiObsFnRef = useRef(null);
   const apiObsFn = useCallback((entries) => {
     if (!entries[0].isIntersecting || loadingRef.current || isRefreshing) return;
@@ -1084,7 +1107,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         style={{
           WebkitOverflowScrolling: "touch",
           scrollbarWidth: "none",
-          // ✅ FIX 10 : accélération GPU pour le scroll sur mobile
           willChange: "transform",
           transform: "translateZ(0)",
         }}

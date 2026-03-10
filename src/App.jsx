@@ -3,6 +3,7 @@
 // ✅ CLS FIX : mainStyle stable, pas de changement de layout après mount
 // ✅ INP FIX : suppression AnimatePresence sur les routes (remount inutile)
 // ✅ HOME FIX : simple tap = scroll en haut, double-tap = vrai refresh API
+// ✅ WAKEUP FIX : écran d'attente rassurant pendant le réveil du serveur Render
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 
 import LoadingSpinner    from "./components/LoadingSpinner";
+import WakeUpScreen      from "./components/WakeUpScreen";
 import { Header }       from "./imports/importsComponents";
 import { useAuth }      from "./imports/importsContext";
 import { useStories }   from "./context/StoryContext";
@@ -35,7 +37,7 @@ import About          from "./pages/About";
 import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
 import StoryViewer    from "./pages/Home/StoryViewer";
 
-export const HOME_REFRESH_EVENT   = "home:refresh";
+export const HOME_REFRESH_EVENT    = "home:refresh";
 export const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
 
 export const emitHomeRefresh = () =>
@@ -112,18 +114,84 @@ function useSmartScroll(threshold = 10) {
 }
 
 // ============================================
+// useBackendReady — surveille le réveil du serveur Render
+//
+// Logique :
+//   1. On tente un /api/health avec timeout 3s.
+//   2. Si ça répond → serverReady = true immédiatement.
+//   3. Si ça échoue (serveur en train de dormir) → on poll toutes les 3s.
+//   4. Une fois ready, on arrête de poller.
+//   5. WakeUpScreen est affiché uniquement si le 1er ping prend > 1.5s
+//      (évite un flash inutile quand le serveur est déjà éveillé).
+// ============================================
+function useBackendReady() {
+  const [serverReady,    setServerReady]    = useState(false);
+  const [showWakeUp,     setShowWakeUp]     = useState(false);
+  const pollingRef    = useRef(null);
+  const mountedRef    = useRef(true);
+  const firstPingDone = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    const ping = async () => {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        const res = await fetch(`${BACKEND_URL}/api/health`, {
+          method: "GET",
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (res.ok && mountedRef.current) {
+          // Serveur réveillé
+          clearInterval(pollingRef.current);
+          setServerReady(true);
+          setShowWakeUp(false);
+        }
+      } catch {
+        // Serveur pas encore prêt — on continue à poller
+        if (!firstPingDone.current && mountedRef.current) {
+          setShowWakeUp(true); // affiche l'écran d'attente
+        }
+      } finally {
+        firstPingDone.current = true;
+      }
+    };
+
+    // Délai de 1.5s avant d'afficher WakeUpScreen — évite le flash si serveur rapide
+    const showDelay = setTimeout(() => {
+      if (!firstPingDone.current && mountedRef.current) {
+        // Le premier ping n'a pas encore répondu → affiche l'attente
+        setShowWakeUp(true);
+      }
+    }, 1500);
+
+    // Premier ping immédiat
+    ping();
+
+    // Polling toutes les 3s
+    pollingRef.current = setInterval(ping, 3000);
+
+    return () => {
+      mountedRef.current = false;
+      clearInterval(pollingRef.current);
+      clearTimeout(showDelay);
+    };
+  }, []);
+
+  return { serverReady, showWakeUp };
+}
+
+// ============================================
 // APP — initialisation async non bloquante
 // ============================================
 export default function App() {
   const [ready, setReady] = useState(false);
+  const { isDarkMode } = useDarkMode();
+  const { serverReady, showWakeUp } = useBackendReady();
 
   useEffect(() => {
-    // Wake-up backend (fire-and-forget)
-    fetch(`${BACKEND_URL}/api/health`, {
-      method: "GET",
-      signal: AbortSignal.timeout(20000),
-    }).catch(() => {});
-
     setReady(true);
 
     // IDB init en arrière-plan (ne bloque pas le rendu)
@@ -140,6 +208,12 @@ export default function App() {
   }, []);
 
   if (!ready) return null;
+
+  // Affiche WakeUpScreen tant que le serveur n'est pas prêt
+  // (seulement si le délai de 1.5s est passé sans réponse)
+  if (showWakeUp && !serverReady) {
+    return <WakeUpScreen isDarkMode={isDarkMode} />;
+  }
 
   return (
     <Suspense fallback={null}>
@@ -253,15 +327,12 @@ function AppContent() {
     if (location.pathname === "/") {
       const now = Date.now();
       if (now - lastHomeTap.current < 400) {
-        // Double-tap → vrai refresh complet (recharge les posts depuis l'API)
         window.dispatchEvent(new CustomEvent(HOME_REFRESH_EVENT));
       } else {
-        // Simple tap → scroll en haut uniquement, feed intact
         window.dispatchEvent(new CustomEvent(HOME_SCROLL_TOP_EVENT));
       }
       lastHomeTap.current = now;
     } else {
-      // Depuis une autre page → navigation normale vers home
       navigate("/");
     }
   }, [location.pathname, navigate]);
