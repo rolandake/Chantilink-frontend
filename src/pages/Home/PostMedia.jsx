@@ -1,20 +1,20 @@
 // 📁 src/pages/Home/PostMedia.jsx
 //
-// ✅ GRID LAYOUT v19 — anti-flash médias défaillants
+// ✅ GRID LAYOUT v20 — grille propre, jamais de case noire
 //
-//  STRATÉGIE ANTI-RE-RENDER :
-//  1. isMutedMap → ref pure (isMutedRef) + manipulation DOM directe sur <video>
-//     → setIsMutedMap supprimé → mute/unmute ne re-render PLUS rien
+//  ✅ FIX v20 : useMediaValidation corrigé
+//     - safetyTimer augmenté à 5s (était 300ms) → les vidéos ont le temps d'être validées
+//     - Timeout image : 1s → si pas de réponse = invalide (exclu de la grille)
+//     - Timeout vidéo : 4s → si pas de métadonnées = invalide (exclu de la grille)
+//     - Médias invalides exclus proprement → grille toujours cohérente
+//     - Ex: 2 médias dont 1 défaillant → affiche 1/1 au lieu de 1 noir + 1 valide
+//
+//  STRATÉGIE ANTI-RE-RENDER (inchangée) :
+//  1. isMutedMap → ref pure + manipulation DOM directe sur <video>
 //  2. Lightbox → état dans un ref + createPortal monté une seule fois
-//     → ouverture/fermeture via CSS visibility/opacity, pas via setState dans PostMedia
 //  3. toggleMuteRef.current → useCallback stable avec refs internes
 //  4. cell() → props calculées une seule fois par useMemo stable
 //  5. onCellClick → ref stable, jamais recréé
-//
-//  ✅ FIX v19 : useMediaValidation commence à null (pas optimiste)
-//     → placeholder gris pendant la validation (~100-300ms)
-//     → les médias apparaissent proprement, sans flash de retrait visible
-//     → safetyTimer 300ms garantit qu'on ne bloque jamais trop longtemps
 //
 // ✅ Conserve : VideoManager global, Prebuffer, CORS Pexels, YouTube embed, Lightbox plein écran
 
@@ -336,7 +336,7 @@ HLSItem.displayName = 'HLSItem';
 
 // ─────────────────────────────────────────────
 // VIDEO ITEM
-// ✅ Mute/unmute → DOM direct + innerHTML sur le bouton → ZÉRO setState, ZÉRO re-render
+// ✅ Mute/unmute → DOM direct + innerHTML → ZÉRO setState, ZÉRO re-render
 // ─────────────────────────────────────────────
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
@@ -352,9 +352,9 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, initialMuted = 
   const [videoError,    setVideoError]    = useState(false);
   const [posterVisible, setPosterVisible] = useState(true);
 
-  const isMutedLocal  = useRef(initialMuted);
-  const playAttempted = useRef(false);
-  const fallbackTimer = useRef(null);
+  const isMutedLocal   = useRef(initialMuted);
+  const playAttempted  = useRef(false);
+  const fallbackTimer  = useRef(null);
   const useCrossOrigin = useMemo(() => needsCrossOrigin(url), [url]);
   const preloadStrat   = useMemo(() => (isLCP || isExternalVideo(url)) ? 'auto' : 'metadata', [isLCP, url]);
 
@@ -395,7 +395,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, initialMuted = 
     return () => obs.disconnect();
   }, [isActive]);
 
-  // ✅ Mute toggle : ZERO setState — innerHTML direct sur le bouton DOM
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
     const vid = videoRef.current; if (!vid) return;
@@ -493,9 +492,6 @@ ImageItem.displayName = 'ImageItem';
 
 // ─────────────────────────────────────────────
 // LIGHTBOX
-// ✅ createPortal sur document.body
-// ✅ Contrôlé via controlRef.current.open(i) / .close()
-//    → PostMedia ne fait JAMAIS de setState pour ouvrir/fermer
 // ─────────────────────────────────────────────
 const Lightbox = React.memo(({ urls, slotTypes, posterUrls, post, controlRef }) => {
   const [index,   setIndex]   = useState(0);
@@ -541,7 +537,6 @@ const Lightbox = React.memo(({ urls, slotTypes, posterUrls, post, controlRef }) 
     >
       <style>{`@keyframes lbFadeIn{from{opacity:0;transform:scale(0.97)}to{opacity:1;transform:scale(1)}}`}</style>
 
-      {/* Fermer */}
       <button onClick={(e) => { e.stopPropagation(); controlRef.current?.close(); }} style={{
         position: 'absolute', top: 16, right: 16, zIndex: 10,
         width: 40, height: 40, borderRadius: '50%',
@@ -552,7 +547,6 @@ const Lightbox = React.memo(({ urls, slotTypes, posterUrls, post, controlRef }) 
         <FaTimes />
       </button>
 
-      {/* Compteur */}
       {total > 1 && (
         <div style={{
           position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)',
@@ -564,92 +558,44 @@ const Lightbox = React.memo(({ urls, slotTypes, posterUrls, post, controlRef }) 
         </div>
       )}
 
-      {/* Média */}
       <div
         onClick={e => e.stopPropagation()}
         style={{
-          width: '100vw',
-          height: 'calc(100vh - 60px)',
+          width: '100vw', height: 'calc(100vh - 60px)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: '0 56px',
-          boxSizing: 'border-box',
+          padding: '0 56px', boxSizing: 'border-box',
         }}
       >
         {slotType === 'image' && (
           <img src={url} alt=""
-            style={{
-              display: 'block',
-              width: '100%',
-              height: 'calc(100vh - 60px)',
-              objectFit: 'contain',
-              borderRadius: 8,
-            }}
-            draggable="false"
-          />
+            style={{ display: 'block', width: '100%', height: 'calc(100vh - 60px)', objectFit: 'contain', borderRadius: 8 }}
+            draggable="false" />
         )}
-
         {slotType !== 'image' && (
-          <div style={{
-            width: '100%', height: '100%',
-            position: 'relative',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <div style={{
-              width: '100%',
-              maxWidth: 'min(100%, calc((100vh - 60px) * 16 / 9))',
-              aspectRatio: '16/9',
-              position: 'relative',
-              borderRadius: 10, overflow: 'hidden',
-            }}>
-              {slotType === 'embed' && (
-                <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge />
-              )}
-              {slotType === 'hls' && (
-                <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
-              )}
-              {slotType === 'video' && (
-                <VideoItem url={url} posterUrl={poster} isLCP={false} isActive={true}
-                  initialMuted={true} onRegisterVideoEl={null} slotIndex={-1} showBadge />
-              )}
+          <div style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: '100%', maxWidth: 'min(100%, calc((100vh - 60px) * 16 / 9))', aspectRatio: '16/9', position: 'relative', borderRadius: 10, overflow: 'hidden' }}>
+              {slotType === 'embed' && <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge />}
+              {slotType === 'hls'   && <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />}
+              {slotType === 'video' && <VideoItem url={url} posterUrl={poster} isLCP={false} isActive={true} initialMuted={true} onRegisterVideoEl={null} slotIndex={-1} showBadge />}
             </div>
           </div>
         )}
       </div>
 
-      {/* Flèches */}
       {total > 1 && (
         <>
           <button onClick={e => { e.stopPropagation(); setIndex(i => (i - 1 + total) % total); }}
-            style={{
-              position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)',
-              width: 44, height: 44, borderRadius: '50%',
-              background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)',
-              color: 'white', fontSize: 18, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
+            style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', width: 44, height: 44, borderRadius: '50%', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'white', fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <FaChevronLeft />
           </button>
           <button onClick={e => { e.stopPropagation(); setIndex(i => (i + 1) % total); }}
-            style={{
-              position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)',
-              width: 44, height: 44, borderRadius: '50%',
-              background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)',
-              color: 'white', fontSize: 18, cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}>
+            style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', width: 44, height: 44, borderRadius: '50%', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'white', fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <FaChevronRight />
           </button>
-
-          {/* Points */}
           <div style={{ position: 'absolute', bottom: 16, display: 'flex', gap: 6, alignItems: 'center' }}>
             {urls.map((_, i) => (
               <button key={i} onClick={e => { e.stopPropagation(); setIndex(i); }}
-                style={{
-                  width: i === index ? 10 : 7, height: i === index ? 10 : 7,
-                  borderRadius: '50%',
-                  background: i === index ? 'white' : 'rgba(255,255,255,0.35)',
-                  border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.2s',
-                }} />
+                style={{ width: i === index ? 10 : 7, height: i === index ? 10 : 7, borderRadius: '50%', background: i === index ? 'white' : 'rgba(255,255,255,0.35)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.2s' }} />
             ))}
           </div>
         </>
@@ -662,7 +608,6 @@ Lightbox.displayName = 'Lightbox';
 
 // ─────────────────────────────────────────────
 // MEDIA CELL
-// ✅ onCellClick stable (jamais recréé) → React.memo efficace
 // ─────────────────────────────────────────────
 const MediaCell = React.memo(({
   url, slotType, posterUrl, isLCP,
@@ -673,42 +618,24 @@ const MediaCell = React.memo(({
   wrapperStyle = {},
   onCellClick,
 }) => {
-  const embedThumbnail = useMemo(
-    () => post?.thumbnail || getYouTubeThumbnail(url),
-    [post?.thumbnail, url]
-  );
-
-  const handleClick = useCallback(() => {
-    onCellClick?.(slotIndex);
-  }, [onCellClick, slotIndex]);
+  const embedThumbnail = useMemo(() => post?.thumbnail || getYouTubeThumbnail(url), [post?.thumbnail, url]);
+  const handleClick = useCallback(() => { onCellClick?.(slotIndex); }, [onCellClick, slotIndex]);
 
   return (
-    <div
-      style={{ position: 'relative', paddingBottom, overflow: 'hidden', background: '#111', cursor: 'pointer', ...wrapperStyle }}
-      onClick={handleClick}
-    >
+    <div style={{ position: 'relative', paddingBottom, overflow: 'hidden', background: '#111', cursor: 'pointer', ...wrapperStyle }} onClick={handleClick}>
       <div style={{ position: 'absolute', inset: 0 }}>
         {slotType === 'embed' ? (
           <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge={showBadge} />
         ) : slotType === 'hls' ? (
           <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
         ) : slotType === 'video' ? (
-          <VideoItem
-            url={url} posterUrl={posterUrl} isLCP={isLCP} isActive={true} initialMuted={true}
-            onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge}
-          />
+          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} isActive={true} initialMuted={true} onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge} />
         ) : (
           <ImageItem url={url} isLCP={isLCP} />
         )}
-
         {overlay && (
-          <div style={{
-            position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10,
-          }}>
-            <span style={{ color: 'white', fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>
-              {overlay}
-            </span>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
+            <span style={{ color: 'white', fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{overlay}</span>
           </div>
         )}
       </div>
@@ -724,44 +651,26 @@ const MAX_PB = 177;
 
 const useNaturalRatio = (url, slotType, fallbackPb) => {
   const [pb, setPb] = useState(null);
-
   useEffect(() => {
-    if (!url || slotType === 'embed' || slotType === 'hls') {
-      setPb(fallbackPb); return;
-    }
+    if (!url || slotType === 'embed' || slotType === 'hls') { setPb(fallbackPb); return; }
     if (slotType === 'image') {
       const img = new Image();
-      img.onload = () => {
-        const r = img.naturalWidth && img.naturalHeight
-          ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB)
-          : parseFloat(fallbackPb);
-        setPb(`${r}%`);
-      };
+      img.onload  = () => { const r = img.naturalWidth && img.naturalHeight ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); };
       img.onerror = () => setPb(fallbackPb);
-      img.src = url;
-      return;
+      img.src = url; return;
     }
     if (slotType === 'video') {
       const vid = document.createElement('video');
       vid.muted = true; vid.preload = 'metadata';
       const cleanup = () => { vid.onloadedmetadata = null; vid.onerror = null; vid.src = ''; };
-      vid.onloadedmetadata = () => {
-        const r = vid.videoWidth && vid.videoHeight
-          ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB)
-          : parseFloat(fallbackPb);
-        setPb(`${r}%`); cleanup();
-      };
+      vid.onloadedmetadata = () => { const r = vid.videoWidth && vid.videoHeight ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); cleanup(); };
       vid.onerror = () => { setPb(fallbackPb); cleanup(); };
       vid.src = url;
     }
   }, [url, slotType]); // eslint-disable-line
-
   return pb ?? fallbackPb;
 };
 
-// ─────────────────────────────────────────────
-// MEDIA CELL AUTO
-// ─────────────────────────────────────────────
 const MediaCellAuto = React.memo((props) => {
   const { url, slotType } = props;
   const isVid = slotType === 'video' || slotType === 'embed' || slotType === 'hls';
@@ -774,48 +683,47 @@ MediaCellAuto.displayName = 'MediaCellAuto';
 // ─────────────────────────────────────────────
 // HOOK — validation des URLs media
 //
-// ✅ FIX v19 : STRATÉGIE "cacher puis montrer" (au lieu de "montrer puis cacher")
+// ✅ FIX v20 : grille propre, jamais de case noire
 //
-// - Commence à null → PostMedia affiche un placeholder gris
-// - Valide chaque média en arrière-plan
-// - Une fois tous les checks terminés → retourne les indices valides → grille s'affiche proprement
-// - safetyTimer 300ms : si les checks traînent, on affiche tout quand même (évite le blocage)
-// - Timeouts réduits (3s image, 4s vidéo) car on préfère afficher vite
+//  CHANGEMENTS vs v19 :
+//  - Image  : timeout 1s  → si pas chargée en 1s  = invalide (exclue)
+//  - Vidéo  : timeout 4s  → si pas de métadonnées = invalide (exclue)
+//  - Safety : timeout 5s  → fallback si tout prend trop longtemps
 //
-// Résultat : l'utilisateur voit un rectangle gris ~100-300ms,
-// puis le(s) média(s) apparaissent sans aucun flash de retrait.
+//  Résultat :
+//  - 2 médias dont 1 défaillant → grille 1/1 propre (plus de case noire)
+//  - Tous valides → grille normale
+//  - Placeholder gris pendant la validation
 // ─────────────────────────────────────────────
 const useMediaValidation = (urls, slotTypes) => {
-  // null = validation en cours | [] = aucun valide | [0,1,...] = indices valides
   const [validIndices, setValidIndices] = useState(null);
 
   useEffect(() => {
     if (!urls.length) { setValidIndices([]); return; }
 
     let cancelled = false;
-
-    // Reset à null → placeholder visible pendant la validation
     setValidIndices(null);
 
-    // ✅ Safety timer : si les checks durent trop longtemps, on affiche tout
+    // Safety timer : si tout prend trop longtemps → affiche quand même
     const safetyTimer = setTimeout(() => {
       if (!cancelled) setValidIndices(urls.map((_, i) => i));
-    }, 300);
+    }, 5000);
 
     const checks = urls.map((url, i) => {
       const type = slotTypes[i];
 
-      // Embeds (YouTube, Vimeo) et HLS → on fait confiance, pas de probe réseau
+      // Embeds et HLS → toujours valides (pas de probe réseau)
       if (type === 'embed' || type === 'hls') return Promise.resolve({ i, ok: true });
 
-      // blob: / data: → toujours valide
+      // blob / data → valide si non vide
       if (!url || url.startsWith('blob:') || url.startsWith('data:')) return Promise.resolve({ i, ok: !!url });
 
       if (type === 'image') {
         return new Promise((resolve) => {
           const img = new Image();
-          const timer = setTimeout(() => resolve({ i, ok: true }), 3000); // timeout réduit vs v18
-          img.onload  = () => { clearTimeout(timer); resolve({ i, ok: true }); };
+          // ✅ 1s : si l'image ne charge pas en 1s → invalide (case noire évitée)
+          const timer = setTimeout(() => resolve({ i, ok: false }), 1000);
+          img.onload  = () => { clearTimeout(timer); resolve({ i, ok: true });  };
           img.onerror = () => { clearTimeout(timer); resolve({ i, ok: false }); };
           img.src = url;
         });
@@ -823,10 +731,11 @@ const useMediaValidation = (urls, slotTypes) => {
 
       if (type === 'video') {
         return new Promise((resolve) => {
-          const timer = setTimeout(() => resolve({ i, ok: true }), 4000); // timeout réduit vs v18
+          // ✅ 4s : si pas de métadonnées vidéo en 4s → invalide
+          const timer = setTimeout(() => resolve({ i, ok: false }), 4000);
           const vid = document.createElement('video');
           vid.muted = true; vid.preload = 'metadata';
-          vid.onloadedmetadata = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: true }); };
+          vid.onloadedmetadata = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: true });  };
           vid.onerror           = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: false }); };
           vid.src = url;
         });
@@ -842,39 +751,20 @@ const useMediaValidation = (urls, slotTypes) => {
       setValidIndices(valid);
     });
 
-    return () => {
-      cancelled = true;
-      clearTimeout(safetyTimer);
-    };
+    return () => { cancelled = true; clearTimeout(safetyTimer); };
   }, [urls.join(','), slotTypes.join(',')]); // eslint-disable-line
 
-  return validIndices; // null pendant la validation, tableau une fois prêt
+  return validIndices;
 };
 
 // ─────────────────────────────────────────────
 // MEDIA PLACEHOLDER
-// Affiché pendant la validation des médias (~100-300ms)
-// Rectangle gris neutre — pas de CLS car même hauteur que le futur contenu
 // ─────────────────────────────────────────────
 const MediaPlaceholder = React.memo(({ total }) => {
-  // Reproduit la hauteur approximative de la grille finale pour éviter le CLS
   const pb = total === 1 ? '75%' : total === 2 ? '50%' : '66%';
   return (
-    <div style={{
-      width: '100%',
-      paddingBottom: pb,
-      background: 'linear-gradient(135deg, #1a1a1a 0%, #222 100%)',
-      borderRadius: 4,
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      {/* Shimmer subtil */}
-      <div style={{
-        position: 'absolute', inset: 0,
-        background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%)',
-        backgroundSize: '200% 100%',
-        animation: 'mediaShimmer 1.4s ease-in-out infinite',
-      }} />
+    <div style={{ width: '100%', paddingBottom: pb, background: 'linear-gradient(135deg, #1a1a1a 0%, #222 100%)', borderRadius: 4, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%)', backgroundSize: '200% 100%', animation: 'mediaShimmer 1.4s ease-in-out infinite' }} />
       <style>{`@keyframes mediaShimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}`}</style>
     </div>
   );
@@ -883,31 +773,18 @@ MediaPlaceholder.displayName = 'MediaPlaceholder';
 
 // ─────────────────────────────────────────────
 // POST MEDIA — composant principal
-// ✅ AUCUN setState déclenché par le mute ou le lightbox
-// ✅ v19 : placeholder gris pendant validation → apparition propre, zéro flash
 // ─────────────────────────────────────────────
 const GAP = 2;
 
 const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
-  const autoGenerated  = !!post?.autoGenerated;
-  const showBadge      = !autoGenerated;
+  const autoGenerated = !!post?.autoGenerated;
+  const showBadge     = !autoGenerated;
 
-  // ✅ Lightbox contrôlé via ref pure → jamais de re-render de PostMedia
-  const lightboxControl = useRef({});
+  const lightboxControl   = useRef({});
+  const handleCellClick   = useCallback((i) => { lightboxControl.current.open?.(i); }, []);
+  const videoRefsMap      = useRef({});
+  const onRegisterVideoEl = useCallback((i, el) => { if (el) videoRefsMap.current[i] = el; else delete videoRefsMap.current[i]; }, []);
 
-  // ✅ handleCellClick stable : useCallback avec deps vides + closure sur ref
-  const handleCellClick = useCallback((i) => {
-    lightboxControl.current.open?.(i);
-  }, []);
-
-  // ✅ Enregistrement vidéos via ref pure
-  const videoRefsMap = useRef({});
-  const onRegisterVideoEl = useCallback((i, el) => {
-    if (el) videoRefsMap.current[i] = el;
-    else    delete videoRefsMap.current[i];
-  }, []);
-
-  // ── URLs ─────────────────────────────────────────────────────────────────
   const safeMediaUrls = useMemo(() => {
     const seen = new Set(); const result = [];
     const add = (url) => {
@@ -925,33 +802,18 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   const isLCPSlot = isFirstPost || priority;
 
-  const urls = useMemo(() =>
-    safeMediaUrls.map((url, i) => getOptimizedUrl(url, isLCPSlot && i === 0)),
-    [safeMediaUrls, isLCPSlot]
-  );
+  const urls      = useMemo(() => safeMediaUrls.map((url, i) => getOptimizedUrl(url, isLCPSlot && i === 0)), [safeMediaUrls, isLCPSlot]);
+  const slotTypes = useMemo(() => urls.map((url, i) => resolveSlotType(url, i === 0 ? post?.mediaType : null)), [urls, post?.mediaType]);
+  const posterUrls= useMemo(() => urls.map((url, i) => slotTypes[i] === 'video' ? getVideoPosterUrl(url, post) : null), [urls, slotTypes, post]);
 
-  const slotTypes = useMemo(() =>
-    urls.map((url, i) => resolveSlotType(url, i === 0 ? post?.mediaType : null)),
-    [urls, post?.mediaType]
-  );
-
-  const posterUrls = useMemo(() =>
-    urls.map((url, i) => slotTypes[i] === 'video' ? getVideoPosterUrl(url, post) : null),
-    [urls, slotTypes, post]
-  );
-
-  const total = urls.length;
-
-  // ✅ v19 : retourne null pendant la validation (placeholder affiché ci-dessous)
+  const total        = urls.length;
   const validIndices = useMediaValidation(urls, slotTypes);
 
-  // URLs/slotTypes/posterUrls filtrés — uniquement les médias valides
-  const validUrls      = validIndices ? validIndices.map(i => urls[i])      : [];
-  const validSlotTypes = validIndices ? validIndices.map(i => slotTypes[i]) : [];
-  const validPosters   = validIndices ? validIndices.map(i => posterUrls[i]): [];
+  const validUrls      = validIndices ? validIndices.map(i => urls[i])       : [];
+  const validSlotTypes = validIndices ? validIndices.map(i => slotTypes[i])  : [];
+  const validPosters   = validIndices ? validIndices.map(i => posterUrls[i]) : [];
   const validTotal     = validUrls.length;
 
-  // ✅ Props stables par cellule — AVANT tout return conditionnel (règle des hooks)
   const cellProps = useCallback((i, extra = {}) => ({
     url:              validUrls[i],
     slotType:         validSlotTypes[i],
@@ -965,23 +827,12 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     ...extra,
   }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, handleCellClick]); // eslint-disable-line
 
-  // ── Returns conditionnels APRÈS tous les hooks ────────────────────────────
-
-  // Pas d'URLs du tout → rien à afficher
   if (!total) return null;
-
-  // ✅ v19 : validation en cours → placeholder gris (évite le flash de retrait)
-  if (validIndices === null) {
-    return <MediaPlaceholder total={total} />;
-  }
-
-  // Tous les médias sont invalides → rien à afficher
+  if (validIndices === null) return <MediaPlaceholder total={total} />;
   if (validTotal === 0) return null;
 
   const renderGrid = () => {
-    if (validTotal === 1) {
-      return <MediaCellAuto key="c0" {...cellProps(0)} />;
-    }
+    if (validTotal === 1) return <MediaCellAuto key="c0" {...cellProps(0)} />;
     if (validTotal === 2) return (
       <div style={{ display: 'flex', gap: GAP }}>
         <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
@@ -1031,14 +882,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   return (
     <>
       {renderGrid()}
-      {/* ✅ Lightbox avec uniquement les médias valides */}
-      <Lightbox
-        urls={validUrls}
-        slotTypes={validSlotTypes}
-        posterUrls={validPosters}
-        post={post}
-        controlRef={lightboxControl}
-      />
+      <Lightbox urls={validUrls} slotTypes={validSlotTypes} posterUrls={validPosters} post={post} controlRef={lightboxControl} />
     </>
   );
 });

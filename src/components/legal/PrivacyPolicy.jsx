@@ -65,9 +65,18 @@ export default function PrivacyPolicy() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-xl font-semibold">7. Contact</h2>
+        <h2 className="text-xl font-semibold">7. Contact et suppression de compte</h2>
         <p>
-          📧 Contact : <strong>Chantilink@gmail.com</strong>
+          📧 Pour toute question concernant vos données ou pour demander la
+          suppression de votre compte Chantilink, envoyez un email à :{" "}
+          <strong>
+            <a href="mailto:Chantilink@gmail.com">Chantilink@gmail.com</a>
+          </strong>.
+        </p>
+        <p>
+          Dans votre email, indiquez clairement l’adresse email ou le numéro de
+          téléphone associé à votre compte. Toutes les données seront supprimées
+          dans un délai de 30 jours après réception de la demande.
         </p>
       </section>
     </div>

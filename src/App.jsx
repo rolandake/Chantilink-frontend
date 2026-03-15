@@ -2,8 +2,10 @@
 // ✅ LCP FIX : __hideSplash() appelé EN PREMIER dans AppContent, avant tout await
 // ✅ CLS FIX : mainStyle stable, pas de changement de layout après mount
 // ✅ INP FIX : suppression AnimatePresence sur les routes (remount inutile)
-// ✅ HOME FIX : simple tap = scroll en haut, double-tap = vrai refresh API
+// ✅ HOME FIX v2 : tap = scroll en haut + refresh (nouveaux posts)
 // ✅ WAKEUP FIX : écran d'attente rassurant pendant le réveil du serveur Render
+// ✅ FIX SCROLL HEADER v2 : useSmartScroll écoute app:scroll + window.scroll
+// ✅ FIX SCROLL INFINI : main ne doit PAS avoir overflow-y sur Home (géré par Home.jsx)
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -44,7 +46,7 @@ export const emitHomeRefresh = () =>
   window.dispatchEvent(new CustomEvent(HOME_REFRESH_EVENT));
 
 // ============================================
-// SKELETON — affiché pendant le lazy-load des pages
+// SKELETON
 // ============================================
 const PageSkeleton = memo(({ isDarkMode }) => (
   <div
@@ -75,6 +77,7 @@ PageSkeleton.displayName = "PageSkeleton";
 
 // ============================================
 // SCROLL — masque la navbar au scroll bas
+// ✅ FIX v2 : écoute app:scroll (Home.jsx) + window.scroll (autres pages)
 // ============================================
 function useSmartScroll(threshold = 10) {
   const [isVisible, setIsVisible] = useState(true);
@@ -83,18 +86,20 @@ function useSmartScroll(threshold = 10) {
   const ticking         = useRef(false);
 
   useEffect(() => {
-    const handleScroll = () => {
+    const update = (currentScrollY) => {
       if (ticking.current) return;
       ticking.current = true;
+
       window.requestAnimationFrame(() => {
-        const currentScrollY = window.scrollY || document.documentElement.scrollTop;
         if (currentScrollY < 80) {
           setIsVisible(true);
           lastScrollY.current = currentScrollY;
           ticking.current = false;
           return;
         }
+
         const diff = currentScrollY - lastScrollY.current;
+
         if (diff > threshold && scrollDirection.current !== "down") {
           scrollDirection.current = "down";
           setIsVisible(false);
@@ -102,31 +107,33 @@ function useSmartScroll(threshold = 10) {
           scrollDirection.current = "up";
           setIsVisible(true);
         }
+
         lastScrollY.current = currentScrollY;
         ticking.current = false;
       });
     };
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleScroll);
+
+    const onAppScroll    = (e) => update(e.detail?.scrollTop ?? 0);
+    const onWindowScroll = ()  => update(window.scrollY || document.documentElement.scrollTop || 0);
+
+    window.addEventListener("app:scroll", onAppScroll,    { passive: true });
+    window.addEventListener("scroll",     onWindowScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("app:scroll", onAppScroll);
+      window.removeEventListener("scroll",     onWindowScroll);
+    };
   }, [threshold]);
 
   return isVisible;
 }
 
 // ============================================
-// useBackendReady — surveille le réveil du serveur Render
-//
-// Logique :
-//   1. On tente un /api/health avec timeout 3s.
-//   2. Si ça répond → serverReady = true immédiatement.
-//   3. Si ça échoue (serveur en train de dormir) → on poll toutes les 3s.
-//   4. Une fois ready, on arrête de poller.
-//   5. WakeUpScreen est affiché uniquement si le 1er ping prend > 1.5s
-//      (évite un flash inutile quand le serveur est déjà éveillé).
+// useBackendReady
 // ============================================
 function useBackendReady() {
-  const [serverReady,    setServerReady]    = useState(false);
-  const [showWakeUp,     setShowWakeUp]     = useState(false);
+  const [serverReady, setServerReady] = useState(false);
+  const [showWakeUp,  setShowWakeUp]  = useState(false);
   const pollingRef    = useRef(null);
   const mountedRef    = useRef(true);
   const firstPingDone = useRef(false);
@@ -144,33 +151,22 @@ function useBackendReady() {
         });
         clearTimeout(timer);
         if (res.ok && mountedRef.current) {
-          // Serveur réveillé
           clearInterval(pollingRef.current);
           setServerReady(true);
           setShowWakeUp(false);
         }
       } catch {
-        // Serveur pas encore prêt — on continue à poller
-        if (!firstPingDone.current && mountedRef.current) {
-          setShowWakeUp(true); // affiche l'écran d'attente
-        }
+        if (!firstPingDone.current && mountedRef.current) setShowWakeUp(true);
       } finally {
         firstPingDone.current = true;
       }
     };
 
-    // Délai de 1.5s avant d'afficher WakeUpScreen — évite le flash si serveur rapide
     const showDelay = setTimeout(() => {
-      if (!firstPingDone.current && mountedRef.current) {
-        // Le premier ping n'a pas encore répondu → affiche l'attente
-        setShowWakeUp(true);
-      }
+      if (!firstPingDone.current && mountedRef.current) setShowWakeUp(true);
     }, 1500);
 
-    // Premier ping immédiat
     ping();
-
-    // Polling toutes les 3s
     pollingRef.current = setInterval(ping, 3000);
 
     return () => {
@@ -184,7 +180,7 @@ function useBackendReady() {
 }
 
 // ============================================
-// APP — initialisation async non bloquante
+// APP
 // ============================================
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -194,7 +190,6 @@ export default function App() {
   useEffect(() => {
     setReady(true);
 
-    // IDB init en arrière-plan (ne bloque pas le rendu)
     Promise.all([
       setupIndexedDB().catch(() => console.warn("IDB init failed")),
       initializeStorage().catch((err) => console.error("❌ [App] Erreur init storage:", err)),
@@ -208,12 +203,7 @@ export default function App() {
   }, []);
 
   if (!ready) return null;
-
-  // Affiche WakeUpScreen tant que le serveur n'est pas prêt
-  // (seulement si le délai de 1.5s est passé sans réponse)
-  if (showWakeUp && !serverReady) {
-    return <WakeUpScreen isDarkMode={isDarkMode} />;
-  }
+  if (showWakeUp && !serverReady) return <WakeUpScreen isDarkMode={isDarkMode} />;
 
   return (
     <Suspense fallback={null}>
@@ -235,14 +225,10 @@ function AppContent() {
 
   const isNavVisible = useSmartScroll(10);
 
-  // ✅ LCP FIX : cache le splash dès le premier rendu
   useEffect(() => {
-    if (typeof window.__hideSplash === "function") {
-      window.__hideSplash();
-    }
+    if (typeof window.__hideSplash === "function") window.__hideSplash();
   }, []);
 
-  // Messages & unread count
   const { data: messagesData } = useMessagesData(token, null);
   const unreadCount = useMemo(() => {
     if (!messagesData?.conversations) return undefined;
@@ -279,7 +265,6 @@ function AppContent() {
 
   const safeUnread = Math.max(0, liveUnreadCount ?? 0);
 
-  // Notifications live
   const notificationQueue = useRef([]);
   const notificationTimer = useRef(null);
   const addNotification = useCallback((notification) => {
@@ -308,7 +293,7 @@ function AppContent() {
   useEffect(() => {
     if (!socket) return;
     const onMsg   = (d) => { if (location.pathname !== "/messages") addNotification({ type: "message", message: `${d.senderName || "Quelqu'un"} vous a envoyé un message` }); };
-    const onStory = (d) => { if (location.pathname !== "/") addNotification({ type: "story", message: `${d.userName || "Quelqu'un"} a publié une story` }); };
+    const onStory = (d) => { if (location.pathname !== "/")         addNotification({ type: "story",   message: `${d.userName  || "Quelqu'un"} a publié une story` });          };
     socket.on("new_message", onMsg);
     socket.on("new_story",   onStory);
     return () => {
@@ -320,18 +305,23 @@ function AppContent() {
 
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
 
-  // ✅ HOME FIX : simple tap = scroll en haut sans reset
-  //               double-tap (< 400ms) = vrai refresh API
-  const lastHomeTap = useRef(0);
+  // Ref pour éviter les refreshs en double (debounce)
+  const homeRefreshPending = useRef(false);
+
   const handleHomeClick = useCallback(() => {
     if (location.pathname === "/") {
-      const now = Date.now();
-      if (now - lastHomeTap.current < 400) {
+      // Scroll en haut immédiatement
+      window.dispatchEvent(new CustomEvent(HOME_SCROLL_TOP_EVENT));
+
+      // ✅ Refresh avec debounce : on attend 300ms que le fetch en cours
+      // (déclenché au mount) soit potentiellement terminé, puis on rafraîchit.
+      // Si un refresh est déjà schedulé, on ne double pas.
+      if (homeRefreshPending.current) return;
+      homeRefreshPending.current = true;
+      setTimeout(() => {
+        homeRefreshPending.current = false;
         window.dispatchEvent(new CustomEvent(HOME_REFRESH_EVENT));
-      } else {
-        window.dispatchEvent(new CustomEvent(HOME_SCROLL_TOP_EVENT));
-      }
-      lastHomeTap.current = now;
+      }, 300);
     } else {
       navigate("/");
     }
@@ -340,23 +330,24 @@ function AppContent() {
   const isHome     = location.pathname === "/";
   const isAuth     = location.pathname === "/auth";
   const isMessages = location.pathname === "/messages";
-  const showNav    = isHome && !isAuth && !storyViewerOpen;
+  // ✅ showNav = visible sur toutes les pages authentifiées sauf /auth et StoryViewer
+  const showNav    = !!user && !isAuth && !storyViewerOpen;
   const isAdmin    = user?.role === "admin" || user?.role === "superadmin";
 
+  // ✅ FIX CSS : uniquement longhands overflowX + overflowY (pas de shorthand overflow)
+  // Home a overflowY:"hidden" car son data-scroll-container gère le scroll interne
   const mainStyle = useMemo(() => ({
     top:                     showNav ? 72 : 0,
     bottom:                  showNav ? 64 : 0,
-    overflowY:               "auto",
     overflowX:               "hidden",
+    overflowY:               isHome ? "hidden" : "auto",
     WebkitOverflowScrolling: "touch",
-    paddingBottom:           "env(safe-area-inset-bottom)",
-  }), [showNav]);
+    paddingBottom:           isHome ? 0 : "env(safe-area-inset-bottom)",
+  }), [showNav, isHome]);
 
   return (
-    <div
-      className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}
-    >
-      {/* Notifications */}
+    <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
+
       <AnimatePresence>
         {liveNotifications.map((notif) => (
           <LiveNotification
@@ -368,7 +359,6 @@ function AppContent() {
         ))}
       </AnimatePresence>
 
-      {/* Header top */}
       {showNav && (
         <div
           className="fixed top-0 left-0 right-0 z-40"
@@ -383,12 +373,8 @@ function AppContent() {
         </div>
       )}
 
-      {/* Bouton retour sur les pages secondaires */}
-      {!isHome && !isAuth && !storyViewerOpen && !isMessages && (
-        <FloatingBackButton isDarkMode={isDarkMode} onClick={() => navigate("/")} />
-      )}
+      {/* FloatingBackButton retiré : la navbar est maintenant présente sur toutes les pages */}
 
-      {/* Sidebar desktop */}
       {showNav && (
         <SidebarDesktopMemo
           isDarkMode={isDarkMode}
@@ -398,9 +384,8 @@ function AppContent() {
         />
       )}
 
-      {/* Contenu principal */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
-        <div className="lg:ml-64 max-w-[630px] lg:max-w-none lg:px-8 mx-auto">
+        <div className={`lg:ml-64 max-w-[630px] lg:max-w-none lg:px-8 mx-auto ${isHome ? "h-full" : ""}`}>
           <Suspense fallback={<LoadingSpinner />}>
             <Routes location={location}>
               <Route path="/auth" element={
@@ -435,7 +420,6 @@ function AppContent() {
         </div>
       </main>
 
-      {/* Navbar mobile */}
       {showNav && (
         <div
           className="fixed bottom-0 left-0 right-0 z-50"
@@ -544,39 +528,39 @@ Badge.displayName = "Badge";
 const NavBtn = memo(({ icon: Icon, label, active, onClick, badge, isDarkMode }) => (
   <button
     onClick={onClick}
-    className="relative flex flex-col items-center justify-center flex-1 gap-1 py-2 select-none"
+    className="relative flex flex-col items-center justify-center flex-1 gap-1 py-2 select-none active:scale-95 transition-transform"
     style={{ WebkitTapHighlightColor: "transparent" }}
   >
-    {active && (
-      <span
-        className="absolute inset-x-2 top-1.5 bottom-1.5 rounded-2xl"
-        style={{ background: isDarkMode ? "rgba(249,115,22,0.12)" : "rgba(249,115,22,0.08)" }}
-      />
-    )}
     <span className="relative">
       <Icon
-        size={22}
+        size={24}
         strokeWidth={active ? 2.5 : 1.8}
-        className={`transition-colors duration-150 ${active ? "text-orange-500" : isDarkMode ? "text-gray-400" : "text-gray-500"}`}
+        fill={active ? "currentColor" : "none"}
+        className={`transition-all duration-150 ${
+          active
+            ? "text-orange-500"
+            : isDarkMode ? "text-gray-400" : "text-gray-500"
+        }`}
       />
       <Badge count={badge} />
     </span>
-    <span className={`text-[10px] font-semibold transition-colors duration-150 ${active ? "text-orange-500" : isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
+    <span className={`text-[10px] font-semibold transition-colors duration-150 ${
+      active ? "text-orange-500" : isDarkMode ? "text-gray-500" : "text-gray-400"
+    }`}>
       {label}
     </span>
-    {active && <span className="absolute bottom-1 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-orange-500" />}
   </button>
 ));
 NavBtn.displayName = "NavBtn";
 
 const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unreadCount, onHomeClick }) => {
-  const navigate = useNavigate();
+  const navigate  = useNavigate();
   const [isMenuOpen, setMenuOpen] = useState(false);
-  const isActive = useCallback((path) => location.pathname === path, [location.pathname]);
-  const goVideos = useCallback(() => navigate("/videos"), [navigate]);
-  const goChat   = useCallback(() => navigate("/chat"),   [navigate]);
-  const openMenu = useCallback(() => setMenuOpen(true),   []);
-  const closeMenu= useCallback(() => setMenuOpen(false),  []);
+  const isActive  = useCallback((path) => location.pathname === path, [location.pathname]);
+  const goVideos  = useCallback(() => navigate("/videos"), [navigate]);
+  const goChat    = useCallback(() => navigate("/chat"),   [navigate]);
+  const openMenu  = useCallback(() => setMenuOpen(true),  []);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
 
   return (
     <>
@@ -603,22 +587,31 @@ NavbarMobileMemo.displayName = "NavbarMobileMemo";
 const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, isAdmin, badge }) => (
   <button
     onClick={onClick}
-    className={`group relative flex items-center gap-3.5 w-full px-3 py-3 rounded-xl transition-all duration-150 ${
-      active
-        ? isDarkMode ? "bg-gray-800/80 text-white" : "bg-gray-100 text-gray-900"
-        : isDarkMode ? "text-gray-400 hover:bg-gray-800/40 hover:text-white" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+    className={`group relative flex items-center gap-3.5 w-full px-3 py-3 rounded-xl transition-all duration-150 active:scale-[0.97] ${
+      isDarkMode
+        ? "hover:bg-gray-800/40"
+        : "hover:bg-gray-50"
     } ${isAdmin ? "!text-rose-500 hover:!text-rose-400" : ""}`}
     style={{ WebkitTapHighlightColor: "transparent" }}
   >
-    {active && (
-      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r-full"
-        style={{ background: "linear-gradient(180deg, #f97316, #ec4899)" }} />
-    )}
     <span className="relative flex-shrink-0">
-      <Icon size={24} strokeWidth={active ? 2.5 : 1.8} className={`transition-all duration-150 ${active ? "text-orange-500" : isAdmin ? "text-rose-500" : ""}`} />
+      <Icon
+        size={24}
+        strokeWidth={active ? 2.5 : 1.8}
+        fill={active && !isAdmin ? "currentColor" : "none"}
+        className={`transition-all duration-150 ${
+          active
+            ? isAdmin ? "text-rose-500" : "text-orange-500"
+            : isAdmin ? "text-rose-500" : isDarkMode ? "text-gray-400" : "text-gray-500"
+        }`}
+      />
       {!!badge && badge > 0 && <Badge count={badge} />}
     </span>
-    <span className={`text-[15px] transition-all duration-150 ${active ? "font-bold" : "font-normal"}`}>{label}</span>
+    <span className={`text-[15px] transition-all duration-150 ${
+      active
+        ? isAdmin ? "font-bold text-rose-500" : "font-bold text-orange-500"
+        : isDarkMode ? "font-normal text-gray-400" : "font-normal text-gray-600"
+    }`}>{label}</span>
   </button>
 ));
 NavItemDesktop.displayName = "NavItemDesktop";
@@ -626,7 +619,7 @@ NavItemDesktop.displayName = "NavItemDesktop";
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick }) => {
   const navigate = useNavigate();
   const location = useLocation();
-  const isActive = useCallback((path) => location.pathname === path, [location.pathname]);
+  const isActive   = useCallback((path) => location.pathname === path, [location.pathname]);
   const goChat     = useCallback(() => navigate("/chat"),    [navigate]);
   const goVideos   = useCallback(() => navigate("/videos"),  [navigate]);
   const goCalculs  = useCallback(() => navigate("/calculs"), [navigate]);

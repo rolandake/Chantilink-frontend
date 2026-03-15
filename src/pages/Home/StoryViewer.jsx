@@ -1,10 +1,51 @@
 // 📁 src/pages/Home/StoryViewer.jsx - VERSION OPTIMISÉE ULTRA-FLUIDE
+// ✅ AJOUT SUPPORT STORIES BOTS (patch minimal) :
+//   - parseBgFromCaption() : lit le gradient dans caption "bg:gradient"
+//   - getSlideBg()         : fond = backgroundColor OU bg:caption OU #000000
+//   - getSlideText()       : texte = text OU content OU caption (sans "bg:")
+//   - slide.media supporté en plus de slide.mediaUrl (champ du schéma Story)
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Loader2, Heart, Send, MoreVertical, Eye, ChevronRight, Volume2, VolumeX, Trash2 } from "lucide-react";
 
 const SERVER_URL = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace('/api', '');
 const MEDIA_URL = (path) => path?.startsWith("http") ? path : `${SERVER_URL}/${path?.replace(/^\/+/, "")}`;
+
+// ─────────────────────────────────────────────────────────────────
+// ✅ HELPERS STORIES BOTS
+// ─────────────────────────────────────────────────────────────────
+
+// Extrait le gradient CSS depuis caption "bg:linear-gradient(...)"
+// Retourne null si caption n'a pas le préfixe "bg:"
+const parseBgFromCaption = (caption) => {
+  if (!caption || typeof caption !== 'string') return null;
+  if (!caption.startsWith('bg:')) return null;
+  return caption.slice(3);
+};
+
+// Fond de la slide texte :
+//   1. slide.backgroundColor  (stories manuelles via StoryCreator)
+//   2. bg: dans caption        (stories texte publiées par les bots)
+//   3. #000000 par défaut
+const getSlideBg = (slide) => {
+  if (!slide) return '#000000';
+  if (slide.backgroundColor) return slide.backgroundColor;
+  const fromCaption = parseBgFromCaption(slide.caption);
+  if (fromCaption) return fromCaption;
+  return '#000000';
+};
+
+// Texte à afficher sur la slide :
+//   1. slide.text    (champ direct du modèle Story)
+//   2. slide.content (compatibilité ancien format)
+//   3. slide.caption SAUF s'il contient un préfixe "bg:" (dans ce cas c'est un fond)
+const getSlideText = (slide) => {
+  if (!slide) return null;
+  if (slide.text) return slide.text;
+  if (slide.content) return slide.content;
+  if (slide.caption && !slide.caption.startsWith('bg:')) return slide.caption;
+  return null;
+};
 
 // ========================================
 // MODAL DE CONFIRMATION DE SUPPRESSION
@@ -122,19 +163,12 @@ const ViewsModal = ({ slide, onClose }) => {
                 const viewerName = viewer?.fullName || viewer?.username || "Utilisateur";
                 const viewerAvatar = viewer?.profilePhoto || viewer?.avatar;
                 const viewedAt = viewer?.viewedAt || slide?.createdAt;
-                
-                const timeAgo = useMemo(() => {
-                  if (!viewedAt) return "";
-                  const diff = Date.now() - new Date(viewedAt).getTime();
-                  const minutes = Math.floor(diff / (1000 * 60));
-                  const hours = Math.floor(diff / (1000 * 60 * 60));
-                  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-                  
-                  if (minutes < 1) return "À l'instant";
-                  if (minutes < 60) return `Il y a ${minutes}min`;
-                  if (hours < 24) return `Il y a ${hours}h`;
-                  return `Il y a ${days}j`;
-                }, [viewedAt]);
+
+                const diff    = Date.now() - new Date(viewedAt || 0).getTime();
+                const minutes = Math.floor(diff / (1000 * 60));
+                const hours   = Math.floor(diff / (1000 * 60 * 60));
+                const days    = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const timeAgo = !viewedAt ? "" : minutes < 1 ? "À l'instant" : minutes < 60 ? `Il y a ${minutes}min` : hours < 24 ? `Il y a ${hours}h` : `Il y a ${days}j`;
 
                 return (
                   <motion.div
@@ -202,7 +236,6 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
   const owner = story.owner || story.user;
   const isMyStory = owner?._id === currentUser?._id;
 
-  // Avatar et nom du propriétaire
   const ownerAvatar = useMemo(() => {
     return MEDIA_URL(owner?.profilePhoto || owner?.avatar || owner?.profilePicture);
   }, [owner]);
@@ -220,142 +253,87 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
     return `Il y a ${Math.floor(hours / 24)}j`;
   }, [slide?.createdAt]);
 
-  // Nombre de vues pour le slide actuel
   const viewCount = useMemo(() => {
     return (slide?.views || []).length;
   }, [slide?.views]);
 
-  // Clé unique pour chaque slide
   const slideKey = useMemo(() => {
     return `${currentStoryIndex}-${slideIdx}`;
   }, [currentStoryIndex, slideIdx]);
 
-  // Vérifier si le slide actuel est chargé
   const isCurrentSlideLoaded = useMemo(() => {
     if (!slide) return false;
     if (slide.type === "text") return true;
     return loadedSlides.has(slideKey);
   }, [slide, loadedSlides, slideKey]);
 
-  // Calcul de la durée en fonction du contenu
   const slideDuration = useMemo(() => {
     if (!slide) return 10000;
-    
-    const content = slide.content || slide.text || "";
+    // ✅ Utilise getSlideText() pour gérer tous les formats (text/content/caption)
+    const content = getSlideText(slide) || "";
     const hasMedia = slide.type === "video" || slide.mediaUrl || slide.media;
-    
     if (content.length > 500) return 60000;
     if (content.length > 300) return 45000;
     if (content.length > 150) return 30000;
     if (content.length > 50) return 20000;
-    
     if (hasMedia && content.length === 0) {
       return slide.type === "video" ? 60000 : 15000;
     }
-    
     return 10000;
   }, [slide]);
 
-  // Préchargement des médias adjacents
   useEffect(() => {
     const preloadMedia = (index) => {
       const targetSlide = allSlides[index];
       if (!targetSlide || targetSlide.type === "text") return;
-
       const key = `${currentStoryIndex}-${index}`;
       if (loadedSlides.has(key)) return;
-
+      // ✅ Supporte media ET mediaUrl
       const mediaUrl = MEDIA_URL(targetSlide.mediaUrl || targetSlide.media);
-      
       if (targetSlide.type === "video") {
         const video = document.createElement('video');
         video.src = mediaUrl;
         video.preload = 'auto';
-        video.onloadeddata = () => {
-          setLoadedSlides(prev => new Set(prev).add(key));
-        };
+        video.onloadeddata = () => setLoadedSlides(prev => new Set(prev).add(key));
       } else {
         const img = new Image();
         img.src = mediaUrl;
-        img.onload = () => {
-          setLoadedSlides(prev => new Set(prev).add(key));
-        };
+        img.onload = () => setLoadedSlides(prev => new Set(prev).add(key));
       }
     };
-
-    // Précharger le slide suivant
-    if (slideIdx < allSlides.length - 1) {
-      preloadMedia(slideIdx + 1);
-    }
-
-    // Précharger les 2 prochains si possible
-    if (slideIdx < allSlides.length - 2) {
-      setTimeout(() => preloadMedia(slideIdx + 2), 500);
-    }
+    if (slideIdx < allSlides.length - 1) preloadMedia(slideIdx + 1);
+    if (slideIdx < allSlides.length - 2) setTimeout(() => preloadMedia(slideIdx + 2), 500);
   }, [slideIdx, allSlides, currentStoryIndex, loadedSlides]);
 
-  // Marquer instantanément le slide de type texte comme chargé
   useEffect(() => {
     if (slide?.type === "text") {
       setLoadedSlides(prev => new Set(prev).add(slideKey));
     }
   }, [slide, slideKey]);
 
-  // Gestion du changement de story/slide
   useEffect(() => {
-    if (!slide && allSlides.length === 0) {
-      onClose();
-    }
+    if (!slide && allSlides.length === 0) onClose();
   }, [slide, allSlides.length, onClose]);
 
-  // Barre de progression
   useEffect(() => {
-    if (!isCurrentSlideLoaded || !slide || isPaused || showViewsModal || showDeleteConfirm || showOptionsMenu) {
-      return;
-    }
-
+    if (!isCurrentSlideLoaded || !slide || isPaused || showViewsModal || showDeleteConfirm || showOptionsMenu) return;
     const interval = setInterval(() => {
       setProgress(p => {
         if (p >= 100) {
-          if (slideIdx < allSlides.length - 1) {
-            setSlideIdx(s => s + 1);
-            setProgress(0);
-          } else {
-            if (currentStoryIndex < stories.length - 1) {
-              setCurrentStoryIndex(i => i + 1);
-              setSlideIdx(0);
-              setProgress(0);
-            } else {
-              onClose();
-            }
-          }
+          if (slideIdx < allSlides.length - 1) { setSlideIdx(s => s + 1); setProgress(0); }
+          else if (currentStoryIndex < stories.length - 1) { setCurrentStoryIndex(i => i + 1); setSlideIdx(0); setProgress(0); }
+          else onClose();
           return 0;
         }
         return p + (100 / (slideDuration / 100));
       });
     }, 100);
-
     return () => clearInterval(interval);
-  }, [
-    slideIdx, 
-    isCurrentSlideLoaded, 
-    allSlides.length, 
-    onClose, 
-    slide, 
-    isPaused, 
-    currentStoryIndex, 
-    stories.length, 
-    slideDuration, 
-    showViewsModal, 
-    showDeleteConfirm, 
-    showOptionsMenu
-  ]);
+  }, [slideIdx, isCurrentSlideLoaded, allSlides.length, onClose, slide, isPaused, currentStoryIndex, stories.length, slideDuration, showViewsModal, showDeleteConfirm, showOptionsMenu]);
 
   const handlePrevSlide = useCallback(() => {
-    if (slideIdx > 0) {
-      setSlideIdx(s => s - 1);
-      setProgress(0);
-    } else if (currentStoryIndex > 0) {
+    if (slideIdx > 0) { setSlideIdx(s => s - 1); setProgress(0); }
+    else if (currentStoryIndex > 0) {
       setCurrentStoryIndex(i => i - 1);
       const prevStory = stories[currentStoryIndex - 1];
       setSlideIdx((prevStory?.slides?.length || 1) - 1);
@@ -364,46 +342,31 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
   }, [slideIdx, currentStoryIndex, stories]);
 
   const handleNextSlide = useCallback(() => {
-    if (slideIdx < allSlides.length - 1) {
-      setSlideIdx(s => s + 1);
-      setProgress(0);
-    } else if (currentStoryIndex < stories.length - 1) {
-      setCurrentStoryIndex(i => i + 1);
-      setSlideIdx(0);
-      setProgress(0);
-    } else {
-      onClose();
-    }
+    if (slideIdx < allSlides.length - 1) { setSlideIdx(s => s + 1); setProgress(0); }
+    else if (currentStoryIndex < stories.length - 1) { setCurrentStoryIndex(i => i + 1); setSlideIdx(0); setProgress(0); }
+    else onClose();
   }, [slideIdx, allSlides.length, currentStoryIndex, stories.length, onClose]);
 
   const handleDragEnd = useCallback((_, info) => {
     if (info.offset.y > 100) onClose();
   }, [onClose]);
 
-  const togglePause = useCallback(() => {
-    setIsPaused(p => !p);
-  }, []);
+  const togglePause = useCallback(() => setIsPaused(p => !p), []);
 
   const handleOpenViewsModal = useCallback(() => {
-    if (isMyStory) {
-      setShowViewsModal(true);
-      setIsPaused(true);
-    }
+    if (isMyStory) { setShowViewsModal(true); setIsPaused(true); }
   }, [isMyStory]);
 
   const handleCloseViewsModal = useCallback(() => {
-    setShowViewsModal(false);
-    setIsPaused(false);
+    setShowViewsModal(false); setIsPaused(false);
   }, []);
 
   const handleToggleOptions = useCallback(() => {
-    setShowOptionsMenu(prev => !prev);
-    setIsPaused(prev => !prev);
+    setShowOptionsMenu(prev => !prev); setIsPaused(prev => !prev);
   }, []);
 
   const handleDeleteClick = useCallback(() => {
-    setShowOptionsMenu(false);
-    setShowDeleteConfirm(true);
+    setShowOptionsMenu(false); setShowDeleteConfirm(true);
   }, []);
 
   const handleConfirmDelete = useCallback(async () => {
@@ -411,34 +374,30 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
       try {
         await onDeleteSlide(story._id, slide._id);
         setShowDeleteConfirm(false);
-        
-        if (allSlides.length === 1) {
-          onClose();
-        } else {
-          if (slideIdx >= allSlides.length - 1) {
-            setSlideIdx(Math.max(0, slideIdx - 1));
-          }
-          setProgress(0);
-        }
+        if (allSlides.length === 1) onClose();
+        else { if (slideIdx >= allSlides.length - 1) setSlideIdx(Math.max(0, slideIdx - 1)); setProgress(0); }
       } catch (error) {
         console.error("Erreur lors de la suppression:", error);
-        setShowDeleteConfirm(false);
-        setIsPaused(false);
+        setShowDeleteConfirm(false); setIsPaused(false);
       }
     }
   }, [onDeleteSlide, story._id, slide?._id, allSlides.length, slideIdx, onClose]);
 
   const handleCancelDelete = useCallback(() => {
-    setShowDeleteConfirm(false);
-    setIsPaused(false);
+    setShowDeleteConfirm(false); setIsPaused(false);
   }, []);
 
-  // Gérer le chargement des médias
   const handleMediaLoaded = useCallback(() => {
     setLoadedSlides(prev => new Set(prev).add(slideKey));
   }, [slideKey]);
 
   if (!slide) return null;
+
+  // ✅ Résolution des valeurs pour la slide courante
+  const slideBg   = getSlideBg(slide);
+  const slideText = getSlideText(slide);
+  // ✅ URL media : supporte media (schéma Story) ET mediaUrl (ancien format)
+  const mediaUrl  = slide.mediaUrl || slide.media;
 
   return (
     <>
@@ -459,9 +418,7 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
               <motion.div 
                 className="h-full bg-white" 
                 initial={false}
-                animate={{ 
-                  width: i === slideIdx ? `${progress}%` : i < slideIdx ? '100%' : '0%' 
-                }}
+                animate={{ width: i === slideIdx ? `${progress}%` : i < slideIdx ? '100%' : '0%' }}
                 transition={{ duration: 0.1, ease: 'linear' }}
               />
             </div>
@@ -472,66 +429,37 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
         <div className="absolute top-[calc(env(safe-area-inset-top)+30px)] left-4 right-4 z-[10001] flex items-center justify-between">
           <div className="flex items-center gap-3">
             {ownerAvatar ? (
-              <img 
-                src={ownerAvatar} 
-                alt={ownerName}
-                className="w-10 h-10 rounded-full border-2 border-white object-cover"
-              />
+              <img src={ownerAvatar} alt={ownerName} className="w-10 h-10 rounded-full border-2 border-white object-cover" />
             ) : (
               <div className="w-10 h-10 rounded-full border-2 border-white bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center text-white font-bold">
                 {ownerName[0]?.toUpperCase()}
               </div>
             )}
-            
             <div className="flex flex-col">
-              <span className="text-white font-semibold text-sm drop-shadow-lg">
-                {ownerName}
-              </span>
-              <span className="text-white/80 text-xs drop-shadow-lg">
-                {timeAgo}
-              </span>
+              <span className="text-white font-semibold text-sm drop-shadow-lg">{ownerName}</span>
+              <span className="text-white/80 text-xs drop-shadow-lg">{timeAgo}</span>
             </div>
           </div>
 
           <div className="flex items-center gap-2 relative">
-            {/* Bouton son pour vidéos */}
             {slide.type === "video" && (
-              <button 
-                onClick={() => setIsMuted(!isMuted)}
-                className="p-2 bg-black/40 backdrop-blur-md rounded-full text-white hover:bg-black/60 transition-all active:scale-95"
-              >
+              <button onClick={() => setIsMuted(!isMuted)} className="p-2 bg-black/40 backdrop-blur-md rounded-full text-white hover:bg-black/60 transition-all active:scale-95">
                 {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
               </button>
             )}
-            
-            {/* Bouton de vues (uniquement pour mes stories) */}
             {isMyStory && (
-              <button
-                onClick={handleOpenViewsModal}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 backdrop-blur-md rounded-full text-white hover:bg-black/60 transition-all active:scale-95"
-              >
-                <Eye size={16} />
-                <span className="text-sm font-bold">{viewCount}</span>
+              <button onClick={handleOpenViewsModal} className="flex items-center gap-1.5 px-3 py-1.5 bg-black/40 backdrop-blur-md rounded-full text-white hover:bg-black/60 transition-all active:scale-95">
+                <Eye size={16} /><span className="text-sm font-bold">{viewCount}</span>
               </button>
             )}
-            
             {isPaused && !showViewsModal && !showDeleteConfirm && (
-              <div className="text-white text-xs bg-black/40 backdrop-blur-sm px-2 py-1 rounded-full">
-                Pause
-              </div>
+              <div className="text-white text-xs bg-black/40 backdrop-blur-sm px-2 py-1 rounded-full">Pause</div>
             )}
-            
-            {/* Bouton options (uniquement pour mes stories) */}
             {isMyStory && (
               <div className="relative">
-                <button 
-                  onClick={handleToggleOptions}
-                  className="p-2 bg-black/20 backdrop-blur-md rounded-full text-white active:scale-95 transition-transform"
-                >
+                <button onClick={handleToggleOptions} className="p-2 bg-black/20 backdrop-blur-md rounded-full text-white active:scale-95 transition-transform">
                   <MoreVertical size={20}/>
                 </button>
-
-                {/* Menu d'options */}
                 <AnimatePresence>
                   {showOptionsMenu && (
                     <motion.div
@@ -540,40 +468,27 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
                       exit={{ opacity: 0, scale: 0.9, y: -10 }}
                       className="absolute top-12 right-0 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden min-w-[200px] border border-gray-200 dark:border-gray-700"
                     >
-                      <button
-                        onClick={handleDeleteClick}
-                        className="w-full flex items-center gap-3 px-4 py-3 text-red-600 dark:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                      >
-                        <Trash2 size={18} />
-                        <span className="font-semibold text-sm">Supprimer</span>
+                      <button onClick={handleDeleteClick} className="w-full flex items-center gap-3 px-4 py-3 text-red-600 dark:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                        <Trash2 size={18} /><span className="font-semibold text-sm">Supprimer</span>
                       </button>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
             )}
-            
             {!isMyStory && (
-              <button 
-                onClick={togglePause}
-                className="p-2 bg-black/20 backdrop-blur-md rounded-full text-white active:scale-95 transition-transform"
-              >
+              <button onClick={togglePause} className="p-2 bg-black/20 backdrop-blur-md rounded-full text-white active:scale-95 transition-transform">
                 <MoreVertical size={20}/>
               </button>
             )}
-            
-            <button 
-              onClick={onClose} 
-              className="p-2 bg-black/20 backdrop-blur-md rounded-full text-white active:scale-95 transition-transform"
-            >
+            <button onClick={onClose} className="p-2 bg-black/20 backdrop-blur-md rounded-full text-white active:scale-95 transition-transform">
               <X size={20}/>
             </button>
           </div>
         </div>
 
-        {/* Contenu média - AFFICHAGE INSTANTANÉ */}
+        {/* Contenu média */}
         <div className="w-full h-full flex items-center justify-center relative">
-          {/* Loader uniquement pour les médias non chargés */}
           {!isCurrentSlideLoaded && slide.type !== "text" && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <Loader2 className="animate-spin text-white/60" size={48}/>
@@ -589,41 +504,34 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
               transition={{ duration: 0.15 }}
               className="w-full h-full flex items-center justify-center"
             >
-              {/* Story de type TEXTE - Affichage instantané */}
               {slide.type === "text" ? (
-                <div 
-                  className="w-full h-full flex items-center justify-center p-8"
-                  style={{ 
-                    background: slide.backgroundColor || "#000000"
-                  }}
-                >
+                // ✅ STORY TEXTE : fond via getSlideBg() (supporte backgroundColor ET bg:caption)
+                <div className="w-full h-full flex items-center justify-center p-8" style={{ background: slideBg }}>
                   <motion.p 
                     initial={{ scale: 0.95, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     transition={{ duration: 0.2 }}
                     className="text-white text-center text-3xl md:text-4xl font-bold drop-shadow-lg px-4 whitespace-pre-wrap break-words"
-                    style={{ 
-                      fontFamily: slide.fontFamily || "Inter",
-                      color: slide.textColor || "#ffffff"
-                    }}
+                    style={{ fontFamily: slide.fontFamily || "Inter", color: slide.textColor || "#ffffff" }}
                   >
-                    {slide.content || slide.text}
+                    {/* ✅ Texte via getSlideText() : text > content > caption(sans bg:) */}
+                    {slideText}
                   </motion.p>
                 </div>
               ) : slide.type === "video" ? (
+                // ✅ STORY VIDÉO : supporte slide.media ET slide.mediaUrl
                 <video 
                   ref={videoRef}
-                  src={MEDIA_URL(slide.mediaUrl || slide.media)} 
+                  src={MEDIA_URL(mediaUrl)} 
                   onLoadedData={handleMediaLoaded}
-                  autoPlay 
-                  playsInline 
-                  muted={isMuted}
+                  autoPlay playsInline muted={isMuted}
                   className="w-full h-full object-contain"
                   style={{ opacity: isCurrentSlideLoaded ? 1 : 0 }}
                 />
               ) : (
+                // ✅ STORY IMAGE : supporte slide.media ET slide.mediaUrl
                 <img 
-                  src={MEDIA_URL(slide.mediaUrl || slide.media)} 
+                  src={MEDIA_URL(mediaUrl)} 
                   onLoad={handleMediaLoaded}
                   alt="Story"
                   className="w-full h-full object-contain transition-opacity duration-200"
@@ -633,8 +541,8 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
             </motion.div>
           </AnimatePresence>
 
-          {/* Texte du slide (uniquement pour les slides avec média) */}
-          {slide.type !== "text" && (slide.content || slide.text) && isCurrentSlideLoaded && (
+          {/* ✅ Caption sur image/vidéo : via getSlideText() (exclut le préfixe bg:) */}
+          {slide.type !== "text" && slideText && isCurrentSlideLoaded && (
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -643,7 +551,7 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
               className="absolute bottom-20 left-4 right-4 z-[10001]"
             >
               <p className="text-white text-sm bg-black/40 backdrop-blur-md px-4 py-3 rounded-2xl drop-shadow-lg">
-                {slide.content || slide.text}
+                {slideText}
               </p>
             </motion.div>
           )}
@@ -651,24 +559,14 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
 
         {/* Zones de navigation */}
         <div className="absolute inset-0 z-[10000] flex">
-          <button 
-            onClick={handlePrevSlide}
-            className="w-[40%] h-full"
-            aria-label="Slide précédent"
-          />
-          <button 
-            onClick={handleNextSlide}
-            className="flex-1 h-full"
-            aria-label="Slide suivant"
-          />
+          <button onClick={handlePrevSlide} className="w-[40%] h-full" aria-label="Slide précédent" />
+          <button onClick={handleNextSlide} className="flex-1 h-full" aria-label="Slide suivant" />
         </div>
 
         {/* Compteur de slides */}
         <div className="absolute top-[calc(env(safe-area-inset-top)+70px)] right-4 z-[10001]">
           <div className="bg-black/40 backdrop-blur-md px-2 py-1 rounded-full">
-            <span className="text-white text-xs font-bold">
-              {slideIdx + 1}/{allSlides.length}
-            </span>
+            <span className="text-white text-xs font-bold">{slideIdx + 1}/{allSlides.length}</span>
           </div>
         </div>
 
@@ -690,27 +588,16 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
           </div>
         )}
 
-        {/* Indication de fermeture */}
         <div className="absolute bottom-2 text-white/20 text-[9px] font-bold tracking-widest pointer-events-none uppercase">
           Glisser vers le bas pour fermer
         </div>
       </motion.div>
 
-      {/* Modal des vues */}
       <AnimatePresence>
-        {showViewsModal && (
-          <ViewsModal slide={slide} onClose={handleCloseViewsModal} />
-        )}
+        {showViewsModal && <ViewsModal slide={slide} onClose={handleCloseViewsModal} />}
       </AnimatePresence>
-
-      {/* Modal de confirmation de suppression */}
       <AnimatePresence>
-        {showDeleteConfirm && (
-          <DeleteConfirmModal 
-            onConfirm={handleConfirmDelete}
-            onCancel={handleCancelDelete}
-          />
-        )}
+        {showDeleteConfirm && <DeleteConfirmModal onConfirm={handleConfirmDelete} onCancel={handleCancelDelete} />}
       </AnimatePresence>
     </>
   );
