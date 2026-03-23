@@ -1,15 +1,23 @@
-// 📁 src/pages/Videos/AggregatedCard.jsx
+// 📁 src/pages/Videos/AggregatedCard.jsx — v2 ANTI-COUPURE
 //
-// ✅ NOUVEAUTÉS :
-//   - Vidéo en BOUCLE : loop sur <video> + onEnded relance play()
-//   - Barre de progression SEEKABLE : clic ou drag pour avancer/reculer
-//     → pointerId capture pour drag fluide même en dehors de la barre
+// ═══════════════════════════════════════════════════════════════════════════
+// FIXES COUPURES (v2) :
 //
-// CONSERVÉS :
-//   - feedLock sur actions
-//   - Modal commentaires dans createPortal
-//   - onVideoError / buildVideoUrl / NoAudioBadge / VimeoEmbed
-//   - Timeout 4s cohérent avec probe
+//  1. useVideoPlayer ABORT RACE — même logique AbortController que VideoCard.
+//     Plus de race condition play()/pause() lors du scroll.
+//
+//  2. DEBOUNCE 80ms — absorbe les scrolls rapides.
+//
+//  3. TIMEOUT 4s ANNULÉ si isActive passe à false — plus d'onError intempestif
+//     sur une slide qui n'est plus active.
+//
+//  4. canplay LISTENER toujours retiré au cleanup — pas de fuite mémoire.
+//
+//  5. HlsVideo — play() dans MANIFEST_PARSED vérifie isActive avant de jouer.
+//     + AbortController pour éviter la race condition HLS.
+//
+//  6. PRÉCHARGEMENT ANTICIPÉ — src assigné au montage, pas à l'activation.
+// ═══════════════════════════════════════════════════════════════════════════
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -18,7 +26,7 @@ import { useAuth } from '../../context/AuthContext';
 import { lockFeed, unlockFeed } from './VideoCard';
 import {
   FaHeart, FaRegHeart, FaComment, FaShare, FaExternalLinkAlt,
-  FaVolumeUp, FaVolumeMute, FaPlay, FaImage,
+  FaVolumeUp, FaVolumeMute, FaPlay, FaImage, FaDownload,
 } from 'react-icons/fa';
 import { IoSend } from 'react-icons/io5';
 
@@ -41,68 +49,214 @@ const generateAvatar = (name = 'U') => {
   const color  = colors[c.charCodeAt(0) % colors.length];
   return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${encodeURIComponent(color)}"/><text x="50%" y="50%" font-size="50" fill="white" text-anchor="middle" dy=".3em" font-family="Arial">${c}</text></svg>`;
 };
+// ── downloadWithWatermark + downloadVideoFile (watermark Chantilink) ──────────
+const downloadVideoFile = async (src, title = 'chantilink-video') => {
+  if (!src) return;
+  try {
+    const res  = await fetch(src, { mode: 'cors' });
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `${title.slice(0, 40).replace(/[^a-z0-9]/gi, '-')}-chantilink.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch {
+    window.open(src, '_blank');
+  }
+};
 
-// ── useVideoPlayer ─────────────────────────────────────────────────────────────
+const downloadWithWatermark = async (videoEl, filename = 'chantilink') => {
+  const src = videoEl?.src || '';
+  if (!src) return;
+  try {
+    const canvas = document.createElement('canvas');
+    const W = videoEl.videoWidth  || 720;
+    const H = videoEl.videoHeight || 1280;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoEl, 0, 0, W, H);
+
+    const grad = ctx.createLinearGradient(0, H * 0.75, 0, H);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.55)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, H * 0.75, W, H * 0.25);
+
+    const pillW = 160, pillH = 36, pillX = W - pillW - 16, pillY = H - pillH - 20;
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(pillX, pillY, pillW, pillH, 10);
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fill();
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(pillX + 18, pillY + pillH / 2, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#f97316';
+    ctx.fill();
+
+    ctx.font = `bold ${Math.round(W * 0.022)}px Arial, sans-serif`;
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Chantilink', pillX + 32, pillY + pillH / 2);
+
+    canvas.toBlob(async (blob) => {
+      if (!blob) return;
+      if (navigator.canShare?.({ files: [new File([blob], 'chantilink.png', { type: 'image/png' })] })) {
+        try {
+          await navigator.share({ files: [new File([blob], 'chantilink.png', { type: 'image/png' })], title: 'Vidéo Chantilink' });
+          return;
+        } catch {}
+      }
+      const url = URL.createObjectURL(blob);
+      const a   = document.createElement('a');
+      a.href = url; a.download = `${filename.slice(0,40)}-chantilink.png`;
+      a.click(); URL.revokeObjectURL(url);
+    }, 'image/png');
+  } catch { window.open(src, '_blank'); }
+};
+
+
+
+// ── useVideoPlayer — version anti-coupure ─────────────────────────────────────
+//
+// FIX 1+2 : AbortController + debounce 80ms
+// FIX 3   : timeout 4s annulé si isActive → false
+// FIX 4   : canplay listener toujours retiré
+// FIX 6   : src assigné au montage pour précharger
+//
 function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError }) {
-  const mutedRef = useRef(muted);
-  const srcRef   = useRef(null);
+  const mutedRef    = useRef(muted);
+  const srcSetRef   = useRef(false);
+  const abortRef    = useRef(null);
+  const debounceRef = useRef(null);
+  const canplayRef  = useRef(null);
+  const timerRef    = useRef(null);  // timeout 4s
 
   useEffect(() => { mutedRef.current = muted; }, [muted]);
 
+  // Injecter src au montage (préchargement anticipé)
   useEffect(() => {
-    if (!src || src === srcRef.current) return;
+    if (!src || srcSetRef.current) return;
     const vid = videoRef.current;
     if (!vid) return;
-    srcRef.current = src;
-    vid.src = src; vid.muted = true; vid.volume = 1;
+    srcSetRef.current = true;
+    vid.src     = src;
+    vid.muted   = true;
+    vid.volume  = 1;
+    vid.preload = 'auto';
+    vid.load();
   }, [src, videoRef]);
 
+  // Play / pause avec debounce + abort
   useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid) return;
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
 
-    if (isActive) {
-      vid.muted = true; vid.volume = 1;
-      let timerId = null;
+    if (!isActive) {
+      // FIX 3 : annuler le timeout 4s
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+      abortRef.current?.abort();
+      abortRef.current = null;
+      const vid = videoRef.current;
+      if (vid) {
+        if (canplayRef.current) { vid.removeEventListener('canplay', canplayRef.current); canplayRef.current = null; }
+        vid.pause();
+        vid.muted  = true;
+        vid.volume = 1;
+      }
+      return;
+    }
 
-      const tryPlay = () => {
-        if (timerId) { clearTimeout(timerId); timerId = null; }
-        vid.play()
-          .then(() => {
-            if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
-              vid.muted  = mutedRef.current;
-              vid.volume = mutedRef.current ? 0 : 1;
-            }
-          })
-          .catch(err => {
-            if (err.name !== 'AbortError') { vid.muted = true; onMutedChange?.(true); }
-          });
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null;
+      const vid = videoRef.current;
+      if (!vid) return;
+
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+
+      vid.muted  = true;
+      vid.volume = 1;
+
+      const doPlay = () => {
+        if (ctrl.signal.aborted) return;
+        if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+
+        const p = vid.play();
+        if (!p) return;
+        p.then(() => {
+          if (ctrl.signal.aborted) { vid.pause(); return; }
+          if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
+            vid.muted  = mutedRef.current;
+            vid.volume = mutedRef.current ? 0 : 1;
+          }
+        }).catch(err => {
+          if (ctrl.signal.aborted || err.name === 'AbortError') return;
+          if (err.name !== 'NotAllowedError') {
+            // Retry 1x après 300ms pour erreurs réseau transitoires
+            setTimeout(() => {
+              if (ctrl.signal.aborted) return;
+              vid.play().then(() => {
+                if (ctrl.signal.aborted) { vid.pause(); return; }
+                if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
+                  vid.muted = mutedRef.current; vid.volume = mutedRef.current ? 0 : 1;
+                }
+              }).catch(() => { vid.muted = true; onMutedChange?.(true); });
+            }, 300);
+          } else {
+            vid.muted = true; onMutedChange?.(true);
+          }
+        });
       };
 
       if (vid.readyState >= 3) {
-        tryPlay();
+        doPlay();
       } else {
-        timerId = setTimeout(() => { if (vid.readyState < 1) onError?.(); }, 4000);
+        // FIX 3 : timeout 4s annulé si isActive change
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null;
+          if (!ctrl.signal.aborted && vid.readyState < 1) onError?.();
+        }, 4000);
+
+        if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
         const onCan = () => {
           vid.removeEventListener('canplay', onCan);
-          if (timerId) { clearTimeout(timerId); timerId = null; }
-          tryPlay();
+          canplayRef.current = null;
+          if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+          doPlay();
         };
+        canplayRef.current = onCan;
         vid.addEventListener('canplay', onCan);
-        return () => { vid.removeEventListener('canplay', onCan); if (timerId) clearTimeout(timerId); };
       }
-    } else {
-      vid.pause(); vid.muted = true; vid.volume = 1;
-    }
+    }, 80);
+
+    return () => {
+      if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
+    };
   }, [isActive]); // eslint-disable-line
 
+  // Sync muted
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
-    vid.muted = muted; vid.volume = muted ? 0 : 1;
-    if (!muted && vid.paused && isActive) vid.play().catch(() => { vid.muted = true; onMutedChange?.(true); });
+    vid.muted  = muted;
+    vid.volume = muted ? 0 : 1;
+    if (!muted && vid.paused && isActive) {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      vid.play().then(() => {
+        if (ctrl.signal.aborted) { vid.pause(); return; }
+      }).catch(() => { vid.muted = true; onMutedChange?.(true); });
+    }
   }, [muted]); // eslint-disable-line
 
+  // Error listener
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
@@ -110,156 +264,296 @@ function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError
     vid.addEventListener('error', fn);
     return () => vid.removeEventListener('error', fn);
   }, [videoRef, onError]);
+
+  // FIX 4 : cleanup complet
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (timerRef.current)    clearTimeout(timerRef.current);
+      abortRef.current?.abort();
+      const vid = videoRef.current;
+      if (vid && canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
+    };
+  }, []); // eslint-disable-line
 }
 
-// ── SeekBar — barre de progression cliquable + draggable ──────────────────────
-const SeekBar = memo(({ progress, videoRef, isEmbed }) => {
-  const barRef    = useRef(null);
-  const dragging  = useRef(false);
+// ── formatTime ───────────────────────────────────────────────────────────────
+const formatTime = (s) => {
+  if (!isFinite(s) || s < 0) return '0:00';
+  const m   = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+};
 
-  const seekTo = useCallback((clientX) => {
+// ── SeekBar — scrubbing TikTok-style ─────────────────────────────────────────
+const SeekBar = memo(({ progress, videoRef, isEmbed, duration = 0 }) => {
+  const trackRef  = useRef(null);
+  const dragging  = useRef(false);
+  const wasPaused = useRef(false);
+  const [isDragging,  setIsDragging]  = useState(false);
+  const [previewTime, setPreviewTime] = useState(0);
+  const [previewPct,  setPreviewPct]  = useState(0);
+
+  const getRatio = useCallback((clientX) => {
+    const bar = trackRef.current;
+    if (!bar) return null;
+    const rect = bar.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  }, []);
+
+  const applySeek = useCallback((ratio) => {
     if (isEmbed) return;
     const vid = videoRef.current;
-    const bar = barRef.current;
-    if (!vid || !bar || !vid.duration) return;
-    const rect   = bar.getBoundingClientRect();
-    const ratio  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    vid.currentTime = ratio * vid.duration;
+    if (!vid || !vid.duration) return;
+    const t = ratio * vid.duration;
+    vid.currentTime = t;
+    setPreviewTime(t);
+    setPreviewPct(ratio * 100);
   }, [videoRef, isEmbed]);
 
   const onPointerDown = useCallback((e) => {
     if (isEmbed) return;
     e.stopPropagation();
-    dragging.current = true;
-    barRef.current?.setPointerCapture(e.pointerId);
-    seekTo(e.clientX);
+    const ratio = getRatio(e.clientX);
+    if (ratio === null) return;
     lockFeed();
-  }, [seekTo, isEmbed]);
+    dragging.current = true;
+    trackRef.current?.setPointerCapture(e.pointerId);
+    const vid = videoRef.current;
+    wasPaused.current = vid ? vid.paused : true;
+    if (vid && !vid.paused) vid.pause();
+    applySeek(ratio);
+    setIsDragging(true);
+  }, [getRatio, applySeek, videoRef, isEmbed]);
 
   const onPointerMove = useCallback((e) => {
     if (!dragging.current) return;
     e.stopPropagation();
-    seekTo(e.clientX);
-  }, [seekTo]);
+    const ratio = getRatio(e.clientX);
+    if (ratio !== null) applySeek(ratio);
+  }, [getRatio, applySeek]);
 
   const onPointerUp = useCallback((e) => {
     if (!dragging.current) return;
-    dragging.current = false;
     e.stopPropagation();
+    dragging.current = false;
+    setIsDragging(false);
+    const vid = videoRef.current;
+    if (vid && !wasPaused.current) vid.play().catch(() => {});
     unlockFeed();
-  }, []);
+  }, [videoRef]);
+
+  const pct = isDragging ? previewPct : progress;
 
   return (
-    <div
-      ref={barRef}
-      className="absolute top-0 left-0 right-0 z-20"
-      style={{
-        height: 20,                        // zone de touch plus large que l'affichage
-        cursor: isEmbed ? 'default' : 'pointer',
-        touchAction: 'none',
-      }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-    >
-      {/* Piste visible */}
-      <div className="absolute top-0 left-0 right-0 h-1 bg-gray-800/30">
-        <div
-          className="h-full bg-white/70 transition-none"
-          style={{ width: `${progress}%` }}
-        />
-        {/* Poignée */}
-        {!isEmbed && (
-          <div
-            className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow-md"
-            style={{ left: `calc(${progress}% - 6px)`, pointerEvents: 'none' }}
-          />
+    <>
+      <AnimatePresence>
+        {isDragging && !isEmbed && (
+          <motion.div
+            initial={{ opacity: 0, y: 4, scale: 0.85 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 4, scale: 0.85 }}
+            transition={{ duration: 0.12 }}
+            className="absolute z-30 pointer-events-none"
+            style={{
+              bottom: 14,
+              left: `clamp(28px, ${pct}%, calc(100% - 28px))`,
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <div style={{
+              background: 'rgba(0,0,0,0.82)',
+              backdropFilter: 'blur(8px)',
+              border: '1px solid rgba(255,255,255,0.18)',
+              borderRadius: 8, padding: '3px 8px',
+              fontSize: 12, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap',
+            }}>
+              {formatTime(previewTime)}
+              {duration > 0 && (
+                <span style={{ opacity: 0.5, fontWeight: 400 }}> / {formatTime(duration)}</span>
+              )}
+            </div>
+          </motion.div>
         )}
+      </AnimatePresence>
+
+      <div
+        ref={trackRef}
+        className="absolute left-0 right-0 z-20"
+        style={{
+          bottom: 0, height: 28,
+          cursor: isEmbed ? 'default' : 'pointer',
+          touchAction: 'none', userSelect: 'none',
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <div
+          className="absolute left-0 right-0"
+          style={{
+            bottom: 0,
+            height: isDragging ? 4 : 2.5,
+            background: 'rgba(255,255,255,0.18)',
+            transition: 'height 0.15s ease',
+          }}
+        >
+          <div style={{
+            position: 'absolute', left: 0, top: 0, bottom: 0,
+            width: `${pct}%`,
+            background: '#fff', borderRadius: 99,
+            transition: isDragging ? 'none' : 'width 0.1s linear',
+          }} />
+          {!isEmbed && (
+            <div style={{
+              position: 'absolute', top: '50%', left: `${pct}%`,
+              transform: 'translate(-50%, -50%)',
+              width: isDragging ? 16 : 10,
+              height: isDragging ? 16 : 10,
+              borderRadius: '50%', background: '#fff',
+              boxShadow: '0 1px 6px rgba(0,0,0,0.5)',
+              transition: isDragging ? 'none' : 'width 0.15s, height 0.15s',
+              pointerEvents: 'none',
+            }} />
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 });
 SeekBar.displayName = 'SeekBar';
 
-// ── DirectVideo ────────────────────────────────────────────────────────────────
-const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTogglePlay, onTimeUpdate, onDoubleTap, onEnded, videoRef }) => {
+// ── DirectVideo ───────────────────────────────────────────────────────────────
+const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded, videoRef }) => {
   useVideoPlayer({ videoRef, src: buildVideoUrl(content), isActive, muted, onMutedChange, onError });
   return (
     <video ref={videoRef}
       className="w-full h-full object-cover"
       style={{ position:'absolute', inset:0, width:'100%', height:'100%', contain:'strict' }}
-      playsInline preload="auto"
-      loop                            // ✅ BOUCLE native
+      playsInline preload="auto" loop
       poster={content.thumbnail || undefined}
-      onClick={onTogglePlay} onDoubleClick={onDoubleTap}
-      onTimeUpdate={onTimeUpdate} onEnded={onEnded}
+      onClick={onTogglePlay}
+      onDoubleClick={onDoubleTap}
+      onTimeUpdate={onTimeUpdate}
+      onDurationChange={onDurationChange}
+      onEnded={onEnded}
     />
   );
 });
 DirectVideo.displayName = 'DirectVideo';
 
-// ── HlsVideo ───────────────────────────────────────────────────────────────────
-const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTogglePlay, onTimeUpdate, onDoubleTap, onEnded, videoRef }) => {
-  const hlsRef   = useRef(null);
-  const mutedRef = useRef(muted);
+// ── HlsVideo — FIX 5 : isActive vérifié dans MANIFEST_PARSED ─────────────────
+const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded, videoRef }) => {
+  const hlsRef    = useRef(null);
+  const mutedRef  = useRef(muted);
+  const abortRef  = useRef(null);
+  const isActRef  = useRef(isActive);
+
   useEffect(() => { mutedRef.current = muted; }, [muted]);
+  useEffect(() => { isActRef.current = isActive; }, [isActive]);
 
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid || !content.videoUrl) return;
+
     const setup = async () => {
       try {
         const { default: Hls } = await import('hls.js');
         if (Hls.isSupported()) {
           hlsRef.current?.destroy();
-          const hls = new Hls({ enableWorker:false, maxBufferLength:30 });
+          const hls = new Hls({ enableWorker: false, maxBufferLength: 30 });
           hlsRef.current = hls;
           hls.loadSource(content.videoUrl);
           hls.attachMedia(vid);
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            vid.muted = true; vid.volume = 1;
-            if (isActive) vid.play().then(() => {
-              if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') { vid.muted = mutedRef.current; vid.volume = mutedRef.current ? 0 : 1; }
-            }).catch(() => {});
+            vid.muted  = true;
+            vid.volume = 1;
+            // FIX 5 : ne joue que si la slide est encore active
+            if (!isActRef.current) return;
+            abortRef.current?.abort();
+            const ctrl = new AbortController();
+            abortRef.current = ctrl;
+            vid.play().then(() => {
+              if (ctrl.signal.aborted) { vid.pause(); return; }
+              if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
+                vid.muted = mutedRef.current; vid.volume = mutedRef.current ? 0 : 1;
+              }
+            }).catch(err => {
+              if (ctrl.signal.aborted || err.name === 'AbortError') return;
+            });
           });
           hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) onError?.(); });
         } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
-          vid.src = content.videoUrl; vid.muted = true;
+          vid.src   = content.videoUrl;
+          vid.muted = true;
         }
-      } catch (e) { console.error('[HLS]', e.message); vid.src = content.videoUrl; vid.muted = true; }
+      } catch (e) {
+        console.error('[HLS]', e.message);
+        vid.src = content.videoUrl; vid.muted = true;
+      }
     };
     setup();
-    return () => { hlsRef.current?.destroy(); hlsRef.current = null; };
+    return () => {
+      abortRef.current?.abort();
+      hlsRef.current?.destroy();
+      hlsRef.current = null;
+    };
   }, [content.videoUrl]); // eslint-disable-line
 
+  // play/pause avec abort sur isActive
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
     if (isActive) {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
       vid.muted = true;
-      vid.play().then(() => {
-        if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') { vid.muted = mutedRef.current; vid.volume = mutedRef.current ? 0 : 1; }
-      }).catch(() => {});
-    } else { vid.pause(); vid.muted = true; }
+      // Debounce léger pour HLS
+      const t = setTimeout(() => {
+        if (ctrl.signal.aborted) return;
+        vid.play().then(() => {
+          if (ctrl.signal.aborted) { vid.pause(); return; }
+          if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
+            vid.muted = mutedRef.current; vid.volume = mutedRef.current ? 0 : 1;
+          }
+        }).catch(err => {
+          if (ctrl.signal.aborted || err.name === 'AbortError') return;
+        });
+      }, 80);
+      return () => { clearTimeout(t); };
+    } else {
+      abortRef.current?.abort();
+      vid.pause(); vid.muted = true;
+    }
   }, [isActive]); // eslint-disable-line
 
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
     vid.muted = muted; vid.volume = muted ? 0 : 1;
-    if (!muted && vid.paused && isActive) vid.play().catch(() => { vid.muted = true; onMutedChange?.(true); });
+    if (!muted && vid.paused && isActive) {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      vid.play().then(() => {
+        if (ctrl.signal.aborted) { vid.pause(); return; }
+      }).catch(() => { vid.muted = true; onMutedChange?.(true); });
+    }
   }, [muted]); // eslint-disable-line
 
   return (
     <video ref={videoRef}
       className="w-full h-full object-cover"
       style={{ position:'absolute', inset:0, width:'100%', height:'100%', contain:'strict' }}
-      playsInline preload="auto"
-      loop                            // ✅ BOUCLE native
+      playsInline preload="auto" loop
       poster={content.thumbnail || undefined}
-      onClick={onTogglePlay} onDoubleClick={onDoubleTap}
-      onTimeUpdate={onTimeUpdate} onEnded={onEnded}
+      onClick={onTogglePlay}
+      onDoubleClick={onDoubleTap}
+      onTimeUpdate={onTimeUpdate}
+      onDurationChange={onDurationChange}
+      onEnded={onEnded}
     />
   );
 });
@@ -288,7 +582,6 @@ const VimeoEmbed = memo(({ content, isActive, muted }) => {
           iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ method:'setVolume', value: muted ? 0 : 1 }), '*');
           if (isActive) iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ method:'play' }), '*');
         }
-        // ✅ BOUCLE Vimeo : relancer à la fin
         if (data?.event === 'finish') {
           iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ method:'seekTo', value: 0 }), '*');
           iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ method:'play' }), '*');
@@ -300,10 +593,16 @@ const VimeoEmbed = memo(({ content, isActive, muted }) => {
   }, []); // eslint-disable-line
 
   useEffect(() => { isReadyRef.current = false; pendingRef.current = []; }, [content.videoUrl]);
-  useEffect(() => { if (isActive) { postCmd('play'); postCmd('setVolume', muted ? 0 : 1); } else postCmd('pause'); }, [isActive, postCmd]); // eslint-disable-line
+  useEffect(() => {
+    if (isActive) { postCmd('play'); postCmd('setVolume', muted ? 0 : 1); }
+    else postCmd('pause');
+  }, [isActive, postCmd]); // eslint-disable-line
   useEffect(() => { postCmd('setVolume', muted ? 0 : 1); }, [muted, postCmd]);
 
-  const src = content.videoUrl ? (content.videoUrl.includes('?') ? `${content.videoUrl}&api=1&loop=1` : `${content.videoUrl}?api=1&loop=1`) : '';
+  const src = content.videoUrl
+    ? (content.videoUrl.includes('?') ? `${content.videoUrl}&api=1&loop=1` : `${content.videoUrl}?api=1&loop=1`)
+    : '';
+
   return (
     <iframe ref={iframeRef} src={src}
       className="w-full h-full"
@@ -323,7 +622,7 @@ const ImageContent = memo(({ content, onDoubleTap }) => {
       {!loaded && !error && <div className="absolute inset-0 flex items-center justify-center"><div className="w-10 h-10 border-4 border-gray-700 border-t-white rounded-full animate-spin" /></div>}
       {!error
         ? <img src={content.imageUrl || content.thumbnail} alt={content.title}
-            className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${loaded?'opacity-100':'opacity-0'}`}
+            className={`max-w-full max-h-full object-contain transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
             onLoad={() => setLoaded(true)} onError={() => setError(true)} />
         : <div className="flex flex-col items-center gap-3 text-gray-500"><FaImage className="text-5xl" /><p className="text-sm">Image non disponible</p></div>
       }
@@ -336,7 +635,8 @@ const ArticleContent = memo(({ content }) => (
   <div className="w-full h-full flex flex-col bg-gray-950" style={{ borderTop:'4px solid #F26522' }}>
     {content.thumbnail && (
       <div className="flex-shrink-0 h-48 overflow-hidden">
-        <img src={content.thumbnail} alt={content.title} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
+        <img src={content.thumbnail} alt={content.title} className="w-full h-full object-cover"
+          onError={e => { e.target.style.display='none'; }} />
       </div>
     )}
     <div className="flex-1 overflow-y-auto p-6 pt-16">
@@ -381,7 +681,86 @@ const NoAudioBadge = memo(() => (
 ));
 NoAudioBadge.displayName = 'NoAudioBadge';
 
-// ── AggregatedCard ─────────────────────────────────────────────────────────────
+
+// ── ChantilinkSignature — overlay animé en fin de vidéo ──────────────────────
+const ChantilinkSignature = memo(({ visible }) => (
+  <AnimatePresence>
+    {visible && (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.35 }}
+        className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none"
+        style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)' }}
+      >
+        <motion.div
+          initial={{ scale: 0.72, opacity: 0, y: 18 }}
+          animate={{ scale: 1,    opacity: 1, y: 0  }}
+          exit={{    scale: 1.08, opacity: 0, y: -8 }}
+          transition={{ type: 'spring', stiffness: 280, damping: 22, delay: 0.05 }}
+          style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}
+        >
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            background: 'rgba(255,255,255,0.10)',
+            border: '1.5px solid rgba(255,255,255,0.22)',
+            backdropFilter: 'blur(18px)',
+            borderRadius: 999,
+            padding: '10px 24px 10px 16px',
+          }}>
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+              <circle cx="16" cy="16" r="16" fill="#f97316" fillOpacity="0.18"/>
+              <circle cx="16" cy="16" r="16" fill="url(#sig-grad-agg)" fillOpacity="0.85"/>
+              <text x="16" y="21" textAnchor="middle" fontSize="16" fontWeight="900"
+                fontFamily="Arial, sans-serif" fill="white">C</text>
+              <defs>
+                <radialGradient id="sig-grad-agg" cx="40%" cy="30%" r="70%">
+                  <stop offset="0%" stopColor="#fb923c"/>
+                  <stop offset="100%" stopColor="#ea580c"/>
+                </radialGradient>
+              </defs>
+            </svg>
+            <span style={{
+              color: '#fff', fontFamily: 'Arial, sans-serif',
+              fontWeight: 800, fontSize: 22, letterSpacing: '-0.3px',
+            }}>
+              Chantilink
+            </span>
+          </div>
+
+          <motion.p
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.18, duration: 0.28 }}
+            style={{
+              color: 'rgba(255,255,255,0.6)', fontSize: 13,
+              fontFamily: 'Arial, sans-serif', fontWeight: 500,
+              letterSpacing: '0.04em', textAlign: 'center',
+            }}
+          >
+            Le réseau du BTP
+          </motion.p>
+
+          <motion.div style={{
+            width: 80, height: 3, borderRadius: 99,
+            background: 'rgba(255,255,255,0.2)', overflow: 'hidden',
+          }}>
+            <motion.div
+              initial={{ width: '0%' }}
+              animate={{ width: '100%' }}
+              transition={{ duration: 1.9, ease: 'linear' }}
+              style={{ height: '100%', background: '#f97316', borderRadius: 99 }}
+            />
+          </motion.div>
+        </motion.div>
+      </motion.div>
+    )}
+  </AnimatePresence>
+));
+ChantilinkSignature.displayName = 'ChantilinkSignature';
+
+// ── AggregatedCard ────────────────────────────────────────────────────────────
 const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVideoError }) => {
   if (!content) return null;
 
@@ -397,6 +776,9 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
   const [localComments, setLocalComments] = useState([]);
   const [newComment,    setNewComment]    = useState('');
   const [progress,      setProgress]      = useState(0);
+  const [duration,      setDuration]      = useState(0);
+  const [showSignature, setShowSignature]  = useState(false);
+  const signatureTimer = useRef(null);
   const [videoError,    setVideoError]    = useState(false);
 
   const videoRef        = useRef(null);
@@ -419,8 +801,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
   const showVideoPlayer = (isShortVideo || isDirectVid || isHLS) && !videoError;
   const showEmbed       = isEmbed && !videoError;
   const showMuteBtn     = showVideoPlayer || showEmbed;
-  const videoHasNoAudio = content.hasAudio !== true && !isEmbed && !isHLS
-    && content.platform === 'Pexels';
+  const videoHasNoAudio = content.hasAudio !== true && !isEmbed && !isHLS && content.platform === 'Pexels';
 
   useEffect(() => { isEndedFiredRef.current = false; }, [content._id]);
 
@@ -445,23 +826,38 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     if (!isActive) {
       if (!videoHasNoAudio) setMuted(sessionStorage.getItem(USER_INTERACTED_KEY) === '1' ? false : true);
       setVideoError(false); setIsPaused(false); setProgress(0); setShowSoundHint(false);
+      setShowSignature(false); signatureTimer.current = null;
     }
   }, [isActive, videoHasNoAudio]);
 
   const handleTimeUpdate = useCallback(e => {
     const v = e.target;
-    if (v?.duration) setProgress((v.currentTime / v.duration) * 100);
+    if (!v?.duration) return;
+    const pct = (v.currentTime / v.duration) * 100;
+    setProgress(pct);
+    if (pct >= 97 && !signatureTimer.current) {
+      signatureTimer.current = setTimeout(() => {}, 0);
+      setShowSignature(true);
+      setTimeout(() => { setShowSignature(false); signatureTimer.current = null; }, 2200);
+    }
+    if (pct < 5 && signatureTimer.current !== null) {
+      setShowSignature(false);
+      signatureTimer.current = null;
+    }
   }, []);
 
-  // ✅ BOUCLE : onEnded relance la lecture (filet de sécurité si loop ne suffit pas)
+  const handleDurationChange = useCallback(e => {
+    const v = e.target;
+    if (v?.duration && isFinite(v.duration)) setDuration(v.duration);
+  }, []);
+
   const handleEnded = useCallback(() => {
     const vid = videoRef.current;
     if (vid && !isEmbed) {
       vid.currentTime = 0;
       vid.play().catch(() => {});
-      return; // pas de onVideoEnded → on boucle
+      return;
     }
-    // Pour les embeds non-Vimeo, notifier le parent une seule fois
     if (isEndedFiredRef.current) return;
     isEndedFiredRef.current = true;
     onVideoEndedRef.current?.();
@@ -472,7 +868,10 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false); setMuted(false);
     const vid = videoRef.current;
-    if (vid && !isEmbed) { vid.muted=false; vid.volume=1; if (vid.paused && isActive) vid.play().catch(() => { vid.muted=true; setMuted(true); }); }
+    if (vid && !isEmbed) {
+      vid.muted = false; vid.volume = 1;
+      if (vid.paused && isActive) vid.play().catch(() => { vid.muted = true; setMuted(true); });
+    }
   }, [isActive, isEmbed]);
 
   const handleTogglePlay = useCallback(e => {
@@ -480,7 +879,8 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     if (sessionStorage.getItem(USER_INTERACTED_KEY) !== '1') { activateSound(e); return; }
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) { v.play().catch(() => {}); setIsPaused(false); } else { v.pause(); setIsPaused(true); }
+    if (v.paused) { v.play().catch(() => {}); setIsPaused(false); }
+    else { v.pause(); setIsPaused(true); }
   }, [activateSound]);
 
   const handleDoubleTap = useCallback(e => {
@@ -508,8 +908,8 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     const nm = !muted; setMuted(nm);
     const vid = videoRef.current;
     if (vid && !isEmbed) {
-      vid.muted=nm; vid.volume=nm?0:1;
-      if (!nm && vid.paused && isActive) vid.play().catch(() => { vid.muted=true; setMuted(true); });
+      vid.muted = nm; vid.volume = nm ? 0 : 1;
+      if (!nm && vid.paused && isActive) vid.play().catch(() => { vid.muted = true; setMuted(true); });
     }
   }, [muted, isActive, isEmbed, videoHasNoAudio]);
 
@@ -533,24 +933,38 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     else navigator.clipboard?.writeText(url);
   }, [content.externalUrl, content.title]);
 
+  const [isDownloading, setIsDownloading] = useState(false);
+  const handleDownload = useCallback(async e => {
+    e.stopPropagation();
+    if (isDownloading) return;
+    setIsDownloading(true);
+    try {
+      const src = videoRef.current?.src || buildVideoUrl(content) || '';
+      await downloadVideoFile(src, content.title || 'chantilink');
+    } finally {
+      setIsDownloading(false);
+    }
+  }, [isDownloading, content]);
+
+  const handleShareWithFrame = useCallback(e => {
+    e.stopPropagation();
+    downloadWithWatermark(videoRef.current, content.title || 'chantilink');
+  }, [content.title]);
+
   const onActDown = useCallback(e => { e.stopPropagation(); lockFeed();   }, []);
   const onActUp   = useCallback(e => { e.stopPropagation(); unlockFeed(); }, []);
 
   const openComments  = useCallback(e => { e.stopPropagation(); lockFeed(); setShowComments(true);  onModalChange?.(true);  }, [onModalChange]);
-  const closeComments = useCallback(()  => { unlockFeed();                  setShowComments(false); onModalChange?.(false); }, [onModalChange]);
+  const closeComments = useCallback(()  => { unlockFeed(); setShowComments(false); onModalChange?.(false); }, [onModalChange]);
 
   const commentsModal = showComments ? createPortal(
     <div className="fixed inset-0 z-[9999] flex items-end"
-      onPointerDown={e => e.stopPropagation()}
-      onTouchStart={e => e.stopPropagation()}
-    >
+      onPointerDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()}>
       <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }}
         className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeComments} />
       <motion.div initial={{ y:'100%' }} animate={{ y:0 }} exit={{ y:'100%' }}
         className="relative w-full bg-gray-900 rounded-t-3xl h-[70vh] flex flex-col shadow-2xl z-10"
-        onPointerDown={e => e.stopPropagation()}
-        onTouchStart={e => e.stopPropagation()}
-      >
+        onPointerDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()}>
         <div className="p-4 border-b border-gray-800 flex justify-between items-center flex-shrink-0">
           <span className="font-bold text-white">Commentaires</span>
           <button onClick={closeComments} className="text-gray-400 p-2 text-lg">×</button>
@@ -598,12 +1012,14 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         <HlsVideo content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
           onError={handleVideoError} videoRef={videoRef}
           onTogglePlay={handleTogglePlay} onTimeUpdate={handleTimeUpdate}
+          onDurationChange={handleDurationChange}
           onDoubleTap={handleDoubleTap} onEnded={handleEnded} />
       )}
       {showVideoPlayer && !isHLS && (
         <DirectVideo content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
           onError={handleVideoError} videoRef={videoRef}
           onTogglePlay={handleTogglePlay} onTimeUpdate={handleTimeUpdate}
+          onDurationChange={handleDurationChange}
           onDoubleTap={handleDoubleTap} onEnded={handleEnded} />
       )}
       {showEmbed && <VimeoEmbed content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />}
@@ -615,13 +1031,11 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
       {!isText && <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />}
       {videoHasNoAudio && isActive && <NoAudioBadge />}
 
-      {/* ✅ Barre de progression seekable */}
-      {showVideoPlayer && (
-        <SeekBar progress={progress} videoRef={videoRef} isEmbed={false} />
-      )}
-      {showEmbed && (
-        <SeekBar progress={progress} videoRef={videoRef} isEmbed={true} />
-      )}
+      {showVideoPlayer && <SeekBar progress={progress} videoRef={videoRef} isEmbed={false} duration={duration} />}
+      {showEmbed       && <SeekBar progress={progress} videoRef={videoRef} isEmbed={true}  duration={0} />}
+
+      {/* Signature Chantilink en fin de vidéo */}
+      <ChantilinkSignature visible={showSignature && showVideoPlayer} />
 
       {showVideoPlayer && isPaused && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
@@ -639,9 +1053,8 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         )}
       </AnimatePresence>
 
-      {/* Infos auteur */}
       {!isText && (
-        <div className="absolute bottom-4 left-4 right-16 z-30 pb-safe">
+        <div className="absolute left-4 right-16 z-30" style={{ bottom: 'calc(72px + env(safe-area-inset-bottom))' }}>
           <div className="flex items-center gap-3 mb-3">
             <img src={content.channelAvatar || generateAvatar(content.channelName)} alt={content.channelName}
               width={40} height={40} style={{ aspectRatio:'1/1', flexShrink:0 }}
@@ -667,35 +1080,60 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         </div>
       )}
 
-      {/* Barre d'actions */}
-      <div className="absolute right-2 bottom-20 flex flex-col items-center gap-6 z-40 pb-safe pointer-events-auto"
+      {/* ── Actions — toujours visibles au-dessus de la navbar ── */}
+      <div
+        className="absolute right-2 flex flex-col items-center gap-5 z-40 pointer-events-auto"
+        style={{ bottom: 'calc(72px + env(safe-area-inset-bottom))' }}
         onPointerDown={onActDown} onPointerUp={onActUp} onPointerCancel={onActUp}
         onTouchStart={e => e.stopPropagation()}
       >
+        {/* Like */}
         <div className="flex flex-col items-center gap-1">
           <motion.button whileTap={{ scale:0.8 }} onClick={handleLike}
-            className={`w-10 h-10 rounded-full flex items-center justify-center text-3xl drop-shadow-xl ${isLiked?'text-red-500':'text-white'}`}>
+            className={`w-11 h-11 rounded-full flex items-center justify-center text-3xl drop-shadow-xl ${isLiked?'text-red-500':'text-white'}`}>
             {isLiked ? <FaHeart /> : <FaRegHeart />}
           </motion.button>
-          <span className="text-xs font-bold text-white drop-shadow-md">{localLikes}</span>
+          <span className="text-[11px] font-bold text-white drop-shadow-md">{localLikes}</span>
         </div>
+
+        {/* Commentaires */}
         <div className="flex flex-col items-center gap-1">
           <motion.button whileTap={{ scale:0.8 }} onClick={openComments}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
+            className="w-11 h-11 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
             <FaComment />
           </motion.button>
-          <span className="text-xs font-bold text-white drop-shadow-md">{localComments.length + (content.localCommentsCount || 0)}</span>
+          <span className="text-[11px] font-bold text-white drop-shadow-md">{localComments.length + (content.localCommentsCount || 0)}</span>
         </div>
+
+        {/* Partager */}
         <div className="flex flex-col items-center gap-1">
           <motion.button whileTap={{ scale:0.8 }} onClick={handleShare}
-            className="w-10 h-10 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
+            className="w-11 h-11 rounded-full flex items-center justify-center text-white text-3xl drop-shadow-xl">
             <FaShare />
           </motion.button>
-          <span className="text-xs font-bold text-white drop-shadow-md">Partager</span>
+          <span className="text-[11px] font-bold text-white drop-shadow-md">Partager</span>
         </div>
+
+        {/* Télécharger */}
+        <div className="flex flex-col items-center gap-1">
+          <motion.button
+            whileTap={{ scale:0.8 }}
+            onClick={handleDownload}
+            className="w-11 h-11 rounded-full flex items-center justify-center text-white text-2xl drop-shadow-xl"
+            style={{ opacity: isDownloading ? 0.5 : 1 }}
+          >
+            {isDownloading
+              ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              : <FaDownload />
+            }
+          </motion.button>
+          <span className="text-[11px] font-bold text-white drop-shadow-md">Sauver</span>
+        </div>
+
+        {/* Mute */}
         {showMuteBtn && !videoHasNoAudio && (
           <motion.button whileTap={{ scale:0.9 }} onClick={handleToggleMute}
-            className="w-9 h-9 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white mt-2">
+            className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md border border-white/20 flex items-center justify-center text-white">
             {muted ? <FaVolumeMute /> : <FaVolumeUp />}
           </motion.button>
         )}

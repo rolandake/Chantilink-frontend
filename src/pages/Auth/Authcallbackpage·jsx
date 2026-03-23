@@ -1,0 +1,59 @@
+// src/pages/Auth/AuthCallbackPage.jsx
+// ✅ Page intermédiaire qui reçoit le token Google depuis l'URL
+// ✅ Compatible avec AuthContext existant (cookie httpOnly déjà posé par le backend)
+// ✅ Redirige vers / → loadSession() reconnecte automatiquement via le cookie
+
+import { useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+
+export default function AuthCallbackPage() {
+  const [searchParams] = useSearchParams();
+  const navigate       = useNavigate();
+
+  useEffect(() => {
+    const error = searchParams.get("error");
+
+    if (error) {
+      const messages = {
+        google_failed: "Connexion Google annulée ou refusée.",
+        no_user:       "Impossible de récupérer le compte Google.",
+        server_error:  "Erreur serveur. Réessayez.",
+      };
+      navigate(
+        `/login?msg=${encodeURIComponent(messages[error] || "Erreur de connexion.")}`,
+        { replace: true }
+      );
+      return;
+    }
+
+    // ✅ Le backend a déjà posé le cookie httpOnly refresh token
+    // → On redirige vers / et loadSession() dans AuthContext reconnecte automatiquement
+    navigate("/", { replace: true });
+  }, []);
+
+  return (
+    <div style={{
+      minHeight: "100dvh",
+      background: "#09090b",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexDirection: "column",
+      gap: 16,
+      color: "#f0f0f0",
+      fontFamily: "system-ui, sans-serif",
+    }}>
+      <svg
+        width="40" height="40" viewBox="0 0 24 24"
+        fill="none" stroke="#f97316" strokeWidth="2" strokeLinecap="round"
+        style={{ animation: "spin .75s linear infinite" }}
+      >
+        <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+      </svg>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <p style={{ margin: 0, fontSize: 15, color: "#5c5c6e" }}>
+        Connexion Google en cours…
+      </p>
+    </div>
+  );
+}

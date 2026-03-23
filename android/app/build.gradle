@@ -1,23 +1,37 @@
+// Fichier : android/app/build.gradle
+
 apply plugin: 'com.android.application'
 
 android {
     namespace = "com.chantilink.app"
     compileSdk = rootProject.ext.compileSdkVersion
+
     defaultConfig {
         applicationId "com.chantilink.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 4
+        versionName "2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
         aaptOptions {
-             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
-             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+
+    // ← SIGNING CONFIGURATION
+    signingConfigs {
+        release {
+            keyAlias 'chantilink-key'                                     // ← remplace par ton alias exact
+            keyPassword 'Abate201925'                                    // ← remplace par ton mot de passe alias
+            storeFile file('C:/Users/HP/keystore/chantilink.keystore')     // ← chemin complet vers ton keystore
+            storePassword 'Abate201925'                                // ← remplace par le mot de passe du keystore
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

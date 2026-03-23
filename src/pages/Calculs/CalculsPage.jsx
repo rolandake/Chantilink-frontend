@@ -2,20 +2,24 @@ import { useState, useCallback, useMemo, memo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useCalculation } from "../../context/CalculationContext";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
+import {
   HardHat, Building2, Leaf, Zap, TrainFront, Coins, ArrowRight, ChevronLeft
 } from "lucide-react";
 
-import BatimentForm from "./batiment/forms/BatimentForm.jsx";
-import TPForm from "./tp/forms/TPForm.jsx";
-import EcoForm from "./eco/forms/EcoForm.jsx";
-import EnergieForm from "./energie/forms/EnergieForm.jsx";
+import BatimentForm    from "./batiment/forms/BatimentForm.jsx";
+import TPForm          from "./tp/forms/TPForm.jsx";
+import EcoForm         from "./eco/forms/EcoForm.jsx";
+import EnergieForm     from "./energie/forms/EnergieForm.jsx";
 import FerroviaireForm from "./ferroviaire/FerroviaireForm.jsx";
 
-// ✅ Transitions ultra-rapides
+// ─────────────────────────────────────────────
+// TRANSITIONS
+// ─────────────────────────────────────────────
 const fastTransition = { duration: 0.2, ease: "easeOut" };
 
-// ✅ Configuration avec images optimisées
+// ─────────────────────────────────────────────
+// CONFIG
+// ─────────────────────────────────────────────
 const projectConfig = {
   tp: {
     label: "Travaux Publics",
@@ -23,7 +27,7 @@ const projectConfig = {
     color: "from-orange-600 to-amber-700",
     bgImage: "https://images.unsplash.com/photo-1541888946425-d81bb19240f5?q=80&w=800&auto=format&fit=crop",
     desc: "Routes, infrastructures et génie civil",
-    details: "Terrassement, fondation, chaussée, ouvrages hydrauliques"
+    details: "Terrassement, fondation, chaussée, ouvrages hydrauliques",
   },
   batiment: {
     label: "Bâtiment",
@@ -31,7 +35,7 @@ const projectConfig = {
     color: "from-blue-600 to-indigo-700",
     bgImage: "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?q=80&w=800&auto=format&fit=crop",
     desc: "Structures résidentielles et commerciales",
-    details: "Béton, ferraillage, maçonnerie, finitions"
+    details: "Béton, ferraillage, maçonnerie, finitions",
   },
   eco: {
     label: "Écologique",
@@ -39,7 +43,7 @@ const projectConfig = {
     color: "from-green-600 to-emerald-700",
     bgImage: "https://images.unsplash.com/photo-1542601906990-b4d3fb7d5b73?q=80&w=800&auto=format&fit=crop",
     desc: "Impact environnemental et durabilité",
-    details: "Empreinte carbone, matériaux recyclés, économie d'énergie"
+    details: "Empreinte carbone, matériaux recyclés, économie d'énergie",
   },
   energie: {
     label: "Énergie",
@@ -47,7 +51,7 @@ const projectConfig = {
     color: "from-yellow-500 to-orange-600",
     bgImage: "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?q=80&w=800&auto=format&fit=crop",
     desc: "Solaire, éolien et réseaux électriques",
-    details: "Dimensionnement, puissance, rendement énergétique"
+    details: "Dimensionnement, puissance, rendement énergétique",
   },
   ferroviaire: {
     label: "Ferroviaire",
@@ -55,63 +59,69 @@ const projectConfig = {
     color: "from-red-600 to-rose-700",
     bgImage: "https://images.unsplash.com/photo-1474487548417-781cb71495f3?q=80&w=800&auto=format&fit=crop",
     desc: "Lignes de train et infrastructures",
-    details: "Voies, ballast, signalisation ferroviaire"
+    details: "Voies, ballast, signalisation ferroviaire",
   },
 };
 
 const currencies = [
   { value: "XOF", label: "CFA (XOF)", symbol: "FCFA" },
-  { value: "EUR", label: "Euro", symbol: "€" },
-  { value: "USD", label: "Dollar", symbol: "$" },
+  { value: "EUR", label: "Euro",      symbol: "€"    },
+  { value: "USD", label: "Dollar",    symbol: "$"    },
 ];
 
-// ✅ ProjectCard optimisée avec chargement d'image progressif
+// ─────────────────────────────────────────────
+// PROJECT CARD
+// ─────────────────────────────────────────────
 const ProjectCard = memo(({ projectKey, config, index, onSelect }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const Icon = config.icon;
-  
+
   return (
     <motion.div
-      initial={{ opacity: 0, y: 50 }}
+      initial={{ opacity: 0, y: 40 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.05, ...fastTransition }}
-      whileHover={{ y: -8, scale: 1.02 }}
+      whileHover={{ y: -6, scale: 1.02 }}
       className="group relative"
     >
-      <div 
-        className="relative h-[400px] rounded-3xl overflow-hidden border border-gray-700/50 shadow-2xl cursor-pointer"
+      <div
+        className="relative rounded-2xl overflow-hidden border border-gray-700/50 shadow-2xl cursor-pointer"
+        style={{ height: 220 }}
         onClick={() => onSelect(projectKey)}
       >
-        
-        {/* ✅ Gradient de fallback pendant le chargement */}
-        <div className={`absolute inset-0 bg-gradient-to-br ${config.color} transition-opacity duration-300 ${imageLoaded ? 'opacity-0' : 'opacity-100'}`} />
-        
-        {/* ✅ Image optimisée avec chargement lazy */}
+        {/* Fallback gradient */}
+        <div
+          className={`absolute inset-0 bg-gradient-to-br ${config.color} transition-opacity duration-300`}
+          style={{ opacity: imageLoaded ? 0 : 1 }}
+        />
+
+        {/* Image */}
         <img
           src={config.bgImage}
           alt=""
           loading="lazy"
           decoding="async"
           onLoad={() => setImageLoaded(true)}
-          className={`absolute inset-0 w-full h-full object-cover transition-all duration-700 group-hover:scale-110 ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
+          className="absolute inset-0 w-full h-full object-cover transition-all duration-700 group-hover:scale-110"
+          style={{ opacity: imageLoaded ? 1 : 0 }}
         />
-        
-        {/* Overlay */}
-        <div className="absolute inset-0 bg-black/40 group-hover:bg-black/50 transition-all duration-300" />
-        
-        <div className="absolute inset-0 flex flex-col justify-between p-8">
-          <div className="flex justify-between items-start">
-            <div className="p-4 bg-white/20 backdrop-blur-md rounded-2xl border border-white/30 group-hover:scale-110 group-hover:bg-white/30 transition-all duration-300 shadow-xl">
-              <Icon className="w-8 h-8 text-white" />
-            </div>
-            <ArrowRight className="w-6 h-6 text-white/80 group-hover:text-white group-hover:translate-x-2 transition-all duration-300" />
-          </div>
 
+        {/* Overlay */}
+        <div className="absolute inset-0 bg-black/45 group-hover:bg-black/55 transition-colors duration-300" />
+
+        {/* Content */}
+        <div className="absolute inset-0 flex flex-col justify-between p-5">
+          <div className="flex justify-between items-start">
+            <div className="p-3 bg-white/20 backdrop-blur-md rounded-xl border border-white/30 group-hover:scale-110 group-hover:bg-white/30 transition-all duration-300 shadow-xl">
+              <Icon className="w-6 h-6 text-white" />
+            </div>
+            <ArrowRight className="w-5 h-5 text-white/80 group-hover:text-white group-hover:translate-x-1 transition-all duration-300" />
+          </div>
           <div>
-            <h3 className="text-3xl font-bold text-white mb-2 group-hover:translate-x-2 transition-transform duration-300 drop-shadow-lg">
+            <h3 className="text-xl font-bold text-white mb-1 drop-shadow-lg group-hover:translate-x-1 transition-transform duration-300">
               {config.label}
             </h3>
-            <p className="text-white/90 text-sm mb-3 group-hover:translate-x-2 transition-transform duration-300 drop-shadow-md">
+            <p className="text-white/80 text-xs leading-relaxed drop-shadow-md group-hover:translate-x-1 transition-transform duration-300">
               {config.details}
             </p>
           </div>
@@ -120,182 +130,210 @@ const ProjectCard = memo(({ projectKey, config, index, onSelect }) => {
     </motion.div>
   );
 });
+ProjectCard.displayName = "ProjectCard";
 
-// ✅ SelectionPage mémorisée
-const SelectionPage = memo(({ currency, onCurrencyChange, onModeSelect }) => {
-  return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 text-white overflow-hidden pb-24">
-      
-      <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:64px_64px] opacity-50" />
-      
-      <div className="absolute top-20 left-20 w-96 h-96 bg-orange-500/20 rounded-full blur-[120px] animate-pulse" />
-      <div className="absolute bottom-20 right-20 w-96 h-96 bg-blue-500/20 rounded-full blur-[120px] animate-pulse" />
+// ─────────────────────────────────────────────
+// SELECTION PAGE
+// ✅ Vit dans le scroll interne — pas de fixed/min-h-screen
+// ─────────────────────────────────────────────
+const SelectionPage = memo(({ currency, onCurrencyChange, onModeSelect }) => (
+  <div
+    className="relative w-full text-white"
+    style={{
+      background: "linear-gradient(135deg, #111827 0%, #1f2937 50%, #111827 100%)",
+      minHeight: "100%",
+    }}
+  >
+    {/* Grille décorative */}
+    <div
+      className="absolute inset-0 pointer-events-none opacity-30"
+      style={{
+        backgroundImage:
+          "linear-gradient(to right, #80808012 1px, transparent 1px), linear-gradient(to bottom, #80808012 1px, transparent 1px)",
+        backgroundSize: "48px 48px",
+      }}
+    />
 
-      <div className="relative z-10 container mx-auto px-6 py-16">
-        
-        <motion.div 
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={fastTransition}
-          className="text-center mb-16"
-        >
-          <h1 className="text-6xl font-black tracking-tight mb-4 bg-gradient-to-r from-orange-400 via-amber-500 to-yellow-400 bg-clip-text text-transparent">
-            ChantiLink Calculs
+    {/* Halos */}
+    <div className="absolute top-16 left-8 w-64 h-64 rounded-full blur-[100px] pointer-events-none" style={{ background: "rgba(249,115,22,0.18)" }} />
+    <div className="absolute bottom-16 right-8 w-64 h-64 rounded-full blur-[100px] pointer-events-none" style={{ background: "rgba(59,130,246,0.15)" }} />
+
+    <div className="relative z-10 px-4 py-8 pb-10">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-8 gap-3">
+        <motion.div initial={{ opacity: 0, y: -12 }} animate={{ opacity: 1, y: 0 }} transition={fastTransition}>
+          <h1
+            className="text-3xl font-black tracking-tight"
+            style={{ background: "linear-gradient(90deg, #fb923c, #fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}
+          >
+            Calculs
           </h1>
-          <p className="text-xl text-gray-400 max-w-2xl mx-auto">
-            Choisissez votre type de projet pour accéder aux outils de calcul professionnels
-          </p>
+          <p className="text-gray-400 text-sm mt-1">Choisissez votre type de projet</p>
         </motion.div>
 
-        <motion.div 
-          initial={{ opacity: 0, x: 20 }}
+        {/* Sélecteur monnaie */}
+        <motion.div
+          initial={{ opacity: 0, x: 12 }}
           animate={{ opacity: 1, x: 0 }}
           transition={fastTransition}
-          className="absolute top-8 right-8 flex items-center gap-3 bg-gray-800/50 backdrop-blur-xl border border-gray-700/50 rounded-2xl px-6 py-3 z-20"
+          className="flex items-center gap-2 rounded-xl px-3 py-2 border flex-shrink-0"
+          style={{ background: "rgba(55,65,81,0.6)", borderColor: "rgba(75,85,99,0.5)", backdropFilter: "blur(8px)" }}
         >
-          <Coins className="w-5 h-5 text-orange-400" />
-          <select 
-            className="bg-transparent border-none text-white text-sm font-semibold focus:outline-none cursor-pointer"
+          <Coins className="w-4 h-4 text-orange-400" />
+          <select
+            className="bg-transparent border-none text-white text-xs font-semibold focus:outline-none cursor-pointer"
             value={currency}
             onChange={(e) => onCurrencyChange(e.target.value)}
           >
             {currencies.map((c) => (
               <option key={c.value} value={c.value} className="bg-gray-800">
-                {c.label} ({c.symbol})
+                {c.label}
               </option>
             ))}
           </select>
         </motion.div>
+      </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 max-w-7xl mx-auto">
-          {Object.entries(projectConfig).map(([key, config], index) => (
-            <ProjectCard 
-              key={key}
-              projectKey={key}
-              config={config}
-              index={index}
-              onSelect={onModeSelect}
-            />
-          ))}
-        </div>
+      {/* Grille de cards — 1 col mobile, 2 col tablet+ */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {Object.entries(projectConfig).map(([key, config], index) => (
+          <ProjectCard
+            key={key}
+            projectKey={key}
+            config={config}
+            index={index}
+            onSelect={onModeSelect}
+          />
+        ))}
       </div>
     </div>
-  );
-});
+  </div>
+));
+SelectionPage.displayName = "SelectionPage";
 
-// ✅ FormHeader mémorisé
+// ─────────────────────────────────────────────
+// FORM HEADER
+// ✅ sticky top-0 dans le scroll interne (pas fixed)
+// ─────────────────────────────────────────────
 const FormHeader = memo(({ theme, currency, onBack }) => {
   const Icon = theme.icon;
-  
+
   return (
-    <header className="sticky top-0 z-50 bg-gray-900/90 backdrop-blur-xl border-b border-gray-700/50 shadow-lg">
-      <div className="container mx-auto px-4 py-3 flex items-center justify-between">
-        
+    <header
+      className="sticky top-0 z-30 border-b"
+      style={{
+        background: "rgba(17,24,39,0.92)",
+        backdropFilter: "blur(16px)",
+        WebkitBackdropFilter: "blur(16px)",
+        borderColor: "rgba(75,85,99,0.4)",
+      }}
+    >
+      <div className="flex items-center justify-between px-3 py-2.5 gap-2">
         <button
           onClick={onBack}
-          className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-xl transition-all duration-200 group active:scale-95"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-semibold text-gray-200 transition-all duration-200 active:scale-95"
+          style={{ background: "rgba(55,65,81,0.8)", border: "0.5px solid rgba(75,85,99,0.6)" }}
         >
-          <ChevronLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform" />
-          <span className="font-semibold text-sm hidden sm:inline">Retour aux choix</span>
-          <span className="font-semibold text-sm sm:hidden">Retour</span>
+          <ChevronLeft className="w-4 h-4" />
+          <span className="hidden sm:inline">Retour</span>
         </button>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-1 justify-center">
           <div className={`p-1.5 rounded-lg bg-gradient-to-br ${theme.color} shadow-md`}>
-            <Icon className="w-5 h-5 text-white" />
+            <Icon className="w-4 h-4 text-white" />
           </div>
-          <h1 className="text-lg font-bold text-white hidden sm:block">{theme.label}</h1>
+          <span className="text-sm font-bold text-white">{theme.label}</span>
         </div>
 
-        <div className="flex items-center bg-gray-800/80 border border-gray-600 rounded-lg px-3 py-1.5">
-          <span className="text-xs font-bold text-orange-400 mr-2">{currency}</span>
-          <Coins className="w-4 h-4 text-gray-400" />
+        <div
+          className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5"
+          style={{ background: "rgba(55,65,81,0.8)", border: "0.5px solid rgba(75,85,99,0.6)" }}
+        >
+          <span className="text-xs font-bold text-orange-400">{currency}</span>
+          <Coins className="w-3.5 h-3.5 text-gray-400" />
         </div>
       </div>
     </header>
   );
 });
+FormHeader.displayName = "FormHeader";
 
-// ✅ BackgroundImage mémorisé avec chargement optimisé
-const BackgroundImage = memo(({ imageUrl }) => {
-  const [loaded, setLoaded] = useState(false);
-  
-  return (
-    <>
-      <div className={`fixed inset-0 z-0 bg-gray-900 transition-opacity duration-500 ${loaded ? 'opacity-0' : 'opacity-100'}`} />
-      <img
-        src={imageUrl}
-        alt=""
-        loading="eager"
-        onLoad={() => setLoaded(true)}
-        className={`fixed inset-0 z-0 w-full h-full object-cover opacity-20 pointer-events-none transition-opacity duration-500 ${loaded ? 'opacity-20' : 'opacity-0'}`}
-      />
-    </>
-  );
-});
-
+// ─────────────────────────────────────────────
+// CALCULS — COMPOSANT PRINCIPAL
+// ✅ h-full + overflow-y-auto interne
+//    Vit dans le <main> de App.jsx sans le casser
+// ─────────────────────────────────────────────
 export default function Calculs() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const mode = searchParams.get("mode");
+  const mode     = searchParams.get("mode");
   const [currency, setCurrency] = useState("XOF");
 
-  const {
-    loading = false,
-    clearMessages = () => {},
-  } = useCalculation() || {};
+  const { loading = false, clearMessages = () => {} } = useCalculation() || {};
 
   const handleModeChange = useCallback((newMode) => {
     setSearchParams({ mode: newMode });
-    if (typeof clearMessages === 'function') clearMessages();
+    if (typeof clearMessages === "function") clearMessages();
   }, [setSearchParams, clearMessages]);
 
   const handleBack = useCallback(() => {
     setSearchParams({});
-    if (typeof clearMessages === 'function') clearMessages();
+    if (typeof clearMessages === "function") clearMessages();
   }, [setSearchParams, clearMessages]);
 
-  const handleCurrencyChange = useCallback((newCurrency) => {
-    setCurrency(newCurrency);
-  }, []);
+  const handleCurrencyChange = useCallback((v) => setCurrency(v), []);
 
   const currentForm = useMemo(() => {
     switch (mode) {
-      case "tp": return <TPForm currency={currency} />;
-      case "batiment": return <BatimentForm currency={currency} />;
-      case "eco": return <EcoForm currency={currency} />;
-      case "energie": return <EnergieForm currency={currency} />;
+      case "tp":          return <TPForm          currency={currency} />;
+      case "batiment":    return <BatimentForm    currency={currency} />;
+      case "eco":         return <EcoForm         currency={currency} />;
+      case "energie":     return <EnergieForm     currency={currency} />;
       case "ferroviaire": return <FerroviaireForm currency={currency} />;
-      default: return null;
+      default:            return null;
     }
   }, [mode, currency]);
 
   const currentTheme = useMemo(() => projectConfig[mode], [mode]);
 
+  // ─── VUE SÉLECTION ────────────────────────
   if (!mode) {
     return (
-      <SelectionPage 
-        currency={currency}
-        onCurrencyChange={handleCurrencyChange}
-        onModeSelect={handleModeChange}
-      />
+      // ✅ h-full + overflow-y-auto : scroll interne, le <main> de App ne déborde pas
+      <div className="h-full overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+        <SelectionPage
+          currency={currency}
+          onCurrencyChange={handleCurrencyChange}
+          onModeSelect={handleModeChange}
+        />
+      </div>
     );
   }
 
+  // ─── VUE FORMULAIRE ───────────────────────
   return (
-    <div className="fixed inset-0 w-full h-full bg-gray-900 text-gray-200 overflow-y-auto">
-      
-      {/* ✅ Background avec image optimisée */}
-      <BackgroundImage imageUrl={currentTheme.bgImage} />
-      
-      <div className="relative z-10 min-h-screen flex flex-col">
-        
-        <FormHeader 
-          theme={currentTheme}
-          currency={currency}
-          onBack={handleBack}
-        />
+    // ✅ même pattern : h-full flex-col, scroll interne
+    <div
+      className="h-full flex flex-col overflow-y-auto"
+      style={{
+        WebkitOverflowScrolling: "touch",
+        background: "linear-gradient(135deg, #111827 0%, #1f2937 100%)",
+        position: "relative",
+      }}
+    >
+      {/* Background image fixe dans le conteneur scrollable */}
+      <img
+        src={currentTheme.bgImage}
+        alt=""
+        loading="eager"
+        className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+        style={{ opacity: 0.12, zIndex: 0 }}
+      />
 
-        <main className="flex-1 container mx-auto px-2 sm:px-4 py-6 relative">
+      {/* Contenu */}
+      <div className="relative z-10 flex flex-col min-h-full">
+        <FormHeader theme={currentTheme} currency={currency} onBack={handleBack} />
+
+        <main className="flex-1 px-2 sm:px-4 py-4 pb-6">
           <AnimatePresence mode="wait">
             <motion.div
               key={mode}
@@ -303,29 +341,27 @@ export default function Calculs() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
               transition={fastTransition}
-              className="pb-10"
             >
               {currentForm}
             </motion.div>
           </AnimatePresence>
         </main>
-
-        <AnimatePresence>
-          {loading && (
-            <motion.div 
-              initial={{ y: 100 }} 
-              animate={{ y: 0 }} 
-              exit={{ y: 100 }}
-              transition={fastTransition}
-              className="fixed bottom-6 right-6 bg-gray-900 border border-orange-500/50 text-white px-5 py-3 rounded-xl shadow-2xl z-[60] flex items-center gap-3"
-            >
-              <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
-              <span className="font-bold text-sm">Calcul...</span>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
       </div>
+
+      {/* Toast loading */}
+      <AnimatePresence>
+        {loading && (
+          <motion.div
+            initial={{ y: 80 }} animate={{ y: 0 }} exit={{ y: 80 }}
+            transition={fastTransition}
+            className="fixed bottom-20 right-4 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl shadow-2xl text-white text-sm font-bold"
+            style={{ background: "#111827", border: "0.5px solid rgba(249,115,22,0.5)" }}
+          >
+            <div className="w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+            Calcul…
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

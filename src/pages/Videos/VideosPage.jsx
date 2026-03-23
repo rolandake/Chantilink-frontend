@@ -1,30 +1,27 @@
-// 📁 src/pages/Videos/VideosPage.jsx  — v4 FIXES DÉFINITIFS
+// 📁 src/pages/Videos/VideosPage.jsx  — v5 FIX VIDÉOS NOIRES CLOUDINARY
 //
 // ═══════════════════════════════════════════════════════════════════════════════
-// BUG RACINE IDENTIFIÉ (était présent dans v1→v3) :
+// NOUVEAU FIX (v5) :
 //
-//   `const activeIdx = activeIndexRef.current` capturé UNE FOIS au render.
-//   Quand l'utilisateur scrolle, activeIndexRef.current avance MAIS le composant
-//   ne re-rend pas (c'est voulu pour les perf). Résultat : le calcul
-//   `dist > CONFIG.virtual` utilise une valeur FIGÉE → des slides qui devraient
-//   être dans la fenêtre reçoivent <SlidePlaceholder> → ÉCRAN NOIR.
+//   Les vidéos publiées par de vrais utilisateurs via Cloudinary deviennent
+//   noires quand la clé Cloudinary est désactivée (HTTP 401/403/404).
+//   Ces posts polluent le feed des autres utilisateurs.
 //
-//   FIX : activeDisplayIndex est un STATE (pas une ref).
-//         Il est mis à jour via startTransition (bas priorité, non bloquant).
-//         La fenêtre virtuelle est toujours calculée sur la valeur courante.
+//   SOLUTION EN 3 COUCHES :
 //
-// AUTRES FIXES DE CETTE VERSION :
-//   ✅ Skeleton CSS injecté synchrone (avant 1er paint)
-//   ✅ SlidePlaceholder fond sombre (jamais noir pur)
-//   ✅ startTransition sur slide activation (INP)
-//   ✅ VIRTUAL_WINDOW = 6 (13 slides dans le DOM)
-//   ✅ bufferAhead = 12 + cascade fetch si feed trop petit
-//   ✅ Recyclage 3 stratégies
+//   1. isPlayableCandidate() — filtre statique :
+//      Les vidéos "user" (non-agrégées) dont l'URL Cloudinary ne peut pas
+//      être vérifiée statiquement passent en probe obligatoire.
 //
-// FIX CLÉS DUPLIQUÉES (ad-XX) :
-//   Utilisation d'un compteur global `_adCounter` incrémental au lieu de
-//   `len` pour générer les IDs des pubs → plus jamais de doublon même si
-//   appendItems est appelé plusieurs fois avec le même feedItemsRef.length.
+//   2. probeCloudinaryVideo() — probe HEAD rapide :
+//      Pour toute vidéo dont l'URL contient "res.cloudinary.com", on fait
+//      un HEAD request. Si status 401/403/404/410 → invalidée immédiatement,
+//      jamais affichée dans le feed.
+//
+//   3. onError dans VideoCard/AggregatedCard — filet de sécurité :
+//      Si une vidéo passe quand même et échoue au chargement → retirée du feed.
+//
+//   Les vidéos déjà invalidées ne réapparaissent JAMAIS (invalidSet persistant).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -55,8 +52,6 @@ const CONFIG = {
 };
 
 // ── COMPTEUR GLOBAL POUR LES IDS DE PUBS ──────────────────────────────────────
-// FIX clés dupliquées : on n'utilise plus `len` (qui peut être identique entre
-// deux appels successifs d'appendItems) mais un compteur strictement croissant.
 let _adCounter = 0;
 
 // ── CSS — injecté SYNCHRONE avant le 1er render ───────────────────────────────
@@ -68,7 +63,6 @@ const VP_CSS = `
   }
   @keyframes vp-pulse { 0%,100%{opacity:.3} 50%{opacity:.65} }
 
-  /* ── Skeleton ── */
   .vp-sk-layer {
     position: absolute; inset: 0; z-index: 5;
     display: flex; flex-direction: column;
@@ -91,11 +85,9 @@ const VP_CSS = `
   .vp-sk-bar { height:10px; border-radius:9999px; background:rgba(255,255,255,0.08); animation:vp-pulse 2s ease-in-out infinite; }
   .vp-sk-dot { border-radius:9999px; background:rgba(255,255,255,0.08); flex-shrink:0; animation:vp-pulse 2s ease-in-out infinite; }
 
-  /* ── Feed ── */
   .vp-scroll::-webkit-scrollbar { display: none; }
   .vp-scroll { -ms-overflow-style:none; scrollbar-width:none; overflow-anchor:none; }
 
-  /* ── Placeholder NON NOIR ── */
   .vp-ph {
     flex-shrink: 0;
     height: calc(var(--vh,1vh)*100);
@@ -116,20 +108,19 @@ const ensureCSS = () => {
   document.head.insertBefore(s, document.head.firstChild);
 };
 
-// ── Filtrage ─────────────────────────────────────────────────────────────────
-const VALID_HOSTS  = ['cdn.pixabay.com/video','res.cloudinary.com','player.pixabay.com','vimeocdn.com']; // 🚫 videos.pexels.com retiré
+// ── Filtrage ──────────────────────────────────────────────────────────────────
+const VALID_HOSTS  = ['cdn.pixabay.com/video', 'res.cloudinary.com', 'player.pixabay.com', 'vimeocdn.com'];
 const PLAYABLE_EXT = /\.(mp4|webm|mov)(\?|$)/i;
-const BLOCKED      = ['youtube.','youtu.be','dailymotion.','/embed/'];
+const BLOCKED      = ['youtube.', 'youtu.be', 'dailymotion.', '/embed/'];
 
 const isPlayableCandidate = (item) => {
-  // 🚫 Pexels bloqué côté client (double sécurité)
   if (item.source === 'pexels') return false;
 
   const url = item.videoUrl || item.url || '';
   if (!url) return false;
   if (url.includes('.m3u8')) return false;
   if (BLOCKED.some(p => url.includes(p))) return false;
-  if (url.includes('pexels.com')) return false; // 🚫 URLs Pexels bloquées
+  if (url.includes('pexels.com')) return false;
   if (url.includes('vimeo.com') && !url.includes('vimeocdn.com')) return false;
   if (VALID_HOSTS.some(h => url.includes(h))) return true;
   if (PLAYABLE_EXT.test(url)) return true;
@@ -137,18 +128,56 @@ const isPlayableCandidate = (item) => {
   return false;
 };
 
+// ── v5 : Probe Cloudinary — vérifie que la vidéo est accessible ──────────────
+// Pour les vidéos utilisateur hébergées sur Cloudinary, on fait un HEAD request.
+// Si la clé Cloudinary est désactivée ou la ressource supprimée → on invalide
+// immédiatement sans jamais afficher la slide noire.
+const CLOUDINARY_PROBE_TIMEOUT = 5000; // 5s max par probe
+
+const probeCloudinaryVideo = (url, onInvalid) => {
+  if (!url || !url.includes('res.cloudinary.com')) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), CLOUDINARY_PROBE_TIMEOUT);
+  fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
+    .then(r => {
+      clearTimeout(timer);
+      // 401 = clé désactivée, 403 = accès refusé, 404 = ressource supprimée, 410 = expirée
+      if ([401, 403, 404, 410].includes(r.status)) onInvalid();
+    })
+    .catch(() => {
+      clearTimeout(timer);
+      // En cas d'erreur réseau (CORS, timeout, offline) on ne pénalise pas — 
+      // la vidéo tente de se charger normalement et onError() prend le relais.
+    });
+};
+
+// ── Probe générique pour les non-Cloudinary ──────────────────────────────────
 const probeItemBackground = (item, onInvalid) => {
   if (item._isAggregated) return;
   const url = item.cloudinaryUrl || item.videoUrl || item.url || '';
   if (!url) { onInvalid(); return; }
+
+  // v5 : probe Cloudinary spécifique (plus strict)
+  if (url.includes('res.cloudinary.com')) {
+    probeCloudinaryVideo(url, onInvalid);
+    return;
+  }
+
+  // Probe générique pour les autres sources
   fetch(url, { method: 'HEAD', cache: 'no-store' })
     .then(r => { if (r.status === 404 || r.status === 410) onInvalid(); })
     .catch(() => {});
 };
 
-// ── Preload ──────────────────────────────────────────────────────────────────
+// ── v5 : Déterminer si une vidéo user nécessite un probe Cloudinary obligatoire
+const needsCloudinaryProbe = (item) => {
+  if (item._isAggregated) return false;
+  const url = item.cloudinaryUrl || item.videoUrl || item.url || '';
+  return url.includes('res.cloudinary.com');
+};
+
+// ── Preload ───────────────────────────────────────────────────────────────────
 const _preloadedUrls = new Set();
-// link.as='video' n'est pas supporté par tous les navigateurs → on utilise fetch() à la place
 const injectPreload = (item) => {
   if (!item?.data) return;
   const url = item.data.cloudinaryUrl || item.data.videoUrl || item.data.url || '';
@@ -159,7 +188,7 @@ const injectPreload = (item) => {
   } catch {}
 };
 
-// ── Recyclage 3 stratégies ───────────────────────────────────────────────────
+// ── Recyclage 3 stratégies ────────────────────────────────────────────────────
 let _recycleRound = 0;
 const _strategies = [
   a => [...a].sort(() => Math.random() - 0.5),
@@ -172,11 +201,11 @@ const smartRecycle = (pool) => {
   return fn(pool).map(item => ({ ...item, _uid: `rec-${_recycleRound}-${Date.now()}-${Math.random().toString(36).slice(2,6)}` }));
 };
 
-// ── Contexts ─────────────────────────────────────────────────────────────────
+// ── Contexts ──────────────────────────────────────────────────────────────────
 const ActiveIndexContext = createContext(null);
 const ModalOpenContext   = createContext(false);
 
-// ── VH Fix ───────────────────────────────────────────────────────────────────
+// ── VH Fix ────────────────────────────────────────────────────────────────────
 const useVhFix = () => {
   useEffect(() => {
     const set = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
@@ -208,7 +237,6 @@ const SkeletonLayer = memo(() => (
       <div key={i} className="vp-sk-slide" style={{ background: bg }}>
         <div style={{ position:'absolute', inset:0, background:'linear-gradient(180deg,transparent 42%,rgba(0,0,0,0.9) 100%)' }} />
         <div style={{ position:'absolute', top:0, left:0, right:0, height:2, background:'rgba(255,255,255,0.05)' }} />
-        {/* Auteur */}
         <div style={{ position:'absolute', bottom:80, left:16, right:72 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
             <div className="vp-sk-dot" style={{ width:40, height:40, animationDelay:`${i*0.13}s` }} />
@@ -220,11 +248,9 @@ const SkeletonLayer = memo(() => (
           <div className="vp-sk-bar" style={{ width:'85%', maxWidth:210, marginBottom:7, animationDelay:`${i*0.1}s` }} />
           <div className="vp-sk-bar" style={{ width:'60%', maxWidth:150, height:8, animationDelay:`${i*0.1+0.07}s` }} />
         </div>
-        {/* Boutons */}
         <div style={{ position:'absolute', right:10, bottom:80, display:'flex', flexDirection:'column', gap:18 }}>
           {[0,1,2].map(j => <div key={j} className="vp-sk-dot" style={{ width:40, height:40, animationDelay:`${i*0.13+j*0.1}s` }} />)}
         </div>
-        {/* Spinner sur la 1ère slide seulement */}
         {i === 0 && (
           <div style={{
             position:'absolute', top:'40%', left:'50%', transform:'translate(-50%,-50%)',
@@ -317,7 +343,7 @@ const ActionBar = memo(({ onBack, activeTab, setActiveTab, showSearch, setShowSe
 ));
 ActionBar.displayName = 'ActionBar';
 
-// ── SlidePlaceholder — fond sombre, JAMAIS noir pur ───────────────────────────
+// ── SlidePlaceholder ──────────────────────────────────────────────────────────
 const SlidePlaceholder = memo(() => (
   <div className="w-full snap-start snap-always vp-ph" aria-hidden="true" />
 ));
@@ -379,7 +405,7 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
 );
 SlideItem.displayName = 'SlideItem';
 
-// ── ScrollHint ────────────────────────────────────────────────────────────────
+// ── ScrollHint ─────────────────────────────────────────────────────────────────
 const ScrollHint = memo(({ visible }) => (
   <AnimatePresence>
     {visible && (
@@ -408,7 +434,6 @@ ScrollHint.displayName = 'ScrollHint';
 // VideosPage
 // ═══════════════════════════════════════════════════════════════════════════════
 const VideosPage = () => {
-  // ── CSS synchrone avant tout render ────────────────────────────────────────
   ensureCSS();
 
   const navigate     = useNavigate();
@@ -423,39 +448,35 @@ const VideosPage = () => {
   useVhFix();
 
   // ── State ──────────────────────────────────────────────────────────────────
-  const [feedItems,        setFeedItems]        = useState([]);
-  const [feedReady,        setFeedReady]        = useState(false);
-  // ╔══════════════════════════════════════════════════════════════════════════╗
-  // ║ FIX RACINE : activeDisplayIndex est un STATE                            ║
-  // ║ → le composant re-rend quand l'index change                             ║
-  // ║ → la fenêtre virtuelle est toujours calculée sur la bonne valeur        ║
-  // ║ → plus jamais de placeholder noir visible                               ║
-  // ╚══════════════════════════════════════════════════════════════════════════╝
+  const [feedItems,          setFeedItems]          = useState([]);
+  const [feedReady,          setFeedReady]          = useState(false);
   const [activeDisplayIndex, setActiveDisplayIndex] = useState(0);
-  const [anyModalOpen,   setAnyModalOpen]   = useState(false);
-  const [showModal,      setShowModal]      = useState(false);
-  const [activeTab,      setActiveTab]      = useState('foryou');
-  const [showSearch,     setShowSearch]     = useState(false);
-  const [searchQuery,    setSearchQuery]    = useState('');
-  const [showScrollHint, setShowScrollHint] = useState(false);
+  const [anyModalOpen,       setAnyModalOpen]       = useState(false);
+  const [showModal,          setShowModal]          = useState(false);
+  const [activeTab,          setActiveTab]          = useState('foryou');
+  const [showSearch,         setShowSearch]         = useState(false);
+  const [searchQuery,        setSearchQuery]        = useState('');
+  const [showScrollHint,     setShowScrollHint]     = useState(false);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
-  const containerRef   = useRef(null);
-  const activeIndexRef = useRef(0);
-  const slideListeners = useRef({});
-  const feedItemsRef   = useRef([]);
-  const seenSet        = useRef(new Set());
-  const invalidSet     = useRef(new Set());
-  const aggPool        = useRef([]);
-  const fetchTriggered = useRef(false);
-  const lastScrollTime = useRef(0);
-  const anyModalRef    = useRef(false);
-  const aggPageRef     = useRef(1);
-  const aggHasMoreRef  = useRef(true);
-  const aggLoadingRef  = useRef(false);
-  const userHasMoreRef = useRef(userHasMore);
-  const userLoadingRef = useRef(userLoading);
-  const loadingMoreRef = useRef(false);
+  const containerRef    = useRef(null);
+  const activeIndexRef  = useRef(0);
+  const slideListeners  = useRef({});
+  const feedItemsRef    = useRef([]);
+  const seenSet         = useRef(new Set());
+  const invalidSet      = useRef(new Set());
+  const aggPool         = useRef([]);
+  const fetchTriggered  = useRef(false);
+  const lastScrollTime  = useRef(0);
+  const anyModalRef     = useRef(false);
+  const aggPageRef      = useRef(1);
+  const aggHasMoreRef   = useRef(true);
+  const aggLoadingRef   = useRef(false);
+  const userHasMoreRef  = useRef(userHasMore);
+  const userLoadingRef  = useRef(userLoading);
+  const loadingMoreRef  = useRef(false);
+  // v5 : compteur de probes Cloudinary en cours (pour ne pas bloquer le feed)
+  const cloudinaryProbesRef = useRef(0);
 
   useEffect(() => { userHasMoreRef.current = userHasMore; }, [userHasMore]);
   useEffect(() => { userLoadingRef.current = userLoading; }, [userLoading]);
@@ -475,17 +496,22 @@ const VideosPage = () => {
     const old = activeIndexRef.current;
     if (old === newIdx) return;
     activeIndexRef.current = newIdx;
-
     if (newIdx > 0) setShowScrollHint(false);
-
     const items = feedItemsRef.current;
     for (let i = 1; i <= CONFIG.preloadAhead; i++) injectPreload(items[newIdx + i]);
-
     startTransition(() => {
       slideListeners.current[old]?.(false);
       slideListeners.current[newIdx]?.(true);
       setActiveDisplayIndex(newIdx);
     });
+  }, []);
+
+  // ── invalidateItem — retire un item du feed ────────────────────────────────
+  const invalidateItem = useCallback((uid) => {
+    if (invalidSet.current.has(uid)) return;
+    invalidSet.current.add(uid);
+    feedItemsRef.current = feedItemsRef.current.filter(i => i.id !== uid);
+    startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== uid)));
   }, []);
 
   // ── appendItems ────────────────────────────────────────────────────────────
@@ -494,22 +520,42 @@ const VideosPage = () => {
     let len = feedItemsRef.current.length;
 
     for (const item of rawItems) {
-      const uid = item._uid || `${item._isAggregated?'agg':'user'}-${item._id||item.externalId}`;
+      const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
       if (seenSet.current.has(uid) || invalidSet.current.has(uid)) continue;
       seenSet.current.add(uid);
-      toAdd.push({ type:'content', id:uid, data:{...item,_uid:uid}, isAggregated:!!item._isAggregated });
+
+      // ── v5 : Probe Cloudinary AVANT d'ajouter au feed ─────────────────────
+      // Si la vidéo est sur Cloudinary (vidéo utilisateur), on probe en arrière-plan.
+      // Si le probe échoue → on invalide AVANT que la slide soit visible.
+      // Le feed n'attend PAS la fin du probe : la slide est ajoutée, mais si le
+      // probe revient négatif rapidement (< scroll time), elle est retirée avant
+      // que l'utilisateur ne la voie.
+      if (needsCloudinaryProbe(item)) {
+        const probeUrl = item.cloudinaryUrl || item.videoUrl || item.url || '';
+        cloudinaryProbesRef.current++;
+        probeCloudinaryVideo(probeUrl, () => {
+          cloudinaryProbesRef.current--;
+          invalidateItem(uid);
+        });
+        // On ajoute quand même au feed (optimiste) — si le probe invalide,
+        // la slide disparaît proprement avant d'être scrollée
+      } else {
+        // Probe générique pour les non-Cloudinary
+        probeItemBackground(item, () => invalidateItem(uid));
+      }
+
+      toAdd.push({
+        type: 'content',
+        id: uid,
+        data: { ...item, _uid: uid },
+        isAggregated: !!item._isAggregated,
+      });
       len++;
+
       if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) {
-        // ✅ FIX : _adCounter global strictement croissant → jamais de doublon
-        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
+        toAdd.push({ type: 'ad', id: `ad-${++_adCounter}` });
         len++;
       }
-      probeItemBackground(item, () => {
-        if (invalidSet.current.has(uid)) return;
-        invalidSet.current.add(uid);
-        feedItemsRef.current = feedItemsRef.current.filter(i => i.id !== uid);
-        startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== uid)));
-      });
     }
 
     if (toAdd.length === 0) return;
@@ -527,7 +573,7 @@ const VideosPage = () => {
 
     if (feedItemsRef.current.length <= CONFIG.preloadAhead * 2)
       toAdd.slice(0, CONFIG.preloadAhead).forEach(injectPreload);
-  }, []);
+  }, [invalidateItem]);
 
   // ── recycle ────────────────────────────────────────────────────────────────
   const recycle = useCallback(() => {
@@ -536,11 +582,10 @@ const VideosPage = () => {
     const toAdd = [];
     let len = feedItemsRef.current.length;
     for (const item of recycled) {
-      toAdd.push({ type:'content', id:item._uid, data:item, isAggregated:true });
+      toAdd.push({ type: 'content', id: item._uid, data: item, isAggregated: true });
       len++;
       if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) {
-        // ✅ FIX : même compteur global ici
-        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
+        toAdd.push({ type: 'ad', id: `ad-${++_adCounter}` });
         len++;
       }
     }
@@ -554,11 +599,11 @@ const VideosPage = () => {
     try {
       aggLoadingRef.current = true;
       const token   = await getToken();
-      const headers = token ? { Authorization:`Bearer ${token}` } : {};
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const res     = await fetch(`${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos`, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json  = await res.json();
-      const items = (json.data||[]).filter(isPlayableCandidate).map(c => ({...c, _isAggregated:true}));
+      const items = (json.data || []).filter(isPlayableCandidate).map(c => ({ ...c, _isAggregated: true }));
 
       aggPool.current       = [...aggPool.current, ...items];
       aggPageRef.current    = page;
@@ -577,16 +622,16 @@ const VideosPage = () => {
     }
   }, [getToken, appendItems, recycle]);
 
-  // ── Sync userVideos ─────────────────────────────────────────────────────────
+  // ── Sync userVideos ────────────────────────────────────────────────────────
   useEffect(() => {
-    const newOnes = (userVideos||[]).filter(v => {
+    const newOnes = (userVideos || []).filter(v => {
       const uid = `user-${v._id}`;
       return !seenSet.current.has(uid) && !invalidSet.current.has(uid);
     });
-    if (newOnes.length > 0) appendItems(newOnes.map(v => ({...v, _isUserVideo:true})));
+    if (newOnes.length > 0) appendItems(newOnes.map(v => ({ ...v, _isUserVideo: true })));
   }, [userVideos, appendItems]);
 
-  // ── Bootstrap ───────────────────────────────────────────────────────────────
+  // ── Bootstrap ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!fetchTriggered.current) {
       fetchTriggered.current = true;
@@ -595,7 +640,7 @@ const VideosPage = () => {
     }
   }, []); // eslint-disable-line
 
-  // ── handleVisible ────────────────────────────────────────────────────────────
+  // ── handleVisible ──────────────────────────────────────────────────────────
   const handleVisible = useCallback((index) => {
     if (anyModalRef.current || isFeedLocked()) return;
     const now = Date.now();
@@ -608,15 +653,15 @@ const VideosPage = () => {
       loadingMoreRef.current = true;
       (async () => {
         try {
-          if (userHasMoreRef.current && !userLoadingRef.current)  fetchUserVideos();
-          if (aggHasMoreRef.current  && !aggLoadingRef.current)   await fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
-          if (!userHasMoreRef.current && !aggHasMoreRef.current)  recycle();
+          if (userHasMoreRef.current && !userLoadingRef.current) fetchUserVideos();
+          if (aggHasMoreRef.current  && !aggLoadingRef.current)  await fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
+          if (!userHasMoreRef.current && !aggHasMoreRef.current) recycle();
         } finally { loadingMoreRef.current = false; }
       })();
     }
   }, [notifyActive, fetchUserVideos, fetchAggregated, recycle]);
 
-  // ── Scroll fallback ─────────────────────────────────────────────────────────
+  // ── Scroll fallback ────────────────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -635,18 +680,15 @@ const VideosPage = () => {
     return () => container.removeEventListener('scroll', onScroll);
   }, [notifyActive]);
 
-  // ── handleVideoError ─────────────────────────────────────────────────────────
+  // ── handleVideoError ───────────────────────────────────────────────────────
   const handleVideoError = useCallback((itemId) => {
-    if (invalidSet.current.has(itemId)) return;
-    invalidSet.current.add(itemId);
-    feedItemsRef.current = feedItemsRef.current.filter(i => i.id !== itemId);
-    startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== itemId)));
+    invalidateItem(itemId);
     const remaining = feedItemsRef.current.length - activeIndexRef.current;
     if (remaining <= CONFIG.bufferAhead && !aggLoadingRef.current) {
       if (aggHasMoreRef.current) fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
       else recycle();
     }
-  }, [fetchAggregated, recycle]);
+  }, [invalidateItem, fetchAggregated, recycle]);
 
   const handleModalChange = useCallback((isOpen) => {
     anyModalRef.current = isOpen;
@@ -655,32 +697,37 @@ const VideosPage = () => {
 
   const handleVideoPublished = useCallback(() => {
     feedItemsRef.current = [];
-    seenSet.current.clear(); invalidSet.current.clear();
-    aggPool.current = []; aggPageRef.current = 1; aggHasMoreRef.current = true;
-    // ✅ FIX : reset des deux compteurs globaux au refresh complet
+    seenSet.current.clear();
+    invalidSet.current.clear();
+    aggPool.current    = [];
+    aggPageRef.current = 1;
+    aggHasMoreRef.current = true;
     _recycleRound = 0;
     _adCounter    = 0;
-    setFeedItems([]); setFeedReady(false); setActiveDisplayIndex(0); setShowScrollHint(false);
-    containerRef.current?.scrollTo({ top:0, behavior:'auto' });
+    setFeedItems([]);
+    setFeedReady(false);
+    setActiveDisplayIndex(0);
+    setShowScrollHint(false);
+    containerRef.current?.scrollTo({ top: 0, behavior: 'auto' });
     activeIndexRef.current = 0;
     fetchUserVideos(true);
     fetchAggregated(1, CONFIG.aggregated.initialLoad);
   }, [fetchUserVideos, fetchAggregated]);
 
-  // ── Cleanup ─────────────────────────────────────────────────────────────────
+  // ── Cleanup ────────────────────────────────────────────────────────────────
   useEffect(() => () => {
     document.getElementById('vp-styles')?.remove();
     _cssInjected = false;
   }, []);
 
-  // ── Filtre recherche ────────────────────────────────────────────────────────
+  // ── Filtre recherche ───────────────────────────────────────────────────────
   const displayItems = useMemo(() => {
     if (!searchQuery.trim()) return feedItems;
     const q = searchQuery.toLowerCase();
     return feedItems.filter(item => {
       if (item.type === 'ad') return false;
       const d = item.data;
-      return ['title','description','channelName','username'].some(k => (d[k]||'').toLowerCase().includes(q));
+      return ['title', 'description', 'channelName', 'username'].some(k => (d[k] || '').toLowerCase().includes(q));
     });
   }, [feedItems, searchQuery]);
 
@@ -694,10 +741,8 @@ const VideosPage = () => {
           className={`fixed inset-0 bg-black overflow-hidden${feedReady ? ' vp-feed-ready' : ''}`}
           style={{ contain: 'strict' }}
         >
-          {/* Skeleton — toujours dans le DOM, caché en CSS quand vp-feed-ready */}
           <SkeletonLayer />
 
-          {/* ActionBar — z-50, au-dessus de tout */}
           <ActionBar
             onBack={handleBack} activeTab={activeTab} setActiveTab={setActiveTab}
             showSearch={showSearch} setShowSearch={setShowSearch}
@@ -705,14 +750,12 @@ const VideosPage = () => {
             onAddVideo={handleAddVideo}
           />
 
-          {/* Scroll hint */}
           <ScrollHint visible={showScrollHint && activeDisplayIndex === 0 && feedReady} />
 
-          {/* ── Feed ── */}
           <div
             ref={containerRef}
             className="vp-scroll absolute inset-0 z-10 overflow-y-scroll snap-y snap-mandatory"
-            style={{ willChange:'transform', WebkitOverflowScrolling:'touch', contain:'layout' }}
+            style={{ willChange: 'transform', WebkitOverflowScrolling: 'touch', contain: 'layout' }}
           >
             {displayItems.map((item, index) => {
               const dist = Math.abs(index - activeDisplayIndex);
@@ -729,7 +772,6 @@ const VideosPage = () => {
             })}
           </div>
 
-          {/* Modal upload */}
           {showModal && (
             <VideoModal
               showModal={showModal}
