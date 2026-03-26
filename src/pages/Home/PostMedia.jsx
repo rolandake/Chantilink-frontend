@@ -1,36 +1,34 @@
 // 📁 src/pages/Home/PostMedia.jsx
 //
-// ✅ GRID LAYOUT v20 — grille propre, jamais de case noire
+// ✅ GRID LAYOUT v22-VIDEO-PAUSE-ON-SCROLL
 //
-//  ✅ FIX v20 : useMediaValidation corrigé
-//     - safetyTimer augmenté à 5s (était 300ms) → les vidéos ont le temps d'être validées
-//     - Timeout image : 1s → si pas de réponse = invalide (exclu de la grille)
-//     - Timeout vidéo : 4s → si pas de métadonnées = invalide (exclu de la grille)
-//     - Médias invalides exclus proprement → grille toujours cohérente
-//     - Ex: 2 médias dont 1 défaillant → affiche 1/1 au lieu de 1 noir + 1 valide
+//  - Lightbox supprimée : aucun agrandissement au clic
+//  - onCellClick supprimé : les cellules ne sont plus cliquables
+//  - VideoItem : AbortController + debounce 80ms
+//  - VideoItem : src assigné au montage pour préchargement anticipé
+//  - VideoItem : timeout 4s annulé si isActive → false
+//  - VideoItem : canplay listener toujours retiré au cleanup
+//  - useMediaValidation inchangée (safetyTimer 5s, image 1s, vidéo 4s)
 //
-//  STRATÉGIE ANTI-RE-RENDER (inchangée) :
-//  1. isMutedMap → ref pure + manipulation DOM directe sur <video>
-//  2. Lightbox → état dans un ref + createPortal monté une seule fois
-//  3. toggleMuteRef.current → useCallback stable avec refs internes
-//  4. cell() → props calculées une seule fois par useMemo stable
-//  5. onCellClick → ref stable, jamais recréé
-//
-// ✅ Conserve : VideoManager global, Prebuffer, CORS Pexels, YouTube embed, Lightbox plein écran
+// ✅ FIX v22 — PAUSE AU SCROLL :
+//  - VideoItem n'utilise plus isActive={true} en dur
+//  - Chaque VideoItem possède son propre IntersectionObserver (threshold 0.5)
+//  - Quand la vidéo sort du viewport → pause automatique + currentTime reset
+//  - Quand elle revient → reprise automatique (si l'utilisateur n'a pas mis en pause manuellement)
+//  - userPausedRef : si l'utilisateur pause manuellement, on ne reprend PAS au scroll
 
 import React, {
   useState, useRef, useEffect, useCallback, useMemo
 } from "react";
-import { createPortal } from "react-dom";
-import { FaVolumeUp, FaVolumeMute, FaTimes, FaChevronLeft, FaChevronRight } from "react-icons/fa";
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
+const API_BASE  = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/api$/, '');
 
-// ─────────────────────────────────────────────
-// VIDEO MANAGER GLOBAL
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// VIDEO MANAGER GLOBAL — une seule vidéo joue à la fois
+// ─────────────────────────────────────────────────────────────────────────────
 let currentPlayingVideo = null;
 const registerPlayingVideo = (video) => {
   if (!video) return;
@@ -40,21 +38,9 @@ const registerPlayingVideo = (video) => {
   currentPlayingVideo = video;
 };
 
-// ─────────────────────────────────────────────
-// PREBUFFER VIDÉO GLOBAL
-// ─────────────────────────────────────────────
-const preloadedVideos = new Set();
-const preloadVideo = (src) => {
-  if (!src || preloadedVideos.has(src)) return;
-  if (!/\.(mp4|webm|mov|avi)/i.test(src.split('?')[0])) return;
-  const video = document.createElement("video");
-  video.src = src; video.preload = "auto"; video.muted = true;
-  preloadedVideos.add(src);
-};
-
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const isStructurallyValid = (url) => {
   if (!url || typeof url !== "string" || url.length < 10) return false;
   if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
@@ -93,8 +79,6 @@ const getYouTubeId = (url) => {
   const w = url.match(/youtube\.com\/watch\?(?:.*&)?v=([a-zA-Z0-9_-]{11})/); if (w) return w[1];
   return null;
 };
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
 const getVideoUrls = (url) => {
   if (!url) return { proxy: null, direct: null };
@@ -176,9 +160,9 @@ const resolveSlotType = (url, postMediaType = null) => {
   return 'image';
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // BADGE SOURCE
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const VideoSourceBadge = React.memo(({ url }) => {
   const info = useMemo(() => {
     if (isPexelsVideo(url))  return { label: 'Pexels',  bg: '#05A081' };
@@ -204,9 +188,9 @@ const VideoSourceBadge = React.memo(({ url }) => {
 });
 VideoSourceBadge.displayName = 'VideoSourceBadge';
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // EMBED ITEM
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
   const [showEmbed,    setShowEmbed]    = useState(false);
   const [thumbError,   setThumbError]   = useState(false);
@@ -289,9 +273,9 @@ const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
 });
 EmbedItem.displayName = 'EmbedItem';
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // HLS ITEM
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
   const [imgError, setImgError] = useState(false);
   const hasThumbnail = thumbnail && !imgError;
@@ -334,66 +318,174 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
 });
 HLSItem.displayName = 'HLSItem';
 
-// ─────────────────────────────────────────────
-// VIDEO ITEM
-// ✅ Mute/unmute → DOM direct + innerHTML → ZÉRO setState, ZÉRO re-render
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// VIDEO ITEM — pause automatique au scroll via IntersectionObserver
+//
+// ✅ FIX v22 : isActive n'est PLUS passé en dur à true depuis MediaCell.
+//   Le VideoItem gère lui-même sa visibilité via un IntersectionObserver interne.
+//   → threshold: 0.5 = la vidéo doit être visible à 50% pour jouer
+//   → Si l'utilisateur pause manuellement (userPausedRef=true), on ne reprend pas
+//   → currentTime reset à 0 quand la vidéo sort du viewport (comportement Instagram)
+// ─────────────────────────────────────────────────────────────────────────────
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
 
-const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, initialMuted = true,
+const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
   onRegisterVideoEl, slotIndex, showBadge = true }) => {
-
+  // ✅ v22 : plus de prop isActive — géré en interne via IntersectionObserver
   const videoRef      = useRef(null);
+  const containerRef  = useRef(null);
   const muteButtonRef = useRef(null);
   const videoUrls     = useMemo(() => getVideoUrls(url), [url]);
+  const abortRef      = useRef(null);
+  const debounceRef   = useRef(null);
+  const canplayRef    = useRef(null);
+  const timerRef      = useRef(null);
+  const srcSetRef     = useRef(false);
+  const isVisibleRef  = useRef(false);
+  const userPausedRef = useRef(false); // true si l'utilisateur a pausé manuellement
 
   const [currentSrc,    setCurrentSrc]    = useState(() => videoUrls.proxy || videoUrls.direct);
   const [videoError,    setVideoError]    = useState(false);
   const [posterVisible, setPosterVisible] = useState(true);
 
   const isMutedLocal   = useRef(initialMuted);
-  const playAttempted  = useRef(false);
-  const fallbackTimer  = useRef(null);
   const useCrossOrigin = useMemo(() => needsCrossOrigin(url), [url]);
   const preloadStrat   = useMemo(() => (isLCP || isExternalVideo(url)) ? 'auto' : 'metadata', [isLCP, url]);
-
-  useEffect(() => () => clearTimeout(fallbackTimer.current), []);
 
   const setVideoRef = useCallback((el) => {
     videoRef.current = el;
     onRegisterVideoEl?.(slotIndex, el);
   }, [onRegisterVideoEl, slotIndex]);
 
+  // ✅ Préchargement anticipé au montage
   useEffect(() => {
+    if (!currentSrc || srcSetRef.current) return;
     const vid = videoRef.current; if (!vid) return;
-    if (isActive) {
-      vid.muted = true; vid.volume = 0; isMutedLocal.current = true;
-      if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
-      setVideoError(false);
-      if (!playAttempted.current) { playAttempted.current = true; vid.play().catch(() => {}); }
-      fallbackTimer.current = setTimeout(() => {
-        if (vid?.paused) { vid.muted = true; vid.play().catch(() => {}); }
-      }, 1500);
-    } else {
-      clearTimeout(fallbackTimer.current);
-      playAttempted.current = false;
-      vid.pause(); vid.currentTime = 0;
-      setPosterVisible(true);
-    }
-    return () => clearTimeout(fallbackTimer.current);
-  }, [isActive]); // eslint-disable-line
+    srcSetRef.current = true;
+    vid.src     = currentSrc;
+    vid.muted   = true;
+    vid.volume  = 1;
+    vid.preload = preloadStrat;
+    if (isLCP) vid.load();
+  }, [currentSrc, preloadStrat, isLCP]);
 
+  // ✅ v22 : IntersectionObserver interne — gère play/pause selon visibilité
   useEffect(() => {
-    const vid = videoRef.current; if (!vid || !isActive) return;
-    const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting && e.intersectionRatio >= 0.1) {
-        playAttempted.current = false; vid.muted = true; vid.play().catch(() => {});
-      } else vid.pause();
-    }, { threshold: [0.1, 0.5] });
-    obs.observe(vid);
-    return () => obs.disconnect();
-  }, [isActive]);
+    const container = containerRef.current;
+    if (!container) return;
+
+    const obs = new IntersectionObserver(([entry]) => {
+      const visible = entry.isIntersecting;
+      isVisibleRef.current = visible;
+
+      if (visible) {
+        // Entré dans le viewport → jouer (sauf si l'utilisateur a pausé manuellement)
+        if (!userPausedRef.current) {
+          playVideo();
+        }
+      } else {
+        // Sorti du viewport → pause + reset
+        pauseVideo(true);
+      }
+    }, {
+      // threshold: 0.5 = au moins 50% visible pour déclencher la lecture
+      // rootMargin négatif pour être sûr que la vidéo est bien visible
+      threshold: 0.5,
+    });
+
+    obs.observe(container);
+    return () => {
+      obs.disconnect();
+      pauseVideo(false); // cleanup sans reset (le composant se démonte)
+    };
+  }, []); // eslint-disable-line
+
+  const playVideo = useCallback(() => {
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
+
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null;
+      const vid = videoRef.current; if (!vid) return;
+
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+
+      vid.muted  = true;
+      vid.volume = 1;
+      userPausedRef.current = false;
+
+      const doPlay = () => {
+        if (ctrl.signal.aborted) return;
+        if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+        registerPlayingVideo(vid);
+        const p = vid.play();
+        if (!p) return;
+        p.then(() => {
+          if (ctrl.signal.aborted) { vid.pause(); return; }
+          setPosterVisible(false);
+        }).catch(err => {
+          if (ctrl.signal.aborted || err.name === 'AbortError') return;
+          if (err.name !== 'NotAllowedError') {
+            setTimeout(() => {
+              if (ctrl.signal.aborted) return;
+              vid.play().catch(() => { vid.muted = true; });
+            }, 300);
+          }
+        });
+      };
+
+      if (vid.readyState >= 3) {
+        doPlay();
+      } else {
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null;
+          if (!ctrl.signal.aborted && vid.readyState < 1) setVideoError(true);
+        }, 4000);
+
+        if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
+        const onCan = () => {
+          vid.removeEventListener('canplay', onCan);
+          canplayRef.current = null;
+          if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+          doPlay();
+        };
+        canplayRef.current = onCan;
+        vid.addEventListener('canplay', onCan);
+      }
+    }, 80);
+  }, []);
+
+  const pauseVideo = useCallback((resetTime = false) => {
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const vid = videoRef.current;
+    if (vid) {
+      if (canplayRef.current) { vid.removeEventListener('canplay', canplayRef.current); canplayRef.current = null; }
+      vid.pause();
+      if (resetTime) {
+        // ✅ Reset à 0 quand hors viewport (comportement Instagram/TikTok)
+        vid.currentTime = 0;
+        setPosterVisible(true);
+      }
+      vid.muted = true;
+      vid.volume = 1;
+    }
+  }, []);
+
+  // Cleanup complet au démontage
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (timerRef.current)    clearTimeout(timerRef.current);
+      abortRef.current?.abort();
+      const vid = videoRef.current;
+      if (vid && canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
+    };
+  }, []); // eslint-disable-line
 
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
@@ -403,26 +495,43 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, initialMuted = 
     isMutedLocal.current = newMuted;
     if (muteButtonRef.current)
       muteButtonRef.current.innerHTML = newMuted ? ICON_MUTED : ICON_UNMUTED;
-    if (!newMuted && vid.paused)
+    if (!newMuted && vid.paused && isVisibleRef.current) {
+      userPausedRef.current = false;
       vid.play().catch(() => {
         vid.muted = true; vid.volume = 0; isMutedLocal.current = true;
         if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
       });
+    }
   }, []);
 
-  const handlePlay  = useCallback(() => { registerPlayingVideo(videoRef.current); setPosterVisible(false); }, []);
-  const handlePause = useCallback(() => {}, []);
+  // ✅ Si l'utilisateur clique sur pause/play natif, on le respecte
+  const handlePlay  = useCallback(() => {
+    registerPlayingVideo(videoRef.current);
+    setPosterVisible(false);
+    userPausedRef.current = false;
+  }, []);
+
+  const handlePause = useCallback(() => {
+    // Ne marquer userPaused que si la vidéo est encore dans le viewport
+    // (évite de marquer userPaused lors d'une pause déclenchée par scroll out)
+    if (isVisibleRef.current) {
+      userPausedRef.current = true;
+    }
+  }, []);
 
   const handleError = useCallback(() => {
     const { proxy, direct } = videoUrls;
     if (currentSrc === proxy && direct) {
       setCurrentSrc(direct);
       const v = videoRef.current;
-      if (v) { v.load(); if (isActive) v.play().catch(() => {}); }
+      if (v) {
+        v.src = direct; v.load();
+        if (isVisibleRef.current && !userPausedRef.current) v.play().catch(() => {});
+      }
       return;
     }
     setVideoError(true); setPosterVisible(false);
-  }, [videoUrls, currentSrc, isActive]);
+  }, [videoUrls, currentSrc]);
 
   if (videoError) return (
     <div style={{ position: 'absolute', inset: 0, background: '#111',
@@ -436,8 +545,9 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, initialMuted = 
   );
 
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
-      <video ref={setVideoRef} src={currentSrc}
+    // ✅ v22 : ref sur le container pour l'IntersectionObserver
+    <div ref={containerRef} style={{ position: 'absolute', inset: 0, background: '#000' }}>
+      <video ref={setVideoRef}
         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
         preload={preloadStrat} playsInline loop
         crossOrigin={useCrossOrigin ? 'anonymous' : undefined}
@@ -453,28 +563,27 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, isActive, initialMuted = 
 
       {showBadge && <VideoSourceBadge url={url} />}
 
-      {isActive && (
-        <button
-          ref={muteButtonRef}
-          onClick={handleMuteClick}
-          style={{
-            position: 'absolute', bottom: 8, right: 8, zIndex: 20,
-            width: 30, height: 30, borderRadius: '50%',
-            background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)',
-            color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent',
-          }}
-          dangerouslySetInnerHTML={{ __html: ICON_MUTED }}
-        />
-      )}
+      {/* Bouton mute — toujours visible sur les vidéos */}
+      <button
+        ref={muteButtonRef}
+        onClick={handleMuteClick}
+        style={{
+          position: 'absolute', bottom: 8, right: 8, zIndex: 20,
+          width: 30, height: 30, borderRadius: '50%',
+          background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)',
+          color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent',
+        }}
+        dangerouslySetInnerHTML={{ __html: ICON_MUTED }}
+      />
     </div>
   );
 });
 VideoItem.displayName = 'VideoItem';
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // IMAGE ITEM
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const ImageItem = React.memo(({ url, isLCP }) => {
   const [loaded, setLoaded] = useState(isLCP);
   return (
@@ -490,125 +599,9 @@ const ImageItem = React.memo(({ url, isLCP }) => {
 });
 ImageItem.displayName = 'ImageItem';
 
-// ─────────────────────────────────────────────
-// LIGHTBOX
-// ─────────────────────────────────────────────
-const Lightbox = React.memo(({ urls, slotTypes, posterUrls, post, controlRef }) => {
-  const [index,   setIndex]   = useState(0);
-  const [visible, setVisible] = useState(false);
-  const total = urls.length;
-
-  useEffect(() => {
-    controlRef.current = {
-      open:  (i) => { setIndex(i); setVisible(true);  document.body.style.overflow = 'hidden'; },
-      close: ()  => { setVisible(false);               document.body.style.overflow = ''; },
-    };
-    return () => { document.body.style.overflow = ''; };
-  }, [controlRef]);
-
-  useEffect(() => {
-    if (!visible) return;
-    const onKey = (e) => {
-      if (e.key === 'Escape')     controlRef.current?.close();
-      if (e.key === 'ArrowLeft')  setIndex(i => (i - 1 + total) % total);
-      if (e.key === 'ArrowRight') setIndex(i => (i + 1) % total);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [visible, total, controlRef]);
-
-  if (!visible) return null;
-
-  const url      = urls[index];
-  const slotType = slotTypes[index];
-  const poster   = posterUrls[index];
-  const embedThumbnail = post?.thumbnail || getYouTubeThumbnail(url);
-
-  return createPortal(
-    <div
-      style={{
-        position: 'fixed', inset: 0, zIndex: 9999,
-        background: 'rgba(0,0,0,0.96)',
-        display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        animation: 'lbFadeIn 0.18s ease',
-      }}
-      onClick={() => controlRef.current?.close()}
-    >
-      <style>{`@keyframes lbFadeIn{from{opacity:0;transform:scale(0.97)}to{opacity:1;transform:scale(1)}}`}</style>
-
-      <button onClick={(e) => { e.stopPropagation(); controlRef.current?.close(); }} style={{
-        position: 'absolute', top: 16, right: 16, zIndex: 10,
-        width: 40, height: 40, borderRadius: '50%',
-        background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)',
-        color: 'white', fontSize: 16, cursor: 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <FaTimes />
-      </button>
-
-      {total > 1 && (
-        <div style={{
-          position: 'absolute', top: 20, left: '50%', transform: 'translateX(-50%)',
-          color: 'rgba(255,255,255,0.65)', fontSize: 13, fontWeight: 600,
-          background: 'rgba(0,0,0,0.45)', padding: '3px 12px', borderRadius: 20,
-          pointerEvents: 'none',
-        }}>
-          {index + 1} / {total}
-        </div>
-      )}
-
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: '100vw', height: 'calc(100vh - 60px)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: '0 56px', boxSizing: 'border-box',
-        }}
-      >
-        {slotType === 'image' && (
-          <img src={url} alt=""
-            style={{ display: 'block', width: '100%', height: 'calc(100vh - 60px)', objectFit: 'contain', borderRadius: 8 }}
-            draggable="false" />
-        )}
-        {slotType !== 'image' && (
-          <div style={{ width: '100%', height: '100%', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ width: '100%', maxWidth: 'min(100%, calc((100vh - 60px) * 16 / 9))', aspectRatio: '16/9', position: 'relative', borderRadius: 10, overflow: 'hidden' }}>
-              {slotType === 'embed' && <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge />}
-              {slotType === 'hls'   && <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />}
-              {slotType === 'video' && <VideoItem url={url} posterUrl={poster} isLCP={false} isActive={true} initialMuted={true} onRegisterVideoEl={null} slotIndex={-1} showBadge />}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {total > 1 && (
-        <>
-          <button onClick={e => { e.stopPropagation(); setIndex(i => (i - 1 + total) % total); }}
-            style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', width: 44, height: 44, borderRadius: '50%', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'white', fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <FaChevronLeft />
-          </button>
-          <button onClick={e => { e.stopPropagation(); setIndex(i => (i + 1) % total); }}
-            style={{ position: 'absolute', right: 16, top: '50%', transform: 'translateY(-50%)', width: 44, height: 44, borderRadius: '50%', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.18)', color: 'white', fontSize: 18, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <FaChevronRight />
-          </button>
-          <div style={{ position: 'absolute', bottom: 16, display: 'flex', gap: 6, alignItems: 'center' }}>
-            {urls.map((_, i) => (
-              <button key={i} onClick={e => { e.stopPropagation(); setIndex(i); }}
-                style={{ width: i === index ? 10 : 7, height: i === index ? 10 : 7, borderRadius: '50%', background: i === index ? 'white' : 'rgba(255,255,255,0.35)', border: 'none', cursor: 'pointer', padding: 0, transition: 'all 0.2s' }} />
-            ))}
-          </div>
-        </>
-      )}
-    </div>,
-    document.body
-  );
-});
-Lightbox.displayName = 'Lightbox';
-
-// ─────────────────────────────────────────────
-// MEDIA CELL
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// MEDIA CELL — ✅ v22 : VideoItem sans prop isActive (géré en interne)
+// ─────────────────────────────────────────────────────────────────────────────
 const MediaCell = React.memo(({
   url, slotType, posterUrl, isLCP,
   onRegisterVideoEl, slotIndex,
@@ -616,25 +609,33 @@ const MediaCell = React.memo(({
   paddingBottom = '75%',
   overlay = null,
   wrapperStyle = {},
-  onCellClick,
 }) => {
   const embedThumbnail = useMemo(() => post?.thumbnail || getYouTubeThumbnail(url), [post?.thumbnail, url]);
-  const handleClick = useCallback(() => { onCellClick?.(slotIndex); }, [onCellClick, slotIndex]);
 
   return (
-    <div style={{ position: 'relative', paddingBottom, overflow: 'hidden', background: '#111', cursor: 'pointer', ...wrapperStyle }} onClick={handleClick}>
+    <div style={{ position: 'relative', paddingBottom, overflow: 'hidden', background: '#111', ...wrapperStyle }}>
       <div style={{ position: 'absolute', inset: 0 }}>
         {slotType === 'embed' ? (
           <EmbedItem url={url} thumbnail={embedThumbnail} title={post?.content?.substring(0, 60)} showBadge={showBadge} />
         ) : slotType === 'hls' ? (
           <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
         ) : slotType === 'video' ? (
-          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} isActive={true} initialMuted={true} onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge} />
+          // ✅ v22 : isActive supprimé — le VideoItem gère sa propre visibilité
+          <VideoItem
+            url={url}
+            posterUrl={posterUrl}
+            isLCP={isLCP}
+            initialMuted={true}
+            onRegisterVideoEl={onRegisterVideoEl}
+            slotIndex={slotIndex}
+            showBadge={showBadge}
+          />
         ) : (
           <ImageItem url={url} isLCP={isLCP} />
         )}
         {overlay && (
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
             <span style={{ color: 'white', fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{overlay}</span>
           </div>
         )}
@@ -644,9 +645,9 @@ const MediaCell = React.memo(({
 });
 MediaCell.displayName = 'MediaCell';
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // HOOK — ratio naturel image/vidéo
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const MAX_PB = 177;
 
 const useNaturalRatio = (url, slotType, fallbackPb) => {
@@ -655,7 +656,12 @@ const useNaturalRatio = (url, slotType, fallbackPb) => {
     if (!url || slotType === 'embed' || slotType === 'hls') { setPb(fallbackPb); return; }
     if (slotType === 'image') {
       const img = new Image();
-      img.onload  = () => { const r = img.naturalWidth && img.naturalHeight ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); };
+      img.onload  = () => {
+        const r = img.naturalWidth && img.naturalHeight
+          ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB)
+          : parseFloat(fallbackPb);
+        setPb(`${r}%`);
+      };
       img.onerror = () => setPb(fallbackPb);
       img.src = url; return;
     }
@@ -663,7 +669,12 @@ const useNaturalRatio = (url, slotType, fallbackPb) => {
       const vid = document.createElement('video');
       vid.muted = true; vid.preload = 'metadata';
       const cleanup = () => { vid.onloadedmetadata = null; vid.onerror = null; vid.src = ''; };
-      vid.onloadedmetadata = () => { const r = vid.videoWidth && vid.videoHeight ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); cleanup(); };
+      vid.onloadedmetadata = () => {
+        const r = vid.videoWidth && vid.videoHeight
+          ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB)
+          : parseFloat(fallbackPb);
+        setPb(`${r}%`); cleanup();
+      };
       vid.onerror = () => { setPb(fallbackPb); cleanup(); };
       vid.src = url;
     }
@@ -680,21 +691,9 @@ const MediaCellAuto = React.memo((props) => {
 });
 MediaCellAuto.displayName = 'MediaCellAuto';
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // HOOK — validation des URLs media
-//
-// ✅ FIX v20 : grille propre, jamais de case noire
-//
-//  CHANGEMENTS vs v19 :
-//  - Image  : timeout 1s  → si pas chargée en 1s  = invalide (exclue)
-//  - Vidéo  : timeout 4s  → si pas de métadonnées = invalide (exclue)
-//  - Safety : timeout 5s  → fallback si tout prend trop longtemps
-//
-//  Résultat :
-//  - 2 médias dont 1 défaillant → grille 1/1 propre (plus de case noire)
-//  - Tous valides → grille normale
-//  - Placeholder gris pendant la validation
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const useMediaValidation = (urls, slotTypes) => {
   const [validIndices, setValidIndices] = useState(null);
 
@@ -704,24 +703,18 @@ const useMediaValidation = (urls, slotTypes) => {
     let cancelled = false;
     setValidIndices(null);
 
-    // Safety timer : si tout prend trop longtemps → affiche quand même
     const safetyTimer = setTimeout(() => {
       if (!cancelled) setValidIndices(urls.map((_, i) => i));
     }, 5000);
 
     const checks = urls.map((url, i) => {
       const type = slotTypes[i];
-
-      // Embeds et HLS → toujours valides (pas de probe réseau)
       if (type === 'embed' || type === 'hls') return Promise.resolve({ i, ok: true });
-
-      // blob / data → valide si non vide
       if (!url || url.startsWith('blob:') || url.startsWith('data:')) return Promise.resolve({ i, ok: !!url });
 
       if (type === 'image') {
         return new Promise((resolve) => {
           const img = new Image();
-          // ✅ 1s : si l'image ne charge pas en 1s → invalide (case noire évitée)
           const timer = setTimeout(() => resolve({ i, ok: false }), 1000);
           img.onload  = () => { clearTimeout(timer); resolve({ i, ok: true });  };
           img.onerror = () => { clearTimeout(timer); resolve({ i, ok: false }); };
@@ -731,7 +724,6 @@ const useMediaValidation = (urls, slotTypes) => {
 
       if (type === 'video') {
         return new Promise((resolve) => {
-          // ✅ 4s : si pas de métadonnées vidéo en 4s → invalide
           const timer = setTimeout(() => resolve({ i, ok: false }), 4000);
           const vid = document.createElement('video');
           vid.muted = true; vid.preload = 'metadata';
@@ -747,8 +739,7 @@ const useMediaValidation = (urls, slotTypes) => {
     Promise.all(checks).then((results) => {
       if (cancelled) return;
       clearTimeout(safetyTimer);
-      const valid = results.filter(r => r.ok).map(r => r.i);
-      setValidIndices(valid);
+      setValidIndices(results.filter(r => r.ok).map(r => r.i));
     });
 
     return () => { cancelled = true; clearTimeout(safetyTimer); };
@@ -757,33 +748,38 @@ const useMediaValidation = (urls, slotTypes) => {
   return validIndices;
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // MEDIA PLACEHOLDER
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const MediaPlaceholder = React.memo(({ total }) => {
   const pb = total === 1 ? '75%' : total === 2 ? '50%' : '66%';
   return (
-    <div style={{ width: '100%', paddingBottom: pb, background: 'linear-gradient(135deg, #1a1a1a 0%, #222 100%)', borderRadius: 4, position: 'relative', overflow: 'hidden' }}>
-      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%)', backgroundSize: '200% 100%', animation: 'mediaShimmer 1.4s ease-in-out infinite' }} />
+    <div style={{ width: '100%', paddingBottom: pb,
+      background: 'linear-gradient(135deg, #1a1a1a 0%, #222 100%)',
+      borderRadius: 4, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', inset: 0,
+        background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%)',
+        backgroundSize: '200% 100%', animation: 'mediaShimmer 1.4s ease-in-out infinite' }} />
       <style>{`@keyframes mediaShimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}`}</style>
     </div>
   );
 });
 MediaPlaceholder.displayName = 'MediaPlaceholder';
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // POST MEDIA — composant principal
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const GAP = 2;
 
 const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
   const autoGenerated = !!post?.autoGenerated;
   const showBadge     = !autoGenerated;
 
-  const lightboxControl   = useRef({});
-  const handleCellClick   = useCallback((i) => { lightboxControl.current.open?.(i); }, []);
   const videoRefsMap      = useRef({});
-  const onRegisterVideoEl = useCallback((i, el) => { if (el) videoRefsMap.current[i] = el; else delete videoRefsMap.current[i]; }, []);
+  const onRegisterVideoEl = useCallback((i, el) => {
+    if (el) videoRefsMap.current[i] = el;
+    else delete videoRefsMap.current[i];
+  }, []);
 
   const safeMediaUrls = useMemo(() => {
     const seen = new Set(); const result = [];
@@ -802,9 +798,9 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   const isLCPSlot = isFirstPost || priority;
 
-  const urls      = useMemo(() => safeMediaUrls.map((url, i) => getOptimizedUrl(url, isLCPSlot && i === 0)), [safeMediaUrls, isLCPSlot]);
-  const slotTypes = useMemo(() => urls.map((url, i) => resolveSlotType(url, i === 0 ? post?.mediaType : null)), [urls, post?.mediaType]);
-  const posterUrls= useMemo(() => urls.map((url, i) => slotTypes[i] === 'video' ? getVideoPosterUrl(url, post) : null), [urls, slotTypes, post]);
+  const urls       = useMemo(() => safeMediaUrls.map((url, i) => getOptimizedUrl(url, isLCPSlot && i === 0)), [safeMediaUrls, isLCPSlot]);
+  const slotTypes  = useMemo(() => urls.map((url, i) => resolveSlotType(url, i === 0 ? post?.mediaType : null)), [urls, post?.mediaType]);
+  const posterUrls = useMemo(() => urls.map((url, i) => slotTypes[i] === 'video' ? getVideoPosterUrl(url, post) : null), [urls, slotTypes, post]);
 
   const total        = urls.length;
   const validIndices = useMediaValidation(urls, slotTypes);
@@ -823,67 +819,58 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     slotIndex:        i,
     showBadge,
     post,
-    onCellClick:      handleCellClick,
     ...extra,
-  }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, handleCellClick]); // eslint-disable-line
+  }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post]); // eslint-disable-line
 
   if (!total) return null;
   if (validIndices === null) return <MediaPlaceholder total={total} />;
   if (validTotal === 0) return null;
 
-  const renderGrid = () => {
-    if (validTotal === 1) return <MediaCellAuto key="c0" {...cellProps(0)} />;
-    if (validTotal === 2) return (
+  if (validTotal === 1) return <MediaCellAuto key="c0" {...cellProps(0)} />;
+  if (validTotal === 2) return (
+    <div style={{ display: 'flex', gap: GAP }}>
+      <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+      <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+    </div>
+  );
+  if (validTotal === 3) return (
+    <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
+      <MediaCell key="c0" {...cellProps(0)} paddingBottom="133%" wrapperStyle={{ flex: 2 }} />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
+        <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" />
+        <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" />
+      </div>
+    </div>
+  );
+  if (validTotal === 4) return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
       <div style={{ display: 'flex', gap: GAP }}>
         <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
         <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
       </div>
-    );
-    if (validTotal === 3) return (
-      <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
-        <MediaCell key="c0" {...cellProps(0)} paddingBottom="133%" wrapperStyle={{ flex: 2 }} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
-          <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" />
-          <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" />
-        </div>
+      <div style={{ display: 'flex', gap: GAP }}>
+        <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+        <MediaCell key="c3" {...cellProps(3)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
       </div>
-    );
-    if (validTotal === 4) return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
-        <div style={{ display: 'flex', gap: GAP }}>
-          <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-          <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-        </div>
-        <div style={{ display: 'flex', gap: GAP }}>
-          <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-          <MediaCell key="c3" {...cellProps(3)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-        </div>
-      </div>
-    );
-    const hidden  = validTotal - 5;
-    const overlay = hidden > 0 ? `+${hidden}` : null;
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
-        <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
-          <MediaCell key="c0" {...cellProps(0)} paddingBottom="75%" wrapperStyle={{ flex: 2 }} />
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
-            <MediaCell key="c1" {...cellProps(1)} paddingBottom="75%" />
-            <MediaCell key="c2" {...cellProps(2)} paddingBottom="75%" />
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: GAP }}>
-          <MediaCell key="c3" {...cellProps(3)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} />
-          <MediaCell key="c4" {...cellProps(4)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} overlay={overlay} />
-        </div>
-      </div>
-    );
-  };
+    </div>
+  );
 
+  const hidden  = validTotal - 5;
+  const overlay = hidden > 0 ? `+${hidden}` : null;
   return (
-    <>
-      {renderGrid()}
-      <Lightbox urls={validUrls} slotTypes={validSlotTypes} posterUrls={validPosters} post={post} controlRef={lightboxControl} />
-    </>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+      <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
+        <MediaCell key="c0" {...cellProps(0)} paddingBottom="75%" wrapperStyle={{ flex: 2 }} />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
+          <MediaCell key="c1" {...cellProps(1)} paddingBottom="75%" />
+          <MediaCell key="c2" {...cellProps(2)} paddingBottom="75%" />
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: GAP }}>
+        <MediaCell key="c3" {...cellProps(3)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} />
+        <MediaCell key="c4" {...cellProps(4)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} overlay={overlay} />
+      </div>
+    </div>
   );
 });
 

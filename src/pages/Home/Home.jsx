@@ -1,24 +1,58 @@
-// 📁 src/pages/Home/Home.jsx — v10 FIX SCROLL INFINI DÉFINITIF
+// 📁 src/pages/Home/Home.jsx — v13 FEED SCORING NIVEAU MONDIAL
 //
 // ══════════════════════════════════════════════════════════════════════════════
-// CAUSE RACINE DU BUG (identifiée v9→v10) :
+// PROBLÈMES v12 → v13 :
 //
-//   Dans Feed, le scroll listener capturait scrollEl via :
-//     sentinelRef.current?.closest("[data-scroll-container]") || window
+//   v12 utilisait un score heuristique plat (scorePost 0-100) + BehaviorTracker
+//   basé sur des boosts manuels. Aucun apprentissage vectoriel, pas de multi-
+//   objectifs, pas de détection de saturation, pas de correction de biais de
+//   position, pas de budget d'exploration.
 //
-//   Si sentinelRef.current est null au mount (posts pas encore chargés),
-//   l'écoute tombe sur `window`. Mais le vrai scroll se passe sur le div
-//   interne [data-scroll-container], pas sur window.
-//   → Après la première boucle, plus aucun scroll event ne déclenche loadMore.
-//   → Seul l'IO reste, mais si le sentinel sort de la rootMargin il ne refire pas.
-//   → L'utilisateur se retrouve bloqué.
+// NOUVEAUTÉS v13 (architecture niveau TikTok/Instagram/YouTube) :
 //
-// FIX v10 :
-//   ✅ scrollContainerRef passé de Home → Feed (ref directe, jamais null)
-//   ✅ scrollEl capturé via ce ref, pas via DOM traversal depuis le sentinel
-//   ✅ IO du sentinel utilise aussi scrollContainerRef comme root
-//   ✅ loadMore sécurisé : loadingRef débloqué dans un microtask APRÈS commit React
-//   ✅ Toutes les corrections v9 conservées (seed rotate, anchor, fix 1-3)
+//   ✅ SCORE H : UserEmbedding — vecteur 32d appris par gradient descent léger.
+//               Mis à jour à chaque interaction. Persiste en localStorage.
+//               Calcule une similarité cosinus user↔post.
+//
+//   ✅ SCORE I : MultiObjective — prédit N probabilités distinctes :
+//               P(like), P(comment), P(share), P(watch≥30s), P(hide).
+//               Combinaison pondérée avec poids configurables.
+//               Pénalise ce que l'utilisateur veut éviter (pHide négatif).
+//
+//   ✅ SCORE J : VelocityScore — mesure le momentum d'un post.
+//               1000 likes en 30min > 10000 likes en 7 jours.
+//               Prédit le contenu viral avant qu'il le devienne.
+//
+//   ✅ SCORE K : SocialGraphBoost — amplifie les posts aimés par les personnes
+//               que l'utilisateur suit. Confiance sociale.
+//
+//   ✅ SCORE L : ExplorationBudget (ε-greedy) — réserve 10% du feed à
+//               l'exploration aléatoire. Évite les filter bubbles.
+//               Posts exploratoires marqués _isExplore: true.
+//
+//   ✅ SCORE M : FatigueDetector — fenêtre glissante de 20 posts.
+//               Détecte la saturation par topic/auteur.
+//               Pénalité jusqu'à -25 pts si l'utilisateur est saturé.
+//
+//   ✅ SCORE N : PositionBiasCorrection — corrige le biais de position
+//               via Inverse Propensity Scoring (IPS).
+//               Un like en position 1 compte moins qu'un like en position 8.
+//
+//   ✅ smartBuildFeed_v13 — combine H+I+J+K+L+M pondérés :
+//               behavioral*0.30 + multiObjective*0.25 + velocity*0.20
+//               + social*0.15 + base*0.10 + fatigueP (négatif).
+//               Puis ExplorationBudget → DiversityGuard → injection bots.
+//
+//   ✅ Embedding update en temps réel — chaque interaction (like/comment/share/
+//               hide/dwell/skip) met à jour le vecteur utilisateur par gradient
+//               descent (lr=0.01). Le feed s'améliore dès la 1ère session.
+//
+//   ✅ _displayPosition tracking — chaque post connaît sa position d'affichage
+//               pour la correction IPS. Utilisé dans les callbacks d'interaction.
+//
+//   ✅ Conserve : toutes les corrections v11 + v12 (seenPostIds, pagination
+//                 proactive, spinner, AbortController, pull-to-refresh, fallback
+//                 posts, BehaviorTracker, DiversityGuard, dwell time, etc.)
 // ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -61,7 +95,11 @@ const MOCK_CONFIG           = DEFAULT_MOCK_CONFIG;
 
 const PAGE_SIZE     = 15;
 const MAX_DOM_POSTS = typeof window !== "undefined" && window.innerWidth < 768 ? 40 : 80;
-const MAX_POOL      = 300;
+const MAX_POOL      = 500;
+
+// ── Seuils pagination proactive ───────────────────────────────────────────────
+const FRESH_POOL_THRESHOLD   = 10;
+const MIN_UNSEEN_BEFORE_LOOP = 3;
 
 const SUGGEST_ACCOUNTS_EVERY = 5;
 const SUGGEST_PROFILE_EVERY  = 7;
@@ -91,7 +129,566 @@ const URGENT_THRESHOLD   = 0.90;
 const SILENT_COOLDOWN_MS = 8_000;
 const SCROLL_IDLE_MS     = 2000;
 
-// ── Prefetch ──────────────────────────────────────────────────────────────────
+// ── v13 : taux d'exploration ε-greedy ─────────────────────────────────────────
+const EXPLORATION_RATE = 0.10; // 10% du feed = découverte
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE A : scorePost — heuristique de base 0-100 (inchangé v12)
+// ══════════════════════════════════════════════════════════════════════════════
+const scorePost = (post, now = Date.now()) => {
+  let score = 0;
+
+  // 1. Fraîcheur (0-35 pts)
+  const age = now - new Date(post.createdAt || post.date || post.publishedAt || 0).getTime();
+  const ageH = age / 3_600_000;
+  if      (ageH <  1) score += 35;
+  else if (ageH <  6) score += 30 - (ageH / 6) * 5;
+  else if (ageH < 24) score += 25 - (ageH / 24) * 10;
+  else if (ageH < 72) score += 15 - (ageH / 72) * 10;
+  else                score += Math.max(0, 5 - ageH / 720);
+
+  // 2. Engagement brut (0-30 pts)
+  const likes    = post.likesCount    || post.likes?.length    || post.reactions?.total || 0;
+  const comments = post.commentsCount || post.comments?.length || 0;
+  const shares   = post.sharesCount   || post.shares           || 0;
+  const saves    = post.savesCount    || post.bookmarks        || 0;
+  const engagementRaw = likes + comments * 3 + shares * 5 + saves * 2;
+  score += Math.min(30, Math.log1p(engagementRaw) * 5);
+
+  // 3. Taux d'engagement relatif (0-15 pts)
+  const followers = post.user?.followersCount || post.author?.followersCount || 1;
+  const engagementRate = engagementRaw / Math.max(followers, 1);
+  score += Math.min(15, engagementRate * 1000);
+
+  // 4. Qualité du contenu (0-10 pts)
+  const hasVideo  = !!(post.videoUrl || post.embedUrl || (Array.isArray(post.media) && post.media.some(m => /\.(mp4|webm)/i.test(m?.url || m || ""))));
+  const hasImage  = !!(Array.isArray(post.images) ? post.images.length : post.images) || !!(Array.isArray(post.media) ? post.media.length : false);
+  const hasText   = (post.content || post.contenu || "").length > 50;
+  const hasMulti  = (Array.isArray(post.images) ? post.images.length : 0) > 1 || (Array.isArray(post.media) ? post.media.length : 0) > 1;
+  if (hasVideo) score += 10;
+  else if (hasMulti) score += 7;
+  else if (hasImage) score += 5;
+  else if (hasText) score += 3;
+
+  // 5. Boost vérification (0-5 pts)
+  if (post.user?.isVerified || post.author?.isVerified) score += 5;
+  else if (followers > 10000) score += 3;
+  else if (followers > 1000)  score += 1;
+
+  // 6. Pénalités
+  if (post.isBot || post.user?.isBot) score -= 5;
+  if (post._isMock || post.isMockPost) score -= 3;
+  if (post._fromFallback) score -= 1;
+
+  return Math.max(0, Math.min(100, score));
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE B : BehaviorTracker (v12 conservé + correction IPS v13)
+// ══════════════════════════════════════════════════════════════════════════════
+const BEHAVIOR_KEY = "feed_behavior_v1";
+const BEHAVIOR_TTL = 7 * 24 * 60 * 60 * 1000;
+
+const loadBehavior = () => {
+  try {
+    const raw = sessionStorage.getItem(BEHAVIOR_KEY) || localStorage.getItem(BEHAVIOR_KEY);
+    if (!raw) return { authorBoosts: {}, categoryBoosts: {}, typeBoosts: {}, postSignals: {}, ts: Date.now() };
+    const data = JSON.parse(raw);
+    if (Date.now() - data.ts > BEHAVIOR_TTL) return { authorBoosts: {}, categoryBoosts: {}, typeBoosts: {}, postSignals: {}, ts: Date.now() };
+    return data;
+  } catch { return { authorBoosts: {}, categoryBoosts: {}, typeBoosts: {}, postSignals: {}, ts: Date.now() }; }
+};
+
+const saveBehavior = (behavior) => {
+  try { localStorage.setItem(BEHAVIOR_KEY, JSON.stringify({ ...behavior, ts: Date.now() })); } catch {}
+};
+
+// ── v13 : Propension par position (IPS correction) ────────────────────────────
+// Un clic en position 0 est trivial (propension élevée), en position 9 est fort signal
+const POSITION_PROPENSITY = [1.00, 0.85, 0.72, 0.61, 0.52, 0.44, 0.38, 0.33, 0.28, 0.25];
+const ipsCorrectedLabel = (interacted, position) => {
+  const propensity = POSITION_PROPENSITY[Math.min(position, POSITION_PROPENSITY.length - 1)];
+  return interacted ? 1 / propensity : 0;
+};
+
+const createBehaviorTracker = () => {
+  let behavior  = loadBehavior();
+  let dirty     = false;
+  let saveTimer = null;
+  const flush       = () => { if (dirty) { saveBehavior(behavior); dirty = false; } };
+  const scheduleSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 2000); dirty = true; };
+  const clamp = (v, min = -20, max = 20) => Math.max(min, Math.min(max, v));
+
+  // ── v13 : boost corrigé par position IPS ──────────────────────────────────
+  const boostWithIPS = (uid, cat, type, baseBoost, position = 0) => {
+    const corrected = baseBoost * ipsCorrectedLabel(true, position);
+    if (uid) behavior.authorBoosts[uid] = clamp((behavior.authorBoosts[uid] || 0) + corrected);
+    if (cat) behavior.categoryBoosts[cat] = clamp((behavior.categoryBoosts[cat] || 0) + corrected * 0.6);
+    if (type) behavior.typeBoosts[type] = clamp((behavior.typeBoosts[type] || 0) + corrected * 0.4);
+    scheduleSave();
+  };
+
+  return {
+    onLike:    (post, position = 0) => {
+      const uid  = post.user?._id || post.author?._id;
+      const cat  = post.category;
+      const type = post.videoUrl ? "video" : post.images?.length ? "image" : "text";
+      boostWithIPS(uid, cat, type, 8, position);
+    },
+    onComment: (post, position = 0) => {
+      const uid = post.user?._id || post.author?._id;
+      boostWithIPS(uid, post.category, null, 10, position);
+    },
+    onShare:   (post, position = 0) => {
+      const uid = post.user?._id || post.author?._id;
+      boostWithIPS(uid, post.category, null, 12, position);
+    },
+    onSave:    (post, position = 0) => {
+      const uid = post.user?._id || post.author?._id;
+      boostWithIPS(uid, post.category, null, 6, position);
+    },
+    // ── v13 : hide signal — pénalise fortement ────────────────────────────────
+    onHide:    (post, position = 0) => {
+      const uid  = post.user?._id || post.author?._id;
+      const cat  = post.category;
+      const type = post.videoUrl ? "video" : post.images?.length ? "image" : "text";
+      const corrected = -15 * ipsCorrectedLabel(true, position);
+      if (uid) behavior.authorBoosts[uid] = clamp((behavior.authorBoosts[uid] || 0) + corrected);
+      if (cat) behavior.categoryBoosts[cat] = clamp((behavior.categoryBoosts[cat] || 0) + corrected * 0.5);
+      if (type) behavior.typeBoosts[type] = clamp((behavior.typeBoosts[type] || 0) + corrected * 0.3);
+      scheduleSave();
+    },
+    onDwell: (post, ms) => {
+      if (ms < 2000) return;
+      const boost = ms > 10000 ? 6 : ms > 5000 ? 3 : 1;
+      const uid   = post.user?._id || post.author?._id;
+      if (uid) behavior.authorBoosts[uid] = clamp((behavior.authorBoosts[uid] || 0) + boost);
+      scheduleSave();
+    },
+    onSkip: (post) => {
+      const uid = post.user?._id || post.author?._id;
+      if (uid) behavior.authorBoosts[uid] = clamp((behavior.authorBoosts[uid] || 0) - 2);
+      scheduleSave();
+    },
+    applyBoost: (post, baseScore) => {
+      let boost = 0;
+      const uid  = post.user?._id || post.author?._id;
+      const cat  = post.category;
+      const type = post.videoUrl ? "video" : (post.images?.length || post.media?.length) ? "image" : "text";
+      if (uid && behavior.authorBoosts[uid])   boost += behavior.authorBoosts[uid];
+      if (cat && behavior.categoryBoosts[cat]) boost += behavior.categoryBoosts[cat] * 0.5;
+      if (behavior.typeBoosts[type])           boost += behavior.typeBoosts[type] * 0.3;
+      return Math.max(0, Math.min(100, baseScore + boost));
+    },
+    getBehavior: () => behavior,
+    flush,
+  };
+};
+
+let _behaviorTracker = null;
+const getBehaviorTracker = () => {
+  if (!_behaviorTracker) _behaviorTracker = createBehaviorTracker();
+  return _behaviorTracker;
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE H : UserEmbedding — vecteur 32d appris par gradient descent
+// ══════════════════════════════════════════════════════════════════════════════
+const EMB_DIM  = 32;
+const EMB_KEY  = "uemb_v1";
+const EMB_LR   = 0.01;  // learning rate
+const EMB_DECAY = 0.999; // weight decay léger
+
+const createUserEmbedding = () => {
+  let vec = new Float32Array(EMB_DIM);
+
+  const load = () => {
+    try {
+      const raw = localStorage.getItem(EMB_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        vec = new Float32Array(parsed);
+      }
+    } catch {}
+  };
+
+  const save = () => {
+    try { localStorage.setItem(EMB_KEY, JSON.stringify(Array.from(vec))); } catch {}
+  };
+
+  load();
+
+  const normalize = (v) => {
+    let norm = 0;
+    for (let i = 0; i < EMB_DIM; i++) norm += v[i] * v[i];
+    norm = Math.sqrt(norm) || 1;
+    const out = new Float32Array(EMB_DIM);
+    for (let i = 0; i < EMB_DIM; i++) out[i] = v[i] / norm;
+    return out;
+  };
+
+  return {
+    // Met à jour le vecteur utilisateur vers/contre le vecteur post
+    // label: +1 = positif (like, dwell, share), -1 = négatif (hide, skip)
+    update(postVec, label) {
+      for (let i = 0; i < EMB_DIM; i++) {
+        vec[i] = vec[i] * EMB_DECAY + EMB_LR * label * postVec[i];
+      }
+      save();
+    },
+
+    // Similarité cosinus entre vecteur user et vecteur post → [-1, 1]
+    similarity(postVec) {
+      const u = normalize(vec);
+      const p = normalize(postVec);
+      let dot = 0;
+      for (let i = 0; i < EMB_DIM; i++) dot += u[i] * p[i];
+      return Math.max(-1, Math.min(1, dot));
+    },
+
+    getVec: () => vec,
+    load,
+    save,
+  };
+};
+
+let _userEmbedding = null;
+const getUserEmbedding = () => {
+  if (!_userEmbedding) _userEmbedding = createUserEmbedding();
+  return _userEmbedding;
+};
+
+// Extraction d'un vecteur post depuis ses features (sans ML serveur)
+const postToVec = (post) => {
+  const vec = new Float32Array(EMB_DIM);
+  const uid = post.user?._id || post.author?._id || "";
+
+  // Feature 0-3 : engagement normalisé
+  vec[0] = Math.tanh((post.likesCount    || 0) / 500);
+  vec[1] = Math.tanh((post.commentsCount || 0) / 50);
+  vec[2] = Math.tanh((post.sharesCount   || 0) / 20);
+  vec[3] = post.user?.isVerified ? 1 : 0;
+
+  // Feature 4-7 : type de media
+  vec[4] = post.videoUrl ? 1 : 0;
+  vec[5] = (Array.isArray(post.images) ? post.images.length : post.images ? 1 : 0) > 0 ? 1 : 0;
+  vec[6] = (post.content || post.contenu || "").length > 200 ? 1 : 0;
+  vec[7] = Array.isArray(post.media) && post.media.length > 1 ? 1 : 0;
+
+  // Feature 8-13 : catégories (one-hot simplifié)
+  const cats = ["tech", "sport", "news", "art", "food", "travel"];
+  cats.forEach((c, i) => { vec[8 + i] = (post.category || "").toLowerCase().includes(c) ? 1 : 0; });
+
+  // Feature 14-23 : hash de l'auteur → embedding pseudo-aléatoire stable
+  for (let j = 0; j < Math.min(uid.length, 10); j++) {
+    vec[14 + j] += (uid.charCodeAt(j) % 100) / 100;
+  }
+
+  // Feature 24-27 : fraîcheur
+  const ageH = (Date.now() - new Date(post.createdAt || 0).getTime()) / 3_600_000;
+  vec[24] = Math.exp(-ageH / 6);
+  vec[25] = Math.exp(-ageH / 24);
+  vec[26] = Math.exp(-ageH / 72);
+  vec[27] = ageH > 168 ? 1 : 0; // > 1 semaine
+
+  // Feature 28-31 : followers normalisés
+  const fl = post.user?.followersCount || 1;
+  vec[28] = Math.tanh(fl / 1000);
+  vec[29] = fl > 10000 ? 1 : 0;
+  vec[30] = fl > 100000 ? 1 : 0;
+
+  return vec;
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE I : MultiObjective — prédiction de N objectifs distincts
+// ══════════════════════════════════════════════════════════════════════════════
+const sigmoid = (x) => 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, x))));
+
+// Poids des objectifs (configurable)
+const MULTI_OBJ_WEIGHTS = {
+  like:    0.25,
+  comment: 0.35,
+  share:   0.30,
+  watch:   0.20,
+  hide:    -0.40, // négatif : pénalise ce que l'user veut éviter
+};
+
+const multiObjectiveScore = (post, userEmbedding, baseScore) => {
+  const sim = userEmbedding.similarity(postToVec(post)); // [-1, 1]
+  const b   = baseScore / 100; // [0, 1]
+
+  // Prédiction de chaque action via features + similarité
+  const pLike    = sigmoid(b * 3  + sim * 4);
+  const pComment = sigmoid(b * 2  + sim * 3 - 0.5);
+  const pShare   = sigmoid(b * 1.5 + sim * 5 - 1);
+  const pWatch   = post.videoUrl ? sigmoid(b * 4 + sim * 3) : 0.4;
+  const pHide    = Math.max(0, sigmoid(-sim * 3 - b * 2 + 1));
+
+  const score = (
+    pLike    * MULTI_OBJ_WEIGHTS.like    +
+    pComment * MULTI_OBJ_WEIGHTS.comment +
+    pShare   * MULTI_OBJ_WEIGHTS.share   +
+    pWatch   * MULTI_OBJ_WEIGHTS.watch   +
+    pHide    * MULTI_OBJ_WEIGHTS.hide
+  );
+
+  return Math.max(0, Math.min(100, score * 100));
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE J : VelocityScore — momentum du post
+// ══════════════════════════════════════════════════════════════════════════════
+const velocityScore = (post, now = Date.now()) => {
+  const ageMs = now - new Date(post.createdAt || 0).getTime();
+  const ageH  = Math.max(ageMs / 3_600_000, 0.1);
+
+  const likes    = post.likesCount    || post.likes?.length    || 0;
+  const comments = post.commentsCount || post.comments?.length || 0;
+  const shares   = post.sharesCount   || post.shares           || 0;
+  const engagement = likes + comments * 3 + shares * 5;
+
+  // engagement par heure → normalisé logarithmiquement
+  const velocity = engagement / ageH;
+  return Math.min(100, Math.log1p(velocity) * 12);
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE K : SocialGraphBoost — amplification par réseau social
+// ══════════════════════════════════════════════════════════════════════════════
+const socialGraphBoost = (post, followingIds = new Set()) => {
+  if (!followingIds.size) return 0;
+
+  // Posts aimés/commentés par des gens qu'on suit
+  const likedByFollowing    = (post.likedBy    || []).filter(id => followingIds.has(id));
+  const commentedByFollowing = (post.commentedBy || []).filter(id => followingIds.has(id));
+  const sharedByFollowing    = (post.sharedBy   || []).filter(id => followingIds.has(id));
+
+  if (!likedByFollowing.length && !commentedByFollowing.length && !sharedByFollowing.length) return 0;
+
+  const social = likedByFollowing.length + commentedByFollowing.length * 2 + sharedByFollowing.length * 3;
+  return Math.min(20, Math.log1p(social) * 7);
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE M : FatigueDetector — détection saturation en temps réel
+// ══════════════════════════════════════════════════════════════════════════════
+const FATIGUE_WINDOW     = 20;  // fenêtre glissante
+const FATIGUE_MAX_PENALTY = 25; // pénalité max en pts
+
+const createFatigueDetector = () => {
+  // { topic: count, uid: count }
+  const recentTopics = [];
+  const recentAuthors = [];
+
+  return {
+    record(post) {
+      const topic  = post.category || "unknown";
+      const uid    = post.user?._id || post.author?._id || "unknown";
+      recentTopics.push(topic);
+      recentAuthors.push(uid);
+      if (recentTopics.length  > FATIGUE_WINDOW) recentTopics.shift();
+      if (recentAuthors.length > FATIGUE_WINDOW) recentAuthors.shift();
+    },
+
+    fatigueTopic(post) {
+      const topic = post.category || "unknown";
+      const count = recentTopics.filter(t => t === topic).length;
+      return count / FATIGUE_WINDOW; // 0–1
+    },
+
+    fatigueAuthor(post) {
+      const uid   = post.user?._id || post.author?._id || "unknown";
+      const count = recentAuthors.filter(a => a === uid).length;
+      return count / FATIGUE_WINDOW;
+    },
+
+    penalty(post) {
+      const ft = this.fatigueTopic(post);
+      const fa = this.fatigueAuthor(post);
+      // Pénalité pondérée topic + auteur
+      return -(ft * 0.6 + fa * 0.4) * FATIGUE_MAX_PENALTY;
+    },
+  };
+};
+
+let _fatigueDetector = null;
+const getFatigueDetector = () => {
+  if (!_fatigueDetector) _fatigueDetector = createFatigueDetector();
+  return _fatigueDetector;
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE C : DiversityGuard (v12 conservé)
+// ══════════════════════════════════════════════════════════════════════════════
+const MAX_SAME_AUTHOR = 2;
+const MAX_SAME_TYPE   = 3;
+
+const applyDiversityGuard = (rankedPosts) => {
+  if (!rankedPosts.length) return rankedPosts;
+  const result        = [];
+  const deferred      = [];
+  const authorStreak  = {};
+  const typeStreak    = {};
+
+  const getType = (p) => {
+    if (p.videoUrl || p.embedUrl) return "video";
+    const imgs = Array.isArray(p.images) ? p.images.length : (p.images ? 1 : 0);
+    const meds = Array.isArray(p.media)  ? p.media.length  : 0;
+    return (imgs + meds) > 0 ? "image" : "text";
+  };
+
+  const canPlace = (p) => {
+    const uid  = p.user?._id || p.author?._id || "_anon";
+    const type = getType(p);
+    return (authorStreak[uid] || 0) < MAX_SAME_AUTHOR && (typeStreak[type] || 0) < MAX_SAME_TYPE;
+  };
+
+  const place = (p) => {
+    const uid  = p.user?._id || p.author?._id || "_anon";
+    const type = getType(p);
+    Object.keys(authorStreak).forEach(k => { if (k !== uid)  authorStreak[k] = 0; });
+    Object.keys(typeStreak).forEach(k  => { if (k !== type)  typeStreak[k]  = 0; });
+    authorStreak[uid]  = (authorStreak[uid]  || 0) + 1;
+    typeStreak[type]   = (typeStreak[type]   || 0) + 1;
+    result.push(p);
+  };
+
+  const pool = [...rankedPosts];
+  while (pool.length || deferred.length) {
+    const idx = pool.findIndex(canPlace);
+    if (idx !== -1) {
+      const [p] = pool.splice(idx, 1);
+      place(p);
+      let freed = true;
+      while (freed && deferred.length) {
+        freed = false;
+        const di = deferred.findIndex(canPlace);
+        if (di !== -1) { const [dp] = deferred.splice(di, 1); place(dp); freed = true; }
+      }
+    } else if (deferred.length) {
+      place(deferred.shift());
+    } else if (pool.length) {
+      deferred.push(pool.shift());
+    } else break;
+  }
+  return result;
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE L : ExplorationBudget — ε-greedy pour éviter les filter bubbles
+// ══════════════════════════════════════════════════════════════════════════════
+const applyExplorationBudget = (rankedPosts, totalSlots) => {
+  if (rankedPosts.length <= 3) return rankedPosts;
+
+  const exploitSlots = Math.floor(totalSlots * (1 - EXPLORATION_RATE));
+  const exploreSlots = Math.max(1, totalSlots - exploitSlots);
+
+  const exploit   = rankedPosts.slice(0, exploitSlots);
+  const remaining = rankedPosts.slice(exploitSlots);
+
+  // Tirage aléatoire parmi les posts restants (score moyen → découverte)
+  const explore = [...remaining].sort(() => Math.random() - 0.5).slice(0, exploreSlots);
+
+  // Interleave : 1 post exploratoire toutes les ~10 positions
+  const result = [...exploit];
+  const step   = Math.max(1, Math.round(1 / EXPLORATION_RATE));
+  explore.forEach((p, i) => {
+    const insertAt = Math.min((i + 1) * step, result.length);
+    result.splice(insertAt, 0, { ...p, _isExplore: true });
+  });
+
+  return result;
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SCORE E : smartBuildFeed v13 — combinaison de tous les scores
+// ══════════════════════════════════════════════════════════════════════════════
+const smartBuildFeed = (posts, bots, seenIds, followingIds = new Set()) => {
+  const tracker  = getBehaviorTracker();
+  const userEmb  = getUserEmbedding();
+  const fatigue  = getFatigueDetector();
+  const now      = Date.now();
+
+  const scoredReal = posts.map(p => {
+    const base       = scorePost(p, now);                           // A : heuristique
+    const behavioral = tracker.applyBoost(p, base);                // B : comportement IPS
+    const velocity   = velocityScore(p, now);                      // J : momentum
+    const social     = socialGraphBoost(p, followingIds);          // K : réseau social
+    const mobjective = multiObjectiveScore(p, userEmb, base);      // I : multi-objectif
+    const fatigueP   = fatigue.penalty(p);                         // M : saturation
+
+    // Decay pour posts déjà vus (50% du score)
+    const seenDecay  = seenIds.has(p._id || p._displayKey) ? 0.5 : 1.0;
+
+    const total = (
+      behavioral  * 0.30 +
+      mobjective  * 0.25 +
+      velocity    * 0.20 +
+      social      * 0.15 +
+      base        * 0.10 +
+      fatigueP          // additif négatif
+    ) * seenDecay;
+
+    return { post: { ...p, _score: Math.max(0, total) }, score: Math.max(0, total) };
+  });
+
+  const scoredBots = bots.map(p => {
+    const base     = scorePost(p, now) * 0.7;
+    const velocity = velocityScore(p, now) * 0.5;
+    const total    = (base * 0.5 + velocity * 0.3) * (seenIds.has(p._id || p._displayKey) ? 0.4 : 1.0);
+    return { post: { ...p, _score: Math.max(0, total) }, score: Math.max(0, total) };
+  });
+
+  scoredReal.sort((a, b) => b.score - a.score);
+  scoredBots.sort((a, b) => b.score - a.score);
+
+  const rankedReal = scoredReal.map(s => s.post);
+  const rankedBots = scoredBots.map(s => s.post);
+
+  // Injection bots
+  const mixed = [];
+  let bi = 0;
+  rankedReal.forEach((p, i) => {
+    mixed.push(p);
+    if ((i + 1) % MIX_BLOCK === 0 && bi < rankedBots.length && bi < MIX_MAX_BOTS) {
+      mixed.push({ ...rankedBots[bi++], _isBot: true });
+    }
+  });
+  while (bi < Math.min(rankedBots.length, MIX_MAX_BOTS)) {
+    mixed.push({ ...rankedBots[bi++], _isBot: true });
+  }
+
+  // ε-greedy exploration
+  const explored = applyExplorationBudget(mixed, mixed.length);
+  // Diversity guard
+  return applyDiversityGuard(explored);
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Dwell Time Tracker (v12 conservé)
+// ══════════════════════════════════════════════════════════════════════════════
+const createDwellTracker = (post, onDwell, onSkip) => {
+  let enterTime     = null;
+  let hasInteracted = false;
+
+  return {
+    onEnter:         () => { enterTime = Date.now(); },
+    onLeave:         () => {
+      if (!enterTime) return;
+      const ms = Date.now() - enterTime;
+      enterTime = null;
+      if (hasInteracted) return;
+      if (ms < 500) onSkip?.(post);
+      else          onDwell?.(post, ms);
+    },
+    markInteracted:  () => { hasInteracted = true; },
+  };
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Prefetch (v12 conservé)
+// ══════════════════════════════════════════════════════════════════════════════
 const prefetchedUrls = new Set();
 const prefetchOneUrl = (url) => {
   if (!url || typeof url !== "string" || prefetchedUrls.has(url)) return;
@@ -122,16 +719,19 @@ const getPostAllMediaUrls = (post) => {
   if (post.thumbnail) push(post.thumbnail);
   return urls;
 };
-const scheduleIdlePrefetch = (posts, fromIndex, count = PREFETCH_AHEAD) => {
+
+const scheduleIdlePrefetch = (posts, fromIndex, count = PREFETCH_AHEAD, minScore = 0) => {
   if (!posts?.length) return;
-  const targets = posts.slice(fromIndex, fromIndex + count);
+  const targets = posts.slice(fromIndex, fromIndex + count).filter(p => (p._score || 0) >= minScore);
   if (!targets.length) return;
   const run = () => targets.forEach(p => getPostAllMediaUrls(p).forEach(prefetchOneUrl));
   if (typeof requestIdleCallback !== "undefined") requestIdleCallback(run, { timeout: 2000 });
   else setTimeout(run, PREFETCH_IDLE_WAIT);
 };
 
-// ── URL cache / expirable ─────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// URL cache / expirable (v11 conservé)
+// ══════════════════════════════════════════════════════════════════════════════
 const URL_CACHE_TTL    = 80 * 60 * 1000;
 const URL_CACHE_PREFIX = "murl_";
 const urlCR = (k) => { try { const r=sessionStorage.getItem(URL_CACHE_PREFIX+k); if(!r)return null; const{url,exp}=JSON.parse(r); if(Date.now()>exp){sessionStorage.removeItem(URL_CACHE_PREFIX+k);return null;} return url; } catch{return null;} };
@@ -186,29 +786,13 @@ const seededShuffle = (arr, seed) => {
   for(let i=r.length-1;i>0;i--){s=(Math.imul(s^(s>>>15),s|1)^(s+Math.imul(s^(s>>>7),s|61)))>>>0;const j=s%(i+1);[r[i],r[j]]=[r[j],r[i]];}
   return r;
 };
-const mixBlocks = (real, bots) => {
-  if(!bots.length)return real; if(!real.length)return bots;
-  const result=[];let ri=0,bi=0;
-  while(ri<real.length||bi<bots.length){
-    const block=[];let bc=0;
-    while(block.length<MIX_BLOCK){const cb=bi<bots.length&&bc<MIX_MAX_BOTS,cr=ri<real.length;if(!cb&&!cr)break;if(cb&&cr){block.push(bc<Math.floor((block.length*MIX_MAX_BOTS)/MIX_BLOCK)?{...bots[bi++],_isBot:true}&&(bc++,block[block.length-1]):real[ri++]);}else if(cr){block.push(real[ri++]);}else{block.push({...bots[bi++],_isBot:true});bc++;}}
-    const[head,...tail]=block;result.push(head,...tail.sort(()=>Math.random()-.5));
-  }
-  return result;
-};
-const buildFeed = (posts, bots, seed) => {
-  const now=Date.now(),age=(p)=>{const d=p.createdAt||p.date||p.publishedAt;return d?now-new Date(d).getTime():Infinity;};
-  const bucket=(arr)=>({fresh:arr.filter(p=>age(p)<RECENT_6H),recent:arr.filter(p=>age(p)>=RECENT_6H&&age(p)<RECENT_24H),medium:arr.filter(p=>age(p)>=RECENT_24H&&age(p)<RECENT_72H),old:arr.filter(p=>age(p)>=RECENT_72H)});
-  const rb=bucket(posts),bb=bucket(bots);
-  return mixBlocks(
-    [...seededShuffle(rb.fresh,seed^0x1111),...seededShuffle(rb.recent,seed^0x2222),...seededShuffle(rb.medium,seed^0x3333),...seededShuffle(rb.old,seed^0x4444)],
-    [...seededShuffle(bb.fresh,seed^0xaaaa),...seededShuffle(bb.recent,seed^0xbbbb),...seededShuffle(bb.medium,seed^0xcccc),...seededShuffle(bb.old,seed^0xdddd)]
-  );
-};
-const _pCache=new WeakMap();
-const stablePost=(p)=>{if(_pCache.has(p))return _pCache.get(p);const s=p._isMock===false?p:{...p,_isMock:false};_pCache.set(p,s);return s;};
 
-// ── Composants UI ─────────────────────────────────────────────────────────────
+const _pCache = new WeakMap();
+const stablePost = (p) => { if(_pCache.has(p))return _pCache.get(p); const s=p._isMock===false?p:{...p,_isMock:false}; _pCache.set(p,s); return s; };
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Composants UI (v12 conservés)
+// ══════════════════════════════════════════════════════════════════════════════
 const FeedSkeleton = memo(({ isDarkMode }) => {
   const bg1=isDarkMode?"#1c1c1c":"#f0f0f0",bg2=isDarkMode?"#2a2a2a":"#e4e4e4";
   return (
@@ -252,14 +836,24 @@ const NewBanner = memo(({ count, onClick, topOffset }) => (
 ));
 NewBanner.displayName = "NewBanner";
 
-const LoopDivider = memo(({ isDarkMode }) => (
-  <div className={`flex items-center gap-3 px-4 py-4 ${isDarkMode?"bg-black":"bg-white"}`}>
+const AllSeenDivider = memo(({ isDarkMode }) => (
+  <div className={`flex items-center gap-3 px-4 py-5 ${isDarkMode?"bg-black":"bg-white"}`}>
     <div className={`flex-1 h-px ${isDarkMode?"bg-gray-800":"bg-gray-200"}`} />
-    <span className={`text-[11px] font-medium px-3 py-1 rounded-full ${isDarkMode?"bg-gray-900 text-gray-500 border border-gray-800":"bg-gray-50 text-gray-400 border border-gray-200"}`}>Vous avez tout vu • Recommencer</span>
+    <span className={`text-[11px] font-medium px-3 py-1 rounded-full ${isDarkMode?"bg-gray-900 text-gray-500 border border-gray-800":"bg-gray-50 text-gray-400 border border-gray-200"}`}>
+      Vous avez tout vu · On recommence
+    </span>
     <div className={`flex-1 h-px ${isDarkMode?"bg-gray-800":"bg-gray-200"}`} />
   </div>
 ));
-LoopDivider.displayName = "LoopDivider";
+AllSeenDivider.displayName = "AllSeenDivider";
+
+const FetchingMore = memo(({ isDarkMode }) => (
+  <div className={`flex items-center justify-center py-6 gap-2 ${isDarkMode?"bg-black":"bg-white"}`}>
+    <div className={`w-4 h-4 border-2 rounded-full animate-spin ${isDarkMode?"border-gray-700 border-t-gray-400":"border-gray-200 border-t-gray-400"}`}/>
+    <span className={`text-xs ${isDarkMode?"text-gray-600":"text-gray-400"}`}>Chargement de nouveaux posts…</span>
+  </div>
+));
+FetchingMore.displayName = "FetchingMore";
 
 const Toast = memo(({ message, type="info", onClose }) => {
   useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [onClose]);
@@ -315,211 +909,232 @@ const NewsCard = memo(({ article, isDarkMode, onClick }) => {
 });
 NewsCard.displayName = "NewsCard";
 
-const PostCardWrapper = memo(({ post, index, onVisible, ...rest }) => {
-  const wrapRef=useRef(null), notified=useRef(false);
+// ── v13 : PostCardWrapper avec _displayPosition pour IPS ──────────────────────
+const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest }) => {
+  const wrapRef  = useRef(null);
+  const notified = useRef(false);
+  const dwellRef = useRef(null);
+
   useEffect(() => {
-    const el=wrapRef.current; if(!el||notified.current)return;
-    const obs=new IntersectionObserver(([entry])=>{if(entry.isIntersecting&&!notified.current){notified.current=true;onVisible?.(index);obs.disconnect();}},{rootMargin:"400px 0px",threshold:0.01});
-    obs.observe(el); return()=>obs.disconnect();
-  },[index,onVisible]);
-  return <div ref={wrapRef}><PostCard post={post} priority={index===0} {...rest} /></div>;
+    const el = wrapRef.current;
+    if (!el) return;
+    const tracker = createDwellTracker(post, onDwell, onSkip);
+    dwellRef.current = tracker;
+
+    const obs = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        tracker.onEnter();
+        if (!notified.current) { notified.current = true; onVisible?.(index); }
+      } else {
+        tracker.onLeave();
+      }
+    }, { rootMargin: "0px", threshold: 0.5 });
+
+    obs.observe(el);
+    return () => { obs.disconnect(); tracker.onLeave(); };
+  }, [index, onVisible, onDwell, onSkip]); // eslint-disable-line
+
+  return (
+    <div ref={wrapRef}>
+      <PostCard
+        post={{ ...post, _displayPosition: index }}
+        priority={index === 0}
+        {...rest}
+      />
+    </div>
+  );
 });
 PostCardWrapper.displayName = "PostCardWrapper";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FEED — v10 : scrollContainerRef passé depuis Home (jamais null)
-// ─────────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// FEED v13
+// ═════════════════════════════════════════════════════════════════════════════
 const Feed = ({
-  posts, isDarkMode, onDeleted, showToast,
-  apiLoadMoreRef, hasMoreFromAPI,
-  isLoading, newPostsCount, onShowNewPosts,
-  resetSignal, topOffset, suggestedUsers, newsArticles=[],
+  posts,
+  isDarkMode,
+  onDeleted,
+  showToast,
+  apiLoadMoreRef,
+  hasMoreFromAPI,
+  isLoading,
+  newPostsCount,
+  onShowNewPosts,
+  resetSignal,
+  topOffset,
+  suggestedUsers,
+  newsArticles = [],
   onScrollProgress,
-  scrollContainerRef,   // ✅ FIX v10 : ref directe du scroll container
+  onNeedMorePosts,
+  scrollContainerRef,
+  followingIds,
 }) => {
-  const [displayed,  setDisplayed]  = useState([]);
-  const [loopBounds, setLoopBounds] = useState([]);
+  const [displayed,     setDisplayed]     = useState([]);
+  const [showAllSeen,   setShowAllSeen]   = useState(false);
+  const [isFetchingAPI, setIsFetchingAPI] = useState(false);
 
   const sentinelRef  = useRef(null);
-  const loopRef      = useRef(0);
-  const cursorRef    = useRef(0);
   const postsRef     = useRef(posts);
   const accRef       = useRef([]);
   const prevReset    = useRef(resetSignal);
-  const prevLen      = useRef(0);
   const loadingRef   = useRef(false);
   const onScrollProgressRef = useRef(onScrollProgress);
-  // ✅ FIX répétitions : seed différent par boucle + pool shuffled
-  const loopSeedRef  = useRef(Math.floor(Math.random() * 0xffffffff));
-  const shuffledPoolRef = useRef([]);   // pool dans l'ordre de la boucle courante
+  const onNeedMorePostsRef  = useRef(onNeedMorePosts);
+  const seenIdsRef          = useRef(new Set());
+  const orderedPoolRef      = useRef([]);
 
-  useEffect(()=>{ onScrollProgressRef.current = onScrollProgress; }, [onScrollProgress]);
-  useEffect(()=>{ postsRef.current = posts; }, [posts]);
+  useEffect(() => { onScrollProgressRef.current = onScrollProgress; },  [onScrollProgress]);
+  useEffect(() => { onNeedMorePostsRef.current  = onNeedMorePosts; },   [onNeedMorePosts]);
+  useEffect(() => { postsRef.current = posts; }, [posts]);
 
-  // ── initFeed ────────────────────────────────────────────────────────────────
-  // Mélange le pool avec un seed donné (Fisher-Yates rapide)
-  const shufflePool = useCallback((pool, seed) => {
-    const r = [...pool]; let s = seed >>> 0;
-    for (let i = r.length - 1; i > 0; i--) {
-      s = (Math.imul(s ^ (s >>> 15), s | 1) ^ (s + Math.imul(s ^ (s >>> 7), s | 61))) >>> 0;
-      const j = s % (i + 1);
-      [r[i], r[j]] = [r[j], r[i]];
+  // ── buildUnseenPool v13 ────────────────────────────────────────────────────
+  const buildUnseenPool = useCallback((pool) => {
+    const seen     = seenIdsRef.current;
+    const tracker  = getBehaviorTracker();
+    const userEmb  = getUserEmbedding();
+    const fatigue  = getFatigueDetector();
+    const now      = Date.now();
+    const fIds     = followingIds || new Set();
+
+    const unseen = pool
+      .filter(p => !seen.has(p._id || p._displayKey))
+      .map(p => {
+        const base       = scorePost(p, now);
+        const behavioral = tracker.applyBoost(p, base);
+        const velocity   = velocityScore(p, now);
+        const social     = socialGraphBoost(p, fIds);
+        const mobjective = multiObjectiveScore(p, userEmb, base);
+        const fatigueP   = fatigue.penalty(p);
+        const total = (
+          behavioral  * 0.30 +
+          mobjective  * 0.25 +
+          velocity    * 0.20 +
+          social      * 0.15 +
+          base        * 0.10 +
+          fatigueP
+        );
+        return { post: { ...p, _score: Math.max(0, total) }, score: Math.max(0, total) };
+      })
+      .sort((a, b) => b.score - a.score)
+      .map(s => s.post);
+
+    if (unseen.length < MIN_UNSEEN_BEFORE_LOOP && pool.length > 0) {
+      const recent = accRef.current.slice(-30).map(p => p._id || p._displayKey);
+      seenIdsRef.current = new Set(recent);
+      return pool
+        .filter(p => !seenIdsRef.current.has(p._id || p._displayKey))
+        .map(p => {
+          const base = scorePost(p, now) * 0.6;
+          return { post: { ...p, _score: base }, score: base };
+        })
+        .sort((a, b) => b.score - a.score)
+        .map(s => s.post);
     }
-    return r;
-  }, []);
 
+    return unseen;
+  }, [followingIds]);
+
+  // ── initFeed ───────────────────────────────────────────────────────────────
   const initFeed = useCallback((pool) => {
-    loopRef.current    = 0;
-    cursorRef.current  = 0;
     loadingRef.current = false;
-    // Nouveau seed à chaque init → ordre différent
-    loopSeedRef.current = Math.floor(Math.random() * 0xffffffff);
-    shuffledPoolRef.current = shufflePool(pool, loopSeedRef.current);
-    const count  = Math.min(PAGE_SIZE, pool.length);
-    const tagged = shuffledPoolRef.current.slice(0, count).map((p,i) => ({...p, _displayKey:`p${i}_l0_${p._id}`}));
-    cursorRef.current = count < pool.length ? count : 0;
-    if (count >= pool.length && pool.length > 0) loopRef.current = 1;
-    accRef.current  = tagged;
-    prevLen.current = pool.length;
-    setDisplayed(tagged);
-    setLoopBounds([]);
-    scheduleIdlePrefetch(shuffledPoolRef.current, 0, PAGE_SIZE + PREFETCH_AHEAD);
-  }, [shufflePool]);
+    seenIdsRef.current = new Set();
+    orderedPoolRef.current = pool;
 
-  // ── Réaction aux changements de posts ──────────────────────────────────────
+    const unseen = buildUnseenPool(pool);
+    const count  = Math.min(PAGE_SIZE, unseen.length);
+    const batch  = unseen.slice(0, count).map((p, i) => ({ ...p, _displayKey: `p${i}_init_${p._id}` }));
+    batch.forEach(p => seenIdsRef.current.add(p._id || p._displayKey));
+
+    accRef.current = batch;
+    setDisplayed([...batch]);
+    setShowAllSeen(false);
+    setIsFetchingAPI(false);
+    scheduleIdlePrefetch(pool, 0, PAGE_SIZE + PREFETCH_AHEAD, 20);
+  }, [buildUnseenPool]);
+
+  // ── Réaction aux changements de posts ─────────────────────────────────────
   useEffect(() => {
     const rc = resetSignal !== prevReset.current;
     prevReset.current = resetSignal;
 
     if (!posts.length) {
-      accRef.current  = [];
-      prevLen.current = 0;
+      accRef.current = [];
       setDisplayed([]);
-      setLoopBounds([]);
+      setShowAllSeen(false);
       return;
     }
 
-    if (rc) {
-      initFeed(posts);
-      return;
-    }
+    if (rc) { initFeed(posts); return; }
 
-    if (posts.length !== prevLen.current) {
-      prevLen.current  = posts.length;
-      postsRef.current = posts;
-      // ✅ FIX répétitions : intégrer les nouveaux posts dans le pool shuffled
-      // On les ajoute à des positions aléatoires du pool restant (pas à la queue)
-      const remaining = shuffledPoolRef.current.slice(cursorRef.current);
-      const newItems  = posts.filter(p => !shuffledPoolRef.current.some(sp => sp._id === p._id));
-      if (newItems.length > 0) {
-        // Insérer les nouveaux posts à des positions aléatoires dans la partie non-vue
-        const merged = [...remaining];
-        newItems.forEach(item => {
-          const pos = Math.floor(Math.random() * (merged.length + 1));
-          merged.splice(pos, 0, item);
-        });
-        // Reconstruire le pool complet (déjà vus + nouveau mélange)
-        shuffledPoolRef.current = [
-          ...shuffledPoolRef.current.slice(0, cursorRef.current),
-          ...merged,
-        ];
-      }
+    const newIds = posts.filter(p => p?._id && !orderedPoolRef.current.some(op => op._id === p._id)).map(p => p._id);
+    if (newIds.length > 0 || posts.length !== orderedPoolRef.current.length) {
+      orderedPoolRef.current = posts;
+      setIsFetchingAPI(false);
       loadingRef.current = false;
       requestAnimationFrame(() => {
         const el = sentinelRef.current;
         if (!el) return;
         const rect = el.getBoundingClientRect();
-        if (rect.top < (window.innerHeight || document.documentElement.clientHeight) + 1200) {
-          loadMoreRef.current();
-        }
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        if (rect.top < vh + 1200) loadMoreRef.current?.();
       });
     }
-  }, [resetSignal, posts.length, initFeed]); // eslint-disable-line
+  }, [resetSignal, posts, initFeed]); // eslint-disable-line
 
-  // Init au premier mount
   useEffect(() => { if (posts.length) initFeed(posts); }, []); // eslint-disable-line
 
-  // ── loadMore ────────────────────────────────────────────────────────────────
+  // ── loadMore v13 ──────────────────────────────────────────────────────────
   const loadMore = useCallback(() => {
     if (loadingRef.current) return;
+    const pool = orderedPoolRef.current;
+    if (!pool.length) return;
 
-    // ✅ FIX répétitions : on lit le pool shuffled, pas postsRef directement
-    let pool = shuffledPoolRef.current;
-    if (!pool.length) {
-      // Fallback : si shuffledPoolRef vide (premier render), init depuis postsRef
-      if (!postsRef.current.length) return;
-      loopSeedRef.current = Math.floor(Math.random() * 0xffffffff);
-      shuffledPoolRef.current = [...postsRef.current].sort(() => Math.random() - 0.5);
-      pool = shuffledPoolRef.current;
+    const unseenPool = buildUnseenPool(pool);
+
+    if (unseenPool.length < FRESH_POOL_THRESHOLD) {
+      onNeedMorePostsRef.current?.();
+      if (unseenPool.length === 0) { setIsFetchingAPI(true); return; }
     }
 
     loadingRef.current = true;
-
-    if (cursorRef.current >= pool.length) {
-      // ✅ FIX répétitions : à chaque nouvelle boucle, ON RESHUFFLES le pool
-      // avec un seed différent → les posts apparaissent dans un ordre différent
-      loopSeedRef.current = (loopSeedRef.current * 1664525 + 1013904223) >>> 0;
-      const basePool = postsRef.current.length > 0 ? postsRef.current : pool;
-      shuffledPoolRef.current = (() => {
-        const r = [...basePool]; let s = loopSeedRef.current;
-        for (let i = r.length - 1; i > 0; i--) {
-          s = (Math.imul(s ^ (s >>> 15), s | 1) ^ (s + Math.imul(s ^ (s >>> 7), s | 61))) >>> 0;
-          [r[i], r[s % (i + 1)]] = [r[s % (i + 1)], r[i]];
-        }
-        return r;
-      })();
-      pool = shuffledPoolRef.current;
-      cursorRef.current = 0;
-    }
-
-    const cursor     = cursorRef.current;
-    const ratio      = cursor / pool.length;
+    const ratio = seenIdsRef.current.size / Math.max(pool.length, 1);
     onScrollProgressRef.current?.(ratio);
 
-    const end        = Math.min(cursor + PAGE_SIZE, pool.length);
-    const raw        = pool.slice(cursor, end);
-    const reachedEnd = end >= pool.length;
+    // ── v13 : DiversityGuard + ExplorationBudget sur le batch ─────────────
+    const rawBatch   = unseenPool.slice(0, PAGE_SIZE);
+    const explored   = applyExplorationBudget(rawBatch, rawBatch.length);
+    const batch      = applyDiversityGuard(explored);
 
-    cursorRef.current = reachedEnd ? 0 : end;
-    if (reachedEnd) {
-      loopRef.current++;
-      // Pré-shuffler pour la prochaine boucle (idle)
-      const nextSeed = (loopSeedRef.current * 1664525 + 1013904223) >>> 0;
-      const basePool = postsRef.current.length > 0 ? postsRef.current : pool;
-      if (typeof requestIdleCallback !== "undefined") {
-        requestIdleCallback(() => {
-          loopSeedRef.current = nextSeed;
-          shuffledPoolRef.current = (() => {
-            const r = [...basePool]; let s = nextSeed;
-            for (let i = r.length - 1; i > 0; i--) {
-              s = (Math.imul(s ^ (s >>> 15), s | 1) ^ (s + Math.imul(s ^ (s >>> 7), s | 61))) >>> 0;
-              [r[i], r[s % (i + 1)]] = [r[s % (i + 1)], r[i]];
-            }
-            return r;
-          })();
-        }, { timeout: 500 });
-      }
+    if (batch.length === 0) {
+      setShowAllSeen(true);
+      setIsFetchingAPI(true);
+      loadingRef.current = false;
+      onNeedMorePostsRef.current?.();
+      return;
     }
 
-    const ln     = loopRef.current;
+    setShowAllSeen(false);
+    setIsFetchingAPI(false);
+
     const offset = accRef.current.length;
-    const batch  = raw.map((p,i) => ({...p, _displayKey:`p${offset+i}_l${ln}_${p._id}`}));
-    const next   = accRef.current.concat(batch);
+    const tagged = batch.map((p, i) => ({ ...p, _displayKey: `p${offset + i}_${p._id}` }));
+    tagged.forEach(p => seenIdsRef.current.add(p._id || p._displayKey));
+
+    // FatigueDetector : enregistre les posts affichés
+    const fatigue = getFatigueDetector();
+    tagged.forEach(p => fatigue.record(p));
+
+    const next = [...accRef.current, ...tagged];
     accRef.current = next.length > MAX_DOM_POSTS ? next.slice(next.length - MAX_DOM_POSTS) : next;
 
-    const newBound = reachedEnd ? accRef.current.length : null;
-
     Promise.resolve().then(() => { loadingRef.current = false; });
-
-    if (newBound !== null) setLoopBounds(b => [...b, newBound]);
     setDisplayed([...accRef.current]);
-  }, []); // deps vides — tout via refs
+    scheduleIdlePrefetch(unseenPool, PAGE_SIZE, PREFETCH_AHEAD, 30);
+  }, [buildUnseenPool]); // eslint-disable-line
 
   const loadMoreRef = useRef(loadMore);
   useEffect(() => { loadMoreRef.current = loadMore; }, [loadMore]);
 
-  // ── IntersectionObserver du sentinel ────────────────────────────────────────
-  // ✅ FIX v10 : root = scrollContainerRef.current (jamais null car passé depuis Home)
+  // ── IntersectionObserver du sentinel ──────────────────────────────────────
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
@@ -530,12 +1145,10 @@ const Feed = ({
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [scrollContainerRef]); // eslint-disable-line
+  }, [scrollContainerRef]);
 
-  // ── Scroll listener ─────────────────────────────────────────────────────────
-  // ✅ FIX v10 : écoute directement scrollContainerRef (jamais window)
+  // ── Scroll listener ────────────────────────────────────────────────────────
   useEffect(() => {
-    // On attend que scrollContainerRef soit disponible
     const getScrollEl = () => scrollContainerRef?.current || null;
     let scrollEl = getScrollEl();
     let lastCall = 0, lastEmit = 0;
@@ -543,13 +1156,11 @@ const Feed = ({
 
     const onScroll = () => {
       const now = Date.now();
-      // Émettre app:scroll pour le header
       if (now - lastEmit >= 50) {
         lastEmit = now;
         const st = scrollEl ? (scrollEl.scrollTop || 0) : 0;
         window.dispatchEvent(new CustomEvent("app:scroll", { detail: { scrollTop: st } }));
       }
-      // Throttle loadMore à 100ms
       if (now - lastCall < 100) return;
       lastCall = now;
       const sentinel = sentinelRef.current;
@@ -564,14 +1175,12 @@ const Feed = ({
       if (!el) return;
       el.addEventListener("scroll", onScroll, { passive: true });
       cleanup = () => el.removeEventListener("scroll", onScroll);
-      // Déclencher immédiatement au cas où le sentinel serait déjà visible
       setTimeout(onScroll, 100);
     };
 
     if (scrollEl) {
       attach(scrollEl);
     } else {
-      // Attendre que le ref soit disponible (max 2s)
       const poll = setInterval(() => {
         scrollEl = getScrollEl();
         if (scrollEl) { clearInterval(poll); attach(scrollEl); }
@@ -580,22 +1189,36 @@ const Feed = ({
     }
 
     return () => cleanup();
-  }, [scrollContainerRef]); // eslint-disable-line
+  }, [scrollContainerRef]);
 
-  // Forcer loadMore quand posts arrivent
   useEffect(() => {
-    if (posts.length > 0) {
+    if (posts.length > 0 && isFetchingAPI) {
       loadingRef.current = false;
-      loadMoreRef.current();
+      loadMoreRef.current?.();
     }
-  }, [posts.length]); // eslint-disable-line
+  }, [posts.length, isFetchingAPI]);
 
   const handlePostVisible = useCallback((index) => {
-    scheduleIdlePrefetch(postsRef.current, index + 1, PREFETCH_AHEAD);
+    scheduleIdlePrefetch(postsRef.current, index + 1, PREFETCH_AHEAD, 20);
   }, []);
 
+  // ── v13 : callbacks comportementaux + embedding update ────────────────────
+  const tracker = getBehaviorTracker();
+  const userEmb = getUserEmbedding();
+
+  const handleDwell = useCallback((post, ms) => {
+    tracker.onDwell(post, ms);
+    // Update embedding : dwell long = signal positif fort
+    const label = ms > 8000 ? 1 : ms > 3000 ? 0.5 : 0.2;
+    userEmb.update(postToVec(post), label);
+  }, []); // eslint-disable-line
+
+  const handleSkip = useCallback((post) => {
+    tracker.onSkip(post);
+    userEmb.update(postToVec(post), -0.3);
+  }, []); // eslint-disable-line
+
   const [selectedArticle, setSelectedArticle] = useState(null);
-  const loopSet = useMemo(() => new Set(loopBounds), [loopBounds]);
 
   if (isLoading && !posts.length) return <FeedSkeleton isDarkMode={isDarkMode}/>;
   if (!isLoading && !posts.length) return (
@@ -610,37 +1233,77 @@ const Feed = ({
   return (
     <>
       <NewBanner count={newPostsCount} onClick={onShowNewPosts} topOffset={topOffset}/>
+
       {displayed.map((post, index) => {
         const newsSlot = index > 0 && index % NEWS_EVERY === 0 ? Math.floor(index / NEWS_EVERY) - 1 : -1;
         const newsItem = newsSlot >= 0 && newsArticles.length > 0 ? newsArticles[newsSlot % newsArticles.length] : null;
         return (
           <div key={post._displayKey}>
-            {loopSet.has(index) && <LoopDivider isDarkMode={isDarkMode}/>}
-            <PostCardWrapper post={post} index={index} onVisible={handlePostVisible}
-              onDeleted={onDeleted} showToast={showToast}
-              mockPost={!!post._isMock||!!post.isMockPost} priority={index===0}/>
-            {newsItem && <NewsCard key={`news-${newsSlot}`} article={newsItem} isDarkMode={isDarkMode} onClick={()=>setSelectedArticle(newsItem)}/>}
-            {index>0&&index%SUGGEST_PROFILE_EVERY===0&&<SuggestedPostPreview key={`spp-${index}`} isDarkMode={isDarkMode} userPool={suggestedUsers} slotIndex={Math.floor(index/SUGGEST_PROFILE_EVERY)}/>}
-            {index>0&&index%SUGGEST_ACCOUNTS_EVERY===0&&index%SUGGEST_PROFILE_EVERY!==0&&<SuggestedAccounts key={`sa-${index}`} isDarkMode={isDarkMode} instanceId={Math.floor(index/SUGGEST_ACCOUNTS_EVERY)}/>}
+            <PostCardWrapper
+              post={post}
+              index={index}
+              onVisible={handlePostVisible}
+              onDwell={handleDwell}
+              onSkip={handleSkip}
+              onDeleted={onDeleted}
+              showToast={showToast}
+              mockPost={!!post._isMock || !!post.isMockPost}
+              priority={index === 0}
+            />
+            {newsItem && (
+              <NewsCard
+                key={`news-${newsSlot}`}
+                article={newsItem}
+                isDarkMode={isDarkMode}
+                onClick={() => setSelectedArticle(newsItem)}
+              />
+            )}
+            {index > 0 && index % SUGGEST_PROFILE_EVERY === 0 && (
+              <SuggestedPostPreview
+                key={`spp-${index}`}
+                isDarkMode={isDarkMode}
+                userPool={suggestedUsers}
+                slotIndex={Math.floor(index / SUGGEST_PROFILE_EVERY)}
+              />
+            )}
+            {index > 0 && index % SUGGEST_ACCOUNTS_EVERY === 0 && index % SUGGEST_PROFILE_EVERY !== 0 && (
+              <SuggestedAccounts
+                key={`sa-${index}`}
+                isDarkMode={isDarkMode}
+                instanceId={Math.floor(index / SUGGEST_ACCOUNTS_EVERY)}
+              />
+            )}
           </div>
         );
       })}
 
-      {/* Sentinel — le scroll infini s'arrête ici */}
+      {showAllSeen    && <AllSeenDivider isDarkMode={isDarkMode}/>}
+      {isFetchingAPI  && <FetchingMore  isDarkMode={isDarkMode}/>}
+
       <div ref={sentinelRef} className="h-10 flex items-center justify-center" aria-hidden="true">
-        {displayed.length > 0 && <div className={`w-1 h-1 rounded-full ${isDarkMode?"bg-gray-800":"bg-gray-200"}`}/>}
+        {displayed.length > 0 && !isFetchingAPI && (
+          <div className={`w-1 h-1 rounded-full ${isDarkMode?"bg-gray-800":"bg-gray-200"}`}/>
+        )}
       </div>
 
       {hasMoreFromAPI && <div ref={apiLoadMoreRef} className="h-1" aria-hidden="true"/>}
-      {selectedArticle && <Suspense fallback={null}><ArticleReaderModal article={selectedArticle} isOpen={!!selectedArticle} onClose={()=>setSelectedArticle(null)}/></Suspense>}
+      {selectedArticle && (
+        <Suspense fallback={null}>
+          <ArticleReaderModal
+            article={selectedArticle}
+            isOpen={!!selectedArticle}
+            onClose={() => setSelectedArticle(null)}
+          />
+        </Suspense>
+      )}
     </>
   );
 };
 Feed.displayName = "Feed";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HOME
-// ─────────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// HOME v13
+// ═════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const { isDarkMode }   = useDarkMode();
   const { fetchStories, stories = [] } = useStories();
@@ -662,12 +1325,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const [apiPages,     setApiPages]     = useState(1);
   const [seed,         setSeed]         = useState(() => Math.floor(Math.random() * 0xffffffff));
   const [suggestedUsers, setSuggestedUsers] = useState([]);
+  // ── v13 : following IDs pour social graph boost ───────────────────────────
+  const [followingIds, setFollowingIds] = useState(new Set());
 
   const livePostsRef = useRef([]);
   const [livePostsVer, setLivePostsVer] = useState(0);
   const [resolved, setResolved] = useState([]);
 
-  // ✅ FIX v10 : scrollRef passé au Feed — jamais null
   const scrollRef    = useRef(null);
   const apiObsRef    = useRef(null);
   const loadingRef   = useRef(false);
@@ -687,11 +1351,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const isScrollingRef     = useRef(false);
   const scrollIdleTimerRef = useRef(null);
 
+  const currentApiPageRef   = useRef(1);
+  const fetchingNextPageRef = useRef(false);
+
   const STORIES_H = 92;
   const TOTAL_TOP = STORIES_H;
   const showMock  = MOCK_CONFIG.enabled;
 
-  // ── News ────────────────────────────────────────────────────────────────────
+  // ── News ───────────────────────────────────────────────────────────────────
   const { articles: newsGC }   = useNews({ maxArticles:4, category:"genieCivil",    autoFetch:!!user, enabled:!!user }) || {};
   const { articles: newsTech } = useNews({ maxArticles:2, category:"technologie",   autoFetch:!!user, enabled:!!user }) || {};
   const { articles: newsEnv }  = useNews({ maxArticles:2, category:"environnement", autoFetch:!!user, enabled:!!user }) || {};
@@ -704,7 +1371,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return all.filter(a => { const key=a._id||a.id||a.url; if(seen.has(key))return false; seen.add(key); return true; });
   }, [newsGCLen, newsTechLen, newsEnvLen]); // eslint-disable-line
 
-  // ── Helpers live posts ──────────────────────────────────────────────────────
+  // ── addLivePosts ───────────────────────────────────────────────────────────
   const addLivePosts = useCallback((list) => {
     const ids   = new Set(livePostsRef.current.map(p => p._id));
     const fresh = list.filter(p => p?._id && !ids.has(p._id));
@@ -714,7 +1381,49 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return true;
   }, []);
 
-  // ── Fix 1 : scroll detection ────────────────────────────────────────────────
+  // ── v13 : charger les following IDs pour social graph ─────────────────────
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      try {
+        const { data } = await axiosClient.get("/users/following?limit=500");
+        const list = Array.isArray(data) ? data : (data?.users || data?.following || []);
+        const ids = new Set(list.map(u => u._id || u.id).filter(Boolean));
+        setFollowingIds(ids);
+      } catch {
+        // fallback silencieux : social graph boost = 0 sans données
+      }
+    })();
+  }, [user]);
+
+  // ── handleNeedMorePosts ────────────────────────────────────────────────────
+  const handleNeedMorePosts = useCallback(async () => {
+    if (fetchingNextPageRef.current) return;
+    if (!user) return;
+    fetchingNextPageRef.current = true;
+    try {
+      if (hasMore && typeof fetchNextPage === "function") {
+        const nextPage = currentApiPageRef.current + 1;
+        currentApiPageRef.current = nextPage;
+        const result = await fetchNextPage();
+        const newApiPosts = result?.posts || [];
+        if (newApiPosts.length > 0) { addLivePosts(newApiPosts); setApiPages(nextPage); return; }
+      }
+      const now = Date.now();
+      if (now - silentLastFetchRef.current >= SILENT_COOLDOWN_MS / 2) {
+        silentLastFetchRef.current = now;
+        const result = await refetch?.();
+        const fp = result?.posts || [];
+        if (fp.length > 0) {
+          const added = addLivePosts(fp);
+          if (!added) startTransition(() => setLivePostsVer(v => v+1));
+        }
+      }
+    } catch {}
+    finally { fetchingNextPageRef.current = false; }
+  }, [user, hasMore, fetchNextPage, refetch, addLivePosts]);
+
+  // ── scroll detection ───────────────────────────────────────────────────────
   useEffect(() => {
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
@@ -727,7 +1436,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => { scrollEl.removeEventListener("scroll", onScroll); clearTimeout(scrollIdleTimerRef.current); };
   }, []);
 
-  // ── Suggestions ─────────────────────────────────────────────────────────────
+  // ── Suggestions ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user || sugFetched.current) return;
     sugFetched.current = true;
@@ -746,7 +1455,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     })();
   }, [user]);
 
-  // ── Fallback posts ──────────────────────────────────────────────────────────
+  // ── Fallback posts ─────────────────────────────────────────────────────────
   const fetchFallbackPosts = useCallback(async () => {
     if (!user) return;
     const now = Date.now();
@@ -801,7 +1510,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         try {
           const { data } = await axiosClient.get(url);
           const posts = Array.isArray(data) ? data : (data?.posts || data?.data || []);
-          return posts.map(p => ({...p, _fromFallback: true}));
+          return posts.map(p => ({ ...p, _fromFallback: true }));
         } catch (e) { if (e.response?.status === 404) delete window.__fallbackPostsRoutePromise__; return []; }
       }));
       const allFallback = results.filter(r => r.status === "fulfilled").flatMap(r => r.value).filter(p => p?._id);
@@ -836,7 +1545,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     startTransition(() => setLivePostsVer(v => v+1));
   }, [rawPosts]);
 
-  // ── isValidPost ─────────────────────────────────────────────────────────────
+  // ── isValidPost ────────────────────────────────────────────────────────────
   const isValidPost = useCallback((p) => {
     if (!p?._id) return false;
     if (p._isMock || p.isMockPost || p._id?.startsWith("post_")) return true;
@@ -853,20 +1562,26 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return true;
   }, []);
 
-  // ── rawPool ─────────────────────────────────────────────────────────────────
+  // ── rawPool v13 : smartBuildFeed avec followingIds ─────────────────────────
   const rawPool = useMemo(() => {
-    const live = livePostsRef.current;
+    const live  = livePostsRef.current;
     const dedup = (arr) => { const s = new Set(); return arr.filter(p => { if (s.has(p._id)) return false; s.add(p._id); return true; }); };
     const valid = dedup(live.filter(p => isValidPost(p)));
     const vReal = valid.filter(p => !p.isBot && !p.user?.isBot);
-    const vBots = valid.filter(p => p.isBot || p.user?.isBot);
-    if (!showMock) return buildFeed(vReal, vBots, seed);
-    const mocks = dedup(MOCK_POSTS.slice(0, mockCount));
-    if (MOCK_CONFIG.mixWithRealPosts && vReal.length > 0) return buildFeed(vReal.map(stablePost), [...vBots.map(stablePost), ...mocks], seed);
-    return seededShuffle(mocks, seed);
-  }, [livePostsVer, mockCount, showMock, isValidPost, seed]); // eslint-disable-line
+    const vBots = valid.filter(p =>  p.isBot ||  p.user?.isBot);
 
-  // ── Résolution des URLs expirables ──────────────────────────────────────────
+    if (!showMock) {
+      const sessionSeen = new Set();
+      return smartBuildFeed(vReal.map(stablePost), vBots.map(stablePost), sessionSeen, followingIds);
+    }
+    const mocks = dedup(MOCK_POSTS.slice(0, mockCount));
+    if (MOCK_CONFIG.mixWithRealPosts && vReal.length > 0) {
+      return smartBuildFeed(vReal.map(stablePost), [...vBots.map(stablePost), ...mocks], new Set(), followingIds);
+    }
+    return seededShuffle(mocks, seed);
+  }, [livePostsVer, mockCount, showMock, isValidPost, seed, followingIds]); // eslint-disable-line
+
+  // ── Résolution URLs expirables ─────────────────────────────────────────────
   useEffect(() => {
     if (!rawPool.length) { setResolved([]); return; }
     let cancelled = false;
@@ -874,7 +1589,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     const exp       = rawPool.filter(p =>  hasExpirable(p));
     startTransition(() => setResolved(immediate));
     if (!exp.length) return;
-    scheduleIdlePrefetch(immediate, 0, PREFETCH_AHEAD);
+    scheduleIdlePrefetch(immediate, 0, PREFETCH_AHEAD, 20);
     const rm = new Map(immediate.map(p => [p._id, p]));
     resolveBatch(exp, (partials) => {
       if (cancelled) return;
@@ -886,12 +1601,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       fr.forEach(p => rm.set(p._id, p));
       const o = rawPool.map(p => rm.get(p._id)).filter(Boolean);
       startTransition(() => setResolved(o));
-      scheduleIdlePrefetch(o, 0, PREFETCH_AHEAD * 2);
+      scheduleIdlePrefetch(o, 0, PREFETCH_AHEAD * 2, 20);
     });
     return () => { cancelled = true; };
   }, [rawPool]);
 
-  // ── Fix 1 : seed rotate désactivé pendant le scroll ────────────────────────
+  // ── Seed rotate ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
     const id = setInterval(() => {
@@ -916,7 +1631,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const isLoading = postsLoading && resolved.length === 0;
   useEffect(() => { loadingRef.current = postsLoading; }, [postsLoading]);
 
-  // ── Lazy mock generation ─────────────────────────────────────────────────────
+  // ── Lazy mock generation ───────────────────────────────────────────────────
   useEffect(() => {
     if (mockGenRef.current || isLoading || !MOCK_CONFIG.enabled) return;
     if (!(MOCK_CONFIG.totalPosts > 100 && MOCK_CONFIG.lazyGeneration?.enabled !== false)) return;
@@ -935,7 +1650,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => window.dispatchEvent(new CustomEvent("app:scroll", { detail: { scrollTop: 0 } }));
   }, []);
 
-  const showToast    = useCallback((msg, type="info") => { startTransition(() => setToast({ message:msg, type })); }, []);
+  const showToast     = useCallback((msg, type="info") => { startTransition(() => setToast({ message:msg, type })); }, []);
   const handleDeleted = useCallback((id) => { startTransition(() => removePost?.(id)); }, [removePost]);
   const triggerReset  = useCallback(() => { startTransition(() => setResetSig(k => k+1)); }, []);
   const handleOpenStory = useCallback((s, o) => {
@@ -943,13 +1658,16 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     else { setViewerData({ stories:s, owner:o }); setShowViewer(true); }
   }, [openStoryViewerProp]);
 
-  // ── Refresh ─────────────────────────────────────────────────────────────────
+  // ── Refresh ────────────────────────────────────────────────────────────────
   const handleRefresh = useCallback(async () => {
     if (isRefreshing) return;
     scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     setIsRefreshing(true); setNewPosts(0); setApiPages(1);
     setSeed(Math.floor(Math.random() * 0xffffffff));
-    prefetchTriggeredRef.current = false;
+    prefetchTriggeredRef.current  = false;
+    currentApiPageRef.current     = 1;
+    fetchingNextPageRef.current   = false;
+    fallbackFetchedRef.current    = false;
     try {
       if (postsLoading) {
         await new Promise(resolve => {
@@ -959,35 +1677,30 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
       }
       const [, r] = await Promise.allSettled([fetchStories(true), refetch?.()]);
       const fp = r?.value?.posts || [];
-      if (fp.length > 0) latestId.current = fp[0]._id;
+      if (fp.length > 0) { latestId.current = fp[0]._id; addLivePosts(fp); }
     } catch { showToast("Erreur lors de l'actualisation", "error"); }
     finally { setIsRefreshing(false); triggerReset(); }
-  }, [isRefreshing, postsLoading, refetch, fetchStories, showToast, triggerReset]);
+  }, [isRefreshing, postsLoading, refetch, fetchStories, showToast, triggerReset, addLivePosts]);
 
-  // ── Fix 2 : refetch silencieux → ajout FIN du tableau ──────────────────────
+  // ── Refetch silencieux ─────────────────────────────────────────────────────
   const handleScrollProgress = useCallback(async (ratio) => {
     if (!user || isRefreshing) return;
     const now = Date.now(), cooldownOk = now - silentLastFetchRef.current >= SILENT_COOLDOWN_MS;
-    const addSilent = (fp) => {
-      if (!fp?.length) return;
-      const ids   = new Set(livePostsRef.current.map(p => p._id));
-      const fresh = fp.filter(p => p?._id && !ids.has(p._id));
-      if (fresh.length > 0) {
-        livePostsRef.current = [...livePostsRef.current, ...fresh].slice(0, MAX_POOL);
-        startTransition(() => setLivePostsVer(v => v+1));
+    if (!cooldownOk) return;
+    if (ratio >= PREFETCH_THRESHOLD && !prefetchTriggeredRef.current) {
+      prefetchTriggeredRef.current = true;
+      silentFetchingRef.current    = true;
+      silentLastFetchRef.current   = now;
+      try {
+        const r = await refetch?.();
+        addLivePosts(r?.posts || []);
+      } catch {}
+      finally {
+        silentFetchingRef.current = false;
+        setTimeout(() => { prefetchTriggeredRef.current = false; }, 10_000);
       }
-    };
-    if (ratio >= PREFETCH_THRESHOLD && !prefetchTriggeredRef.current && cooldownOk) {
-      prefetchTriggeredRef.current = true; silentFetchingRef.current = true; silentLastFetchRef.current = now;
-      try { const r = await refetch?.(); addSilent(r?.posts); }
-      catch {} finally { silentFetchingRef.current = false; setTimeout(() => { prefetchTriggeredRef.current = false; }, 10_000); }
     }
-    if (ratio >= URGENT_THRESHOLD && !silentFetchingRef.current && cooldownOk) {
-      silentFetchingRef.current = true; silentLastFetchRef.current = now;
-      try { const r = await refetch?.(); addSilent(r?.posts); }
-      catch {} finally { silentFetchingRef.current = false; }
-    }
-  }, [user, isRefreshing, refetch]);
+  }, [user, isRefreshing, refetch, addLivePosts]);
 
   useEffect(() => {
     window.addEventListener(HOME_REFRESH_EVENT, handleRefresh);
@@ -1000,7 +1713,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => window.removeEventListener(HOME_SCROLL_TOP_EVENT, h);
   }, []);
 
-  // ── Polling nouveaux posts ───────────────────────────────────────────────────
+  // ── Polling nouveaux posts ─────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
     const poll = async () => {
@@ -1027,10 +1740,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
 
   const handleShowNew = useCallback(() => {
     setNewPosts(0);
+    currentApiPageRef.current   = 1;
+    fetchingNextPageRef.current = false;
     startTransition(() => { setSeed(Math.floor(Math.random() * 0xffffffff)); setResetSig(k => k+1); });
   }, []);
 
-  // ── Pull-to-refresh ─────────────────────────────────────────────────────────
+  // ── Pull-to-refresh ────────────────────────────────────────────────────────
   const PTR = 72;
   useEffect(() => {
     let raf = null, lu = 0;
@@ -1055,13 +1770,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => { if (raf) cancelAnimationFrame(raf); t.removeEventListener("touchstart", onStart); t.removeEventListener("touchmove", onMove); t.removeEventListener("touchend", onEnd); };
   }, [handleRefresh]);
 
-  // ── API load more observer ───────────────────────────────────────────────────
+  // ── API load more observer ─────────────────────────────────────────────────
   const apiObsFnRef = useRef(null);
   const apiObsFn = useCallback((entries) => {
     if (!entries[0].isIntersecting || loadingRef.current || isRefreshing) return;
     startPageTrans(() => {
       if (showMock && mockCount < MOCK_POSTS.length) setMockCount(p => Math.min(p + MOCK_CONFIG.loadMoreCount, MOCK_POSTS.length));
-      if (hasMore) { fetchNextPage(); setApiPages(p => p+1); }
+      if (hasMore) { fetchNextPage(); setApiPages(p => p+1); currentApiPageRef.current++; }
     });
   }, [hasMore, fetchNextPage, isRefreshing, showMock, mockCount]);
   useEffect(() => { apiObsFnRef.current = apiObsFn; }, [apiObsFn]);
@@ -1073,13 +1788,57 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => obs.disconnect();
   }, []); // eslint-disable-line
 
+  // ── v13 : Event bus d'interactions → embedding update + behavior tracker ──
+  useEffect(() => {
+    const tracker = getBehaviorTracker();
+    const userEmb = getUserEmbedding();
+
+    const h = (e) => {
+      const { action, post, position = 0 } = e.detail || {};
+      if (!post) return;
+
+      const postVec = postToVec(post);
+
+      switch (action) {
+        case "like":
+          tracker.onLike(post, position);
+          userEmb.update(postVec, 1.0);
+          break;
+        case "comment":
+          tracker.onComment(post, position);
+          userEmb.update(postVec, 1.2); // commentaire = signal encore plus fort
+          break;
+        case "share":
+          tracker.onShare(post, position);
+          userEmb.update(postVec, 1.5); // share = signal le plus fort
+          break;
+        case "save":
+          tracker.onSave(post, position);
+          userEmb.update(postVec, 0.8);
+          break;
+        case "hide":
+        case "not_interested":
+          tracker.onHide(post, position);
+          userEmb.update(postVec, -1.5); // signal négatif fort
+          break;
+        case "report":
+          tracker.onHide(post, position);
+          userEmb.update(postVec, -2.0); // signal négatif très fort
+          break;
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener("feed:interaction", h);
+    return () => window.removeEventListener("feed:interaction", h);
+  }, []);
+
   const bg     = isDarkMode ? "bg-black" : "bg-white";
   const border = isDarkMode ? "border-gray-800" : "border-gray-200";
 
   return (
     <div className={`flex flex-col ${bg}`} style={{ height:"100%", overflow:"hidden" }}>
-
-      {/* ✅ scrollRef est passé en prop AU Feed — c'est la référence directe */}
       <div
         ref={scrollRef}
         data-scroll-container="true"
@@ -1129,13 +1888,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
             isLoading={isLoading}
             newPostsCount={newPosts}
             onShowNewPosts={handleShowNew}
-            apiFullyLoaded={!hasMore && apiPages >= API_PREFETCH}
             resetSignal={resetSig}
             topOffset={TOTAL_TOP}
             suggestedUsers={suggestedUsers}
             newsArticles={newsArticles}
             onScrollProgress={handleScrollProgress}
+            onNeedMorePosts={handleNeedMorePosts}
             scrollContainerRef={scrollRef}
+            followingIds={followingIds}
           />
         </div>
       </div>

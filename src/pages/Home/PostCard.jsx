@@ -9,6 +9,11 @@
 // ✅ FIX 5 : mediaUrls useMemo — dépendances stables (longueurs)
 // ✅ FIX 6 : SimpleAvatar — memo strict, pas de recalcul inutile
 // ✅ FIX 7 : ActionsBar — memo strict avec comparateur personnalisé
+//
+// ✅ v3 — SYNC STATS TEMPS RÉEL :
+//   → handleLike : synchronise likesCount avec la vraie valeur retournée par l'API
+//   → handleLike : émet feed:interaction pour le scoring v13
+//   → PostCommentsModal reçoit onCommentsCountChange pour sync commentsCount
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -36,7 +41,7 @@ const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // ✅ FIX 1 : TIMESTAMP LIVE — timer GLOBAL partagé
 //
 // Problème original : 1 setTimeout par PostCard → 30+ timers actifs en parallèle
@@ -44,7 +49,7 @@ const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 //
 // Solution : 1 seul setInterval global à 15s qui notifie tous les abonnés.
 // Coût = O(1) peu importe le nombre de cards affichées.
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const _relativeSubscribers = new Set();
 let   _relativeTimer = null;
 
@@ -52,7 +57,7 @@ const _startGlobalTimer = () => {
   if (_relativeTimer) return;
   _relativeTimer = setInterval(() => {
     _relativeSubscribers.forEach(fn => fn());
-  }, 15_000); // tick toutes les 15s — suffisant pour "à l'instant" / "il y a X min"
+  }, 15_000);
 };
 
 const _formatRelative = (date) => {
@@ -76,23 +81,19 @@ const useRelativeTime = (date) => {
 
   useEffect(() => {
     if (!date) return;
-    // Met à jour immédiatement si la date a changé
     setLabel(_formatRelative(date));
-
-    // S'abonne au timer global
     const tick = () => setLabel(_formatRelative(date));
     _relativeSubscribers.add(tick);
     _startGlobalTimer();
-
     return () => { _relativeSubscribers.delete(tick); };
   }, [date]);
 
   return label;
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // URL HELPERS
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const EXTERNAL_URL_PATTERNS = [
   'youtube.com', 'youtu.be', 'player.vimeo.com', 'dailymotion.com',
   'cdn.pixabay.com', 'images.pexels.com',
@@ -113,9 +114,9 @@ const isStructurallyValid = (url) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// OBSERVER VIDÉO (singleton — inchangé)
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// OBSERVER VIDÉO (singleton)
+// ─────────────────────────────────────────────────────────────────────────────
 let _videoObserver = null;
 const _observedVideos = new WeakMap();
 
@@ -133,9 +134,9 @@ const getVideoObserver = () => {
   return _videoObserver;
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // CLOUDINARY URL
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const getCloudinaryUrl = (id, opts = {}) => {
   if (!id || typeof id !== "string") return null;
   if (id.startsWith("http") || id.startsWith("data:")) return id;
@@ -166,9 +167,9 @@ const resolveMediaUrl = (raw, opts = {}) => {
   return getCloudinaryUrl(raw, opts);
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // INDICATEUR POST EN COURS D'UPLOAD
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount }) => (
   <div className={`w-full max-w-[630px] mx-auto px-4 py-3 flex items-center gap-3 ${
     isDarkMode ? "bg-black border-b border-white/5" : "bg-white border-b border-gray-100"
@@ -191,9 +192,9 @@ export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount })
 ));
 PostUploadingIndicator.displayName = "PostUploadingIndicator";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // ✅ FIX 6 : AVATAR — memo strict
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
 
 const getAvatarColor = (username) => {
@@ -211,7 +212,6 @@ const getInitials = (username) => {
 const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
   const [error, setError] = useState(false);
 
-  // Mémoïsé au niveau module — pas de recalcul à chaque render
   const initials = useMemo(() => getInitials(username), [username]);
   const bgColor  = useMemo(() => getAvatarColor(username), [username]);
 
@@ -242,9 +242,9 @@ const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
 );
 SimpleAvatar.displayName = "SimpleAvatar";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // SKELETON
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const SkeletonPostCard = memo(({ isDarkMode }) => (
   <div className={`w-full max-w-[630px] mx-auto animate-pulse ${isDarkMode ? "bg-black" : "bg-white"}`}>
     <div className="flex items-center gap-3 p-3">
@@ -262,9 +262,9 @@ const SkeletonPostCard = memo(({ isDarkMode }) => (
 ));
 SkeletonPostCard.displayName = "SkeletonPostCard";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // DELETE MODAL
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
     onClick={() => !isDeleting && onCancel()}>
@@ -296,9 +296,9 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
 ));
 DeleteModal.displayName = "DeleteModal";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // ✅ FIX 7 : ACTIONS BAR — memo avec comparateur strict
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const ActionsBar = memo(({
   liked, likesCount, saved, commentsCount,
   isDarkMode, onLike, onOpenComments, onOpenShare, onSave,
@@ -346,9 +346,9 @@ const ActionsBar = memo(({
 );
 ActionsBar.displayName = "ActionsBar";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // POST CARD INNER
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
   const { user: currentUser, getToken, updateUserProfile } = useAuth();
@@ -359,7 +359,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const isMockPost   = mockPost || post._id?.startsWith("post_") || post.isMockPost;
   const isOptimistic = !!post.isOptimistic || post._id?.startsWith("temp_");
 
-  // ✅ FIX 4 : postUser — dépendances réduites à l'essentiel (pas 12 champs)
+  // ✅ FIX 4 : postUser — dépendances réduites à l'essentiel
   const postUser = useMemo(() => {
     const u = post.user || post.author || {};
     const fullName = u.fullName || post.fullName || "";
@@ -379,9 +379,8 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       isBannedOrDeleted: isBannedDeleted,
     };
   }, [
-    // ✅ Dépendances minimales : identifiant stable du post + user
     post._id,
-    post.user,       // référence de l'objet — change seulement si le post change
+    post.user,
     post.author,
     post.userId,
     post.fullName,
@@ -452,6 +451,17 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     [currentUser, isOwner, postUser._id]
   );
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // ✅ v3 : handleLike — synchronise avec le vrai count de la DB
+  //
+  // Fonctionnement :
+  //   1. Optimistic update immédiat (UX réactif)
+  //   2. Appel API
+  //   3. Si l'API retourne likesCount → on remplace l'estimation optimiste
+  //      par la vraie valeur DB (évite les dérives en cas de likes concurrents)
+  //   4. Si erreur → rollback propre
+  //   5. Émet feed:interaction pour le scoring v13 (embedding update)
+  // ─────────────────────────────────────────────────────────────────────────
   const handleLike = useCallback((e) => {
     e?.stopPropagation();
     if (loadingLikeRef.current) return;
@@ -459,13 +469,38 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     const { post, currentUser, isMockPost, isOptimistic, showToast } = postRef.current;
     if (isOptimistic) { showToast?.("Publication en cours, patientez…", "info"); return; }
     if (!currentUser) { showToast?.("Connectez-vous pour aimer", "info"); return; }
+
     loadingLikeRef.current = true;
+
+    // Optimistic update
     const nl = !liked;
     setLiked(nl);
     setLikesCount(c => nl ? c + 1 : c - 1);
+
     if (isMockPost) { loadingLikeRef.current = false; return; }
+
     axiosClient.post(`/posts/${post._id}/like`)
+      .then(({ data }) => {
+        // ✅ Synchroniser avec la vraie valeur DB retournée par l'API
+        // (remplace l'estimation optimiste en cas de likes concurrents)
+        if (typeof data.likesCount === 'number') {
+          setLikesCount(data.likesCount);
+        }
+        if (typeof data.userLiked === 'boolean') {
+          setLiked(data.userLiked);
+        }
+
+        // ✅ Émettre l'événement pour le feed scoring v13 (embedding update)
+        window.dispatchEvent(new CustomEvent("feed:interaction", {
+          detail: {
+            action:   "like",
+            post:     post,
+            position: post._displayPosition ?? 0,
+          },
+        }));
+      })
       .catch(err => {
+        // Rollback si erreur
         setLiked(liked);
         setLikesCount(likesCount);
         showToast?.(err.response?.data?.message || "Erreur", "error");
@@ -534,6 +569,11 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
   const handleOpenDelete   = useCallback((e) => { e?.stopPropagation(); setShowDeleteModal(true); }, []);
 
+  // ✅ v3 : callback pour synchroniser commentsCount depuis PostCommentsModal
+  const handleCommentsCountChange = useCallback((count) => {
+    if (typeof count === 'number') setCommentsCount(count);
+  }, []);
+
   const setRootRef = useCallback((node) => {
     cardRef.current = node;
     if (ref) {
@@ -547,7 +587,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
   const isBoosted      = !!post.isBoosted;
 
-  // ✅ FIX 5 : mediaUrls — dépendances stables (longueurs plutôt que références)
+  // ✅ FIX 5 : mediaUrls — dépendances stables (longueurs)
   const embedUrl  = post.embedUrl  || null;
   const videoUrl  = post.videoUrl  || null;
   const imagesLen = Array.isArray(post.images) ? post.images.length : 0;
@@ -579,14 +619,13 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     const arr = Array.isArray(imgSrc) ? imgSrc : (imgSrc ? [imgSrc] : []);
     arr.forEach(m => addUrl(typeof m === 'string' ? m : m?.url));
     return result;
-  }, [embedUrl, videoUrl, imagesLen, mediaLen]); // ✅ longueurs stables, pas de références
+  }, [embedUrl, videoUrl, imagesLen, mediaLen]);
 
   const hasMedia = mediaUrls.length > 0
     || post.mediaType === 'youtube'
     || post.mediaType === 'video'
     || !!(post.thumbnail && (videoUrl || embedUrl));
 
-  // ✅ FIX 1 : timer global partagé — 0 overhead par card supplémentaire
   const formattedDate = useRelativeTime(post.createdAt || null);
 
   if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
@@ -599,8 +638,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
         style={{
           margin: 0,
           padding: 0,
-          // ✅ FIX 2 : "layout style" évite les bugs de stacking context sur mobile
-          // "content" (original) bloquait overflow:visible nécessaire pour certains modals
           contain: "layout style",
         }}
       >
@@ -715,6 +752,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
               showToast={showToast}
               navigate={navigate}
               isMockPost={isMockPost}
+              onCommentsCountChange={handleCommentsCountChange}
             />
           </Suspense>
         </ErrorBoundary>
@@ -743,9 +781,9 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 });
 PostCardInner.displayName = "PostCardInner";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // POSTCARD wrapper
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
 

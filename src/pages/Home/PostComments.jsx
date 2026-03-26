@@ -1,5 +1,11 @@
 // src/pages/Home/PostComments.jsx
 // ✅ FIX CRITIQUE : BASE_URL ne doit pas inclure /api — évite le double /api/api/
+//
+// ✅ v2 — SYNC STATS TEMPS RÉEL :
+//   → Prop onCommentsCountChange ajoutée
+//   → Appelée après chaque ajout/suppression de commentaire (pas de réponse)
+//   → Utilise commentsCount retourné par l'API si disponible
+//   → Fallback sur safeComments.length si l'API ne retourne pas commentsCount
 
 import React, {
   useState, useRef, useEffect, useCallback, useMemo, memo
@@ -22,9 +28,9 @@ const BASE_URL = (() => {
   return url.replace(/\/api\/?$/, "");  // → "http://localhost:5000"
 })();
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // AVATAR
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const Avatar = memo(({ username, profilePhoto, size = 36, onClick }) => {
   const [error, setError] = useState(false);
 
@@ -62,9 +68,9 @@ const Avatar = memo(({ username, profilePhoto, size = 36, onClick }) => {
 });
 Avatar.displayName = "Avatar";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // TIME AGO
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const timeAgo = (date) => {
   if (!date) return "";
   const diff = Date.now() - new Date(date);
@@ -78,9 +84,9 @@ const timeAgo = (date) => {
   return new Date(date).toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // REPLY ROW
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNavigate, isReacting, isDeleting }) => {
   const user = reply.user || {};
   const isMe = currentUser && (user._id === currentUser._id);
@@ -160,9 +166,9 @@ const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNav
 });
 ReplyRow.displayName = "ReplyRow";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // COMMENT ROW
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const CommentRow = memo(({
   comment, currentUser, isDarkMode,
   onLike, onDelete, onReply, onNavigate,
@@ -311,9 +317,9 @@ const CommentRow = memo(({
 });
 CommentRow.displayName = "CommentRow";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // COLONNE GAUCHE — media + infos (desktop)
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const MediaColumn = memo(({ postUser, postContent, postMediaUrl, likesCount, isDarkMode, onNavigate }) => (
   <div className="flex flex-col h-full overflow-hidden">
     <div className="flex-1 min-h-0 bg-black flex items-center justify-center overflow-hidden">
@@ -353,15 +359,16 @@ const MediaColumn = memo(({ postUser, postContent, postMediaUrl, likesCount, isD
 ));
 MediaColumn.displayName = "MediaColumn";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // MODAL PRINCIPAL
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const PostCommentsModal = ({
   isOpen, onClose,
   postId, postUser, postContent, postMediaUrl, likesCount = 0,
   comments = [], setComments,
   currentUser, getToken, showToast, navigate,
   isMockPost = false,
+  onCommentsCountChange, // ✅ v2 : nouvelle prop — notifie PostCard du nouveau count
 }) => {
   const { isDarkMode } = useDarkMode();
   const [text,      setText]      = useState("");
@@ -438,15 +445,20 @@ const PostCommentsModal = ({
     setShowEmoji(false);
     if (inputRef.current) { inputRef.current.style.height = "auto"; inputRef.current.blur(); }
 
-    if (isMockPost) { showToast?.("Commentaire ajouté !", "success"); return; }
+    if (isMockPost) {
+      // ✅ v2 : mock — notifier avec le count estimé
+      if (!currentReplyTarget) {
+        onCommentsCountChange?.(safeComments.length + 1);
+      }
+      showToast?.("Commentaire ajouté !", "success");
+      return;
+    }
 
     setSending(true);
     try {
       const token = await getToken();
       if (!token) throw new Error("Non authentifié");
 
-      // ✅ BASE_URL = "http://localhost:5000" (sans /api)
-      // endpoint = "/api/posts/..." → résultat correct : "http://localhost:5000/api/posts/..."
       const endpoint = currentReplyTarget
         ? `${BASE_URL}/api/posts/${postId}/comment/${currentReplyTarget.commentId}/reply`
         : `${BASE_URL}/api/posts/${postId}/comment`;
@@ -469,6 +481,14 @@ const PostCommentsModal = ({
         ));
       } else {
         setComments(prev => prev.map(c => c._id === tempId ? saved : c));
+
+        // ✅ v2 : notifier PostCard avec le vrai count DB si disponible,
+        // sinon utiliser safeComments.length + 1 (le nouveau commentaire est déjà dans la liste)
+        onCommentsCountChange?.(
+          typeof data.commentsCount === 'number'
+            ? data.commentsCount
+            : safeComments.length + 1
+        );
       }
     } catch (err) {
       // Rollback
@@ -486,7 +506,7 @@ const PostCommentsModal = ({
     } finally {
       setSending(false);
     }
-  }, [currentUser, text, postId, isMockPost, getToken, setComments, showToast, replyTarget]);
+  }, [currentUser, text, postId, isMockPost, getToken, setComments, showToast, replyTarget, safeComments.length, onCommentsCountChange]);
 
   // ── SUPPRIMER ──
   const handleDelete = useCallback(async (id, parentCommentId = null) => {
@@ -503,7 +523,14 @@ const PostCommentsModal = ({
       setComments(prev => prev.filter(c => c._id !== id));
     }
 
-    if (isMockPost) { showToast?.("Commentaire supprimé", "success"); return; }
+    if (isMockPost) {
+      if (!parentCommentId) {
+        // ✅ v2 : notifier avec le count estimé
+        onCommentsCountChange?.(Math.max(0, safeComments.length - 1));
+      }
+      showToast?.("Commentaire supprimé", "success");
+      return;
+    }
 
     try {
       const token = await getToken();
@@ -513,12 +540,27 @@ const PostCommentsModal = ({
 
       const res = await fetch(endpoint, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error();
+
+      if (!parentCommentId) {
+        // ✅ v2 : notifier PostCard avec le vrai count DB si disponible
+        try {
+          const data = await res.json();
+          onCommentsCountChange?.(
+            typeof data.commentsCount === 'number'
+              ? data.commentsCount
+              : Math.max(0, safeComments.length - 1)
+          );
+        } catch {
+          onCommentsCountChange?.(Math.max(0, safeComments.length - 1));
+        }
+      }
+
       showToast?.("Supprimé", "success");
     } catch {
       setComments(prevComments);
       showToast?.("Erreur lors de la suppression", "error");
     }
-  }, [comments, postId, isMockPost, getToken, setComments, showToast]);
+  }, [comments, postId, isMockPost, getToken, setComments, showToast, safeComments.length, onCommentsCountChange]);
 
   // ── LIKER ──
   const handleLike = useCallback(async (id, parentCommentId = null) => {
