@@ -53,6 +53,9 @@
 //   ✅ Conserve : toutes les corrections v11 + v12 (seenPostIds, pagination
 //                 proactive, spinner, AbortController, pull-to-refresh, fallback
 //                 posts, BehaviorTracker, DiversityGuard, dwell time, etc.)
+//
+// CORRECTIF v23 :
+//   ✅ PostCardWrapper threshold : 0.5 → 0.1 (évite conflit avec VideoItem à 0.4)
 // ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -204,7 +207,6 @@ const saveBehavior = (behavior) => {
 };
 
 // ── v13 : Propension par position (IPS correction) ────────────────────────────
-// Un clic en position 0 est trivial (propension élevée), en position 9 est fort signal
 const POSITION_PROPENSITY = [1.00, 0.85, 0.72, 0.61, 0.52, 0.44, 0.38, 0.33, 0.28, 0.25];
 const ipsCorrectedLabel = (interacted, position) => {
   const propensity = POSITION_PROPENSITY[Math.min(position, POSITION_PROPENSITY.length - 1)];
@@ -219,7 +221,6 @@ const createBehaviorTracker = () => {
   const scheduleSave = () => { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 2000); dirty = true; };
   const clamp = (v, min = -20, max = 20) => Math.max(min, Math.min(max, v));
 
-  // ── v13 : boost corrigé par position IPS ──────────────────────────────────
   const boostWithIPS = (uid, cat, type, baseBoost, position = 0) => {
     const corrected = baseBoost * ipsCorrectedLabel(true, position);
     if (uid) behavior.authorBoosts[uid] = clamp((behavior.authorBoosts[uid] || 0) + corrected);
@@ -247,7 +248,6 @@ const createBehaviorTracker = () => {
       const uid = post.user?._id || post.author?._id;
       boostWithIPS(uid, post.category, null, 6, position);
     },
-    // ── v13 : hide signal — pénalise fortement ────────────────────────────────
     onHide:    (post, position = 0) => {
       const uid  = post.user?._id || post.author?._id;
       const cat  = post.category;
@@ -296,8 +296,8 @@ const getBehaviorTracker = () => {
 // ══════════════════════════════════════════════════════════════════════════════
 const EMB_DIM  = 32;
 const EMB_KEY  = "uemb_v1";
-const EMB_LR   = 0.01;  // learning rate
-const EMB_DECAY = 0.999; // weight decay léger
+const EMB_LR   = 0.01;
+const EMB_DECAY = 0.999;
 
 const createUserEmbedding = () => {
   let vec = new Float32Array(EMB_DIM);
@@ -328,16 +328,12 @@ const createUserEmbedding = () => {
   };
 
   return {
-    // Met à jour le vecteur utilisateur vers/contre le vecteur post
-    // label: +1 = positif (like, dwell, share), -1 = négatif (hide, skip)
     update(postVec, label) {
       for (let i = 0; i < EMB_DIM; i++) {
         vec[i] = vec[i] * EMB_DECAY + EMB_LR * label * postVec[i];
       }
       save();
     },
-
-    // Similarité cosinus entre vecteur user et vecteur post → [-1, 1]
     similarity(postVec) {
       const u = normalize(vec);
       const p = normalize(postVec);
@@ -345,7 +341,6 @@ const createUserEmbedding = () => {
       for (let i = 0; i < EMB_DIM; i++) dot += u[i] * p[i];
       return Math.max(-1, Math.min(1, dot));
     },
-
     getVec: () => vec,
     load,
     save,
@@ -358,40 +353,33 @@ const getUserEmbedding = () => {
   return _userEmbedding;
 };
 
-// Extraction d'un vecteur post depuis ses features (sans ML serveur)
 const postToVec = (post) => {
   const vec = new Float32Array(EMB_DIM);
   const uid = post.user?._id || post.author?._id || "";
 
-  // Feature 0-3 : engagement normalisé
   vec[0] = Math.tanh((post.likesCount    || 0) / 500);
   vec[1] = Math.tanh((post.commentsCount || 0) / 50);
   vec[2] = Math.tanh((post.sharesCount   || 0) / 20);
   vec[3] = post.user?.isVerified ? 1 : 0;
 
-  // Feature 4-7 : type de media
   vec[4] = post.videoUrl ? 1 : 0;
   vec[5] = (Array.isArray(post.images) ? post.images.length : post.images ? 1 : 0) > 0 ? 1 : 0;
   vec[6] = (post.content || post.contenu || "").length > 200 ? 1 : 0;
   vec[7] = Array.isArray(post.media) && post.media.length > 1 ? 1 : 0;
 
-  // Feature 8-13 : catégories (one-hot simplifié)
   const cats = ["tech", "sport", "news", "art", "food", "travel"];
   cats.forEach((c, i) => { vec[8 + i] = (post.category || "").toLowerCase().includes(c) ? 1 : 0; });
 
-  // Feature 14-23 : hash de l'auteur → embedding pseudo-aléatoire stable
   for (let j = 0; j < Math.min(uid.length, 10); j++) {
     vec[14 + j] += (uid.charCodeAt(j) % 100) / 100;
   }
 
-  // Feature 24-27 : fraîcheur
   const ageH = (Date.now() - new Date(post.createdAt || 0).getTime()) / 3_600_000;
   vec[24] = Math.exp(-ageH / 6);
   vec[25] = Math.exp(-ageH / 24);
   vec[26] = Math.exp(-ageH / 72);
-  vec[27] = ageH > 168 ? 1 : 0; // > 1 semaine
+  vec[27] = ageH > 168 ? 1 : 0;
 
-  // Feature 28-31 : followers normalisés
   const fl = post.user?.followersCount || 1;
   vec[28] = Math.tanh(fl / 1000);
   vec[29] = fl > 10000 ? 1 : 0;
@@ -401,24 +389,22 @@ const postToVec = (post) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE I : MultiObjective — prédiction de N objectifs distincts
+// SCORE I : MultiObjective
 // ══════════════════════════════════════════════════════════════════════════════
 const sigmoid = (x) => 1 / (1 + Math.exp(-Math.max(-20, Math.min(20, x))));
 
-// Poids des objectifs (configurable)
 const MULTI_OBJ_WEIGHTS = {
   like:    0.25,
   comment: 0.35,
   share:   0.30,
   watch:   0.20,
-  hide:    -0.40, // négatif : pénalise ce que l'user veut éviter
+  hide:    -0.40,
 };
 
 const multiObjectiveScore = (post, userEmbedding, baseScore) => {
-  const sim = userEmbedding.similarity(postToVec(post)); // [-1, 1]
-  const b   = baseScore / 100; // [0, 1]
+  const sim = userEmbedding.similarity(postToVec(post));
+  const b   = baseScore / 100;
 
-  // Prédiction de chaque action via features + similarité
   const pLike    = sigmoid(b * 3  + sim * 4);
   const pComment = sigmoid(b * 2  + sim * 3 - 0.5);
   const pShare   = sigmoid(b * 1.5 + sim * 5 - 1);
@@ -437,7 +423,7 @@ const multiObjectiveScore = (post, userEmbedding, baseScore) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE J : VelocityScore — momentum du post
+// SCORE J : VelocityScore
 // ══════════════════════════════════════════════════════════════════════════════
 const velocityScore = (post, now = Date.now()) => {
   const ageMs = now - new Date(post.createdAt || 0).getTime();
@@ -448,18 +434,16 @@ const velocityScore = (post, now = Date.now()) => {
   const shares   = post.sharesCount   || post.shares           || 0;
   const engagement = likes + comments * 3 + shares * 5;
 
-  // engagement par heure → normalisé logarithmiquement
   const velocity = engagement / ageH;
   return Math.min(100, Math.log1p(velocity) * 12);
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE K : SocialGraphBoost — amplification par réseau social
+// SCORE K : SocialGraphBoost
 // ══════════════════════════════════════════════════════════════════════════════
 const socialGraphBoost = (post, followingIds = new Set()) => {
   if (!followingIds.size) return 0;
 
-  // Posts aimés/commentés par des gens qu'on suit
   const likedByFollowing    = (post.likedBy    || []).filter(id => followingIds.has(id));
   const commentedByFollowing = (post.commentedBy || []).filter(id => followingIds.has(id));
   const sharedByFollowing    = (post.sharedBy   || []).filter(id => followingIds.has(id));
@@ -471,13 +455,12 @@ const socialGraphBoost = (post, followingIds = new Set()) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE M : FatigueDetector — détection saturation en temps réel
+// SCORE M : FatigueDetector
 // ══════════════════════════════════════════════════════════════════════════════
-const FATIGUE_WINDOW     = 20;  // fenêtre glissante
-const FATIGUE_MAX_PENALTY = 25; // pénalité max en pts
+const FATIGUE_WINDOW     = 20;
+const FATIGUE_MAX_PENALTY = 25;
 
 const createFatigueDetector = () => {
-  // { topic: count, uid: count }
   const recentTopics = [];
   const recentAuthors = [];
 
@@ -494,7 +477,7 @@ const createFatigueDetector = () => {
     fatigueTopic(post) {
       const topic = post.category || "unknown";
       const count = recentTopics.filter(t => t === topic).length;
-      return count / FATIGUE_WINDOW; // 0–1
+      return count / FATIGUE_WINDOW;
     },
 
     fatigueAuthor(post) {
@@ -506,7 +489,6 @@ const createFatigueDetector = () => {
     penalty(post) {
       const ft = this.fatigueTopic(post);
       const fa = this.fatigueAuthor(post);
-      // Pénalité pondérée topic + auteur
       return -(ft * 0.6 + fa * 0.4) * FATIGUE_MAX_PENALTY;
     },
   };
@@ -576,7 +558,7 @@ const applyDiversityGuard = (rankedPosts) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE L : ExplorationBudget — ε-greedy pour éviter les filter bubbles
+// SCORE L : ExplorationBudget — ε-greedy
 // ══════════════════════════════════════════════════════════════════════════════
 const applyExplorationBudget = (rankedPosts, totalSlots) => {
   if (rankedPosts.length <= 3) return rankedPosts;
@@ -587,10 +569,8 @@ const applyExplorationBudget = (rankedPosts, totalSlots) => {
   const exploit   = rankedPosts.slice(0, exploitSlots);
   const remaining = rankedPosts.slice(exploitSlots);
 
-  // Tirage aléatoire parmi les posts restants (score moyen → découverte)
   const explore = [...remaining].sort(() => Math.random() - 0.5).slice(0, exploreSlots);
 
-  // Interleave : 1 post exploratoire toutes les ~10 positions
   const result = [...exploit];
   const step   = Math.max(1, Math.round(1 / EXPLORATION_RATE));
   explore.forEach((p, i) => {
@@ -602,7 +582,7 @@ const applyExplorationBudget = (rankedPosts, totalSlots) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE E : smartBuildFeed v13 — combinaison de tous les scores
+// SCORE E : smartBuildFeed v13
 // ══════════════════════════════════════════════════════════════════════════════
 const smartBuildFeed = (posts, bots, seenIds, followingIds = new Set()) => {
   const tracker  = getBehaviorTracker();
@@ -611,14 +591,13 @@ const smartBuildFeed = (posts, bots, seenIds, followingIds = new Set()) => {
   const now      = Date.now();
 
   const scoredReal = posts.map(p => {
-    const base       = scorePost(p, now);                           // A : heuristique
-    const behavioral = tracker.applyBoost(p, base);                // B : comportement IPS
-    const velocity   = velocityScore(p, now);                      // J : momentum
-    const social     = socialGraphBoost(p, followingIds);          // K : réseau social
-    const mobjective = multiObjectiveScore(p, userEmb, base);      // I : multi-objectif
-    const fatigueP   = fatigue.penalty(p);                         // M : saturation
+    const base       = scorePost(p, now);
+    const behavioral = tracker.applyBoost(p, base);
+    const velocity   = velocityScore(p, now);
+    const social     = socialGraphBoost(p, followingIds);
+    const mobjective = multiObjectiveScore(p, userEmb, base);
+    const fatigueP   = fatigue.penalty(p);
 
-    // Decay pour posts déjà vus (50% du score)
     const seenDecay  = seenIds.has(p._id || p._displayKey) ? 0.5 : 1.0;
 
     const total = (
@@ -627,7 +606,7 @@ const smartBuildFeed = (posts, bots, seenIds, followingIds = new Set()) => {
       velocity    * 0.20 +
       social      * 0.15 +
       base        * 0.10 +
-      fatigueP          // additif négatif
+      fatigueP
     ) * seenDecay;
 
     return { post: { ...p, _score: Math.max(0, total) }, score: Math.max(0, total) };
@@ -646,7 +625,6 @@ const smartBuildFeed = (posts, bots, seenIds, followingIds = new Set()) => {
   const rankedReal = scoredReal.map(s => s.post);
   const rankedBots = scoredBots.map(s => s.post);
 
-  // Injection bots
   const mixed = [];
   let bi = 0;
   rankedReal.forEach((p, i) => {
@@ -659,14 +637,12 @@ const smartBuildFeed = (posts, bots, seenIds, followingIds = new Set()) => {
     mixed.push({ ...rankedBots[bi++], _isBot: true });
   }
 
-  // ε-greedy exploration
   const explored = applyExplorationBudget(mixed, mixed.length);
-  // Diversity guard
   return applyDiversityGuard(explored);
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Dwell Time Tracker (v12 conservé)
+// Dwell Time Tracker
 // ══════════════════════════════════════════════════════════════════════════════
 const createDwellTracker = (post, onDwell, onSkip) => {
   let enterTime     = null;
@@ -687,7 +663,7 @@ const createDwellTracker = (post, onDwell, onSkip) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Prefetch (v12 conservé)
+// Prefetch
 // ══════════════════════════════════════════════════════════════════════════════
 const prefetchedUrls = new Set();
 const prefetchOneUrl = (url) => {
@@ -730,7 +706,7 @@ const scheduleIdlePrefetch = (posts, fromIndex, count = PREFETCH_AHEAD, minScore
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// URL cache / expirable (v11 conservé)
+// URL cache / expirable
 // ══════════════════════════════════════════════════════════════════════════════
 const URL_CACHE_TTL    = 80 * 60 * 1000;
 const URL_CACHE_PREFIX = "murl_";
@@ -791,7 +767,7 @@ const _pCache = new WeakMap();
 const stablePost = (p) => { if(_pCache.has(p))return _pCache.get(p); const s=p._isMock===false?p:{...p,_isMock:false}; _pCache.set(p,s); return s; };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Composants UI (v12 conservés)
+// Composants UI
 // ══════════════════════════════════════════════════════════════════════════════
 const FeedSkeleton = memo(({ isDarkMode }) => {
   const bg1=isDarkMode?"#1c1c1c":"#f0f0f0",bg2=isDarkMode?"#2a2a2a":"#e4e4e4";
@@ -909,7 +885,7 @@ const NewsCard = memo(({ article, isDarkMode, onClick }) => {
 });
 NewsCard.displayName = "NewsCard";
 
-// ── v13 : PostCardWrapper avec _displayPosition pour IPS ──────────────────────
+// ── v13 + v23 : PostCardWrapper — threshold 0.1 (fix conflit VideoItem à 0.4) ─
 const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest }) => {
   const wrapRef  = useRef(null);
   const notified = useRef(false);
@@ -928,7 +904,10 @@ const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest
       } else {
         tracker.onLeave();
       }
-    }, { rootMargin: "0px", threshold: 0.5 });
+    }, {
+      rootMargin: "0px",
+      threshold: 0.1, // ✅ v23 : était 0.5, conflit avec VideoItem (0.4) — maintenant 0.1
+    });
 
     obs.observe(el);
     return () => { obs.disconnect(); tracker.onLeave(); };
@@ -986,7 +965,6 @@ const Feed = ({
   useEffect(() => { onNeedMorePostsRef.current  = onNeedMorePosts; },   [onNeedMorePosts]);
   useEffect(() => { postsRef.current = posts; }, [posts]);
 
-  // ── buildUnseenPool v13 ────────────────────────────────────────────────────
   const buildUnseenPool = useCallback((pool) => {
     const seen     = seenIdsRef.current;
     const tracker  = getBehaviorTracker();
@@ -1033,7 +1011,6 @@ const Feed = ({
     return unseen;
   }, [followingIds]);
 
-  // ── initFeed ───────────────────────────────────────────────────────────────
   const initFeed = useCallback((pool) => {
     loadingRef.current = false;
     seenIdsRef.current = new Set();
@@ -1051,7 +1028,6 @@ const Feed = ({
     scheduleIdlePrefetch(pool, 0, PAGE_SIZE + PREFETCH_AHEAD, 20);
   }, [buildUnseenPool]);
 
-  // ── Réaction aux changements de posts ─────────────────────────────────────
   useEffect(() => {
     const rc = resetSignal !== prevReset.current;
     prevReset.current = resetSignal;
@@ -1082,7 +1058,6 @@ const Feed = ({
 
   useEffect(() => { if (posts.length) initFeed(posts); }, []); // eslint-disable-line
 
-  // ── loadMore v13 ──────────────────────────────────────────────────────────
   const loadMore = useCallback(() => {
     if (loadingRef.current) return;
     const pool = orderedPoolRef.current;
@@ -1099,7 +1074,6 @@ const Feed = ({
     const ratio = seenIdsRef.current.size / Math.max(pool.length, 1);
     onScrollProgressRef.current?.(ratio);
 
-    // ── v13 : DiversityGuard + ExplorationBudget sur le batch ─────────────
     const rawBatch   = unseenPool.slice(0, PAGE_SIZE);
     const explored   = applyExplorationBudget(rawBatch, rawBatch.length);
     const batch      = applyDiversityGuard(explored);
@@ -1119,7 +1093,6 @@ const Feed = ({
     const tagged = batch.map((p, i) => ({ ...p, _displayKey: `p${offset + i}_${p._id}` }));
     tagged.forEach(p => seenIdsRef.current.add(p._id || p._displayKey));
 
-    // FatigueDetector : enregistre les posts affichés
     const fatigue = getFatigueDetector();
     tagged.forEach(p => fatigue.record(p));
 
@@ -1134,7 +1107,6 @@ const Feed = ({
   const loadMoreRef = useRef(loadMore);
   useEffect(() => { loadMoreRef.current = loadMore; }, [loadMore]);
 
-  // ── IntersectionObserver du sentinel ──────────────────────────────────────
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el) return;
@@ -1147,7 +1119,6 @@ const Feed = ({
     return () => obs.disconnect();
   }, [scrollContainerRef]);
 
-  // ── Scroll listener ────────────────────────────────────────────────────────
   useEffect(() => {
     const getScrollEl = () => scrollContainerRef?.current || null;
     let scrollEl = getScrollEl();
@@ -1202,13 +1173,11 @@ const Feed = ({
     scheduleIdlePrefetch(postsRef.current, index + 1, PREFETCH_AHEAD, 20);
   }, []);
 
-  // ── v13 : callbacks comportementaux + embedding update ────────────────────
   const tracker = getBehaviorTracker();
   const userEmb = getUserEmbedding();
 
   const handleDwell = useCallback((post, ms) => {
     tracker.onDwell(post, ms);
-    // Update embedding : dwell long = signal positif fort
     const label = ms > 8000 ? 1 : ms > 3000 ? 0.5 : 0.2;
     userEmb.update(postToVec(post), label);
   }, []); // eslint-disable-line
@@ -1325,7 +1294,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const [apiPages,     setApiPages]     = useState(1);
   const [seed,         setSeed]         = useState(() => Math.floor(Math.random() * 0xffffffff));
   const [suggestedUsers, setSuggestedUsers] = useState([]);
-  // ── v13 : following IDs pour social graph boost ───────────────────────────
   const [followingIds, setFollowingIds] = useState(new Set());
 
   const livePostsRef = useRef([]);
@@ -1358,7 +1326,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const TOTAL_TOP = STORIES_H;
   const showMock  = MOCK_CONFIG.enabled;
 
-  // ── News ───────────────────────────────────────────────────────────────────
   const { articles: newsGC }   = useNews({ maxArticles:4, category:"genieCivil",    autoFetch:!!user, enabled:!!user }) || {};
   const { articles: newsTech } = useNews({ maxArticles:2, category:"technologie",   autoFetch:!!user, enabled:!!user }) || {};
   const { articles: newsEnv }  = useNews({ maxArticles:2, category:"environnement", autoFetch:!!user, enabled:!!user }) || {};
@@ -1371,7 +1338,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return all.filter(a => { const key=a._id||a.id||a.url; if(seen.has(key))return false; seen.add(key); return true; });
   }, [newsGCLen, newsTechLen, newsEnvLen]); // eslint-disable-line
 
-  // ── addLivePosts ───────────────────────────────────────────────────────────
   const addLivePosts = useCallback((list) => {
     const ids   = new Set(livePostsRef.current.map(p => p._id));
     const fresh = list.filter(p => p?._id && !ids.has(p._id));
@@ -1381,7 +1347,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return true;
   }, []);
 
-  // ── v13 : charger les following IDs pour social graph ─────────────────────
   useEffect(() => {
     if (!user) return;
     (async () => {
@@ -1390,13 +1355,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         const list = Array.isArray(data) ? data : (data?.users || data?.following || []);
         const ids = new Set(list.map(u => u._id || u.id).filter(Boolean));
         setFollowingIds(ids);
-      } catch {
-        // fallback silencieux : social graph boost = 0 sans données
-      }
+      } catch {}
     })();
   }, [user]);
 
-  // ── handleNeedMorePosts ────────────────────────────────────────────────────
   const handleNeedMorePosts = useCallback(async () => {
     if (fetchingNextPageRef.current) return;
     if (!user) return;
@@ -1423,7 +1385,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     finally { fetchingNextPageRef.current = false; }
   }, [user, hasMore, fetchNextPage, refetch, addLivePosts]);
 
-  // ── scroll detection ───────────────────────────────────────────────────────
   useEffect(() => {
     const scrollEl = scrollRef.current;
     if (!scrollEl) return;
@@ -1436,7 +1397,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => { scrollEl.removeEventListener("scroll", onScroll); clearTimeout(scrollIdleTimerRef.current); };
   }, []);
 
-  // ── Suggestions ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user || sugFetched.current) return;
     sugFetched.current = true;
@@ -1455,7 +1415,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     })();
   }, [user]);
 
-  // ── Fallback posts ─────────────────────────────────────────────────────────
   const fetchFallbackPosts = useCallback(async () => {
     if (!user) return;
     const now = Date.now();
@@ -1545,7 +1504,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     startTransition(() => setLivePostsVer(v => v+1));
   }, [rawPosts]);
 
-  // ── isValidPost ────────────────────────────────────────────────────────────
   const isValidPost = useCallback((p) => {
     if (!p?._id) return false;
     if (p._isMock || p.isMockPost || p._id?.startsWith("post_")) return true;
@@ -1562,7 +1520,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return true;
   }, []);
 
-  // ── rawPool v13 : smartBuildFeed avec followingIds ─────────────────────────
   const rawPool = useMemo(() => {
     const live  = livePostsRef.current;
     const dedup = (arr) => { const s = new Set(); return arr.filter(p => { if (s.has(p._id)) return false; s.add(p._id); return true; }); };
@@ -1581,7 +1538,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return seededShuffle(mocks, seed);
   }, [livePostsVer, mockCount, showMock, isValidPost, seed, followingIds]); // eslint-disable-line
 
-  // ── Résolution URLs expirables ─────────────────────────────────────────────
   useEffect(() => {
     if (!rawPool.length) { setResolved([]); return; }
     let cancelled = false;
@@ -1606,7 +1562,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => { cancelled = true; };
   }, [rawPool]);
 
-  // ── Seed rotate ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
     const id = setInterval(() => {
@@ -1631,7 +1586,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
   const isLoading = postsLoading && resolved.length === 0;
   useEffect(() => { loadingRef.current = postsLoading; }, [postsLoading]);
 
-  // ── Lazy mock generation ───────────────────────────────────────────────────
   useEffect(() => {
     if (mockGenRef.current || isLoading || !MOCK_CONFIG.enabled) return;
     if (!(MOCK_CONFIG.totalPosts > 100 && MOCK_CONFIG.lazyGeneration?.enabled !== false)) return;
@@ -1658,7 +1612,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     else { setViewerData({ stories:s, owner:o }); setShowViewer(true); }
   }, [openStoryViewerProp]);
 
-  // ── Refresh ────────────────────────────────────────────────────────────────
   const handleRefresh = useCallback(async () => {
     if (isRefreshing) return;
     scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -1682,7 +1635,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     finally { setIsRefreshing(false); triggerReset(); }
   }, [isRefreshing, postsLoading, refetch, fetchStories, showToast, triggerReset, addLivePosts]);
 
-  // ── Refetch silencieux ─────────────────────────────────────────────────────
   const handleScrollProgress = useCallback(async (ratio) => {
     if (!user || isRefreshing) return;
     const now = Date.now(), cooldownOk = now - silentLastFetchRef.current >= SILENT_COOLDOWN_MS;
@@ -1713,7 +1665,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => window.removeEventListener(HOME_SCROLL_TOP_EVENT, h);
   }, []);
 
-  // ── Polling nouveaux posts ─────────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
     const poll = async () => {
@@ -1745,7 +1696,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     startTransition(() => { setSeed(Math.floor(Math.random() * 0xffffffff)); setResetSig(k => k+1); });
   }, []);
 
-  // ── Pull-to-refresh ────────────────────────────────────────────────────────
   const PTR = 72;
   useEffect(() => {
     let raf = null, lu = 0;
@@ -1770,7 +1720,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => { if (raf) cancelAnimationFrame(raf); t.removeEventListener("touchstart", onStart); t.removeEventListener("touchmove", onMove); t.removeEventListener("touchend", onEnd); };
   }, [handleRefresh]);
 
-  // ── API load more observer ─────────────────────────────────────────────────
   const apiObsFnRef = useRef(null);
   const apiObsFn = useCallback((entries) => {
     if (!entries[0].isIntersecting || loadingRef.current || isRefreshing) return;
@@ -1788,7 +1737,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
     return () => obs.disconnect();
   }, []); // eslint-disable-line
 
-  // ── v13 : Event bus d'interactions → embedding update + behavior tracker ──
   useEffect(() => {
     const tracker = getBehaviorTracker();
     const userEmb = getUserEmbedding();
@@ -1806,11 +1754,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
           break;
         case "comment":
           tracker.onComment(post, position);
-          userEmb.update(postVec, 1.2); // commentaire = signal encore plus fort
+          userEmb.update(postVec, 1.2);
           break;
         case "share":
           tracker.onShare(post, position);
-          userEmb.update(postVec, 1.5); // share = signal le plus fort
+          userEmb.update(postVec, 1.5);
           break;
         case "save":
           tracker.onSave(post, position);
@@ -1819,11 +1767,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery = "" }) => {
         case "hide":
         case "not_interested":
           tracker.onHide(post, position);
-          userEmb.update(postVec, -1.5); // signal négatif fort
+          userEmb.update(postVec, -1.5);
           break;
         case "report":
           tracker.onHide(post, position);
-          userEmb.update(postVec, -2.0); // signal négatif très fort
+          userEmb.update(postVec, -2.0);
           break;
         default:
           break;

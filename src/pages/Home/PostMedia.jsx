@@ -1,21 +1,19 @@
 // 📁 src/pages/Home/PostMedia.jsx
+// ✅ GRID LAYOUT v25-TEXT-FALLBACK
 //
-// ✅ GRID LAYOUT v22-VIDEO-PAUSE-ON-SCROLL
+// FIXES v25 :
+//   - TextOnlyCard : si tous les slots media échouent ET que post.content existe,
+//     affiche le texte en grand sur fond coloré (style Facebook post texte pur).
+//     Police adaptative : 32px ≤280 chars, 24px ≤500 chars, 18px au-delà.
+//     Fond : gradient parmi 8 palettes selon un hash du contenu (stable).
+//     Hauteur min 260px, max 420px selon longueur du texte.
+//     Le composant est exporté pour usage éventuel dans PostCard.
 //
-//  - Lightbox supprimée : aucun agrandissement au clic
-//  - onCellClick supprimé : les cellules ne sont plus cliquables
-//  - VideoItem : AbortController + debounce 80ms
-//  - VideoItem : src assigné au montage pour préchargement anticipé
-//  - VideoItem : timeout 4s annulé si isActive → false
-//  - VideoItem : canplay listener toujours retiré au cleanup
-//  - useMediaValidation inchangée (safetyTimer 5s, image 1s, vidéo 4s)
-//
-// ✅ FIX v22 — PAUSE AU SCROLL :
-//  - VideoItem n'utilise plus isActive={true} en dur
-//  - Chaque VideoItem possède son propre IntersectionObserver (threshold 0.5)
-//  - Quand la vidéo sort du viewport → pause automatique + currentTime reset
-//  - Quand elle revient → reprise automatique (si l'utilisateur n'a pas mis en pause manuellement)
-//  - userPausedRef : si l'utilisateur pause manuellement, on ne reprend PAS au scroll
+// FIXES v24 (conservés) :
+//   - VideoItem : videoError → return null (slot entier supprimé, plus de "Vidéo indisponible")
+//   - useMediaValidation : onerror vidéo → invalide immédiatement (plus d'attente 4s)
+//   - useMediaValidation : timeout vidéo réduit 4000→2000ms
+//   - PostMedia recalcule le layout sur les slots valides uniquement
 
 import React, {
   useState, useRef, useEffect, useCallback, useMemo
@@ -32,7 +30,11 @@ const API_BASE  = (import.meta.env.VITE_API_URL || 'http://localhost:5000').repl
 let currentPlayingVideo = null;
 const registerPlayingVideo = (video) => {
   if (!video) return;
-  if (currentPlayingVideo && currentPlayingVideo !== video) {
+  if (
+    currentPlayingVideo &&
+    currentPlayingVideo !== video &&
+    document.contains(currentPlayingVideo)
+  ) {
     try { currentPlayingVideo.pause(); } catch {}
   }
   currentPlayingVideo = video;
@@ -159,6 +161,123 @@ const resolveSlotType = (url, postMediaType = null) => {
   if (isVideoUrl(url) || isExternalVideo(url)) return 'video';
   return 'image';
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ v25 : TEXT ONLY CARD — style Facebook post texte pur
+// Affiché quand tous les slots média ont échoué mais que du texte existe
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 8 palettes de gradient : [from, to, textColor]
+const TEXT_CARD_PALETTES = [
+  ['#1877F2', '#0D5FCC', '#ffffff'],   // bleu Facebook
+  ['#E4405F', '#C13584', '#ffffff'],   // rose Instagram
+  ['#FF6B35', '#F7C59F', '#ffffff'],   // orange chaud
+  ['#2EC4B6', '#0B7A75', '#ffffff'],   // teal
+  ['#6A0572', '#AB83A1', '#ffffff'],   // violet
+  ['#1A1A2E', '#16213E', '#ffffff'],   // marine nuit
+  ['#2D6A4F', '#52B788', '#ffffff'],   // vert forêt
+  ['#8B2FC9', '#5A108F', '#ffffff'],   // pourpre
+];
+
+// Hash stable du texte → index de palette (0-7)
+const hashText = (str) => {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(31, h) + str.charCodeAt(i) | 0;
+  }
+  return Math.abs(h) % TEXT_CARD_PALETTES.length;
+};
+
+// Taille de police selon longueur du texte
+const getFontSize = (len) => {
+  if (len <= 60)  return { size: '32px', lineHeight: '1.25', weight: '700' };
+  if (len <= 120) return { size: '26px', lineHeight: '1.30', weight: '700' };
+  if (len <= 220) return { size: '22px', lineHeight: '1.35', weight: '600' };
+  if (len <= 380) return { size: '18px', lineHeight: '1.40', weight: '600' };
+  return            { size: '15px', lineHeight: '1.50', weight: '500' };
+};
+
+// Hauteur du bloc selon longueur du texte
+const getCardHeight = (len) => {
+  if (len <= 60)  return 260;
+  if (len <= 120) return 280;
+  if (len <= 220) return 300;
+  if (len <= 380) return 340;
+  if (len <= 600) return 380;
+  return 420;
+};
+
+export const TextOnlyCard = React.memo(({ content }) => {
+  if (!content || typeof content !== 'string' || !content.trim()) return null;
+
+  const text      = content.trim();
+  const paletteIdx = hashText(text);
+  const [from, to, textColor] = TEXT_CARD_PALETTES[paletteIdx];
+  const { size, lineHeight, weight } = getFontSize(text.length);
+  const height = getCardHeight(text.length);
+
+  // Tronque à 500 chars pour l'affichage dans la card
+  const displayed = text.length > 500 ? text.slice(0, 497) + '…' : text;
+
+  return (
+    <div
+      style={{
+        width: '100%',
+        minHeight: height,
+        background: `linear-gradient(135deg, ${from} 0%, ${to} 100%)`,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '28px 24px',
+        boxSizing: 'border-box',
+        position: 'relative',
+        overflow: 'hidden',
+      }}
+    >
+      {/* Décoration de fond subtile */}
+      <div style={{
+        position: 'absolute',
+        top: -60,
+        right: -60,
+        width: 200,
+        height: 200,
+        borderRadius: '50%',
+        background: 'rgba(255,255,255,0.06)',
+        pointerEvents: 'none',
+      }} />
+      <div style={{
+        position: 'absolute',
+        bottom: -40,
+        left: -40,
+        width: 150,
+        height: 150,
+        borderRadius: '50%',
+        background: 'rgba(255,255,255,0.04)',
+        pointerEvents: 'none',
+      }} />
+
+      {/* Texte centré */}
+      <p style={{
+        color: textColor,
+        fontSize: size,
+        lineHeight: lineHeight,
+        fontWeight: weight,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        textAlign: 'center',
+        margin: 0,
+        position: 'relative',
+        zIndex: 1,
+        wordBreak: 'break-word',
+        overflowWrap: 'break-word',
+        letterSpacing: text.length <= 60 ? '-0.5px' : 'normal',
+        textShadow: '0 1px 3px rgba(0,0,0,0.15)',
+      }}>
+        {displayed}
+      </p>
+    </div>
+  );
+});
+TextOnlyCard.displayName = 'TextOnlyCard';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BADGE SOURCE
@@ -319,20 +438,14 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
 HLSItem.displayName = 'HLSItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO ITEM — pause automatique au scroll via IntersectionObserver
-//
-// ✅ FIX v22 : isActive n'est PLUS passé en dur à true depuis MediaCell.
-//   Le VideoItem gère lui-même sa visibilité via un IntersectionObserver interne.
-//   → threshold: 0.5 = la vidéo doit être visible à 50% pour jouer
-//   → Si l'utilisateur pause manuellement (userPausedRef=true), on ne reprend pas
-//   → currentTime reset à 0 quand la vidéo sort du viewport (comportement Instagram)
+// VIDEO ITEM v24
 // ─────────────────────────────────────────────────────────────────────────────
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
 
 const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
-  onRegisterVideoEl, slotIndex, showBadge = true }) => {
-  // ✅ v22 : plus de prop isActive — géré en interne via IntersectionObserver
+  onRegisterVideoEl, slotIndex, showBadge = true, onVideoError,
+}) => {
   const videoRef      = useRef(null);
   const containerRef  = useRef(null);
   const muteButtonRef = useRef(null);
@@ -343,7 +456,7 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
   const timerRef      = useRef(null);
   const srcSetRef     = useRef(false);
   const isVisibleRef  = useRef(false);
-  const userPausedRef = useRef(false); // true si l'utilisateur a pausé manuellement
+  const userPausedRef = useRef(false);
 
   const [currentSrc,    setCurrentSrc]    = useState(() => videoUrls.proxy || videoUrls.direct);
   const [videoError,    setVideoError]    = useState(false);
@@ -358,7 +471,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
     onRegisterVideoEl?.(slotIndex, el);
   }, [onRegisterVideoEl, slotIndex]);
 
-  // ✅ Préchargement anticipé au montage
   useEffect(() => {
     if (!currentSrc || srcSetRef.current) return;
     const vid = videoRef.current; if (!vid) return;
@@ -370,52 +482,30 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
     if (isLCP) vid.load();
   }, [currentSrc, preloadStrat, isLCP]);
 
-  // ✅ v22 : IntersectionObserver interne — gère play/pause selon visibilité
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-
     const obs = new IntersectionObserver(([entry]) => {
       const visible = entry.isIntersecting;
       isVisibleRef.current = visible;
-
-      if (visible) {
-        // Entré dans le viewport → jouer (sauf si l'utilisateur a pausé manuellement)
-        if (!userPausedRef.current) {
-          playVideo();
-        }
-      } else {
-        // Sorti du viewport → pause + reset
-        pauseVideo(true);
-      }
-    }, {
-      // threshold: 0.5 = au moins 50% visible pour déclencher la lecture
-      // rootMargin négatif pour être sûr que la vidéo est bien visible
-      threshold: 0.5,
-    });
-
+      if (visible) { if (!userPausedRef.current) playVideo(); }
+      else { pauseVideo(true); }
+    }, { threshold: 0.4, rootMargin: '-5% 0px' });
     obs.observe(container);
-    return () => {
-      obs.disconnect();
-      pauseVideo(false); // cleanup sans reset (le composant se démonte)
-    };
+    return () => { obs.disconnect(); pauseVideo(false); };
   }, []); // eslint-disable-line
 
   const playVideo = useCallback(() => {
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
-
     debounceRef.current = setTimeout(() => {
       debounceRef.current = null;
       const vid = videoRef.current; if (!vid) return;
-
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
-
       vid.muted  = true;
       vid.volume = 1;
       userPausedRef.current = false;
-
       const doPlay = () => {
         if (ctrl.signal.aborted) return;
         if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -428,22 +518,17 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
         }).catch(err => {
           if (ctrl.signal.aborted || err.name === 'AbortError') return;
           if (err.name !== 'NotAllowedError') {
-            setTimeout(() => {
-              if (ctrl.signal.aborted) return;
-              vid.play().catch(() => { vid.muted = true; });
-            }, 300);
+            setTimeout(() => { if (ctrl.signal.aborted) return; vid.play().catch(() => { vid.muted = true; }); }, 300);
           }
         });
       };
-
       if (vid.readyState >= 3) {
         doPlay();
       } else {
         timerRef.current = setTimeout(() => {
           timerRef.current = null;
-          if (!ctrl.signal.aborted && vid.readyState < 1) setVideoError(true);
+          if (!ctrl.signal.aborted && vid.readyState < 1) { setVideoError(true); onVideoError?.(); }
         }, 4000);
-
         if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
         const onCan = () => {
           vid.removeEventListener('canplay', onCan);
@@ -454,8 +539,8 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
         canplayRef.current = onCan;
         vid.addEventListener('canplay', onCan);
       }
-    }, 80);
-  }, []);
+    }, 200);
+  }, [onVideoError]); // eslint-disable-line
 
   const pauseVideo = useCallback((resetTime = false) => {
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
@@ -466,24 +551,21 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
     if (vid) {
       if (canplayRef.current) { vid.removeEventListener('canplay', canplayRef.current); canplayRef.current = null; }
       vid.pause();
-      if (resetTime) {
-        // ✅ Reset à 0 quand hors viewport (comportement Instagram/TikTok)
-        vid.currentTime = 0;
-        setPosterVisible(true);
-      }
-      vid.muted = true;
-      vid.volume = 1;
+      if (resetTime) { vid.currentTime = 0; setPosterVisible(true); }
+      vid.muted = true; vid.volume = 1;
     }
   }, []);
 
-  // Cleanup complet au démontage
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (timerRef.current)    clearTimeout(timerRef.current);
       abortRef.current?.abort();
       const vid = videoRef.current;
-      if (vid && canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
+      if (vid) {
+        if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
+        vid.pause(); vid.src = ''; vid.load();
+      }
     };
   }, []); // eslint-disable-line
 
@@ -497,62 +579,34 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
       muteButtonRef.current.innerHTML = newMuted ? ICON_MUTED : ICON_UNMUTED;
     if (!newMuted && vid.paused && isVisibleRef.current) {
       userPausedRef.current = false;
-      vid.play().catch(() => {
-        vid.muted = true; vid.volume = 0; isMutedLocal.current = true;
-        if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
-      });
+      vid.play().catch(() => { vid.muted = true; vid.volume = 0; isMutedLocal.current = true; if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED; });
     }
   }, []);
 
-  // ✅ Si l'utilisateur clique sur pause/play natif, on le respecte
-  const handlePlay  = useCallback(() => {
-    registerPlayingVideo(videoRef.current);
-    setPosterVisible(false);
-    userPausedRef.current = false;
-  }, []);
-
-  const handlePause = useCallback(() => {
-    // Ne marquer userPaused que si la vidéo est encore dans le viewport
-    // (évite de marquer userPaused lors d'une pause déclenchée par scroll out)
-    if (isVisibleRef.current) {
-      userPausedRef.current = true;
-    }
-  }, []);
+  const handlePlay  = useCallback(() => { registerPlayingVideo(videoRef.current); setPosterVisible(false); userPausedRef.current = false; }, []);
+  const handlePause = useCallback(() => { if (isVisibleRef.current) userPausedRef.current = true; }, []);
 
   const handleError = useCallback(() => {
     const { proxy, direct } = videoUrls;
     if (currentSrc === proxy && direct) {
       setCurrentSrc(direct);
       const v = videoRef.current;
-      if (v) {
-        v.src = direct; v.load();
-        if (isVisibleRef.current && !userPausedRef.current) v.play().catch(() => {});
-      }
+      if (v) { v.src = direct; v.load(); if (isVisibleRef.current && !userPausedRef.current) v.play().catch(() => {}); }
       return;
     }
-    setVideoError(true); setPosterVisible(false);
-  }, [videoUrls, currentSrc]);
+    setVideoError(true);
+    onVideoError?.();
+  }, [videoUrls, currentSrc, onVideoError]);
 
-  if (videoError) return (
-    <div style={{ position: 'absolute', inset: 0, background: '#111',
-      display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      {posterUrl && <img src={posterUrl} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.3 }} />}
-      <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <span style={{ fontSize: 32 }}>📹</span>
-        <span style={{ color: '#666', fontSize: 11 }}>Vidéo indisponible</span>
-      </div>
-    </div>
-  );
+  if (videoError) return null;
 
   return (
-    // ✅ v22 : ref sur le container pour l'IntersectionObserver
     <div ref={containerRef} style={{ position: 'absolute', inset: 0, background: '#000' }}>
       <video ref={setVideoRef}
         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
         preload={preloadStrat} playsInline loop
         crossOrigin={useCrossOrigin ? 'anonymous' : undefined}
         onPlay={handlePlay} onPause={handlePause} onError={handleError} />
-
       {posterUrl && (
         <img src={posterUrl} alt=""
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
@@ -560,13 +614,8 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
             opacity: posterVisible ? 1 : 0, transition: isLCP ? 'none' : 'opacity 0.3s ease' }}
           loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'} draggable="false" />
       )}
-
       {showBadge && <VideoSourceBadge url={url} />}
-
-      {/* Bouton mute — toujours visible sur les vidéos */}
-      <button
-        ref={muteButtonRef}
-        onClick={handleMuteClick}
+      <button ref={muteButtonRef} onClick={handleMuteClick}
         style={{
           position: 'absolute', bottom: 8, right: 8, zIndex: 20,
           width: 30, height: 30, borderRadius: '50%',
@@ -600,7 +649,7 @@ const ImageItem = React.memo(({ url, isLCP }) => {
 ImageItem.displayName = 'ImageItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MEDIA CELL — ✅ v22 : VideoItem sans prop isActive (géré en interne)
+// MEDIA CELL
 // ─────────────────────────────────────────────────────────────────────────────
 const MediaCell = React.memo(({
   url, slotType, posterUrl, isLCP,
@@ -609,6 +658,7 @@ const MediaCell = React.memo(({
   paddingBottom = '75%',
   overlay = null,
   wrapperStyle = {},
+  onVideoError,
 }) => {
   const embedThumbnail = useMemo(() => post?.thumbnail || getYouTubeThumbnail(url), [post?.thumbnail, url]);
 
@@ -620,16 +670,9 @@ const MediaCell = React.memo(({
         ) : slotType === 'hls' ? (
           <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
         ) : slotType === 'video' ? (
-          // ✅ v22 : isActive supprimé — le VideoItem gère sa propre visibilité
-          <VideoItem
-            url={url}
-            posterUrl={posterUrl}
-            isLCP={isLCP}
-            initialMuted={true}
-            onRegisterVideoEl={onRegisterVideoEl}
-            slotIndex={slotIndex}
-            showBadge={showBadge}
-          />
+          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} initialMuted={true}
+            onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex}
+            showBadge={showBadge} onVideoError={onVideoError} />
         ) : (
           <ImageItem url={url} isLCP={isLCP} />
         )}
@@ -692,7 +735,7 @@ const MediaCellAuto = React.memo((props) => {
 MediaCellAuto.displayName = 'MediaCellAuto';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HOOK — validation des URLs media
+// HOOK — validation des URLs media v24
 // ─────────────────────────────────────────────────────────────────────────────
 const useMediaValidation = (urls, slotTypes) => {
   const [validIndices, setValidIndices] = useState(null);
@@ -724,7 +767,7 @@ const useMediaValidation = (urls, slotTypes) => {
 
       if (type === 'video') {
         return new Promise((resolve) => {
-          const timer = setTimeout(() => resolve({ i, ok: false }), 4000);
+          const timer = setTimeout(() => resolve({ i, ok: false }), 2000);
           const vid = document.createElement('video');
           vid.muted = true; vid.preload = 'metadata';
           vid.onloadedmetadata = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: true });  };
@@ -767,7 +810,13 @@ const MediaPlaceholder = React.memo(({ total }) => {
 MediaPlaceholder.displayName = 'MediaPlaceholder';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST MEDIA — composant principal
+// POST MEDIA v25
+//
+// Nouveauté v25 : quand activeIndices = [] (tous les slots ont échoué)
+// ET que post.content contient du texte → affiche TextOnlyCard
+// au lieu de retourner null.
+// Le texte est déjà rendu dans PostCard, mais ici on lui donne un rendu
+// grand format centré sur fond coloré (style Facebook texte pur).
 // ─────────────────────────────────────────────────────────────────────────────
 const GAP = 2;
 
@@ -779,6 +828,15 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const onRegisterVideoEl = useCallback((i, el) => {
     if (el) videoRefsMap.current[i] = el;
     else delete videoRefsMap.current[i];
+  }, []);
+
+  const [failedSlots, setFailedSlots] = useState(() => new Set());
+  const markSlotFailed = useCallback((slotIndex) => {
+    setFailedSlots(prev => {
+      const next = new Set(prev);
+      next.add(slotIndex);
+      return next;
+    });
   }, []);
 
   const safeMediaUrls = useMemo(() => {
@@ -805,9 +863,14 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const total        = urls.length;
   const validIndices = useMediaValidation(urls, slotTypes);
 
-  const validUrls      = validIndices ? validIndices.map(i => urls[i])       : [];
-  const validSlotTypes = validIndices ? validIndices.map(i => slotTypes[i])  : [];
-  const validPosters   = validIndices ? validIndices.map(i => posterUrls[i]) : [];
+  const activeIndices = useMemo(() => {
+    if (!validIndices) return null;
+    return validIndices.filter(i => !failedSlots.has(i));
+  }, [validIndices, failedSlots]);
+
+  const validUrls      = activeIndices ? activeIndices.map(i => urls[i])       : [];
+  const validSlotTypes = activeIndices ? activeIndices.map(i => slotTypes[i])  : [];
+  const validPosters   = activeIndices ? activeIndices.map(i => posterUrls[i]) : [];
   const validTotal     = validUrls.length;
 
   const cellProps = useCallback((i, extra = {}) => ({
@@ -816,15 +879,26 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     posterUrl:        validPosters[i],
     isLCP:            isLCPSlot && i === 0,
     onRegisterVideoEl,
-    slotIndex:        i,
+    slotIndex:        activeIndices?.[i] ?? i,
     showBadge,
     post,
+    onVideoError:     () => markSlotFailed(activeIndices?.[i] ?? i),
     ...extra,
-  }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post]); // eslint-disable-line
+  }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, activeIndices, markSlotFailed]); // eslint-disable-line
 
   if (!total) return null;
-  if (validIndices === null) return <MediaPlaceholder total={total} />;
-  if (validTotal === 0) return null;
+
+  // Encore en cours de validation → placeholder
+  if (activeIndices === null) return <MediaPlaceholder total={total} />;
+
+  // ✅ v25 : tous les slots ont échoué → TextOnlyCard si contenu disponible
+  if (validTotal === 0) {
+    const content = post?.content || post?.contenu || '';
+    if (content.trim()) {
+      return <TextOnlyCard content={content} />;
+    }
+    return null;
+  }
 
   if (validTotal === 1) return <MediaCellAuto key="c0" {...cellProps(0)} />;
   if (validTotal === 2) return (
