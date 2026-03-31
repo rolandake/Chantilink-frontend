@@ -4,13 +4,17 @@
 // ✅ Refresh token longue durée (90j) dans cookie httpOnly — géré par le navigateur
 // ✅ "Se souvenir de moi" → 90 jours | sinon → session navigateur
 // ✅ Même appareil = connecté automatiquement | Nouvel appareil = connexion requise
-// 🔥 FIX PROD : API_URL utilise isProd pour ne jamais pointer localhost en production
 //
 // 🔥 FIX LCP COLD START :
 //    - ready=true est émis IMMÉDIATEMENT au démarrage
 //    - loadSession() tourne en arrière-plan sans bloquer le render
 //    - sessionLoading=true pendant le refresh-token → AuthRoute affiche un skeleton
 //    - L'app est visible instantanément même si Render met 5s à répondre
+//
+// ✅ FIX updateUserProfile : supporte les deux signatures utilisées dans le projet
+//    - AuthContext interne : updateUserProfile(updates)        → 1 argument
+//    - Messages.jsx        : updateUserProfile(userId, updates) → 2 arguments
+//    La fonction détecte automatiquement la forme appelée.
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -42,13 +46,13 @@ export const useAuth = () => {
 };
 
 // ============================================
-// 🔥 FIX CRITIQUE : détection prod/dev identique à axiosClientGlobal.js
+// 🔥 URL — identique à apiService.js
 // ============================================
 const isProd = import.meta.env.PROD;
 
 const API_URL = isProd
-  ? (import.meta.env.VITE_API_URL_PROD     || "https://chantilink-backend.onrender.com/api")
-  : (import.meta.env.VITE_API_URL_LOCAL    || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+  ? (import.meta.env.VITE_API_URL_PROD  || "https://chantilink-backend.onrender.com/api")
+  : (import.meta.env.VITE_API_URL_LOCAL || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
 
 const BACKEND_URL = API_URL.replace("/api", "");
 const SOCKET_URL  = BACKEND_URL;
@@ -61,15 +65,12 @@ const debugLog = (level, context, message, data = null) => {
   const timestamp = new Date().toISOString().slice(11, 23);
   const parts     = [`${timestamp} ${prefix} ${message}`];
   if (data !== null) parts.push(data);
-
-  if (level === 'error')     console.error(...parts);
-  else if (level === 'warn') console.warn(...parts);
+  if (level === "error")     console.error(...parts);
+  else if (level === "warn") console.warn(...parts);
   else                       console.log(...parts);
 };
 
-console.log(`🔧 [AuthContext] Environnement: ${isProd ? 'PRODUCTION' : 'DÉVELOPPEMENT'}`);
-console.log(`🔧 [AuthContext] API_URL: ${API_URL}`);
-console.log(`🔧 [AuthContext] BACKEND_URL: ${BACKEND_URL}`);
+console.log(`🔧 [AuthContext] ${isProd ? "PRODUCTION" : "DÉVELOPPEMENT"} — ${API_URL}`);
 
 const summarizeAxiosError = (err) => ({
   message:    err?.message,
@@ -82,7 +83,7 @@ const summarizeAxiosError = (err) => ({
   method:     err?.config?.method?.toUpperCase(),
   withCreds:  err?.config?.withCredentials,
   isNetwork:  !err?.response && !!err?.request,
-  isCORS:     err?.message?.includes('CORS') || err?.message?.includes('Network'),
+  isCORS:     err?.message?.includes("CORS") || err?.message?.includes("Network"),
 });
 
 const CONFIG = {
@@ -102,7 +103,7 @@ const STORAGE_KEYS = {
 
 const secureSetItem = (key, value) => {
   try { localStorage.setItem(key, JSON.stringify(value)); }
-  catch (err) { debugLog('warn', 'Storage', 'setItem échec', err); }
+  catch (err) { debugLog("warn", "Storage", "setItem échec", err); }
 };
 const secureGetItem = (key) => {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
@@ -125,8 +126,6 @@ export function AuthProvider({ children }) {
   const [loading, setLoading]               = useState(false);
 
   // 🔥 FIX LCP : deux états distincts
-  //   ready        = true dès le démarrage (app affichable immédiatement)
-  //   sessionLoading = true pendant loadSession() (AuthRoute affiche skeleton)
   const [ready, setReady]                   = useState(false);
   const [sessionLoading, setSessionLoading] = useState(true);
 
@@ -202,7 +201,7 @@ export function AuthProvider({ children }) {
         idbSet("users", "user_active", userData),
       ]);
     } catch (err) {
-      debugLog('warn', 'IDB', 'Échec sync', err.message);
+      debugLog("warn", "IDB", "Échec sync", err.message);
     }
   }, []);
 
@@ -220,7 +219,7 @@ export function AuthProvider({ children }) {
   // DÉCONNEXION
   // ============================================
   const logout = useCallback(async (silent = false) => {
-    debugLog('log', 'Logout', `Déconnexion (silent: ${silent})`);
+    debugLog("log", "Logout", `Déconnexion (silent: ${silent})`);
     try { await authAxios.post("/api/auth/logout").catch(() => {}); } catch {}
     cleanupSocket();
     setUser(null); setToken(null); setTokenExpiresAt(null);
@@ -235,7 +234,7 @@ export function AuthProvider({ children }) {
   const refreshAccessToken = useCallback(async (retryCount = 0) => {
     const now = Date.now();
     if (now - lastRefreshAttempt.current < CONFIG.REFRESH_COOLDOWN_MS) {
-      debugLog('warn', 'Refresh', 'Cooldown actif, skip');
+      debugLog("warn", "Refresh", "Cooldown actif, skip");
       return false;
     }
     lastRefreshAttempt.current = now;
@@ -245,7 +244,7 @@ export function AuthProvider({ children }) {
     }
 
     isRefreshing.current = true;
-    debugLog('log', 'Refresh', `Tentative #${retryCount + 1}`);
+    debugLog("log", "Refresh", `Tentative #${retryCount + 1}`);
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
@@ -262,13 +261,13 @@ export function AuthProvider({ children }) {
         await syncUserToIDB(updatedUser);
       }
 
-      debugLog('log', 'Refresh', '✅ Access token renouvelé');
+      debugLog("log", "Refresh", "✅ Access token renouvelé");
       const queue = [...refreshQueue.current]; refreshQueue.current = [];
       queue.forEach((resolve) => resolve(true));
       return true;
     } catch (err) {
       const summary = summarizeAxiosError(err);
-      debugLog('error', 'Refresh', '❌ Échec refresh', summary);
+      debugLog("error", "Refresh", "❌ Échec refresh", summary);
 
       const isClientError = err.response?.status >= 400 && err.response?.status < 500;
       if (!isClientError && retryCount < CONFIG.MAX_REFRESH_RETRIES - 1) {
@@ -306,27 +305,13 @@ export function AuthProvider({ children }) {
     const storedAttempts = secureGetItem(STORAGE_KEYS.LOGIN_ATTEMPTS) || {};
     setLoginAttempts(storedAttempts);
 
-    debugLog('log', 'AutoLogin', '🔍 Démarrage tentative auto-login (non-bloquant)', {
-      apiUrl:         API_URL,
-      backendBase:    authAxios.defaults.baseURL,
-      online:         navigator.onLine,
-      cookiesEnabled: navigator.cookieEnabled,
-      env:            import.meta.env.MODE,
-    });
+    debugLog("log", "AutoLogin", "🔍 Démarrage auto-login (non-bloquant)");
 
-    // 🔥 FIX LCP : setReady(true) IMMÉDIATEMENT — l'app s'affiche sans attendre
-    // sessionLoading reste true pendant le refresh-token (AuthRoute affiche skeleton)
+    // 🔥 FIX LCP : app visible immédiatement
     setReady(true);
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
-
-      debugLog('log', 'AutoLogin', '✅ Réponse reçue', {
-        status:    res.status,
-        success:   res.data?.success,
-        hasToken:  !!res.data?.token,
-        userEmail: res.data?.user?.email,
-      });
 
       if (res.data.success && res.data.token) {
         const { token: newToken, expiresIn, user: userData } = res.data;
@@ -334,25 +319,24 @@ export function AuthProvider({ children }) {
         setToken(newToken); setTokenExpiresAt(expiresAt); setUser(userData);
         secureSetItem(STORAGE_KEYS.USER_INFO, userData);
         await syncUserToIDB(userData);
-        debugLog('log', 'AutoLogin', `✅ Reconnecté: ${userData?.email}`);
+        debugLog("log", "AutoLogin", `✅ Reconnecté: ${userData?.email}`);
       } else {
-        debugLog('log', 'AutoLogin', 'ℹ️ Pas de session active (réponse sans token)');
+        debugLog("log", "AutoLogin", "ℹ️ Pas de session active");
       }
     } catch (err) {
       const summary = summarizeAxiosError(err);
-
       if (err.response?.status === 401) {
-        debugLog('log', 'AutoLogin', 'ℹ️ Pas de session (401 — cookie absent ou expiré)');
+        debugLog("log", "AutoLogin", "ℹ️ Pas de session (401 — cookie absent ou expiré)");
       } else {
-        debugLog('error', 'AutoLogin', '❌ Erreur inattendue', {
+        debugLog("error", "AutoLogin", "❌ Erreur inattendue", {
           ...summary,
           diagnostic: summary.isNetwork
-            ? '🔴 ERREUR RÉSEAU — backend endormi (cold start) ou CORS'
+            ? "🔴 ERREUR RÉSEAU — backend endormi (cold start) ou CORS"
             : summary.status === 403
-            ? '🔴 CORS BLOQUÉ — vérifier CLIENT_URL dans Render'
+            ? "🔴 CORS BLOQUÉ — vérifier CLIENT_URL dans Render"
             : summary.status >= 500
-            ? '🔴 ERREUR SERVEUR — vérifier les logs Render'
-            : '🟡 Erreur inconnue',
+            ? "🔴 ERREUR SERVEUR — vérifier les logs Render"
+            : "🟡 Erreur inconnue",
         });
       }
 
@@ -361,13 +345,12 @@ export function AuthProvider({ children }) {
         const idbUser = await idbGet("users", "user_active").catch(() => null);
         if (idbUser?._id) {
           setUser(idbUser);
-          debugLog('log', 'AutoLogin', '📴 Mode offline — utilisateur chargé depuis IDB');
+          debugLog("log", "AutoLogin", "📴 Mode offline — utilisateur chargé depuis IDB");
         }
       }
     } finally {
-      // ✅ sessionLoading=false → AuthRoute résout la route définitivement
       setSessionLoading(false);
-      debugLog('log', 'AutoLogin', '🏁 loadSession terminé', { sessionLoading: false });
+      debugLog("log", "AutoLogin", "🏁 loadSession terminé");
     }
   }, [syncUserToIDB]);
 
@@ -377,14 +360,10 @@ export function AuthProvider({ children }) {
   const login = useCallback(async (email, password, rememberMe = false) => {
     const safeEmail = (email || "").toString().trim().toLowerCase();
     setLoading(true);
-
-    debugLog('log', 'Login', '🔑 Tentative connexion', { email: safeEmail, rememberMe });
-
     try {
       const res = await authAxios.post("/api/auth/login", {
         email: safeEmail, password: password.toString(), rememberMe,
       });
-
       if (!res.data.success) throw new Error(res.data?.message || "Erreur login");
 
       const { token: newToken, expiresIn, user: userData } = res.data;
@@ -394,11 +373,11 @@ export function AuthProvider({ children }) {
       await syncUserToIDB(userData);
       resetLoginAttempts(safeEmail);
       addNotification("success", "Connecté avec succès");
-      debugLog('log', 'Login', `✅ Connecté: ${userData?.email}`);
+      debugLog("log", "Login", `✅ Connecté: ${userData?.email}`);
       return { success: true, user: userData };
     } catch (err) {
       const summary = summarizeAxiosError(err);
-      debugLog('error', 'Login', '❌ Échec connexion', summary);
+      debugLog("error", "Login", "❌ Échec connexion", summary);
       trackLoginAttempt(safeEmail);
       const msg = err.response?.data?.message || err.message || "Erreur connexion";
       addNotification("error", msg);
@@ -413,7 +392,6 @@ export function AuthProvider({ children }) {
   // ============================================
   const register = useCallback(async (fullName, email, password, rememberMe = false) => {
     setLoading(true);
-    debugLog('log', 'Register', '📝 Tentative inscription', { email, rememberMe });
     try {
       const res = await authAxios.post("/api/auth/register", {
         fullName, email, password, rememberMe,
@@ -429,7 +407,7 @@ export function AuthProvider({ children }) {
       return { success: true, user: userData };
     } catch (err) {
       const summary = summarizeAxiosError(err);
-      debugLog('error', 'Register', '❌ Échec inscription', summary);
+      debugLog("error", "Register", "❌ Échec inscription", summary);
       const msg = err.response?.data?.message || err.message || "Erreur inscription";
       addNotification("error", msg);
       return { success: false, message: msg };
@@ -440,15 +418,33 @@ export function AuthProvider({ children }) {
 
   // ============================================
   // MISE À JOUR PROFIL
+  // ✅ FIX : supporte les deux signatures utilisées dans le projet
+  //
+  //   Forme 1 (AuthContext interne, refresh, etc.) :
+  //     updateUserProfile(updates)           → updates = objet de champs
+  //
+  //   Forme 2 (Messages.jsx onboarding) :
+  //     updateUserProfile(userId, updates)   → userId = string, updates = objet
+  //
+  //   La fonction détecte automatiquement en testant typeof du 1er argument.
+  //   Le userId est ignoré ici car l'utilisateur courant est toujours user.
   // ============================================
-  const updateUserProfile = useCallback(async (updates) => {
+  const updateUserProfile = useCallback(async (userIdOrUpdates, maybeUpdates) => {
+    // Détection de la signature appelée
+    const updates = typeof userIdOrUpdates === "string"
+      ? maybeUpdates   // updateUserProfile(userId, updates)
+      : userIdOrUpdates; // updateUserProfile(updates)
+
     if (!updates) return;
+
     setUser((prev) => {
       if (!prev) return prev;
       const updated = {
-        ...prev, ...updates,
+        ...prev,
+        ...updates,
         following: updates.following !== undefined ? updates.following : prev.following,
       };
+      // Persister en arrière-plan sans bloquer le render
       setTimeout(() => {
         secureSetItem(STORAGE_KEYS.USER_INFO, updated);
         syncUserToIDB(updated);
@@ -469,7 +465,8 @@ export function AuthProvider({ children }) {
         withCredentials: true,
         timeout:         10000,
       });
-      if (res.status === 200 && (res.data.user?.role === "admin" || res.data.user?.role === "superadmin")) {
+      if (res.status === 200 &&
+        (res.data.user?.role === "admin" || res.data.user?.role === "superadmin")) {
         return currentToken;
       }
       return null;
@@ -484,23 +481,23 @@ export function AuthProvider({ children }) {
     if (socketRef.current?.connected && socketRef.current?.auth?.token === token) return;
 
     cleanupSocket();
-    debugLog('log', 'Socket', `Connexion à ${SOCKET_URL}`);
+    debugLog("log", "Socket", `Connexion à ${SOCKET_URL}`);
 
     const newSocket = io(SOCKET_URL, {
-      auth:                  { token },
-      transports:            ["websocket", "polling"],
-      reconnection:          true,
-      reconnectionAttempts:  5,
-      reconnectionDelay:     1000,
-      reconnectionDelayMax:  5000,
-      timeout:               10000,
+      auth:                 { token },
+      transports:           ["websocket", "polling"],
+      reconnection:         true,
+      reconnectionAttempts: 5,
+      reconnectionDelay:    1000,
+      reconnectionDelayMax: 5000,
+      timeout:              10000,
     });
 
-    newSocket.on("connect",       ()    => debugLog('log',  'Socket', `✅ Connecté: ${newSocket.id}`));
-    newSocket.on("connect_error", (err) => debugLog('warn', 'Socket', `⚠️ Erreur: ${err.message}`));
+    newSocket.on("connect",       ()    => debugLog("log",  "Socket", `✅ Connecté: ${newSocket.id}`));
+    newSocket.on("connect_error", (err) => debugLog("warn", "Socket", `⚠️ Erreur: ${err.message}`));
     newSocket.on("disconnect",    (reason) => {
       if (reason !== "io client disconnect")
-        debugLog('log', 'Socket', `🔌 Déconnecté: ${reason}`);
+        debugLog("log", "Socket", `🔌 Déconnecté: ${reason}`);
     });
 
     socketRef.current = newSocket;
@@ -541,7 +538,6 @@ export function AuthProvider({ children }) {
     const isAdmin = user?.role === "admin" || user?.role === "superadmin";
     return {
       user, token, socket: socketRef.current, loading, ready,
-      // 🔥 sessionLoading exposé pour AuthRoute (skeleton non-bloquant)
       sessionLoading,
       isAuthenticated: !!user && !!token, notifications,
       login, logout, register, getToken, updateUserProfile,

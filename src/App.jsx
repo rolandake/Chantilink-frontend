@@ -1,11 +1,7 @@
 // 📁 src/App.jsx
-// ✅ LCP FIX : __hideSplash() appelé EN PREMIER dans AppContent, avant tout await
-// ✅ CLS FIX : mainStyle stable, pas de changement de layout après mount
-// ✅ INP FIX : suppression AnimatePresence sur les routes (remount inutile)
-// ✅ HOME FIX v2 : tap = scroll en haut + refresh (nouveaux posts)
-// ✅ WAKEUP FIX : écran d'attente rassurant pendant le réveil du serveur Render
-// ✅ FIX SCROLL HEADER v2 : useSmartScroll écoute app:scroll + window.scroll
-// ✅ FIX SCROLL INFINI : main ne doit PAS avoir overflow-y sur Home (géré par Home.jsx)
+// ✅ Header + navbar + sidebar uniquement sur la Home
+// ✅ Bouton retour flottant sur toutes les pages non-Home authentifiées
+//    (sauf /videos qui gère son propre bouton retour)
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -18,14 +14,14 @@ import {
   Home, MessageSquare, Video, Calculator, Mail, User, Menu, ArrowLeft, Shield, Bell, X
 } from "lucide-react";
 
-import LoadingSpinner    from "./components/LoadingSpinner";
-import WakeUpScreen      from "./components/WakeUpScreen";
-import { Header }       from "./imports/importsComponents";
-import { useAuth }      from "./imports/importsContext";
-import { useStories }   from "./context/StoryContext";
-import { useDarkMode }  from "./context/DarkModeContext";
+import LoadingSpinner       from "./components/LoadingSpinner";
+import WakeUpScreen         from "./components/WakeUpScreen";
+import { Header }          from "./imports/importsComponents";
+import { useAuth }         from "./imports/importsContext";
+import { useStories }      from "./context/StoryContext";
+import { useDarkMode }     from "./context/DarkModeContext";
 import { useMessagesData } from "./pages/Chat/hooks/useMessagesData";
-import { usePosts }     from "./context/PostsContext";
+import { usePosts }        from "./context/PostsContext";
 import ProtectedAdminRoute from "./components/ProtectedAdminRoute";
 import { setupIndexedDB }    from "./utils/idbMigration";
 import { initializeStorage } from "./utils/idbCleanup";
@@ -76,8 +72,38 @@ const PageSkeleton = memo(({ isDarkMode }) => (
 PageSkeleton.displayName = "PageSkeleton";
 
 // ============================================
+// BOUTON RETOUR FLOTTANT
+// Affiché sur toutes les pages non-Home authentifiées,
+// sauf /videos qui possède déjà son propre bouton retour interne.
+// ============================================
+const FloatingBackButton = memo(({ isDarkMode, onBack }) => (
+  <motion.button
+    initial={{ opacity: 0, x: -12 }}
+    animate={{ opacity: 1, x: 0 }}
+    exit={{ opacity: 0, x: -12 }}
+    transition={{ duration: 0.18, ease: "easeOut" }}
+    onClick={onBack}
+    className="fixed z-[60] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full transition-all active:scale-95"
+    style={{
+      top:             "max(16px, env(safe-area-inset-top, 16px))",
+      left:            16,
+      background:      "transparent",
+      border:          "none",
+      color:           isDarkMode ? "rgba(255,255,255,0.75)" : "rgba(0,0,0,0.55)",
+    }}
+  >
+    <span className="flex items-center justify-center w-7 h-7 rounded-full"
+      style={{ background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}
+    >
+      <ArrowLeft size={16} strokeWidth={2.5} />
+    </span>
+    <span className="text-sm font-semibold">Retour</span>
+  </motion.button>
+));
+FloatingBackButton.displayName = "FloatingBackButton";
+
+// ============================================
 // SCROLL — masque la navbar au scroll bas
-// ✅ FIX v2 : écoute app:scroll (Home.jsx) + window.scroll (autres pages)
 // ============================================
 function useSmartScroll(threshold = 10) {
   const [isVisible, setIsVisible] = useState(true);
@@ -305,17 +331,10 @@ function AppContent() {
 
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
 
-  // Ref pour éviter les refreshs en double (debounce)
   const homeRefreshPending = useRef(false);
-
   const handleHomeClick = useCallback(() => {
     if (location.pathname === "/") {
-      // Scroll en haut immédiatement
       window.dispatchEvent(new CustomEvent(HOME_SCROLL_TOP_EVENT));
-
-      // ✅ Refresh avec debounce : on attend 300ms que le fetch en cours
-      // (déclenché au mount) soit potentiellement terminé, puis on rafraîchit.
-      // Si un refresh est déjà schedulé, on ne double pas.
       if (homeRefreshPending.current) return;
       homeRefreshPending.current = true;
       setTimeout(() => {
@@ -327,27 +346,46 @@ function AppContent() {
     }
   }, [location.pathname, navigate]);
 
-  const isHome     = location.pathname === "/";
-  const isAuth     = location.pathname === "/auth";
-  const isMessages = location.pathname === "/messages";
-  // ✅ showNav = visible sur toutes les pages authentifiées sauf /auth et StoryViewer
-  const showNav    = !!user && !isAuth && !storyViewerOpen;
-  const isAdmin    = user?.role === "admin" || user?.role === "superadmin";
+  // ── Flags de route ──
+  const isHome   = location.pathname === "/";
+  const isAuth   = location.pathname === "/auth";
+  const isVideos = location.pathname === "/videos";
+  const isAdmin  = user?.role === "admin" || user?.role === "superadmin";
 
-  // ✅ FIX CSS : uniquement longhands overflowX + overflowY (pas de shorthand overflow)
-  // Home a overflowY:"hidden" car son data-scroll-container gère le scroll interne
+  // ── Header + navbar + sidebar : Home uniquement ──
+  const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
+  const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
+
+  // ── Bouton retour flottant :
+  //    - uniquement pages authentifiées
+  //    - pas sur Home (pas besoin)
+  //    - pas sur /auth
+  //    - pas sur /videos (ActionBar interne gère le retour)
+  //    - pas quand StoryViewer est ouvert (il a son propre close)
+  const showBackButton = !!user && !isAuth && !isHome && !isVideos && !storyViewerOpen;
+
+  const handleBack = useCallback(() => {
+    if (window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate("/");
+    }
+  }, [navigate]);
+
+  // ── mainStyle ──
   const mainStyle = useMemo(() => ({
-    top:                     showNav ? 72 : 0,
-    bottom:                  showNav ? 64 : 0,
+    top:                     showHeader ? 72 : 0,
+    bottom:                  showNav    ? 64 : 0,
     overflowX:               "hidden",
     overflowY:               isHome ? "hidden" : "auto",
     WebkitOverflowScrolling: "touch",
     paddingBottom:           isHome ? 0 : "env(safe-area-inset-bottom)",
-  }), [showNav, isHome]);
+  }), [showHeader, showNav, isHome]);
 
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
 
+      {/* ── NOTIFICATIONS LIVE ── */}
       <AnimatePresence>
         {liveNotifications.map((notif) => (
           <LiveNotification
@@ -359,7 +397,8 @@ function AppContent() {
         ))}
       </AnimatePresence>
 
-      {showNav && (
+      {/* ── HEADER — Home uniquement ── */}
+      {showHeader && (
         <div
           className="fixed top-0 left-0 right-0 z-40"
           style={{
@@ -373,8 +412,18 @@ function AppContent() {
         </div>
       )}
 
-      {/* FloatingBackButton retiré : la navbar est maintenant présente sur toutes les pages */}
+      {/* ── BOUTON RETOUR FLOTTANT ── */}
+      <AnimatePresence>
+        {showBackButton && (
+          <FloatingBackButton
+            key={location.pathname}
+            isDarkMode={isDarkMode}
+            onBack={handleBack}
+          />
+        )}
+      </AnimatePresence>
 
+      {/* ── SIDEBAR DESKTOP — Home uniquement ── */}
       {showNav && (
         <SidebarDesktopMemo
           isDarkMode={isDarkMode}
@@ -384,6 +433,7 @@ function AppContent() {
         />
       )}
 
+      {/* ── CONTENU PRINCIPAL ── */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
         <div className={`lg:ml-64 max-w-[630px] lg:max-w-none lg:px-8 mx-auto ${isHome ? "h-full" : ""}`}>
           <Suspense fallback={<LoadingSpinner />}>
@@ -420,6 +470,7 @@ function AppContent() {
         </div>
       </main>
 
+      {/* ── NAVBAR MOBILE — Home uniquement ── */}
       {showNav && (
         <div
           className="fixed bottom-0 left-0 right-0 z-50"
@@ -440,6 +491,7 @@ function AppContent() {
         </div>
       )}
 
+      {/* ── STORY VIEWER ── */}
       {storyViewerOpen && (
         <StoryViewer
           stories={storyViewerData.stories}
@@ -487,26 +539,6 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => (
 LiveNotification.displayName = "LiveNotification";
 
 // ============================================
-// FLOATING BACK BUTTON
-// ============================================
-const FloatingBackButton = memo(({ isDarkMode, onClick }) => (
-  <button
-    onClick={onClick}
-    className={`fixed top-4 left-4 z-[60] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full shadow-lg backdrop-blur-md border transition-all active:scale-95 ${
-      isDarkMode ? "bg-gray-900/80 border-gray-700/60 text-white" : "bg-white/90 border-gray-200 text-gray-800"
-    }`}
-    style={{ animation: "btn-appear 150ms ease-out" }}
-  >
-    <span className={`flex items-center justify-center w-7 h-7 rounded-full ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
-      <ArrowLeft size={16} strokeWidth={2.5} />
-    </span>
-    <span className="text-sm font-semibold">Retour</span>
-    <style>{`@keyframes btn-appear { from { opacity:0; transform:translateX(-8px); } to { opacity:1; transform:translateX(0); } }`}</style>
-  </button>
-));
-FloatingBackButton.displayName = "FloatingBackButton";
-
-// ============================================
 // BADGE
 // ============================================
 const Badge = memo(({ count }) => {
@@ -537,9 +569,7 @@ const NavBtn = memo(({ icon: Icon, label, active, onClick, badge, isDarkMode }) 
         strokeWidth={active ? 2.5 : 1.8}
         fill={active ? "currentColor" : "none"}
         className={`transition-all duration-150 ${
-          active
-            ? "text-orange-500"
-            : isDarkMode ? "text-gray-400" : "text-gray-500"
+          active ? "text-orange-500" : isDarkMode ? "text-gray-400" : "text-gray-500"
         }`}
       />
       <Badge count={badge} />
@@ -588,9 +618,7 @@ const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, i
   <button
     onClick={onClick}
     className={`group relative flex items-center gap-3.5 w-full px-3 py-3 rounded-xl transition-all duration-150 active:scale-[0.97] ${
-      isDarkMode
-        ? "hover:bg-gray-800/40"
-        : "hover:bg-gray-50"
+      isDarkMode ? "hover:bg-gray-800/40" : "hover:bg-gray-50"
     } ${isAdmin ? "!text-rose-500 hover:!text-rose-400" : ""}`}
     style={{ WebkitTapHighlightColor: "transparent" }}
   >
