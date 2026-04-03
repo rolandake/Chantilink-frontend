@@ -6,6 +6,11 @@
 // ✅ FIX HTTP 400 : garde ObjectId — attend un vrai _id MongoDB avant tout fetch
 // ✅ FALLBACK HOME : expose les posts chargés via window.__profilePostsCache__
 //    Home.jsx peut les consommer si son propre feed est vide
+// ✅ v2 FIX : profil visible même si l'utilisateur n'a AUCUN post
+//    — tryBuildProfileFromPosts ne bloquait pas assez tôt
+//    — nouveau fallback : profil vide affiché avec un état explicite
+//    — skeleton affiché pendant le fetch user, jamais "Profil introuvable"
+//      si le réseau répond avec un user valide
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -39,56 +44,35 @@ const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
 
 // ─────────────────────────────────────────────
 // CACHE GLOBAL DE POSTS DE PROFILS
-// Permet à Home.jsx de consommer des posts depuis les profils visités
-// sans déclencher de requêtes réseau supplémentaires.
-//
-// Structure : window.__profilePostsCache__ = Map<userId, { posts, ts }>
-// TTL : 5 minutes — après quoi Home ignorera les entrées périmées
 // ─────────────────────────────────────────────
 const PROFILE_CACHE_TTL = 5 * 60 * 1000;
 
 const getProfilePostsCache = () => {
-  if (!window.__profilePostsCache__) {
-    window.__profilePostsCache__ = new Map();
-  }
+  if (!window.__profilePostsCache__) window.__profilePostsCache__ = new Map();
   return window.__profilePostsCache__;
 };
 
-/**
- * Stocke les posts d'un profil dans le cache global partagé.
- * Appelé chaque fois que ProfilePage charge des posts avec succès.
- */
 const storeProfilePostsInCache = (userId, posts) => {
   if (!userId || !Array.isArray(posts) || posts.length === 0) return;
   try {
     const cache = getProfilePostsCache();
     cache.set(userId, { posts, ts: Date.now() });
-    // Garder max 20 entrées pour éviter une fuite mémoire
     if (cache.size > 20) {
       const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
       if (oldest) cache.delete(oldest[0]);
     }
-    // Émettre un événement custom pour que Home puisse réagir immédiatement
     window.dispatchEvent(new CustomEvent("profilePostsCached", {
       detail: { userId, count: posts.length }
     }));
-  } catch {
-    // Silencieux — le cache est best-effort
-  }
+  } catch {}
 };
 
-/**
- * Lit tous les posts du cache global (tous profils confondus), dédupliqués.
- * Utilisé par Home.jsx comme source de fallback.
- * @param {number} maxAge - Ignore les entrées plus vieilles que maxAge ms (défaut: TTL)
- */
 export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
   try {
     const cache = getProfilePostsCache();
     const now = Date.now();
     const seen = new Set();
     const result = [];
-    // Trier par fraîcheur — les plus récents en premier
     const sorted = [...cache.entries()].sort((a, b) => b[1].ts - a[1].ts);
     for (const [, { posts, ts }] of sorted) {
       if (now - ts > maxAge) continue;
@@ -157,6 +141,7 @@ const extractUserFromResponse = (data) => {
   return null;
 };
 
+// buildUserFromPost — fallback ultime si GET /users/:id retourne 404
 const buildUserFromPost = (post) => {
   if (!post) return null;
   const u = post.user || {};
@@ -178,6 +163,27 @@ const buildUserFromPost = (post) => {
     createdAt:    null,
   };
 };
+
+// ✅ v2 : buildMinimalUser — construit un profil valide même sans posts
+//   Garantit que profileUser n'est jamais null pour un ObjectId valide.
+//   Utilisé comme dernier recours avant d'afficher "Profil introuvable".
+const buildMinimalUser = (uid, partial = {}) => ({
+  _id:           uid,
+  username:      partial.username      || partial.email?.split("@")[0] || "utilisateur",
+  fullName:      partial.fullName      || partial.name || "Utilisateur",
+  profilePhoto:  partial.profilePhoto  || partial.avatar || null,
+  coverPhoto:    partial.coverPhoto    || null,
+  bio:           partial.bio           || "",
+  location:      partial.location      || "",
+  website:       partial.website       || "",
+  isVerified:    partial.isVerified    ?? false,
+  isPremium:     partial.isPremium     ?? false,
+  isBot:         partial.isBot         ?? false,
+  isAutoCreated: partial.isAutoCreated ?? false,
+  followers:     partial.followers     || [],
+  following:     partial.following     || [],
+  createdAt:     partial.createdAt     || null,
+});
 
 // ─────────────────────────────────────────────
 // COMPOSANTS UI
@@ -211,7 +217,7 @@ const FollowButton = memo(({ isFollowing, isLoading, onClick, isDarkMode }) => (
         <span className="inline-block w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></span>
         Chargement...
       </span>
-    ) : isFollowing ? "Se desabonner" : "S'abonner"}
+    ) : isFollowing ? "Se désabonner" : "S'abonner"}
   </button>
 ));
 FollowButton.displayName = "FollowButton";
@@ -226,6 +232,22 @@ const Toast = memo(({ message, type }) => (
   </div>
 ));
 Toast.displayName = "Toast";
+
+// ✅ v2 : état vide dédié — clairement distinct de "Profil introuvable"
+const EmptyPostsState = memo(({ isOwner, isDarkMode }) => (
+  <div className={`text-center py-16 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
+    <p className="text-5xl mb-4">📭</p>
+    <p className={`text-lg font-semibold mb-2 ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
+      {isOwner ? "Tu n'as pas encore publié de post" : "Aucun post pour l'instant"}
+    </p>
+    <p className="text-sm mt-1 max-w-xs mx-auto leading-relaxed">
+      {isOwner
+        ? "Partage quelque chose avec ta communauté !"
+        : "Cet utilisateur n'a encore rien publié. Reviens plus tard !"}
+    </p>
+  </div>
+));
+EmptyPostsState.displayName = "EmptyPostsState";
 
 // ─────────────────────────────────────────────
 // PROFILE PAGE
@@ -259,6 +281,8 @@ export default function ProfilePage({
   const [isBot,          setIsBot]          = useState(false);
   const [isLoadingUser,  setIsLoadingUser]  = useState(!initialUser && !(isOwner && authUser));
   const [authToken,      setAuthToken]      = useState(null);
+  // ✅ v2 : flag explicite — "Profil introuvable" uniquement si ce flag est true
+  const [userNotFound,   setUserNotFound]   = useState(false);
 
   const loadingRef        = useRef(false);
   const saveDebounceTimer = useRef(null);
@@ -273,28 +297,51 @@ export default function ProfilePage({
     setTimeout(() => setToast(null), 3000);
   }, []);
 
+  // ─────────────────────────────────────────────
+  // fetchUserById — v2 : normalise la réponse en profil minimal garanti
+  // Retourne toujours un objet si le backend répond 2xx, même avec peu de champs.
+  // Ne retourne null QUE sur un vrai 404 ou une erreur réseau totale.
+  // ─────────────────────────────────────────────
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
     if (!isValidObjectId(uid)) return null;
+
     const cached = requestCache.current.get(uid);
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
     if (!navigator.onLine) return null;
+
     try {
       const { data } = await axios.get(`${API_URL}/users/${uid}`, {
         withCredentials: true,
         headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
         timeout: 8000,
       });
-      const user = extractUserFromResponse(data);
-      if (user) requestCache.current.set(uid, { data: user, timestamp: Date.now() });
-      return user;
+
+      // Extraction flexible — supporte { user: {...} }, { data: {...} } ou directement {...}
+      let raw = extractUserFromResponse(data);
+      if (!raw && data) raw = data.data || data.user || (data._id || data.id ? data : null);
+
+      if (raw) {
+        const normalized = buildMinimalUser(raw._id || raw.id, raw);
+        requestCache.current.set(uid, { data: normalized, timestamp: Date.now() });
+        return normalized;
+      }
+      return null;
     } catch (err) {
       if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED") return null;
-      console.warn(`[Profile] fetchUserById echoue pour ${uid}:`, err.message);
+      // 404 = l'utilisateur n'existe vraiment pas
+      if (err.response?.status === 404) return null;
+      // 401/403 = accès refusé, mais l'utilisateur existe — on retourne un profil minimal
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        console.warn(`[Profile] Accès refusé (${err.response.status}) pour ${uid} — profil minimal`);
+        return buildMinimalUser(uid);
+      }
+      console.warn(`[Profile] fetchUserById échoue pour ${uid}:`, err.message);
       return null;
     }
   }, []);
 
+  // tryBuildProfileFromPosts — utilisé SEULEMENT si fetchUserById retourne null (vrai 404)
   const tryBuildProfileFromPosts = useCallback(async (uid) => {
     if (!isValidObjectId(uid)) return null;
     try {
@@ -346,17 +393,20 @@ export default function ProfilePage({
     const normalized = normalizePost(newPost);
     if (!isMockProfile) await syncNewPost(normalized, profileUser._id);
     startTransition(() => setProfilePosts(prev => [normalized, ...prev]));
-    showLocalToast("Post publie !");
+    showLocalToast("Post publié !");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
 
   const handlePostDeleted = useCallback(async (postId) => {
     if (!isMockProfile) await syncDeletePost(postId, profileUser._id);
     startTransition(() => setProfilePosts(prev => prev.filter(p => p._id !== postId)));
-    showLocalToast("Post supprime");
+    showLocalToast("Post supprimé");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
 
-  const handleFollowSuccess = useCallback(() => showLocalToast("Abonne !"), [showLocalToast]);
+  const handleFollowSuccess = useCallback(() => showLocalToast("Abonné !"), [showLocalToast]);
 
+  // ─────────────────────────────────────────────
+  // loadProfilePosts — v2 : posts vides = état vide, pas une erreur
+  // ─────────────────────────────────────────────
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
     if (!targetId || loadingRef.current) return;
     if (!isValidObjectId(targetId)) {
@@ -377,7 +427,6 @@ export default function ProfilePage({
       if (isMockProfile && initialPosts && !append) {
         postsArray = initialPosts;
         startTransition(() => setProfilePosts(initialPosts));
-        // ✅ Stocker les posts mock dans le cache global aussi
         storeProfilePostsInCache(targetId, initialPosts);
         return;
       }
@@ -388,7 +437,6 @@ export default function ProfilePage({
           if (Array.isArray(cached) && cached.length > 0) {
             postsArray = cached;
             startTransition(() => setProfilePosts(cached));
-            // ✅ Les posts du cache IDB alimentent aussi le cache global
             storeProfilePostsInCache(targetId, cached);
           }
         } catch (e) {
@@ -400,14 +448,16 @@ export default function ProfilePage({
         try {
           const result  = await fetchUserPosts(targetId, pageNumber);
           const fetched = extractPostsFromResult(result);
-          if (fetched.length > 0) postsArray = fetched;
+          // ✅ v2 : fetched peut légitimement être [] — aucune erreur générée
+          postsArray = fetched;
         } catch (networkErr) {
-          console.error("[Profile] Erreur fetch posts reseau:", networkErr);
+          console.error("[Profile] Erreur fetch posts réseau:", networkErr);
           if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info");
         }
       }
 
-      setHasMore(postsArray.length > 0 && postsArray.length >= 20);
+      // ✅ v2 : hasMore=false si réponse vide (évite la pagination infinie à vide)
+      setHasMore(postsArray.length >= 20);
 
       startTransition(() => {
         setProfilePosts(prev => {
@@ -418,11 +468,7 @@ export default function ProfilePage({
             .filter(p => { if (seen.has(p._id)) return false; seen.add(p._id); return true; })
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           if (!isMockProfile) savePosts(targetId, uniquePosts);
-
-          // ✅ Stocker dans le cache global partagé avec Home
-          // On stocke même en mode append pour garder le cache à jour
           storeProfilePostsInCache(targetId, uniquePosts);
-
           return uniquePosts;
         });
       });
@@ -435,7 +481,6 @@ export default function ProfilePage({
     }
   }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts]);
 
-  // ✅ Stocker également quand profilePosts change depuis l'extérieur (ex: socket)
   useEffect(() => {
     if (profilePosts.length > 0 && profileUser?._id) {
       storeProfilePostsInCache(profileUser._id, profilePosts);
@@ -470,7 +515,7 @@ export default function ProfilePage({
     try {
       if (wasFollowing) await unfollowUser(profileUser._id);
       else await followUser(profileUser._id);
-      showLocalToast(wasFollowing ? "Desabonne !" : "Abonne !");
+      showLocalToast(wasFollowing ? "Désabonné !" : "Abonné !");
     } catch (err) {
       console.error("Erreur follow:", err);
       showLocalToast("Erreur lors de l'action", "error");
@@ -518,7 +563,18 @@ export default function ProfilePage({
   }, [profileUser?._id, loadProfilePosts]);
 
   // ─────────────────────────────────────────────
-  // useEffect principal — chargement profil
+  // useEffect principal — v2
+  //
+  // STRATÉGIE DE CHARGEMENT :
+  //   1. fetchUserById → profil minimal garanti si 2xx (même peu de champs)
+  //   2. 401/403 → profil minimal avec uid (user existe, accès limité)
+  //   3. 404 → tryBuildProfileFromPosts (cherche dans ses posts)
+  //   4. Pas de posts non plus → buildMinimalUser(uid) = profil vide affiché
+  //   5. Hors ligne + pas de cache → profil vide avec toast info
+  //
+  // "Profil introuvable" n'est affiché QUE si userNotFound=true, c'est-à-dire :
+  //   - targetUserId manquant ou invalide
+  //   - targetUserId invalide ET pas l'authUser
   // ─────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return;
@@ -528,6 +584,7 @@ export default function ProfilePage({
       setProfileUser(initialUser);
       setIsBot(!!initialUser.isBot);
       setIsLoadingUser(false);
+      setUserNotFound(false);
       if (targetUserId && isValidObjectId(targetUserId)) {
         loadProfilePosts(targetUserId, 1, false);
       }
@@ -536,70 +593,115 @@ export default function ProfilePage({
 
     if (!targetUserId || targetUserId === "undefined") {
       setIsLoadingUser(false);
+      setUserNotFound(true);
       return;
     }
 
+    // ID temporaire (pas encore un ObjectId) — afficher authUser sans fetch réseau
     if (isOwner && !isValidObjectId(targetUserId)) {
-      console.warn(`[Profile] ID propriétaire temporaire (${targetUserId}) — attente ObjectId...`);
+      console.warn(`[Profile] ID temporaire (${targetUserId}) — affichage authUser direct`);
       setProfileUser(authUser);
       setIsBot(false);
       setIsLoadingUser(false);
+      setUserNotFound(false);
       return;
     }
 
     (async () => {
       setIsLoadingUser(true);
+      setUserNotFound(false);
+
       try {
         await idbClearOtherKeys(`profilePosts_${targetUserId}`);
 
         if (isOwner) {
+          // ── Mon propre profil ──
           setProfileUser(authUser);
           setIsBot(false);
+          setUserNotFound(false);
           saveUser(authUser);
           if (navigator.onLine) {
             fetchUserById(authUserId).then(fresh => {
               if (fresh) { setProfileUser(fresh); saveUser(fresh); }
             }).catch(() => {});
           }
+
         } else {
+          // ── Profil d'un autre utilisateur ──
+
+          // Étape 1 : cache IDB (affichage immédiat si disponible)
           const cachedUser = await idbGetUser(targetUserId);
           if (cachedUser) {
-            setProfileUser(cachedUser);
+            setProfileUser(buildMinimalUser(cachedUser._id || cachedUser.id, cachedUser));
             setIsBot(!!cachedUser.isBot);
+            setUserNotFound(false);
           }
 
           if (navigator.onLine) {
+            // Étape 2 : fetch réseau
             const fetchedUser = await fetchUserById(targetUserId);
 
             if (fetchedUser) {
+              // ✅ Cas normal — user trouvé (avec ou sans posts)
               setProfileUser(fetchedUser);
               setIsBot(!!fetchedUser.isBot);
+              setUserNotFound(false);
               saveUser(fetchedUser);
+
             } else if (!cachedUser) {
+              // fetchUserById a retourné null (vrai 404) — tentative via posts
               const fallback = await tryBuildProfileFromPosts(targetUserId);
+
               if (fallback) {
                 setProfileUser(fallback.user);
                 setIsBot(!!fallback.user.isBot);
+                setUserNotFound(false);
                 saveUser(fallback.user);
                 setPage(1);
                 setHasMore(fallback.posts.length >= 20);
                 await loadProfilePosts(targetUserId, 1, false, fallback.posts);
-                return;
+                return; // posts déjà chargés
               } else {
-                showLocalToast("Profil inaccessible", "error");
+                // ✅ v2 : DERNIÈRE CHANCE — profil minimal vide plutôt que "Profil introuvable"
+                // L'utilisateur peut exister mais n'avoir aucun post et le backend indisponible
+                if (isValidObjectId(targetUserId)) {
+                  console.warn(`[Profile] Profil réseau indisponible pour ${targetUserId} — affichage profil vide`);
+                  setProfileUser(buildMinimalUser(targetUserId));
+                  setIsBot(false);
+                  setUserNotFound(false);
+                  showLocalToast("Profil partiellement disponible", "info");
+                } else {
+                  setUserNotFound(true);
+                }
               }
             }
+            // cachedUser existe mais fetchedUser null → on conserve le cache, pas d'erreur
+
           } else if (!cachedUser) {
-            showLocalToast("Profil non disponible hors ligne", "info");
+            // Hors ligne, pas de cache
+            if (isValidObjectId(targetUserId)) {
+              setProfileUser(buildMinimalUser(targetUserId));
+              setIsBot(false);
+              setUserNotFound(false);
+              showLocalToast("Profil non disponible hors ligne", "info");
+            } else {
+              setUserNotFound(true);
+            }
           }
         }
 
+        // Charger les posts (séparément du profil — leur absence n'est pas une erreur)
         setPage(1);
         setHasMore(true);
         await loadProfilePosts(targetUserId, 1, false);
 
       } catch (err) {
         console.error("Profil Load Error:", err);
+        // Même en cas d'erreur inattendue, on tente d'afficher quelque chose
+        if (!profileUser && isValidObjectId(targetUserId)) {
+          setProfileUser(buildMinimalUser(targetUserId));
+          setUserNotFound(false);
+        }
         showLocalToast("Erreur lors du chargement", "error");
       } finally {
         setIsLoadingUser(false);
@@ -608,7 +710,7 @@ export default function ProfilePage({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, authUser?._id, targetUserId, isOwner]);
 
-  // Socket temps réel
+  // ── Socket temps réel ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket || !profileUser || isMockProfile || isBot) return;
     const handleNewPost = (post) => {
@@ -619,7 +721,7 @@ export default function ProfilePage({
           if (prev.find(p => p._id === post._id)) return prev;
           const updated = [normalizePost(post), ...prev];
           savePosts(profileUser._id, updated);
-          storeProfilePostsInCache(profileUser._id, updated); // ✅ sync cache global
+          storeProfilePostsInCache(profileUser._id, updated);
           return updated;
         });
       });
@@ -629,7 +731,7 @@ export default function ProfilePage({
         setProfilePosts(prev => {
           const updated = prev.filter(p => p._id !== postId);
           savePosts(profileUser._id, updated);
-          storeProfilePostsInCache(profileUser._id, updated); // ✅ sync cache global
+          storeProfilePostsInCache(profileUser._id, updated);
           return updated;
         });
       });
@@ -639,14 +741,14 @@ export default function ProfilePage({
         setProfilePosts(prev => {
           const updated = prev.map(p => p._id === post._id ? normalizePost(post) : p);
           savePosts(profileUser._id, updated);
-          storeProfilePostsInCache(profileUser._id, updated); // ✅ sync cache global
+          storeProfilePostsInCache(profileUser._id, updated);
           return updated;
         });
       });
     };
-    socket.on("newPost",      handleNewPost);
-    socket.on("postDeleted",  handleDeletedPost);
-    socket.on("postUpdated",  handleUpdatedPost);
+    socket.on("newPost",     handleNewPost);
+    socket.on("postDeleted", handleDeletedPost);
+    socket.on("postUpdated", handleUpdatedPost);
     return () => {
       socket.off("newPost",     handleNewPost);
       socket.off("postDeleted", handleDeletedPost);
@@ -654,12 +756,16 @@ export default function ProfilePage({
     };
   }, [socket, profileUser?._id, savePosts, isMockProfile, isBot]);
 
+  // ── Stats ──────────────────────────────────────────────────────────────────
   const stats = {
     posts:     profilePosts.length,
     followers: profileUser?.followers?.length || 0,
     following: profileUser?.following?.length || 0,
   };
 
+  // ── Rendu ──────────────────────────────────────────────────────────────────
+
+  // Skeleton pendant le fetch initial du user
   if (authLoading || (isLoadingUser && !profileUser)) {
     return (
       <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
@@ -670,18 +776,21 @@ export default function ProfilePage({
     );
   }
 
-  if (!profileUser) {
+  // ✅ v2 : "Profil introuvable" — uniquement si userNotFound=true explicitement
+  //   Ne s'affiche PLUS pour un user qui existe mais n'a aucun post
+  if (userNotFound || (!profileUser && !isLoadingUser)) {
     return (
       <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
         isDarkMode ? "bg-black" : "bg-orange-50"
       }`}>
         <div className="text-center">
-          <p className={`text-lg font-medium ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
+          <p className="text-5xl mb-4">🔍</p>
+          <p className={`text-lg font-medium mb-4 ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
             Profil introuvable
           </p>
           <button
             onClick={() => navigate(-1)}
-            className="mt-4 px-6 py-2 bg-orange-500 text-white rounded-full font-semibold hover:bg-orange-600 transition"
+            className="px-6 py-2 bg-orange-500 text-white rounded-full font-semibold hover:bg-orange-600 transition"
           >
             Retour
           </button>
@@ -699,7 +808,7 @@ export default function ProfilePage({
           <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg px-4 py-3">
             <p className="text-sm text-blue-500 text-center flex items-center justify-center gap-2">
               <span>👤</span>
-              <span>Profil de demonstration - Toutes les interactions sont simulees</span>
+              <span>Profil de démonstration — Toutes les interactions sont simulées</span>
             </p>
           </div>
         </div>
@@ -761,12 +870,8 @@ export default function ProfilePage({
               {isLoadingPosts && profilePosts.length === 0 ? (
                 <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
               ) : profilePosts.length === 0 && !isLoadingPosts ? (
-                <div className={`text-center py-12 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
-                  <p className="text-4xl mb-3">📭</p>
-                  <p className="text-base font-medium">
-                    {isOwner ? "Tu n'as pas encore publie de post" : "Aucun post pour l'instant"}
-                  </p>
-                </div>
+                // ✅ v2 : état vide explicite — jamais "Profil introuvable"
+                <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
               ) : (
                 <div>
                   {profilePosts.map((post, index) => (
@@ -794,7 +899,7 @@ export default function ProfilePage({
                   )}
 
                   {!hasMore && profilePosts.length > 0 && (
-                    <p className={`text-center py-4 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+                    <p className={`text-center py-4 text-sm ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
                       Plus de posts
                     </p>
                   )}

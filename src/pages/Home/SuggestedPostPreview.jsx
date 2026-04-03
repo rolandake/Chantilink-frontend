@@ -1,32 +1,75 @@
 // 📁 src/pages/Home/SuggestedPostPreview.jsx
-// Suggestion pleine largeur d'UN profil avec l'une de ses publications
-// ✅ v4 : sélection ALÉATOIRE du contenu — vidéos/images/textes ont la même probabilité
+// ✨ v5 — INTELLIGENCE PREMIUM MONDIALE
+//
+//  🧠 Sélection du post la PLUS PERTINENTE (pas aléatoire) :
+//     - Score composite : engagement rate + récence + qualité rédactionnelle
+//     - Préférence contextuelle selon l'heure (même logique que Home v14)
+//     - Bonus type contenu selon préférence utilisateur (LTM via localStorage)
+//     - Anti-répétition : ne re-propose pas un post déjà vu en session
+//
+//  ⚡ Performance :
+//     - IntersectionObserver : le fetch se déclenche seulement à l'entrée écran
+//     - AbortController : annule les requêtes si le composant est démonté
+//     - Autoplay vidéo silencieux déclenché par IntersectionObserver (0.4 seuil)
+//     - Poster vidéo calculé dynamiquement (Cloudinary / Pexels / Pixabay)
+//     - Résolution URL async non-bloquante (système Home v14)
+//
+//  🎨 UX premium :
+//     - MediaBlock pleine largeur avec overlay stats
+//     - Badge "Pertinent pour vous" si score > seuil
+//     - Animation entrée spring naturelle
+//     - Toggle mute/play avec animation
+//     - Barre de score pertinence discrète
+//     - Stat bar likes / commentaires / vues
 
-import React, { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
+import React, {
+  useState, useEffect, useRef, useCallback, useMemo, memo,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckBadgeIcon } from "@heroicons/react/24/solid";
-import { XMarkIcon, PlayIcon, SpeakerWaveIcon, SpeakerXMarkIcon } from "@heroicons/react/24/outline";
+import {
+  XMarkIcon, PlayIcon, PauseIcon,
+  SpeakerWaveIcon, SpeakerXMarkIcon,
+  HeartIcon, ChatBubbleOvalLeftIcon, EyeIcon,
+} from "@heroicons/react/24/outline";
 import { motion, AnimatePresence } from "framer-motion";
 import axiosClient from "../../api/axiosClientGlobal";
 import { useAuth } from "../../context/AuthContext";
 
-const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
-const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
-const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG & CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
+const CLOUD_NAME    = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
+const IMG_BASE      = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
+const VID_BASE      = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
+const URL_CACHE_PFX = "murl_";
+const URL_CACHE_TTL = 80 * 60 * 1000;
+const SEEN_KEY      = "spp_seen_v5";     // posts déjà montrés
+const HIGH_SCORE    = 72;               // seuil badge "Pertinent"
 
-// ─────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────
-const isVideoUrl   = (url) => url && /\.(mp4|webm|mov|avi)$/i.test(url.split("?")[0]);
-const isEmbedUrl   = (url) => url && (url.includes("youtube") || url.includes("youtu.be") || url.includes("vimeo"));
-const isCloudinary = (url) => url && url.includes("res.cloudinary.com");
+// ─────────────────────────────────────────────────────────────────────────────
+// URL HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+const urlRead  = (k) => { try { const r = sessionStorage.getItem(URL_CACHE_PFX + k); if (!r) return null; const { url, exp } = JSON.parse(r); if (Date.now() > exp) { sessionStorage.removeItem(URL_CACHE_PFX + k); return null; } return url; } catch { return null; } };
+const urlWrite = (k, u) => { try { sessionStorage.setItem(URL_CACHE_PFX + k, JSON.stringify({ url: u, exp: Date.now() + URL_CACHE_TTL })); } catch {} };
+
+const isVideoUrl   = (u) => u && /\.(mp4|webm|mov|avi)$/i.test((u || "").split("?")[0]);
+const isEmbedUrl   = (u) => u && (u.includes("youtube") || u.includes("youtu.be") || u.includes("vimeo"));
+const isCloudinary = (u) => u && u.includes("res.cloudinary.com");
+const EXPIRABLE    = [(u) => u.includes("videos.pexels.com/video-files/"), (u) => /cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\//.test(u)];
+const DEAD         = ["youtube.com/watch", "youtu.be/", "dailymotion.com/video", "tiktok.com/@"];
+const isExpirable  = (u) => typeof u === "string" && EXPIRABLE.some(fn => fn(u));
+const isDead       = (u) => typeof u === "string" && DEAD.some(p => u.includes(p));
+const isStructValid = (u) => { if (!u || typeof u !== "string" || u.length < 10) return false; if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("/")) return true; try { const x = new URL(u); return !!(x.hostname && x.pathname !== "/"); } catch { return false; } };
+const isUsable     = (u) => u && !isExpirable(u) && !isDead(u) && isStructValid(u);
 
 const resolveMediaUrl = (url) => {
   if (!url || typeof url !== "string") return null;
   if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("http")) return url;
   const id = url.replace(/^\/+/, "");
-  if (isVideoUrl(id)) return `${VID_BASE}q_auto:good,f_auto,w_800,c_limit/${id}`;
-  return `${IMG_BASE}q_auto,f_auto,w_800,c_limit/${id}`;
+  return isVideoUrl(id)
+    ? `${VID_BASE}q_auto:good,f_auto,w_800,c_limit/${id}`
+    : `${IMG_BASE}q_auto,f_auto,w_800,c_limit/${id}`;
 };
 
 const getVideoPoster = (videoUrl) => {
@@ -36,11 +79,8 @@ const getVideoPoster = (videoUrl) => {
       const idx = videoUrl.indexOf("/upload/");
       if (idx === -1) return null;
       const after = videoUrl.substring(idx + 8);
-      const segs  = after.split("/");
-      const pub   = segs
-        .filter(s => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes(".")))
-        .join("/")
-        .replace(/\.(mp4|webm|mov|avi)$/i, "");
+      const segs  = after.split("/").filter(s => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes(".")));
+      const pub   = segs.join("/").replace(/\.(mp4|webm|mov|avi)$/i, "");
       return pub ? `${IMG_BASE}q_auto:good,f_jpg,w_800,c_limit,so_0/${pub}.jpg` : null;
     }
     if (videoUrl.includes("videos.pexels.com")) {
@@ -48,76 +88,208 @@ const getVideoPoster = (videoUrl) => {
       if (m) return `https://images.pexels.com/videos/${m[1]}/pictures/preview-0.jpg`;
     }
     if (videoUrl.includes("cdn.pixabay.com")) {
-      return videoUrl
-        .replace(/_large\.mp4$/i, "_tiny.jpg")
-        .replace(/_medium\.mp4$/i, "_tiny.jpg");
+      return videoUrl.replace(/_large\.mp4$/i, "_tiny.jpg").replace(/_medium\.mp4$/i, "_tiny.jpg");
     }
   } catch {}
   return null;
 };
 
-// ─────────────────────────────────────────────
-// 🎲 SÉLECTION ALÉATOIRE — aucune priorité de type
-//
-// Stratégie :
-//   1. On classe chaque post selon son type réel (video / embed / image / text)
-//   2. On mélange aléatoirement TOUS les posts sans distinction de type
-//   3. On prend le premier — chaque type a une chance égale d'apparaître
-// ─────────────────────────────────────────────
-const classifyPost = (post) => {
-  if (!post) return null;
+const extractPexelsId = (u) => { const m = (u || "").match(/video-files\/(\d+)\//) || (u || "").match(/^pexels_(\d+)$/); return m?.[1] || null; };
+
+const resolveExpired = async (url, externalId, signal) => {
+  const pexId = extractPexelsId(url) || extractPexelsId(externalId || "") || (/^\d+$/.test(externalId) ? externalId : null);
+  if (!pexId) return null;
+  const cached = urlRead(`pexels_${pexId}`);
+  if (cached) return cached;
+  try {
+    const res = await axiosClient.get(`/videos/refresh-url?id=${pexId}`, { signal });
+    const fresh = res.data?.url || res.data?.videoUrl || null;
+    if (fresh) urlWrite(`pexels_${pexId}`, fresh);
+    return fresh;
+  } catch { return null; }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCORING POST — choisit le post le plus pertinent à montrer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Bucket horaire (0=nuit … 5=tard) */
+const getTimeBucket = () => {
+  const h = new Date().getHours();
+  if (h < 6)  return 0;
+  if (h < 10) return 1;
+  if (h < 14) return 2;
+  if (h < 18) return 3;
+  if (h < 22) return 4;
+  return 5;
+};
+
+/** Multiplicateur contexte temporel × type */
+const TIME_MATRIX = {
+  0: { video: 0.8,  image: 0.9,  text: 0.7  },
+  1: { video: 0.9,  image: 1.0,  text: 1.3  },
+  2: { video: 1.0,  image: 1.1,  text: 1.0  },
+  3: { video: 1.1,  image: 1.2,  text: 0.9  },
+  4: { video: 1.4,  image: 1.2,  text: 0.8  },
+  5: { video: 1.2,  image: 1.0,  text: 0.8  },
+};
+
+/** Préférences type utilisateur depuis LTM localStorage */
+const getUserTypePref = () => {
+  try {
+    const raw = localStorage.getItem("feedLTM_fallback");
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    return { video: data.video?.score || 0, image: data.image?.score || 0, text: data.text?.score || 0 };
+  } catch { return {}; }
+};
+
+const getPostType = (post) => {
+  if (post.videoUrl || isVideoUrl(getFirstUrl(post))) return "video";
+  if (getFirstUrl(post) && !isEmbedUrl(getFirstUrl(post))) return "image";
+  return "text";
+};
+
+const getFirstUrl = (post) => {
+  const imgs = post.images || post.media;
+  const arr  = Array.isArray(imgs) ? imgs : (imgs ? [imgs] : []);
+  const raw  = arr[0];
+  return (typeof raw === "string" ? raw : raw?.url) || post.videoUrl || post.embedUrl || null;
+};
+
+const scorePostForSuggestion = (post, seenIds) => {
+  let score = 0;
+
+  // Ne pas re-montrer
+  if (seenIds.has(post._id)) return -1;
+
+  // Récence (0-30 pts)
+  const ageH = (Date.now() - new Date(post.createdAt || 0).getTime()) / 3_600_000;
+  if      (ageH < 1)  score += 30;
+  else if (ageH < 6)  score += 22;
+  else if (ageH < 24) score += 15;
+  else if (ageH < 72) score += 8;
+  else                score += 2;
+
+  // Engagement rate (0-30 pts)
+  const likes    = post.likesCount    || post.likes?.length    || 0;
+  const comments = post.commentsCount || post.comments?.length || 0;
+  const shares   = post.sharesCount   || post.shares           || 0;
+  const eng      = likes + comments * 3 + shares * 5;
+  const fl       = post.user?.followersCount || 1;
+  const engRate  = eng / Math.max(fl, 1);
+  score += Math.min(30, engRate * 1000);
+
+  // Vélocité (eng / âge) — 0-20 pts
+  const velocity = eng / Math.max(ageH, 0.1);
+  score += Math.min(20, Math.log1p(velocity) * 8);
+
+  // Type × contexte temporel (0-15 pts)
+  const bucket = getTimeBucket();
+  const type   = getPostType(post);
+  const timeMul = (TIME_MATRIX[bucket] || TIME_MATRIX[2])[type] || 1.0;
+  score += (timeMul - 0.7) / 0.7 * 15;
+
+  // Préférence utilisateur pour ce type
+  const prefs = getUserTypePref();
+  const typePref = prefs[type] || 0;
+  score += typePref * 10;
+
+  // Qualité rédactionnelle légère
+  const text = post.content || post.contenu || "";
+  if (text.length > 100 && text.length < 1000) score += 8;
+  const hasClickbait = /\!\!\!|[A-Z]{5,}|😱{2,}/.test(text);
+  if (hasClickbait) score -= 10;
+
+  // Pénalité mocks
+  if (post._isMock || post.isMockPost) score -= 15;
+
+  return Math.max(0, Math.min(100, score));
+};
+
+/** Choisit le post optimal + résout les URLs */
+const pickBestPost = async (posts, signal) => {
+  if (!posts?.length) return null;
+
+  // Récupère les IDs déjà montrés
+  let seenIds = new Set();
+  try { seenIds = new Set(JSON.parse(sessionStorage.getItem(SEEN_KEY) || "[]")); } catch {}
+
+  // Score tous les posts
+  const scored = posts
+    .map(p => ({ post: p, score: scorePostForSuggestion(p, seenIds) }))
+    .filter(s => s.score >= 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (!scored.length) return null;
+
+  // On prend le meilleur
+  const best = scored[0];
+
+  // Marque comme vu
+  try {
+    const prev = JSON.parse(sessionStorage.getItem(SEEN_KEY) || "[]");
+    const next = [...prev, best.post._id].slice(-100);
+    sessionStorage.setItem(SEEN_KEY, JSON.stringify(next));
+  } catch {}
+
+  const post  = best.post;
+  const score = best.score;
+  const type  = getPostType(post);
 
   const imgs   = post.images || post.media;
   const arr    = Array.isArray(imgs) ? imgs : (imgs ? [imgs] : []);
-  const raw    = arr[0];
-  const rawUrl = typeof raw === "string" ? raw : raw?.url;
+  const rawUrl = arr[0] ? (typeof arr[0] === "string" ? arr[0] : arr[0]?.url) : null;
 
-  const vidUrl = isVideoUrl(rawUrl)
-    ? rawUrl
-    : isVideoUrl(post.videoUrl)
-      ? post.videoUrl
-      : null;
+  let videoUrl = null;
+  let mediaUrl = null;
+  let poster   = null;
+  let embedUrl = null;
 
-  const imgUrl = !vidUrl && rawUrl && !isEmbedUrl(rawUrl) ? rawUrl : null;
-
-  const embed = isEmbedUrl(post.embedUrl)
-    ? post.embedUrl
-    : isEmbedUrl(rawUrl)
-      ? rawUrl
-      : null;
+  if (type === "video") {
+    const raw = post.videoUrl || (isVideoUrl(rawUrl) ? rawUrl : null);
+    if (raw) {
+      if (isUsable(raw)) {
+        videoUrl = resolveMediaUrl(raw);
+        poster   = post.thumbnail || getVideoPoster(videoUrl);
+      } else if (isExpirable(raw)) {
+        const fresh = await resolveExpired(raw, post.externalId, signal);
+        if (fresh) { videoUrl = resolveMediaUrl(fresh); poster = post.thumbnail || getVideoPoster(videoUrl); }
+      }
+    }
+  } else if (type === "image") {
+    const raw = rawUrl;
+    if (raw) {
+      if (isUsable(raw)) {
+        mediaUrl = resolveMediaUrl(raw);
+      } else if (isExpirable(raw)) {
+        const fresh = await resolveExpired(raw, post.externalId, signal);
+        if (fresh) mediaUrl = resolveMediaUrl(fresh);
+      }
+    }
+  } else if (isEmbedUrl(post.embedUrl)) {
+    embedUrl = post.embedUrl;
+  }
 
   return {
-    type:     vidUrl ? "video" : embed ? "embed" : imgUrl ? "image" : "text",
-    mediaUrl: resolveMediaUrl(vidUrl || imgUrl || embed),
-    videoUrl: vidUrl ? resolveMediaUrl(vidUrl) : null,
-    poster:   vidUrl ? (post.thumbnail || getVideoPoster(resolveMediaUrl(vidUrl))) : null,
-    embedUrl: embed,
+    type,
+    videoUrl,
+    mediaUrl,
+    poster,
+    embedUrl,
     text:     post.content || post.contenu || "",
-    likes:    Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0),
-    comments: Array.isArray(post.comments) ? post.comments.length : (post.commentsCount || 0),
+    likes:    (post.likesCount || post.likes?.length || 0),
+    comments: (post.commentsCount || post.comments?.length || 0),
+    views:    post.viewsCount || post.views || 0,
     postId:   post._id,
+    score,
+    isHighRelevance: score >= HIGH_SCORE,
   };
 };
 
-const pickRandomPost = (posts) => {
-  if (!posts?.length) return null;
-
-  // Mélange de Fisher-Yates pour un ordre vraiment aléatoire
-  const shuffled = [...posts];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-
-  // On prend le premier post valide du tableau mélangé
-  for (const post of shuffled) {
-    const classified = classifyPost(post);
-    if (classified) return classified;
-  }
-
-  return null;
-};
-
+// ─────────────────────────────────────────────────────────────────────────────
+// FORMAT HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
 const fmtNum = (n) => {
   if (!n) return "0";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -125,70 +297,71 @@ const fmtNum = (n) => {
   return String(n);
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // AVATAR
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const Avatar = memo(({ username, photo, size = 44 }) => {
   const [err, setErr] = useState(false);
   const initials = useMemo(() => {
     if (!username) return "?";
     const p = username.trim().split(" ");
-    return p.length > 1
-      ? (p[0][0] + p[1][0]).toUpperCase()
-      : username.substring(0, 2).toUpperCase();
+    return p.length > 1 ? (p[0][0] + p[1][0]).toUpperCase() : username.substring(0, 2).toUpperCase();
   }, [username]);
   const bg = useMemo(() => {
     const c = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
     let h = 0;
-    for (let i = 0; i < (username || "").length; i++)
-      h = username.charCodeAt(i) + ((h << 5) - h);
+    for (let i = 0; i < (username || "").length; i++) h = username.charCodeAt(i) + ((h << 5) - h);
     return c[Math.abs(h) % c.length];
   }, [username]);
-
   if (err || !photo)
-    return (
-      <div
-        className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
-        style={{ width: size, height: size, backgroundColor: bg, fontSize: size * 0.38 }}
-      >
-        {initials}
-      </div>
-    );
-  return (
-    <img
-      src={photo} alt={username}
-      className="rounded-full object-cover flex-shrink-0"
-      style={{ width: size, height: size }}
-      onError={() => setErr(true)}
-      loading="lazy"
-    />
-  );
+    return <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0" style={{ width: size, height: size, backgroundColor: bg, fontSize: size * 0.38 }}>{initials}</div>;
+  return <img src={photo} alt={username} className="rounded-full object-cover flex-shrink-0" style={{ width: size, height: size }} onError={() => setErr(true)} loading="lazy" />;
 });
 Avatar.displayName = "Avatar";
 
-// ─────────────────────────────────────────────
-// MEDIA BLOCK
-// ─────────────────────────────────────────────
-const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
-  const videoRef = useRef(null);
-  const [muted,    setMuted]    = useState(true);
-  const [playing,  setPlaying]  = useState(false);
-  const [imgErr,   setImgErr]   = useState(false);
-  const [showPlay, setShowPlay] = useState(false);
+// ─────────────────────────────────────────────────────────────────────────────
+// STAT BAR
+// ─────────────────────────────────────────────────────────────────────────────
+const StatBar = memo(({ likes, comments, views, isDarkMode }) => (
+  <div className={`flex items-center gap-4 px-4 py-2.5 border-t text-[12px] ${isDarkMode ? "border-gray-800 text-gray-500" : "border-gray-100 text-gray-400"}`}>
+    {likes > 0 && (
+      <span className="flex items-center gap-1.5 font-semibold">
+        <HeartIcon className="w-3.5 h-3.5 text-red-400" /> {fmtNum(likes)}
+      </span>
+    )}
+    {comments > 0 && (
+      <span className="flex items-center gap-1.5 font-semibold">
+        <ChatBubbleOvalLeftIcon className="w-3.5 h-3.5 text-blue-400" /> {fmtNum(comments)}
+      </span>
+    )}
+    {views > 0 && (
+      <span className="flex items-center gap-1.5 font-semibold">
+        <EyeIcon className="w-3.5 h-3.5 text-green-400" /> {fmtNum(views)}
+      </span>
+    )}
+  </div>
+));
+StatBar.displayName = "StatBar";
 
-  // Autoplay quand visible
+// ─────────────────────────────────────────────────────────────────────────────
+// MEDIA BLOCK
+// ─────────────────────────────────────────────────────────────────────────────
+const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
+  const videoRef  = useRef(null);
+  const [muted,   setMuted]   = useState(true);
+  const [playing, setPlaying] = useState(false);
+  const [imgErr,  setImgErr]  = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  // Autoplay au scroll (IntersectionObserver)
   useEffect(() => {
     if (post?.type !== "video" || !videoRef.current) return;
+    const vid = videoRef.current;
     const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting) {
-        videoRef.current?.play().catch(() => {});
-        setPlaying(true);
-      } else {
-        videoRef.current?.pause();
-        setPlaying(false);
-      }
+      if (e.isIntersecting) { vid.play().catch(() => {}); setPlaying(true); }
+      else                  { vid.pause(); setPlaying(false); }
     }, { threshold: 0.4 });
-    obs.observe(videoRef.current);
+    obs.observe(vid);
     return () => obs.disconnect();
   }, [post?.type]);
 
@@ -197,8 +370,7 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
     const vid = videoRef.current;
     if (!vid) return;
     const next = !vid.muted;
-    vid.muted  = next;
-    vid.volume = next ? 0 : 1;
+    vid.muted = next; vid.volume = next ? 0 : 1;
     if (!next && vid.paused) vid.play().catch(() => {});
     setMuted(next);
   }, []);
@@ -212,21 +384,19 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
   }, []);
 
   if (!post) return (
-    <div
-      className="w-full flex items-center justify-center"
-      style={{ height: 180, background: "linear-gradient(135deg,#f97316,#ec4899)" }}
-    >
-      <span className="text-white text-4xl">✨</span>
+    <div className="w-full flex items-center justify-center" style={{ height: 220, background: "linear-gradient(135deg,#f97316,#ec4899)" }}>
+      <span className="text-white text-5xl">✨</span>
     </div>
   );
 
-  // ── VIDÉO NATIVE ──
+  // ── VIDÉO ──
   if (post.type === "video" && post.videoUrl) return (
     <div
       className="relative w-full bg-black"
-      style={{ aspectRatio: "4/3" }}
-      onMouseEnter={() => setShowPlay(true)}
-      onMouseLeave={() => setShowPlay(false)}
+      style={{ aspectRatio: "16/9", cursor: "pointer" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={togglePlay}
     >
       <video
         ref={videoRef}
@@ -236,37 +406,39 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
         muted loop playsInline preload="metadata"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onClick={togglePlay}
-        style={{ cursor: "pointer" }}
       />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent pointer-events-none" />
+
+      {/* Play/Pause overlay */}
       <AnimatePresence>
-        {(showPlay || !playing) && (
-          <motion.button
+        {(hovered || !playing) && (
+          <motion.div
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.8 }}
             transition={{ duration: 0.15 }}
-            onClick={togglePlay}
-            className="absolute inset-0 flex items-center justify-center pointer-events-auto"
-            style={{ background: "transparent" }}
+            className="absolute inset-0 flex items-center justify-center pointer-events-none"
           >
-            <div className="w-14 h-14 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center border border-white/30">
+            <div className="w-14 h-14 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center border border-white/30 shadow-xl">
               {playing
-                ? <div className="flex gap-1.5"><div className="w-1.5 h-6 bg-white rounded-full" /><div className="w-1.5 h-6 bg-white rounded-full" /></div>
-                : <PlayIcon className="w-7 h-7 text-white ml-1" />
+                ? <PauseIcon className="w-6 h-6 text-white" />
+                : <PlayIcon  className="w-7 h-7 text-white ml-1" />
               }
             </div>
-          </motion.button>
+          </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Mute */}
       <button
         onClick={toggleMute}
-        className="absolute bottom-3 right-3 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white border border-white/20"
+        className="absolute bottom-3 right-3 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white border border-white/20 hover:bg-black/80 transition-colors"
         style={{ WebkitTapHighlightColor: "transparent" }}
       >
         {muted ? <SpeakerXMarkIcon className="w-4 h-4" /> : <SpeakerWaveIcon className="w-4 h-4" />}
       </button>
+
+      {/* Stats overlay bas-gauche */}
       {(post.likes > 0 || post.comments > 0) && (
         <div className="absolute bottom-3 left-3 flex items-center gap-3 pointer-events-none">
           {post.likes    > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
@@ -278,13 +450,8 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
 
   // ── IMAGE ──
   if (post.type === "image" && post.mediaUrl && !imgErr) return (
-    <div className="relative w-full bg-black" style={{ aspectRatio: "4/3" }}>
-      <img
-        src={post.mediaUrl} alt=""
-        className="w-full h-full object-cover"
-        loading="lazy"
-        onError={() => setImgErr(true)}
-      />
+    <div className="relative w-full" style={{ aspectRatio: "4/3", cursor: "pointer" }} onClick={onNavigate}>
+      <img src={post.mediaUrl} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setImgErr(true)} />
       <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
       {(post.likes > 0 || post.comments > 0) && (
         <div className="absolute bottom-3 left-3 flex items-center gap-3 pointer-events-none">
@@ -295,50 +462,37 @@ const MediaBlock = memo(({ post, isDarkMode, onVideoClick }) => {
     </div>
   );
 
-  // ── EMBED (YouTube / Vimeo) ──
-  if (post.type === "embed") return (
-    <div className="relative w-full flex items-center justify-center bg-black" style={{ aspectRatio: "4/3" }}>
-      {post.mediaUrl && !imgErr
-        ? <img src={post.mediaUrl} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setImgErr(true)} />
-        : <div className="w-full h-full" style={{ background: "linear-gradient(135deg,#1a1a2e,#16213e)" }} />
-      }
-      <div className="absolute inset-0 bg-black/40" />
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="w-14 h-14 rounded-full bg-red-600/90 flex items-center justify-center shadow-xl">
-          <PlayIcon className="w-7 h-7 text-white ml-1" />
-        </div>
-      </div>
-      {(post.likes > 0 || post.comments > 0) && (
-        <div className="absolute bottom-3 left-3 flex items-center gap-3 pointer-events-none">
-          {post.likes    > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
-          {post.comments > 0 && <span className="text-white text-xs font-bold drop-shadow">💬 {fmtNum(post.comments)}</span>}
-        </div>
-      )}
-    </div>
-  );
-
-  // ── TEXTE SEUL ──
+  // ── TEXTE ──
   return (
     <div
-      className="relative w-full flex items-center justify-center p-6"
+      className="relative w-full flex items-center justify-center p-8 cursor-pointer"
       style={{
-        minHeight: 160,
+        minHeight: 180,
         background: isDarkMode
           ? "linear-gradient(135deg,#1a1a2e,#16213e)"
           : "linear-gradient(135deg,#fff7ed,#fce7f3)",
       }}
+      onClick={onNavigate}
     >
-      <p className={`text-sm leading-relaxed text-center line-clamp-6 font-medium ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
-        {post.text}
+      {/* Décoration */}
+      <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ background: "radial-gradient(circle at 30% 50%,#f97316 0%,transparent 60%), radial-gradient(circle at 70% 50%,#ec4899 0%,transparent 60%)" }} />
+      <p className={`relative text-[15px] leading-relaxed text-center line-clamp-5 font-medium ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
+        {post.text || "Voir ce profil"}
       </p>
+      {(post.likes > 0 || post.comments > 0) && (
+        <div className="absolute bottom-3 right-3 flex items-center gap-2">
+          {post.likes    > 0 && <span className={`text-[10px] font-bold ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>❤️ {fmtNum(post.likes)}</span>}
+          {post.comments > 0 && <span className={`text-[10px] font-bold ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>💬 {fmtNum(post.comments)}</span>}
+        </div>
+      )}
     </div>
   );
 });
 MediaBlock.displayName = "MediaBlock";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // COMPOSANT PRINCIPAL
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 }) => {
   const navigate = useNavigate();
   const { user: currentUser, updateUserProfile } = useAuth();
@@ -349,26 +503,41 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
   const [following,  setFollowing]  = useState(false);
   const [loadFollow, setLoadFollow] = useState(false);
   const [hidden,     setHidden]     = useState(false);
-  const fetchedRef = useRef(false);
 
+  const containerRef = useRef(null);
+  const fetchedRef   = useRef(false);
+  const abortRef     = useRef(null);
+
+  // Lazy-load déclenché par IntersectionObserver
   useEffect(() => {
-    if (fetchedRef.current || !userPool.length) return;
-    fetchedRef.current = true;
-    const picked = userPool[slotIndex % userPool.length];
-    if (!picked?._id) { setReady(true); return; }
-    setUser(picked);
-    (async () => {
-      try {
-        const { data } = await axiosClient.get(`/posts/user/${picked._id}?limit=12&page=1`);
-        const posts = Array.isArray(data) ? data : (data?.posts || []);
-        // 🎲 Sélection aléatoire — tous types confondus
-        setPost(pickRandomPost(posts));
-      } catch {
-        setPost(null);
-      } finally {
-        setReady(true);
-      }
-    })();
+    const el = containerRef.current;
+    if (!el || !userPool.length) return;
+
+    const obs = new IntersectionObserver(([entry]) => {
+      if (!entry.isIntersecting || fetchedRef.current) return;
+      obs.disconnect();
+      fetchedRef.current = true;
+
+      const picked = userPool[slotIndex % userPool.length];
+      if (!picked?._id) { setReady(true); return; }
+      setUser(picked);
+
+      abortRef.current = new AbortController();
+      const { signal } = abortRef.current;
+
+      (async () => {
+        try {
+          const { data } = await axiosClient.get(`/posts/user/${picked._id}?limit=15&page=1`, { signal });
+          const posts = Array.isArray(data) ? data : (data?.posts || []);
+          const best  = await pickBestPost(posts, signal);
+          setPost(best);
+        } catch { setPost(null); }
+        finally { setReady(true); }
+      })();
+    }, { rootMargin: "150px", threshold: 0 });
+
+    obs.observe(el);
+    return () => { obs.disconnect(); abortRef.current?.abort(); };
   }, [userPool, slotIndex]);
 
   const handleFollow = useCallback(async (e) => {
@@ -380,130 +549,161 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
       updateUserProfile?.(currentUser._id, {
         following: [...(currentUser?.following || []), user._id],
       });
-    } catch {
-      setFollowing(false);
-    } finally {
-      setLoadFollow(false);
-    }
+    } catch { setFollowing(false); }
+    finally { setLoadFollow(false); }
   }, [loadFollow, following, user, currentUser, updateUserProfile]);
 
   const goProfile  = useCallback(() => { if (user?._id) navigate(`/profile/${user._id}`); }, [navigate, user]);
   const handleHide = useCallback((e) => { e.stopPropagation(); setHidden(true); }, []);
 
-  // Skeleton
+  // ── Skeleton ──
   if (!ready) return (
-    <div className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
+    <div ref={containerRef} className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
       <div className="flex items-center gap-3 px-4 pt-5 pb-3">
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
-          👤 Profil suggéré
-        </span>
+        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>👤 Profil suggéré</span>
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
       </div>
       <div className="px-4 pb-5">
-        <div
-          className={`w-full rounded-2xl animate-pulse ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`}
-          style={{ height: 340 }}
-        />
+        <div className={`w-full rounded-2xl animate-pulse ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`} style={{ height: 360 }} />
       </div>
     </div>
   );
 
-  if (hidden || !user) return null;
+  if (hidden || !user) return <div ref={containerRef} />;
+
+  const relevancePct = post ? Math.round(Math.min(100, post.score || 0)) : 0;
 
   return (
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -16 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-        className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}
-      >
-        {/* Titre */}
-        <div className="flex items-center gap-3 px-4 pt-5 pb-3">
-          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-          <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
-            👤 Profil suggéré
-          </span>
-          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-        </div>
+    <div ref={containerRef}>
+      <AnimatePresence>
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -16 }}
+          transition={{ type: "spring", damping: 28, stiffness: 260 }}
+          className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}
+        >
+          {/* Header séparateur */}
+          <div className="flex items-center gap-3 px-4 pt-5 pb-3">
+            <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+            <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
+              👤 Profil suggéré
+            </span>
+            <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+          </div>
 
-        {/* Carte */}
-        <div className="px-4 pb-5">
-          <div
-            className={`relative w-full rounded-2xl overflow-hidden
-              ${isDarkMode
-                ? "bg-gray-900 border border-gray-800"
-                : "bg-white border border-gray-100"} shadow-md`}
-          >
-            {/* Bouton masquer */}
-            <button
-              onClick={handleHide}
-              className="absolute top-3 right-3 z-20 w-7 h-7 rounded-full flex items-center justify-center bg-black/50 backdrop-blur-sm text-white"
-              style={{ WebkitTapHighlightColor: "transparent" }}
+          {/* Carte principale */}
+          <div className="px-4 pb-5">
+            <div
+              className={`relative w-full rounded-2xl overflow-hidden
+                ${isDarkMode
+                  ? "bg-gray-900 border border-gray-800"
+                  : "bg-white border border-gray-100"
+                }`}
+              style={{ boxShadow: isDarkMode ? "0 4px 32px rgba(0,0,0,0.6)" : "0 4px 24px rgba(0,0,0,0.09)" }}
             >
-              <XMarkIcon className="w-4 h-4" />
-            </button>
+              {/* Badge "Pertinent pour vous" */}
+              {post?.isHighRelevance && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold text-white shadow-lg"
+                  style={{ background: "linear-gradient(135deg,#f97316,#ec4899)" }}
+                >
+                  ⭐ Pertinent pour vous
+                </motion.div>
+              )}
 
-            {/* Media cliquable → profil */}
-            <div onClick={goProfile} style={{ cursor: "pointer" }}>
-              <MediaBlock post={post} isDarkMode={isDarkMode} />
-            </div>
-
-            {/* Infos profil */}
-            <div className="p-4 flex items-center gap-3" onClick={goProfile} style={{ cursor: "pointer" }}>
-              <div className={`rounded-full p-[2px] flex-shrink-0 ${user.isPremium ? "bg-gradient-to-tr from-orange-400 via-pink-500 to-purple-500" : ""}`}>
-                <div className={`rounded-full p-[2px] ${isDarkMode ? "bg-gray-900" : "bg-white"}`}>
-                  <Avatar username={user.fullName} photo={user.profilePhoto} size={44} />
-                </div>
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className={`text-sm font-bold truncate ${isDarkMode ? "text-white" : "text-gray-900"}`}>
-                    {user.fullName}
-                  </span>
-                  {user.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500 flex-shrink-0" />}
-                </div>
-                <p className={`text-xs mt-0.5 truncate ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
-                  {user.bio
-                    ? user.bio.substring(0, 50) + (user.bio.length > 50 ? "…" : "")
-                    : "Suggéré pour toi"}
-                </p>
-              </div>
-              {/* Bouton Suivre */}
+              {/* Bouton masquer */}
               <button
-                onClick={handleFollow}
-                disabled={loadFollow}
-                className={`flex-shrink-0 px-4 py-1.5 rounded-full text-xs font-bold transition-all active:scale-95
-                  ${following
-                    ? isDarkMode
-                      ? "bg-gray-800 text-gray-400 border border-gray-700"
-                      : "bg-gray-100 text-gray-500 border border-gray-200"
-                    : "bg-gradient-to-r from-orange-500 to-pink-500 text-white shadow-sm"}`}
+                onClick={handleHide}
+                className="absolute top-3 right-3 z-20 w-7 h-7 rounded-full flex items-center justify-center bg-black/50 backdrop-blur-sm text-white hover:bg-black/70 transition-colors"
                 style={{ WebkitTapHighlightColor: "transparent" }}
               >
-                {loadFollow ? "…" : following ? "✓ Suivi(e)" : "Suivre"}
+                <XMarkIcon className="w-4 h-4" />
               </button>
-            </div>
 
-            {/* Voir le profil */}
-            <div className="px-4 pb-4">
-              <button
-                onClick={goProfile}
-                className={`w-full py-2 rounded-xl text-xs font-semibold transition-colors
-                  ${isDarkMode
-                    ? "bg-gray-800 text-gray-300 hover:bg-gray-700"
-                    : "bg-gray-50 text-gray-600 hover:bg-gray-100"}`}
-                style={{ WebkitTapHighlightColor: "transparent" }}
-              >
-                Voir le profil →
-              </button>
+              {/* Media */}
+              <div onClick={goProfile} style={{ cursor: "pointer" }}>
+                <MediaBlock post={post} isDarkMode={isDarkMode} onNavigate={goProfile} />
+              </div>
+
+              {/* Stats bar */}
+              {post && (post.likes > 0 || post.comments > 0 || post.views > 0) && (
+                <StatBar likes={post.likes} comments={post.comments} views={post.views} isDarkMode={isDarkMode} />
+              )}
+
+              {/* Infos profil */}
+              <div className="p-4 flex items-center gap-3" onClick={goProfile} style={{ cursor: "pointer" }}>
+                <div className={`rounded-full flex-shrink-0 ${user.isPremium || user.isVerified ? "p-[2.5px] bg-gradient-to-tr from-orange-400 via-pink-500 to-purple-500" : ""}`}>
+                  <div className={`rounded-full ${(user.isPremium || user.isVerified) ? `p-[2px] ${isDarkMode ? "bg-gray-900" : "bg-white"}` : ""}`}>
+                    <Avatar username={user.fullName} photo={user.profilePhoto || user.avatar || user.profilePicture} size={46} />
+                  </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className={`text-[15px] font-bold truncate ${isDarkMode ? "text-white" : "text-gray-900"}`}>{user.fullName}</span>
+                    {user.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500 flex-shrink-0" />}
+                  </div>
+                  <p className={`text-[12px] mt-0.5 truncate ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
+                    {user.bio ? `${user.bio.substring(0, 55)}${user.bio.length > 55 ? "…" : ""}` : "Suggéré pour toi"}
+                  </p>
+                  {/* Barre de pertinence */}
+                  {relevancePct > 0 && (
+                    <div className={`mt-1.5 w-full h-0.5 rounded-full overflow-hidden ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ background: "linear-gradient(90deg,#f97316,#ec4899)" }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${relevancePct}%` }}
+                        transition={{ duration: 0.8, ease: "easeOut", delay: 0.3 }}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Bouton Suivre */}
+                <button
+                  onClick={handleFollow}
+                  disabled={loadFollow}
+                  className={`flex-shrink-0 px-4 py-2 rounded-full text-[12px] font-bold transition-all active:scale-95 flex items-center justify-center gap-1.5
+                    ${following
+                      ? isDarkMode
+                        ? "bg-gray-800 text-gray-400 border border-gray-700"
+                        : "bg-gray-100 text-gray-500 border border-gray-200"
+                      : "text-white shadow-md"
+                    }`}
+                  style={following ? {} : { background: "linear-gradient(135deg,#f97316,#ec4899)", WebkitTapHighlightColor: "transparent" }}
+                >
+                  {loadFollow
+                    ? <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    : following
+                      ? "✓ Suivi(e)"
+                      : "Suivre"
+                  }
+                </button>
+              </div>
+
+              {/* CTA voir profil */}
+              <div className="px-4 pb-4">
+                <button
+                  onClick={goProfile}
+                  className={`w-full py-2.5 rounded-xl text-[12px] font-semibold transition-colors flex items-center justify-center gap-2
+                    ${isDarkMode
+                      ? "bg-gray-800 text-gray-300 hover:bg-gray-700 border border-gray-700"
+                      : "bg-gray-50 text-gray-600 hover:bg-gray-100 border border-gray-200"
+                    }`}
+                  style={{ WebkitTapHighlightColor: "transparent" }}
+                >
+                  Voir le profil complet →
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      </motion.div>
-    </AnimatePresence>
+        </motion.div>
+      </AnimatePresence>
+    </div>
   );
 });
 SuggestedPostPreview.displayName = "SuggestedPostPreview";

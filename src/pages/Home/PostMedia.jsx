@@ -1,18 +1,21 @@
 // 📁 src/pages/Home/PostMedia.jsx
-// ✅ GRID LAYOUT v25-TEXT-FALLBACK
+// ✅ GRID LAYOUT v26-TEXT-CARD
 //
-// FIXES v25 :
-//   - TextOnlyCard : si tous les slots media échouent ET que post.content existe,
-//     affiche le texte en grand sur fond coloré (style Facebook post texte pur).
-//     Police adaptative : 32px ≤280 chars, 24px ≤500 chars, 18px au-delà.
-//     Fond : gradient parmi 8 palettes selon un hash du contenu (stable).
-//     Hauteur min 260px, max 420px selon longueur du texte.
-//     Le composant est exporté pour usage éventuel dans PostCard.
+// NOUVEAUTÉS v26 :
+//   ✅ mediaType:"text-card" → shortcut direct vers TextOnlyCard
+//      sans aucune validation URL (post texte pur créé depuis CreatePost).
+//      Si post.textCardPalette est défini (0-7) → utilise cette palette
+//      au lieu du hash automatique.
+//      Compatible avec les posts optimistes (blob: URLs ignorées) et
+//      les vrais posts sauvegardés en base.
 //
-// FIXES v24 (conservés) :
-//   - VideoItem : videoError → return null (slot entier supprimé, plus de "Vidéo indisponible")
-//   - useMediaValidation : onerror vidéo → invalide immédiatement (plus d'attente 4s)
-//   - useMediaValidation : timeout vidéo réduit 4000→2000ms
+//   ✅ TextOnlyCard accepte maintenant une prop `forceIndex` (0-7)
+//      pour forcer la palette sans recalcul de hash.
+//
+// FIXES v25 (conservés) :
+//   - TextOnlyCard : fallback texte coloré quand tous les slots échouent
+//   - VideoItem : videoError → return null
+//   - useMediaValidation : timeout vidéo 2000ms
 //   - PostMedia recalcule le layout sur les slots valides uniquement
 
 import React, {
@@ -25,16 +28,12 @@ const VID_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 const API_BASE  = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/api$/, '');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO MANAGER GLOBAL — une seule vidéo joue à la fois
+// VIDEO MANAGER GLOBAL
 // ─────────────────────────────────────────────────────────────────────────────
 let currentPlayingVideo = null;
 const registerPlayingVideo = (video) => {
   if (!video) return;
-  if (
-    currentPlayingVideo &&
-    currentPlayingVideo !== video &&
-    document.contains(currentPlayingVideo)
-  ) {
+  if (currentPlayingVideo && currentPlayingVideo !== video && document.contains(currentPlayingVideo)) {
     try { currentPlayingVideo.pause(); } catch {}
   }
   currentPlayingVideo = video;
@@ -109,10 +108,7 @@ const getVideoPosterUrl = (videoUrl, postData = null) => {
       return m ? `https://images.pexels.com/videos/${m[1]}/pictures/preview-0.jpg` : null;
     }
     if (isPixabayVideo(videoUrl)) {
-      const t = videoUrl
-        .replace('_large.mp4', '_tiny.jpg')
-        .replace('_medium.mp4', '_tiny.jpg')
-        .replace('_small.mp4', '_tiny.jpg');
+      const t = videoUrl.replace('_large.mp4', '_tiny.jpg').replace('_medium.mp4', '_tiny.jpg').replace('_small.mp4', '_tiny.jpg');
       return t !== videoUrl ? t : null;
     }
     return null;
@@ -163,32 +159,25 @@ const resolveSlotType = (url, postMediaType = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ v25 : TEXT ONLY CARD — style Facebook post texte pur
-// Affiché quand tous les slots média ont échoué mais que du texte existe
+// ✅ v26 : TEXT ONLY CARD — supporte forceIndex pour palette explicite
 // ─────────────────────────────────────────────────────────────────────────────
-
-// 8 palettes de gradient : [from, to, textColor]
 const TEXT_CARD_PALETTES = [
-  ['#1877F2', '#0D5FCC', '#ffffff'],   // bleu Facebook
-  ['#E4405F', '#C13584', '#ffffff'],   // rose Instagram
-  ['#FF6B35', '#F7C59F', '#ffffff'],   // orange chaud
-  ['#2EC4B6', '#0B7A75', '#ffffff'],   // teal
-  ['#6A0572', '#AB83A1', '#ffffff'],   // violet
-  ['#1A1A2E', '#16213E', '#ffffff'],   // marine nuit
-  ['#2D6A4F', '#52B788', '#ffffff'],   // vert forêt
-  ['#8B2FC9', '#5A108F', '#ffffff'],   // pourpre
+  ['#1877F2', '#0D5FCC', '#ffffff'],   // 0 — bleu
+  ['#E4405F', '#C13584', '#ffffff'],   // 1 — rose
+  ['#FF6B35', '#F7C59F', '#ffffff'],   // 2 — orange
+  ['#2EC4B6', '#0B7A75', '#ffffff'],   // 3 — teal
+  ['#6A0572', '#AB83A1', '#ffffff'],   // 4 — violet
+  ['#1A1A2E', '#16213E', '#ffffff'],   // 5 — marine
+  ['#2D6A4F', '#52B788', '#ffffff'],   // 6 — vert
+  ['#8B2FC9', '#5A108F', '#ffffff'],   // 7 — pourpre
 ];
 
-// Hash stable du texte → index de palette (0-7)
 const hashText = (str) => {
   let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = Math.imul(31, h) + str.charCodeAt(i) | 0;
-  }
+  for (let i = 0; i < str.length; i++) h = Math.imul(31, h) + str.charCodeAt(i) | 0;
   return Math.abs(h) % TEXT_CARD_PALETTES.length;
 };
 
-// Taille de police selon longueur du texte
 const getFontSize = (len) => {
   if (len <= 60)  return { size: '32px', lineHeight: '1.25', weight: '700' };
   if (len <= 120) return { size: '26px', lineHeight: '1.30', weight: '700' };
@@ -197,7 +186,6 @@ const getFontSize = (len) => {
   return            { size: '15px', lineHeight: '1.50', weight: '500' };
 };
 
-// Hauteur du bloc selon longueur du texte
 const getCardHeight = (len) => {
   if (len <= 60)  return 260;
   if (len <= 120) return 280;
@@ -207,68 +195,34 @@ const getCardHeight = (len) => {
   return 420;
 };
 
-export const TextOnlyCard = React.memo(({ content }) => {
+export const TextOnlyCard = React.memo(({ content, forceIndex }) => {
   if (!content || typeof content !== 'string' || !content.trim()) return null;
 
-  const text      = content.trim();
-  const paletteIdx = hashText(text);
+  const text       = content.trim();
+  // ✅ v26 : forceIndex prioritaire sur hash
+  const paletteIdx = (typeof forceIndex === 'number' && forceIndex >= 0 && forceIndex <= 7)
+    ? forceIndex
+    : hashText(text);
   const [from, to, textColor] = TEXT_CARD_PALETTES[paletteIdx];
   const { size, lineHeight, weight } = getFontSize(text.length);
-  const height = getCardHeight(text.length);
-
-  // Tronque à 500 chars pour l'affichage dans la card
+  const height   = getCardHeight(text.length);
   const displayed = text.length > 500 ? text.slice(0, 497) + '…' : text;
 
   return (
-    <div
-      style={{
-        width: '100%',
-        minHeight: height,
-        background: `linear-gradient(135deg, ${from} 0%, ${to} 100%)`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '28px 24px',
-        boxSizing: 'border-box',
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Décoration de fond subtile */}
-      <div style={{
-        position: 'absolute',
-        top: -60,
-        right: -60,
-        width: 200,
-        height: 200,
-        borderRadius: '50%',
-        background: 'rgba(255,255,255,0.06)',
-        pointerEvents: 'none',
-      }} />
-      <div style={{
-        position: 'absolute',
-        bottom: -40,
-        left: -40,
-        width: 150,
-        height: 150,
-        borderRadius: '50%',
-        background: 'rgba(255,255,255,0.04)',
-        pointerEvents: 'none',
-      }} />
-
-      {/* Texte centré */}
+    <div style={{
+      width: '100%', minHeight: height,
+      background: `linear-gradient(135deg, ${from} 0%, ${to} 100%)`,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '28px 24px', boxSizing: 'border-box',
+      position: 'relative', overflow: 'hidden',
+    }}>
+      <div style={{ position: 'absolute', top: -60, right: -60, width: 200, height: 200, borderRadius: '50%', background: 'rgba(255,255,255,0.06)', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', bottom: -40, left: -40, width: 150, height: 150, borderRadius: '50%', background: 'rgba(255,255,255,0.04)', pointerEvents: 'none' }} />
       <p style={{
-        color: textColor,
-        fontSize: size,
-        lineHeight: lineHeight,
-        fontWeight: weight,
+        color: textColor, fontSize: size, lineHeight, fontWeight: weight,
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        textAlign: 'center',
-        margin: 0,
-        position: 'relative',
-        zIndex: 1,
-        wordBreak: 'break-word',
-        overflowWrap: 'break-word',
+        textAlign: 'center', margin: 0, position: 'relative', zIndex: 1,
+        wordBreak: 'break-word', overflowWrap: 'break-word',
         letterSpacing: text.length <= 60 ? '-0.5px' : 'normal',
         textShadow: '0 1px 3px rgba(0,0,0,0.15)',
       }}>
@@ -298,9 +252,7 @@ const VideoSourceBadge = React.memo(({ url }) => {
       background: info.bg, color: 'white', fontSize: 10, fontWeight: 700,
       pointerEvents: 'none', boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
     }}>
-      <svg viewBox="0 0 10 10" style={{ width: 8, height: 8 }} fill="white">
-        <polygon points="2,1 9,5 2,9" />
-      </svg>
+      <svg viewBox="0 0 10 10" style={{ width: 8, height: 8 }} fill="white"><polygon points="2,1 9,5 2,9" /></svg>
       {info.label}
     </div>
   );
@@ -311,9 +263,9 @@ VideoSourceBadge.displayName = 'VideoSourceBadge';
 // EMBED ITEM
 // ─────────────────────────────────────────────────────────────────────────────
 const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
-  const [showEmbed,    setShowEmbed]    = useState(false);
-  const [thumbError,   setThumbError]   = useState(false);
-  const [thumbLoaded,  setThumbLoaded]  = useState(false);
+  const [showEmbed, setShowEmbed] = useState(false);
+  const [thumbError, setThumbError] = useState(false);
+  const [thumbLoaded, setThumbLoaded] = useState(false);
   const [thumbQuality, setThumbQuality] = useState('hq');
 
   const normalizedUrl = useMemo(() => toEmbedUrl(url), [url]);
@@ -354,34 +306,21 @@ const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
             <>
               {!thumbLoaded && <div style={{ position: 'absolute', inset: 0, background: '#111' }} />}
               <img src={resolvedThumb} alt={title || 'Vidéo'}
-                style={{ width: '100%', height: '100%', objectFit: 'cover',
-                  opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.25s' }}
-                loading="lazy" decoding="async"
-                onLoad={() => setThumbLoaded(true)} onError={handleThumbError}
-                referrerPolicy="no-referrer" />
+                style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: thumbLoaded ? 1 : 0, transition: 'opacity 0.25s' }}
+                loading="lazy" decoding="async" onLoad={() => setThumbLoaded(true)} onError={handleThumbError} referrerPolicy="no-referrer" />
             </>
           ) : (
-            <div style={{ width: '100%', height: '100%', background: '#111',
-              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: '100%', height: '100%', background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <span style={{ color: '#555', fontSize: 36 }}>▶</span>
             </div>
           )}
           {hasThumbnail && thumbLoaded && (
-            <div style={{ position: 'absolute', inset: 0,
-              background: 'linear-gradient(to top, rgba(0,0,0,0.5), transparent)',
-              pointerEvents: 'none' }} />
+            <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.5), transparent)', pointerEvents: 'none' }} />
           )}
           <button onClick={() => setShowEmbed(true)}
-            style={{ position: 'absolute', inset: 0, background: 'transparent',
-              border: 'none', cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ width: 48, height: 48, borderRadius: '50%',
-              background: 'rgba(255,255,255,0.92)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
-              <div style={{ width: 0, height: 0, marginLeft: 4,
-                borderTop: '10px solid transparent', borderBottom: '10px solid transparent',
-                borderLeft: '17px solid #111' }} />
+            style={{ position: 'absolute', inset: 0, background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(255,255,255,0.92)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 20px rgba(0,0,0,0.4)' }}>
+              <div style={{ width: 0, height: 0, marginLeft: 4, borderTop: '10px solid transparent', borderBottom: '10px solid transparent', borderLeft: '17px solid #111' }} />
             </div>
           </button>
         </>
@@ -399,53 +338,35 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
   const [imgError, setImgError] = useState(false);
   const hasThumbnail = thumbnail && !imgError;
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#111',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-      {hasThumbnail ? (
-        <img src={thumbnail} alt={title || ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          loading="lazy" decoding="async" onError={() => setImgError(true)} />
-      ) : (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
-          justifyContent: 'center', background: 'linear-gradient(135deg, #1a1a2e, #0f3460)' }}>
-          <svg viewBox="0 0 24 24" style={{ width: 32, height: 32 }} fill="rgba(255,69,0,0.9)">
-            <path d="M8 5v14l11-7z"/>
-          </svg>
-        </div>
-      )}
+    <div style={{ position: 'absolute', inset: 0, background: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+      {hasThumbnail
+        ? <img src={thumbnail} alt={title || ''} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" onError={() => setImgError(true)} />
+        : <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, #1a1a2e, #0f3460)' }}><svg viewBox="0 0 24 24" style={{ width: 32, height: 32 }} fill="rgba(255,69,0,0.9)"><path d="M8 5v14l11-7z"/></svg></div>
+      }
       {externalUrl && (
         <a href={externalUrl} target="_blank" rel="noopener noreferrer"
           style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           onClick={e => e.stopPropagation()}>
           {hasThumbnail && (
-            <div style={{ width: 48, height: 48, borderRadius: '50%',
-              background: 'rgba(255,69,0,0.85)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 4px 16px rgba(0,0,0,0.4)' }}>
-              <svg viewBox="0 0 24 24" style={{ width: 24, height: 24, marginLeft: 3 }} fill="white">
-                <path d="M8 5v14l11-7z"/>
-              </svg>
+            <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'rgba(255,69,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 16px rgba(0,0,0,0.4)' }}>
+              <svg viewBox="0 0 24 24" style={{ width: 24, height: 24, marginLeft: 3 }} fill="white"><path d="M8 5v14l11-7z"/></svg>
             </div>
           )}
         </a>
       )}
-      <div style={{ position: 'absolute', top: 8, left: 8, padding: '2px 8px', borderRadius: 9999,
-        background: 'rgba(255,69,0,0.85)', color: 'white', fontSize: 10, fontWeight: 700 }}>
-        Reddit
-      </div>
+      <div style={{ position: 'absolute', top: 8, left: 8, padding: '2px 8px', borderRadius: 9999, background: 'rgba(255,69,0,0.85)', color: 'white', fontSize: 10, fontWeight: 700 }}>Reddit</div>
     </div>
   );
 });
 HLSItem.displayName = 'HLSItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO ITEM v24
+// VIDEO ITEM
 // ─────────────────────────────────────────────────────────────────────────────
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
 
-const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
-  onRegisterVideoEl, slotIndex, showBadge = true, onVideoError,
-}) => {
+const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRegisterVideoEl, slotIndex, showBadge = true, onVideoError }) => {
   const videoRef      = useRef(null);
   const containerRef  = useRef(null);
   const muteButtonRef = useRef(null);
@@ -466,29 +387,21 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
   const useCrossOrigin = useMemo(() => needsCrossOrigin(url), [url]);
   const preloadStrat   = useMemo(() => (isLCP || isExternalVideo(url)) ? 'auto' : 'metadata', [isLCP, url]);
 
-  const setVideoRef = useCallback((el) => {
-    videoRef.current = el;
-    onRegisterVideoEl?.(slotIndex, el);
-  }, [onRegisterVideoEl, slotIndex]);
+  const setVideoRef = useCallback((el) => { videoRef.current = el; onRegisterVideoEl?.(slotIndex, el); }, [onRegisterVideoEl, slotIndex]);
 
   useEffect(() => {
     if (!currentSrc || srcSetRef.current) return;
     const vid = videoRef.current; if (!vid) return;
     srcSetRef.current = true;
-    vid.src     = currentSrc;
-    vid.muted   = true;
-    vid.volume  = 1;
-    vid.preload = preloadStrat;
+    vid.src = currentSrc; vid.muted = true; vid.volume = 1; vid.preload = preloadStrat;
     if (isLCP) vid.load();
   }, [currentSrc, preloadStrat, isLCP]);
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const container = containerRef.current; if (!container) return;
     const obs = new IntersectionObserver(([entry]) => {
-      const visible = entry.isIntersecting;
-      isVisibleRef.current = visible;
-      if (visible) { if (!userPausedRef.current) playVideo(); }
+      isVisibleRef.current = entry.isIntersecting;
+      if (entry.isIntersecting) { if (!userPausedRef.current) playVideo(); }
       else { pauseVideo(true); }
     }, { threshold: 0.4, rootMargin: '-5% 0px' });
     obs.observe(container);
@@ -501,41 +414,22 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
       debounceRef.current = null;
       const vid = videoRef.current; if (!vid) return;
       abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      vid.muted  = true;
-      vid.volume = 1;
-      userPausedRef.current = false;
+      const ctrl = new AbortController(); abortRef.current = ctrl;
+      vid.muted = true; vid.volume = 1; userPausedRef.current = false;
       const doPlay = () => {
         if (ctrl.signal.aborted) return;
         if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
         registerPlayingVideo(vid);
         const p = vid.play();
         if (!p) return;
-        p.then(() => {
-          if (ctrl.signal.aborted) { vid.pause(); return; }
-          setPosterVisible(false);
-        }).catch(err => {
-          if (ctrl.signal.aborted || err.name === 'AbortError') return;
-          if (err.name !== 'NotAllowedError') {
-            setTimeout(() => { if (ctrl.signal.aborted) return; vid.play().catch(() => { vid.muted = true; }); }, 300);
-          }
-        });
+        p.then(() => { if (ctrl.signal.aborted) { vid.pause(); return; } setPosterVisible(false); })
+          .catch(err => { if (ctrl.signal.aborted || err.name === 'AbortError') return; if (err.name !== 'NotAllowedError') setTimeout(() => { if (ctrl.signal.aborted) return; vid.play().catch(() => { vid.muted = true; }); }, 300); });
       };
-      if (vid.readyState >= 3) {
-        doPlay();
-      } else {
-        timerRef.current = setTimeout(() => {
-          timerRef.current = null;
-          if (!ctrl.signal.aborted && vid.readyState < 1) { setVideoError(true); onVideoError?.(); }
-        }, 4000);
+      if (vid.readyState >= 3) { doPlay(); }
+      else {
+        timerRef.current = setTimeout(() => { timerRef.current = null; if (!ctrl.signal.aborted && vid.readyState < 1) { setVideoError(true); onVideoError?.(); } }, 4000);
         if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
-        const onCan = () => {
-          vid.removeEventListener('canplay', onCan);
-          canplayRef.current = null;
-          if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-          doPlay();
-        };
+        const onCan = () => { vid.removeEventListener('canplay', onCan); canplayRef.current = null; if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; } doPlay(); };
         canplayRef.current = onCan;
         vid.addEventListener('canplay', onCan);
       }
@@ -545,8 +439,7 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
   const pauseVideo = useCallback((resetTime = false) => {
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    abortRef.current?.abort();
-    abortRef.current = null;
+    abortRef.current?.abort(); abortRef.current = null;
     const vid = videoRef.current;
     if (vid) {
       if (canplayRef.current) { vid.removeEventListener('canplay', canplayRef.current); canplayRef.current = null; }
@@ -556,17 +449,12 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
     }
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      if (timerRef.current)    clearTimeout(timerRef.current);
-      abortRef.current?.abort();
-      const vid = videoRef.current;
-      if (vid) {
-        if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
-        vid.pause(); vid.src = ''; vid.load();
-      }
-    };
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (timerRef.current)    clearTimeout(timerRef.current);
+    abortRef.current?.abort();
+    const vid = videoRef.current;
+    if (vid) { if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current); vid.pause(); vid.src = ''; vid.load(); }
   }, []); // eslint-disable-line
 
   const handleMuteClick = useCallback((e) => {
@@ -575,8 +463,7 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
     const newMuted = !vid.muted;
     vid.muted = newMuted; vid.volume = newMuted ? 0 : 1;
     isMutedLocal.current = newMuted;
-    if (muteButtonRef.current)
-      muteButtonRef.current.innerHTML = newMuted ? ICON_MUTED : ICON_UNMUTED;
+    if (muteButtonRef.current) muteButtonRef.current.innerHTML = newMuted ? ICON_MUTED : ICON_UNMUTED;
     if (!newMuted && vid.paused && isVisibleRef.current) {
       userPausedRef.current = false;
       vid.play().catch(() => { vid.muted = true; vid.volume = 0; isMutedLocal.current = true; if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED; });
@@ -594,37 +481,25 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true,
       if (v) { v.src = direct; v.load(); if (isVisibleRef.current && !userPausedRef.current) v.play().catch(() => {}); }
       return;
     }
-    setVideoError(true);
-    onVideoError?.();
+    setVideoError(true); onVideoError?.();
   }, [videoUrls, currentSrc, onVideoError]);
 
   if (videoError) return null;
 
   return (
     <div ref={containerRef} style={{ position: 'absolute', inset: 0, background: '#000' }}>
-      <video ref={setVideoRef}
-        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        preload={preloadStrat} playsInline loop
-        crossOrigin={useCrossOrigin ? 'anonymous' : undefined}
+      <video ref={setVideoRef} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        preload={preloadStrat} playsInline loop crossOrigin={useCrossOrigin ? 'anonymous' : undefined}
         onPlay={handlePlay} onPause={handlePause} onError={handleError} />
       {posterUrl && (
         <img src={posterUrl} alt=""
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover',
-            pointerEvents: 'none', zIndex: posterVisible ? 2 : -1,
-            opacity: posterVisible ? 1 : 0, transition: isLCP ? 'none' : 'opacity 0.3s ease' }}
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none', zIndex: posterVisible ? 2 : -1, opacity: posterVisible ? 1 : 0, transition: isLCP ? 'none' : 'opacity 0.3s ease' }}
           loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'} draggable="false" />
       )}
       {showBadge && <VideoSourceBadge url={url} />}
       <button ref={muteButtonRef} onClick={handleMuteClick}
-        style={{
-          position: 'absolute', bottom: 8, right: 8, zIndex: 20,
-          width: 30, height: 30, borderRadius: '50%',
-          background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)',
-          color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent',
-        }}
-        dangerouslySetInnerHTML={{ __html: ICON_MUTED }}
-      />
+        style={{ position: 'absolute', bottom: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: '50%', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
+        dangerouslySetInnerHTML={{ __html: ICON_MUTED }} />
     </div>
   );
 });
@@ -637,10 +512,7 @@ const ImageItem = React.memo(({ url, isLCP }) => {
   const [loaded, setLoaded] = useState(isLCP);
   return (
     <div style={{ position: 'absolute', inset: 0, background: '#111' }}>
-      <img src={url} alt=""
-        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block',
-          userSelect: 'none', opacity: isLCP ? 1 : (loaded ? 1 : 0),
-          transition: isLCP ? 'none' : 'opacity 0.2s ease' }}
+      <img src={url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', userSelect: 'none', opacity: isLCP ? 1 : (loaded ? 1 : 0), transition: isLCP ? 'none' : 'opacity 0.2s ease' }}
         loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'}
         onLoad={() => setLoaded(true)} onError={() => setLoaded(true)} draggable="false" />
     </div>
@@ -651,17 +523,8 @@ ImageItem.displayName = 'ImageItem';
 // ─────────────────────────────────────────────────────────────────────────────
 // MEDIA CELL
 // ─────────────────────────────────────────────────────────────────────────────
-const MediaCell = React.memo(({
-  url, slotType, posterUrl, isLCP,
-  onRegisterVideoEl, slotIndex,
-  showBadge, post,
-  paddingBottom = '75%',
-  overlay = null,
-  wrapperStyle = {},
-  onVideoError,
-}) => {
+const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideoEl, slotIndex, showBadge, post, paddingBottom = '75%', overlay = null, wrapperStyle = {}, onVideoError }) => {
   const embedThumbnail = useMemo(() => post?.thumbnail || getYouTubeThumbnail(url), [post?.thumbnail, url]);
-
   return (
     <div style={{ position: 'relative', paddingBottom, overflow: 'hidden', background: '#111', ...wrapperStyle }}>
       <div style={{ position: 'absolute', inset: 0 }}>
@@ -670,15 +533,12 @@ const MediaCell = React.memo(({
         ) : slotType === 'hls' ? (
           <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
         ) : slotType === 'video' ? (
-          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} initialMuted={true}
-            onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex}
-            showBadge={showBadge} onVideoError={onVideoError} />
+          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} initialMuted={true} onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge} onVideoError={onVideoError} />
         ) : (
           <ImageItem url={url} isLCP={isLCP} />
         )}
         {overlay && (
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
             <span style={{ color: 'white', fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{overlay}</span>
           </div>
         )}
@@ -688,36 +548,21 @@ const MediaCell = React.memo(({
 });
 MediaCell.displayName = 'MediaCell';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HOOK — ratio naturel image/vidéo
-// ─────────────────────────────────────────────────────────────────────────────
 const MAX_PB = 177;
-
 const useNaturalRatio = (url, slotType, fallbackPb) => {
   const [pb, setPb] = useState(null);
   useEffect(() => {
     if (!url || slotType === 'embed' || slotType === 'hls') { setPb(fallbackPb); return; }
     if (slotType === 'image') {
       const img = new Image();
-      img.onload  = () => {
-        const r = img.naturalWidth && img.naturalHeight
-          ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB)
-          : parseFloat(fallbackPb);
-        setPb(`${r}%`);
-      };
+      img.onload  = () => { const r = img.naturalWidth && img.naturalHeight ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); };
       img.onerror = () => setPb(fallbackPb);
       img.src = url; return;
     }
     if (slotType === 'video') {
-      const vid = document.createElement('video');
-      vid.muted = true; vid.preload = 'metadata';
+      const vid = document.createElement('video'); vid.muted = true; vid.preload = 'metadata';
       const cleanup = () => { vid.onloadedmetadata = null; vid.onerror = null; vid.src = ''; };
-      vid.onloadedmetadata = () => {
-        const r = vid.videoWidth && vid.videoHeight
-          ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB)
-          : parseFloat(fallbackPb);
-        setPb(`${r}%`); cleanup();
-      };
+      vid.onloadedmetadata = () => { const r = vid.videoWidth && vid.videoHeight ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); cleanup(); };
       vid.onerror = () => { setPb(fallbackPb); cleanup(); };
       vid.src = url;
     }
@@ -734,75 +579,32 @@ const MediaCellAuto = React.memo((props) => {
 });
 MediaCellAuto.displayName = 'MediaCellAuto';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HOOK — validation des URLs media v24
-// ─────────────────────────────────────────────────────────────────────────────
 const useMediaValidation = (urls, slotTypes) => {
   const [validIndices, setValidIndices] = useState(null);
-
   useEffect(() => {
     if (!urls.length) { setValidIndices([]); return; }
-
     let cancelled = false;
     setValidIndices(null);
-
-    const safetyTimer = setTimeout(() => {
-      if (!cancelled) setValidIndices(urls.map((_, i) => i));
-    }, 5000);
-
+    const safetyTimer = setTimeout(() => { if (!cancelled) setValidIndices(urls.map((_, i) => i)); }, 5000);
     const checks = urls.map((url, i) => {
       const type = slotTypes[i];
       if (type === 'embed' || type === 'hls') return Promise.resolve({ i, ok: true });
       if (!url || url.startsWith('blob:') || url.startsWith('data:')) return Promise.resolve({ i, ok: !!url });
-
-      if (type === 'image') {
-        return new Promise((resolve) => {
-          const img = new Image();
-          const timer = setTimeout(() => resolve({ i, ok: false }), 1000);
-          img.onload  = () => { clearTimeout(timer); resolve({ i, ok: true });  };
-          img.onerror = () => { clearTimeout(timer); resolve({ i, ok: false }); };
-          img.src = url;
-        });
-      }
-
-      if (type === 'video') {
-        return new Promise((resolve) => {
-          const timer = setTimeout(() => resolve({ i, ok: false }), 2000);
-          const vid = document.createElement('video');
-          vid.muted = true; vid.preload = 'metadata';
-          vid.onloadedmetadata = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: true });  };
-          vid.onerror           = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: false }); };
-          vid.src = url;
-        });
-      }
-
+      if (type === 'image') return new Promise((resolve) => { const img = new Image(); const timer = setTimeout(() => resolve({ i, ok: false }), 1000); img.onload = () => { clearTimeout(timer); resolve({ i, ok: true }); }; img.onerror = () => { clearTimeout(timer); resolve({ i, ok: false }); }; img.src = url; });
+      if (type === 'video') return new Promise((resolve) => { const timer = setTimeout(() => resolve({ i, ok: false }), 2000); const vid = document.createElement('video'); vid.muted = true; vid.preload = 'metadata'; vid.onloadedmetadata = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: true }); }; vid.onerror = () => { clearTimeout(timer); vid.src = ''; resolve({ i, ok: false }); }; vid.src = url; });
       return Promise.resolve({ i, ok: true });
     });
-
-    Promise.all(checks).then((results) => {
-      if (cancelled) return;
-      clearTimeout(safetyTimer);
-      setValidIndices(results.filter(r => r.ok).map(r => r.i));
-    });
-
+    Promise.all(checks).then((results) => { if (cancelled) return; clearTimeout(safetyTimer); setValidIndices(results.filter(r => r.ok).map(r => r.i)); });
     return () => { cancelled = true; clearTimeout(safetyTimer); };
   }, [urls.join(','), slotTypes.join(',')]); // eslint-disable-line
-
   return validIndices;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MEDIA PLACEHOLDER
-// ─────────────────────────────────────────────────────────────────────────────
 const MediaPlaceholder = React.memo(({ total }) => {
   const pb = total === 1 ? '75%' : total === 2 ? '50%' : '66%';
   return (
-    <div style={{ width: '100%', paddingBottom: pb,
-      background: 'linear-gradient(135deg, #1a1a1a 0%, #222 100%)',
-      borderRadius: 4, position: 'relative', overflow: 'hidden' }}>
-      <div style={{ position: 'absolute', inset: 0,
-        background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%)',
-        backgroundSize: '200% 100%', animation: 'mediaShimmer 1.4s ease-in-out infinite' }} />
+    <div style={{ width: '100%', paddingBottom: pb, background: 'linear-gradient(135deg, #1a1a1a 0%, #222 100%)', borderRadius: 4, position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.03) 50%, transparent 100%)', backgroundSize: '200% 100%', animation: 'mediaShimmer 1.4s ease-in-out infinite' }} />
       <style>{`@keyframes mediaShimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}`}</style>
     </div>
   );
@@ -810,17 +612,29 @@ const MediaPlaceholder = React.memo(({ total }) => {
 MediaPlaceholder.displayName = 'MediaPlaceholder';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST MEDIA v25
-//
-// Nouveauté v25 : quand activeIndices = [] (tous les slots ont échoué)
-// ET que post.content contient du texte → affiche TextOnlyCard
-// au lieu de retourner null.
-// Le texte est déjà rendu dans PostCard, mais ici on lui donne un rendu
-// grand format centré sur fond coloré (style Facebook texte pur).
+// POST MEDIA v26
 // ─────────────────────────────────────────────────────────────────────────────
 const GAP = 2;
 
 const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
+  // ✅ v26 : SHORTCUT — mediaType "text-card" → TextOnlyCard directe, pas de validation
+  if (post?.mediaType === 'text-card') {
+    const content = post.content || post.contenu || '';
+    if (content.trim()) {
+      return (
+        <TextOnlyCard
+          content={content}
+          forceIndex={
+            typeof post.textCardPalette === 'number'
+              ? post.textCardPalette
+              : undefined
+          }
+        />
+      );
+    }
+    return null;
+  }
+
   const autoGenerated = !!post?.autoGenerated;
   const showBadge     = !autoGenerated;
 
@@ -832,11 +646,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   const [failedSlots, setFailedSlots] = useState(() => new Set());
   const markSlotFailed = useCallback((slotIndex) => {
-    setFailedSlots(prev => {
-      const next = new Set(prev);
-      next.add(slotIndex);
-      return next;
-    });
+    setFailedSlots(prev => { const next = new Set(prev); next.add(slotIndex); return next; });
   }, []);
 
   const safeMediaUrls = useMemo(() => {
@@ -874,29 +684,20 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const validTotal     = validUrls.length;
 
   const cellProps = useCallback((i, extra = {}) => ({
-    url:              validUrls[i],
-    slotType:         validSlotTypes[i],
-    posterUrl:        validPosters[i],
-    isLCP:            isLCPSlot && i === 0,
-    onRegisterVideoEl,
-    slotIndex:        activeIndices?.[i] ?? i,
-    showBadge,
-    post,
-    onVideoError:     () => markSlotFailed(activeIndices?.[i] ?? i),
+    url: validUrls[i], slotType: validSlotTypes[i], posterUrl: validPosters[i],
+    isLCP: isLCPSlot && i === 0, onRegisterVideoEl,
+    slotIndex: activeIndices?.[i] ?? i, showBadge, post,
+    onVideoError: () => markSlotFailed(activeIndices?.[i] ?? i),
     ...extra,
   }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, activeIndices, markSlotFailed]); // eslint-disable-line
 
   if (!total) return null;
-
-  // Encore en cours de validation → placeholder
   if (activeIndices === null) return <MediaPlaceholder total={total} />;
 
-  // ✅ v25 : tous les slots ont échoué → TextOnlyCard si contenu disponible
+  // v25 : tous les slots ont échoué → TextOnlyCard si contenu
   if (validTotal === 0) {
     const content = post?.content || post?.contenu || '';
-    if (content.trim()) {
-      return <TextOnlyCard content={content} />;
-    }
+    if (content.trim()) return <TextOnlyCard content={content} />;
     return null;
   }
 
@@ -929,7 +730,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     </div>
   );
 
-  const hidden  = validTotal - 5;
+  const hidden = validTotal - 5;
   const overlay = hidden > 0 ? `+${hidden}` : null;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
