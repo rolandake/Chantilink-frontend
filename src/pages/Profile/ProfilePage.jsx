@@ -11,6 +11,8 @@
 //    — nouveau fallback : profil vide affiché avec un état explicite
 //    — skeleton affiché pendant le fetch user, jamais "Profil introuvable"
 //      si le réseau répond avec un user valide
+// ✅ v3 FIX TEXT-CARD : normalizePost préserve désormais mediaType + textCardPalette
+//    Les posts "texte coloré" s'affichent correctement dans le profil
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -91,18 +93,29 @@ export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
+
+// ✅ v3 FIX : normalizePost préserve maintenant mediaType et textCardPalette
+//    Sans ces champs, PostCard/PostMedia ne pouvait pas détecter les text-cards
+//    et n'affichait pas le rendu coloré dans le profil.
 const normalizePost = (p) => ({
-  _id: p._id || p.id,
-  content: p.content || "",
+  _id:             p._id || p.id,
+  content:         p.content || "",
   media: Array.isArray(p.media)
     ? p.media.map((m) => ({ url: m?.url || m?.path || m?.location || m, type: m?.type || "image" }))
     : [],
   user: typeof p.user === "object" ? (p.user._id ? p.user : { _id: p.user.id }) : { _id: p.user },
-  likes: p.likes || [],
-  comments: p.comments || [],
-  views: p.views || [],
-  shares: p.shares || [],
-  createdAt: p.createdAt,
+  likes:           p.likes    || [],
+  comments:        p.comments || [],
+  views:           p.views    || [],
+  shares:          p.shares   || [],
+  createdAt:       p.createdAt,
+  // ✅ Champs text-card — INDISPENSABLES pour l'affichage coloré
+  mediaType:       p.mediaType       || null,
+  textCardPalette: p.textCardPalette ?? undefined,
+  // Autres champs utiles préservés
+  location:        p.location        || null,
+  privacy:         p.privacy         || null,
+  isOptimistic:    p.isOptimistic    || false,
 });
 
 const extractPostsFromResult = (result) => {
@@ -165,8 +178,6 @@ const buildUserFromPost = (post) => {
 };
 
 // ✅ v2 : buildMinimalUser — construit un profil valide même sans posts
-//   Garantit que profileUser n'est jamais null pour un ObjectId valide.
-//   Utilisé comme dernier recours avant d'afficher "Profil introuvable".
 const buildMinimalUser = (uid, partial = {}) => ({
   _id:           uid,
   username:      partial.username      || partial.email?.split("@")[0] || "utilisateur",
@@ -298,9 +309,7 @@ export default function ProfilePage({
   }, []);
 
   // ─────────────────────────────────────────────
-  // fetchUserById — v2 : normalise la réponse en profil minimal garanti
-  // Retourne toujours un objet si le backend répond 2xx, même avec peu de champs.
-  // Ne retourne null QUE sur un vrai 404 ou une erreur réseau totale.
+  // fetchUserById
   // ─────────────────────────────────────────────
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
@@ -317,7 +326,6 @@ export default function ProfilePage({
         timeout: 8000,
       });
 
-      // Extraction flexible — supporte { user: {...} }, { data: {...} } ou directement {...}
       let raw = extractUserFromResponse(data);
       if (!raw && data) raw = data.data || data.user || (data._id || data.id ? data : null);
 
@@ -329,9 +337,7 @@ export default function ProfilePage({
       return null;
     } catch (err) {
       if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED") return null;
-      // 404 = l'utilisateur n'existe vraiment pas
       if (err.response?.status === 404) return null;
-      // 401/403 = accès refusé, mais l'utilisateur existe — on retourne un profil minimal
       if (err.response?.status === 401 || err.response?.status === 403) {
         console.warn(`[Profile] Accès refusé (${err.response.status}) pour ${uid} — profil minimal`);
         return buildMinimalUser(uid);
@@ -341,7 +347,7 @@ export default function ProfilePage({
     }
   }, []);
 
-  // tryBuildProfileFromPosts — utilisé SEULEMENT si fetchUserById retourne null (vrai 404)
+  // tryBuildProfileFromPosts — utilisé SEULEMENT si fetchUserById retourne null
   const tryBuildProfileFromPosts = useCallback(async (uid) => {
     if (!isValidObjectId(uid)) return null;
     try {
@@ -405,7 +411,7 @@ export default function ProfilePage({
   const handleFollowSuccess = useCallback(() => showLocalToast("Abonné !"), [showLocalToast]);
 
   // ─────────────────────────────────────────────
-  // loadProfilePosts — v2 : posts vides = état vide, pas une erreur
+  // loadProfilePosts
   // ─────────────────────────────────────────────
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
     if (!targetId || loadingRef.current) return;
@@ -448,7 +454,6 @@ export default function ProfilePage({
         try {
           const result  = await fetchUserPosts(targetId, pageNumber);
           const fetched = extractPostsFromResult(result);
-          // ✅ v2 : fetched peut légitimement être [] — aucune erreur générée
           postsArray = fetched;
         } catch (networkErr) {
           console.error("[Profile] Erreur fetch posts réseau:", networkErr);
@@ -456,7 +461,6 @@ export default function ProfilePage({
         }
       }
 
-      // ✅ v2 : hasMore=false si réponse vide (évite la pagination infinie à vide)
       setHasMore(postsArray.length >= 20);
 
       startTransition(() => {
@@ -464,8 +468,10 @@ export default function ProfilePage({
           const base        = append ? prev : [];
           const merged      = [...base, ...postsArray];
           const seen        = new Set();
+          // ✅ normalizePost préserve mediaType + textCardPalette à chaque merge
           const uniquePosts = merged
             .filter(p => { if (seen.has(p._id)) return false; seen.add(p._id); return true; })
+            .map(normalizePost)
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
           if (!isMockProfile) savePosts(targetId, uniquePosts);
           storeProfilePostsInCache(targetId, uniquePosts);
@@ -564,17 +570,6 @@ export default function ProfilePage({
 
   // ─────────────────────────────────────────────
   // useEffect principal — v2
-  //
-  // STRATÉGIE DE CHARGEMENT :
-  //   1. fetchUserById → profil minimal garanti si 2xx (même peu de champs)
-  //   2. 401/403 → profil minimal avec uid (user existe, accès limité)
-  //   3. 404 → tryBuildProfileFromPosts (cherche dans ses posts)
-  //   4. Pas de posts non plus → buildMinimalUser(uid) = profil vide affiché
-  //   5. Hors ligne + pas de cache → profil vide avec toast info
-  //
-  // "Profil introuvable" n'est affiché QUE si userNotFound=true, c'est-à-dire :
-  //   - targetUserId manquant ou invalide
-  //   - targetUserId invalide ET pas l'authUser
   // ─────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return;
@@ -597,7 +592,6 @@ export default function ProfilePage({
       return;
     }
 
-    // ID temporaire (pas encore un ObjectId) — afficher authUser sans fetch réseau
     if (isOwner && !isValidObjectId(targetUserId)) {
       console.warn(`[Profile] ID temporaire (${targetUserId}) — affichage authUser direct`);
       setProfileUser(authUser);
@@ -615,7 +609,6 @@ export default function ProfilePage({
         await idbClearOtherKeys(`profilePosts_${targetUserId}`);
 
         if (isOwner) {
-          // ── Mon propre profil ──
           setProfileUser(authUser);
           setIsBot(false);
           setUserNotFound(false);
@@ -627,9 +620,6 @@ export default function ProfilePage({
           }
 
         } else {
-          // ── Profil d'un autre utilisateur ──
-
-          // Étape 1 : cache IDB (affichage immédiat si disponible)
           const cachedUser = await idbGetUser(targetUserId);
           if (cachedUser) {
             setProfileUser(buildMinimalUser(cachedUser._id || cachedUser.id, cachedUser));
@@ -638,18 +628,15 @@ export default function ProfilePage({
           }
 
           if (navigator.onLine) {
-            // Étape 2 : fetch réseau
             const fetchedUser = await fetchUserById(targetUserId);
 
             if (fetchedUser) {
-              // ✅ Cas normal — user trouvé (avec ou sans posts)
               setProfileUser(fetchedUser);
               setIsBot(!!fetchedUser.isBot);
               setUserNotFound(false);
               saveUser(fetchedUser);
 
             } else if (!cachedUser) {
-              // fetchUserById a retourné null (vrai 404) — tentative via posts
               const fallback = await tryBuildProfileFromPosts(targetUserId);
 
               if (fallback) {
@@ -660,10 +647,8 @@ export default function ProfilePage({
                 setPage(1);
                 setHasMore(fallback.posts.length >= 20);
                 await loadProfilePosts(targetUserId, 1, false, fallback.posts);
-                return; // posts déjà chargés
+                return;
               } else {
-                // ✅ v2 : DERNIÈRE CHANCE — profil minimal vide plutôt que "Profil introuvable"
-                // L'utilisateur peut exister mais n'avoir aucun post et le backend indisponible
                 if (isValidObjectId(targetUserId)) {
                   console.warn(`[Profile] Profil réseau indisponible pour ${targetUserId} — affichage profil vide`);
                   setProfileUser(buildMinimalUser(targetUserId));
@@ -675,10 +660,8 @@ export default function ProfilePage({
                 }
               }
             }
-            // cachedUser existe mais fetchedUser null → on conserve le cache, pas d'erreur
 
           } else if (!cachedUser) {
-            // Hors ligne, pas de cache
             if (isValidObjectId(targetUserId)) {
               setProfileUser(buildMinimalUser(targetUserId));
               setIsBot(false);
@@ -690,14 +673,12 @@ export default function ProfilePage({
           }
         }
 
-        // Charger les posts (séparément du profil — leur absence n'est pas une erreur)
         setPage(1);
         setHasMore(true);
         await loadProfilePosts(targetUserId, 1, false);
 
       } catch (err) {
         console.error("Profil Load Error:", err);
-        // Même en cas d'erreur inattendue, on tente d'afficher quelque chose
         if (!profileUser && isValidObjectId(targetUserId)) {
           setProfileUser(buildMinimalUser(targetUserId));
           setUserNotFound(false);
@@ -765,7 +746,6 @@ export default function ProfilePage({
 
   // ── Rendu ──────────────────────────────────────────────────────────────────
 
-  // Skeleton pendant le fetch initial du user
   if (authLoading || (isLoadingUser && !profileUser)) {
     return (
       <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
@@ -776,8 +756,6 @@ export default function ProfilePage({
     );
   }
 
-  // ✅ v2 : "Profil introuvable" — uniquement si userNotFound=true explicitement
-  //   Ne s'affiche PLUS pour un user qui existe mais n'a aucun post
   if (userNotFound || (!profileUser && !isLoadingUser)) {
     return (
       <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
@@ -870,7 +848,6 @@ export default function ProfilePage({
               {isLoadingPosts && profilePosts.length === 0 ? (
                 <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
               ) : profilePosts.length === 0 && !isLoadingPosts ? (
-                // ✅ v2 : état vide explicite — jamais "Profil introuvable"
                 <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
               ) : (
                 <div>

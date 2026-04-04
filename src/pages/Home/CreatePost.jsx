@@ -1,6 +1,6 @@
 // src/pages/Home/CreatePost.jsx — VERSION ULTRA PREMIUM
 // ✅ NOUVEAUTÉ : Aperçu TextOnlyCard en temps réel pour texte court sans média
-//   - Texte ≤ 280 chars + 0 fichier → aperçu coloré live (même rendu que PostMedia v25)
+//   - Texte ≤ 120 chars + 0 fichier → aperçu coloré live (même rendu que PostMedia v25)
 //   - Palette choisie manuellement via sélecteur de couleur circulaire (8 palettes)
 //   - L'aperçu clique → bascule le sélecteur de palette
 //   - Au submit → optimistic post avec mediaType: "text-card" pour PostMedia
@@ -10,6 +10,11 @@
 //   - Upload progress RÉEL via onUploadProgress
 //   - Post optimiste instantané
 //   - Timeout 60s pour vidéos
+//
+// ✅ v2 — ALIGNEMENT SEUIL TEXT-CARD :
+//   - TEXT_CARD_THRESHOLD abaissé de 280 à 120 chars (cohérence avec PostCard.jsx v7)
+//   - Texte 121–280 chars → affichage classique, pas d'aperçu coloré
+//   - Texte > 280 chars → affichage classique avec troncature "voir plus"
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -51,7 +56,11 @@ const getFontStyle = (len) => {
   return            { size: '16px', weight: '500', lineHeight: '1.50' };
 };
 
-const TEXT_CARD_THRESHOLD = 280; // seuil : texte seul ≤ 280 chars → aperçu coloré
+// ✅ v2 : seuil abaissé à 120 chars — cohérence avec PostCard.jsx v7
+// Règles d'affichage :
+//   ≤ 120 chars + 0 fichier → aperçu coloré (text-card)
+//   > 120 chars             → textarea classique, pas d'aperçu coloré
+const TEXT_CARD_THRESHOLD = 120;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LIVE PREVIEW — aperçu carte colorée
@@ -231,24 +240,24 @@ const SimpleAvatar = ({ username, profilePhoto, size = 38 }) => {
 export default function CreatePost({ user, showToast, onPostCreated }) {
   const { addPostOptimistic, replaceOptimisticPost, removeOptimisticPost } = usePosts();
   const { isDarkMode } = useDarkMode();
-  const fileInputRef      = useRef(null);
+  const fileInputRef       = useRef(null);
   const abortControllerRef = useRef(null);
-  const textareaRef       = useRef(null);
+  const textareaRef        = useRef(null);
 
-  const [isOpen,          setIsOpen]          = useState(false);
-  const [content,         setContent]         = useState("");
-  const [mediaFiles,      setMediaFiles]       = useState([]);
-  const [previewUrls,     setPreviewUrls]      = useState([]);
-  const [location,        setLocation]         = useState("");
-  const [privacy,         setPrivacy]          = useState("Public");
-  const [posting,         setPosting]          = useState(false);
-  const [showEmoji,       setShowEmoji]        = useState(false);
-  const [showLocation,    setShowLocation]     = useState(false);
-  const [dragOver,        setDragOver]         = useState(false);
-  const [currentIndex,    setCurrentIndex]     = useState(0);
-  const [uploadProgress,  setUploadProgress]   = useState(0);
-  const [paletteIndex,    setPaletteIndex]     = useState(null); // null = auto (hash)
-  const [showPalette,     setShowPalette]      = useState(false);
+  const [isOpen,         setIsOpen]         = useState(false);
+  const [content,        setContent]        = useState("");
+  const [mediaFiles,     setMediaFiles]     = useState([]);
+  const [previewUrls,    setPreviewUrls]    = useState([]);
+  const [location,       setLocation]       = useState("");
+  const [privacy,        setPrivacy]        = useState("Public");
+  const [posting,        setPosting]        = useState(false);
+  const [showEmoji,      setShowEmoji]      = useState(false);
+  const [showLocation,   setShowLocation]   = useState(false);
+  const [dragOver,       setDragOver]       = useState(false);
+  const [currentIndex,   setCurrentIndex]   = useState(0);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [paletteIndex,   setPaletteIndex]   = useState(null); // null = auto (hash)
+  const [showPalette,    setShowPalette]    = useState(false);
 
   const touchStartX = useRef(0);
   const touchEndX   = useRef(0);
@@ -267,6 +276,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
   const ALLOWED_VIDEO_TYPES = ["video/mp4","video/webm","video/quicktime"];
 
   // ── Détermine si on est en mode "carte colorée" ──────────────────────────
+  // ✅ v2 : seuil 120 chars (au lieu de 280) — cohérence avec PostCard.jsx v7
   const isTextCard = useMemo(() =>
     content.trim().length > 0 &&
     content.trim().length <= TEXT_CARD_THRESHOLD &&
@@ -370,11 +380,11 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
     }
 
     // Capture l'état courant avant reset
-    const capturedIsTextCard    = isTextCard;
-    const capturedPaletteIndex  = effectivePaletteIndex;
-    const capturedFiles         = [...mediaFiles];
-    const capturedContent       = trimmedContent;
-    const capturedLocation      = location.trim();
+    const capturedIsTextCard   = isTextCard;
+    const capturedPaletteIndex = effectivePaletteIndex;
+    const capturedFiles        = [...mediaFiles];
+    const capturedContent      = trimmedContent;
+    const capturedLocation     = location.trim();
 
     // ── Post optimiste instantané ─────────────────────────────────────────
     const tempId = `temp_${Date.now()}`;
@@ -389,18 +399,18 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
         isVerified:   user.isVerified || false,
         isPremium:    user.isPremium  || false,
       },
-      media:         previewUrls.map(p => p.url),
-      mediaType:     capturedIsTextCard
+      media:     previewUrls.map(p => p.url),
+      mediaType: capturedIsTextCard
         ? "text-card"
         : previewUrls.some(p => p.type === "video") ? "video"
         : previewUrls.length > 0 ? "image"
         : null,
       // Palette choisie (transmise pour que PostMedia puisse la lire)
       textCardPalette: capturedIsTextCard ? capturedPaletteIndex : undefined,
-      likes:           [],
-      comments:        [],
-      shares:          [],
-      location:        capturedLocation || null,
+      likes:        [],
+      comments:     [],
+      shares:       [],
+      location:     capturedLocation || null,
       privacy,
       createdAt:    new Date().toISOString(),
       isOptimistic: true,
@@ -572,13 +582,13 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
                   {/* Compteur */}
                   <div className="flex justify-end">
                     <span className={`text-[11px] font-mono ${
-                      charLeft < 40
+                      content.length >= TEXT_CARD_THRESHOLD - 20
                         ? 'text-red-400'
-                        : charLeft < 80
+                        : content.length >= TEXT_CARD_THRESHOLD - 40
                           ? 'text-orange-400'
                           : isDarkMode ? 'text-gray-600' : 'text-gray-400'
                     }`}>
-                      {charLeft}
+                      {TEXT_CARD_THRESHOLD - content.length}
                     </span>
                   </div>
                 </motion.div>
@@ -665,7 +675,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
                 <div className="text-center">
                   <PhotoIcon className={`w-8 h-8 mx-auto mb-1.5 ${isDarkMode ? "text-gray-600" : "text-gray-400"}`} />
                   <p className="text-xs text-gray-500">Ajouter des photos ou vidéos</p>
-                  <p className="text-[10px] text-gray-400 mt-0.5">ou taper du texte court pour la carte colorée</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">ou taper du texte court (≤ 120 car.) pour la carte colorée</p>
                 </div>
               </div>
             )}
@@ -733,9 +743,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
                   onClick={handlePost}
                   disabled={!canPost}
                   className={`px-5 py-1.5 rounded-full text-sm font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed text-white ${
-                    isTextCard
-                      ? ''
-                      : 'bg-orange-500 hover:bg-orange-600'
+                    isTextCard ? '' : 'bg-orange-500 hover:bg-orange-600'
                   }`}
                   style={isTextCard ? {
                     background: `linear-gradient(135deg, ${TEXT_CARD_PALETTES[effectivePaletteIndex][0]}, ${TEXT_CARD_PALETTES[effectivePaletteIndex][1]})`,

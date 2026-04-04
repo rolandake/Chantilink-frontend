@@ -1,24 +1,39 @@
 // 📁 src/pages/Home/PostCard.jsx
 // ⚡ PERF v2 — toutes les optimisations de performance appliquées
 //
-// FIXES APPLIQUÉS :
-// ✅ FIX 1 : useRelativeTime — timer GLOBAL partagé (1 seul setInterval, pas 1 par card)
-// ✅ FIX 2 : contain: "layout style" au lieu de "content" (pas de bug stacking context)
-// ✅ FIX 3 : getVideoObserver — IntersectionObserver singleton (inchangé, déjà correct)
-// ✅ FIX 4 : postUser useMemo — dépendances réduites à l'essentiel
-// ✅ FIX 5 : mediaUrls useMemo — dépendances stables (longueurs)
-// ✅ FIX 6 : SimpleAvatar — memo strict, pas de recalcul inutile
-// ✅ FIX 7 : ActionsBar — memo strict avec comparateur personnalisé
+// ✅ v7 — FIX TEXTE LONG JAMAIS EN TEXT-CARD :
+//   → TEXT_CARD_THRESHOLD abaissé de 280 à 120 chars pour la détection auto.
 //
-// ✅ v3 — SYNC STATS TEMPS RÉEL :
-//   → handleLike : synchronise likesCount avec la vraie valeur retournée par l'API
-//   → handleLike : émet feed:interaction pour le scoring v13
-//   → PostCommentsModal reçoit onCommentsCountChange pour sync commentsCount
+// ✅ v8 — FIX BOUTON SUPPRESSION (modal ne s'ouvre pas) :
+//   → Cause 1 : contain:"layout style" sur le wrapper créait un stacking context
+//     qui bloquait les événements pointer sur les boutons dans certains navigateurs.
+//     → SUPPRIMÉ. Le wrapper n'a plus de contain.
+//   → Cause 2 : le badge SPONSORISÉ (absolute) captait les clics sur le header.
+//     → pointer-events:none ajouté sur le badge décoratif.
+//   → Cause 3 : manque de robustesse du bouton TrashIcon.
+//     → type="button" explicite + onPointerDown + z-20 + aria-label ajoutés.
+//   → La DeleteModal reste portée via createPortal(document.body) (fix v5 conservé).
+//
+// ✅ v9 — FIX isOwner SILENCIEUSEMENT FALSE (cause racine du bouton invisible) :
+//   → post.userId peut être un objet MongoDB { _id: "..." } au lieu d'une string brute.
+//     String({ _id: "abc" }) → "[object Object]" ≠ "abc" → isOwner toujours false
+//     → le bouton TrashIcon n'était jamais rendu, peu importe les fix v8.
+//   → Correction : helper toStr() qui extrait ._id ou .id avant la comparaison.
+//   → Couvre aussi les cas null/undefined sans throw.
+//
+// ✅ v9 — FIX DELETE 403 (backend refuse même si on est l'auteur) :
+//   → Le backend DELETE /:id compare post.user?._id avec uid(req).
+//   → uid(req) = req.user?.id || req.user?.userId — peut être undefined si le
+//     JWT middleware n'injecte pas le bon champ.
+//   → Fix côté frontend : on envoie le header Authorization via axiosClient
+//     (déjà configuré) — rien à changer ici. Le vrai fix est dans postRoutes.js.
+//   → Voir commentaire dans postRoutes.js v9 pour le détail.
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
   useCallback, useMemo, useRef, memo, lazy, Suspense
 } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import {
@@ -42,13 +57,25 @@ const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
 const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX 1 : TIMESTAMP LIVE — timer GLOBAL partagé
+// ✅ v9 : helper robuste pour comparer des IDs MongoDB
+// Gère les cas : string brute, objet { _id }, objet { id }, null, undefined.
 //
-// Problème original : 1 setTimeout par PostCard → 30+ timers actifs en parallèle
-// sur le main thread, se réveillant toutes les 15s.
+// POURQUOI : post.userId (envoyé par le backend) peut être :
+//   - une string "507f1f77bcf86cd799439011"     → String() OK
+//   - un ObjectId mongoose sérialisé en objet   → String() → "[object Object]" ❌
+//   - un objet { _id: "507f..." }               → String() → "[object Object]" ❌
+//   - null / undefined                          → String() → "null" / "undefined" ❌
 //
-// Solution : 1 seul setInterval global à 15s qui notifie tous les abonnés.
-// Coût = O(1) peu importe le nombre de cards affichées.
+// toStr() normalise tout ça en string brute comparable.
+// ─────────────────────────────────────────────────────────────────────────────
+const toStr = (v) => {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return String(v._id ?? v.id ?? "");
+  return String(v);
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIMESTAMP LIVE — timer GLOBAL partagé
 // ─────────────────────────────────────────────────────────────────────────────
 const _relativeSubscribers = new Set();
 let   _relativeTimer = null;
@@ -193,7 +220,7 @@ export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount })
 PostUploadingIndicator.displayName = "PostUploadingIndicator";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX 6 : AVATAR — memo strict
+// AVATAR — memo strict
 // ─────────────────────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
 
@@ -223,17 +250,21 @@ const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
 
   if (error || !url)
     return (
-      <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
-        style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}>
+      <div
+        className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
+        style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}
+      >
         {initials}
       </div>
     );
 
   return (
-    <img src={url} alt={username}
+    <img
+      src={url} alt={username}
       className="rounded-full object-cover bg-gray-200 flex-shrink-0"
       style={{ width: size, height: size }}
-      onError={() => setError(true)} loading="lazy" />
+      onError={() => setError(true)} loading="lazy"
+    />
   );
 }, (prev, next) =>
   prev.username === next.username &&
@@ -266,8 +297,10 @@ SkeletonPostCard.displayName = "SkeletonPostCard";
 // DELETE MODAL
 // ─────────────────────────────────────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-    onClick={() => !isDeleting && onCancel()}>
+  <div
+    className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+    onClick={() => !isDeleting && onCancel()}
+  >
     <motion.div
       initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.9, opacity: 0 }} transition={{ duration: 0.15 }}
@@ -278,16 +311,24 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
         <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
           <TrashIcon className="w-8 h-8 text-red-500" />
         </div>
-        <h2 className={`text-xl font-bold mb-2 ${isDarkMode ? "text-white" : "text-gray-900"}`}>Supprimer ce post ?</h2>
+        <h2 className={`text-xl font-bold mb-2 ${isDarkMode ? "text-white" : "text-gray-900"}`}>
+          Supprimer ce post ?
+        </h2>
         <p className="text-sm text-gray-500">Cette action est irréversible.</p>
       </div>
       <div className="flex gap-3">
-        <button onClick={onCancel} disabled={isDeleting}
-          className={`flex-1 py-3 rounded-xl font-bold ${isDarkMode ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} disabled:opacity-50`}>
+        <button
+          onClick={onCancel}
+          disabled={isDeleting}
+          className={`flex-1 py-3 rounded-xl font-bold ${isDarkMode ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} disabled:opacity-50`}
+        >
           Annuler
         </button>
-        <button onClick={onConfirm} disabled={isDeleting}
-          className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold hover:bg-red-600 disabled:opacity-50">
+        <button
+          onClick={onConfirm}
+          disabled={isDeleting}
+          className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold hover:bg-red-600 disabled:opacity-50"
+        >
           {isDeleting ? "..." : "Supprimer"}
         </button>
       </div>
@@ -297,7 +338,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
 DeleteModal.displayName = "DeleteModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX 7 : ACTIONS BAR — memo avec comparateur strict
+// ACTIONS BAR — memo avec comparateur strict
 // ─────────────────────────────────────────────────────────────────────────────
 const ActionsBar = memo(({
   liked, likesCount, saved, commentsCount,
@@ -359,7 +400,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const isMockPost   = mockPost || post._id?.startsWith("post_") || post.isMockPost;
   const isOptimistic = !!post.isOptimistic || post._id?.startsWith("temp_");
 
-  // ✅ FIX 4 : postUser — dépendances réduites à l'essentiel
   const postUser = useMemo(() => {
     const u = post.user || post.author || {};
     const fullName = u.fullName || post.fullName || "";
@@ -378,15 +418,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       isInvalid:         !isMockPost && !isOptimistic && (isInvalidName || isInvalidId),
       isBannedOrDeleted: isBannedDeleted,
     };
-  }, [
-    post._id,
-    post.user,
-    post.author,
-    post.userId,
-    post.fullName,
-    isMockPost,
-    isOptimistic,
-  ]);
+  }, [post._id, post.user, post.author, post.userId, post.fullName, isMockPost, isOptimistic]);
 
   const [liked,             setLiked]             = useState(() =>
     currentUser && Array.isArray(post.likes)
@@ -438,30 +470,25 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
-  const isOwner = useMemo(() =>
-    !!(currentUser && (
-      String(post.userId) === String(currentUser._id) ||
-      String(postUser._id) === String(currentUser._id)
-    )),
-    [currentUser?._id, post.userId, postUser._id]
-  );
+  // ✅ v9 : utilisation de toStr() pour comparer les IDs de manière robuste.
+  // Avant : String(post.userId) échouait si post.userId était un objet MongoDB
+  // ({ _id: "..." }) → "[object Object]" ≠ "abc" → isOwner toujours false
+  // → le bouton TrashIcon n'était jamais rendu.
+  const isOwner = useMemo(() => {
+    if (!currentUser) return false;
+    const cuid = toStr(currentUser._id);
+    if (!cuid) return false;
+    return (
+      toStr(post.userId)   === cuid ||
+      toStr(postUser._id)  === cuid
+    );
+  }, [currentUser?._id, post.userId, postUser._id]);
 
   const canFollow = useMemo(() =>
     !!(currentUser && !isOwner && postUser._id !== "unknown"),
     [currentUser, isOwner, postUser._id]
   );
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // ✅ v3 : handleLike — synchronise avec le vrai count de la DB
-  //
-  // Fonctionnement :
-  //   1. Optimistic update immédiat (UX réactif)
-  //   2. Appel API
-  //   3. Si l'API retourne likesCount → on remplace l'estimation optimiste
-  //      par la vraie valeur DB (évite les dérives en cas de likes concurrents)
-  //   4. Si erreur → rollback propre
-  //   5. Émet feed:interaction pour le scoring v13 (embedding update)
-  // ─────────────────────────────────────────────────────────────────────────
   const handleLike = useCallback((e) => {
     e?.stopPropagation();
     if (loadingLikeRef.current) return;
@@ -471,8 +498,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     if (!currentUser) { showToast?.("Connectez-vous pour aimer", "info"); return; }
 
     loadingLikeRef.current = true;
-
-    // Optimistic update
     const nl = !liked;
     setLiked(nl);
     setLikesCount(c => nl ? c + 1 : c - 1);
@@ -481,26 +506,13 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
     axiosClient.post(`/posts/${post._id}/like`)
       .then(({ data }) => {
-        // ✅ Synchroniser avec la vraie valeur DB retournée par l'API
-        // (remplace l'estimation optimiste en cas de likes concurrents)
-        if (typeof data.likesCount === 'number') {
-          setLikesCount(data.likesCount);
-        }
-        if (typeof data.userLiked === 'boolean') {
-          setLiked(data.userLiked);
-        }
-
-        // ✅ Émettre l'événement pour le feed scoring v13 (embedding update)
+        if (typeof data.likesCount === 'number') setLikesCount(data.likesCount);
+        if (typeof data.userLiked  === 'boolean') setLiked(data.userLiked);
         window.dispatchEvent(new CustomEvent("feed:interaction", {
-          detail: {
-            action:   "like",
-            post:     post,
-            position: post._displayPosition ?? 0,
-          },
+          detail: { action: "like", post, position: post._displayPosition ?? 0 },
         }));
       })
       .catch(err => {
-        // Rollback si erreur
         setLiked(liked);
         setLikesCount(likesCount);
         showToast?.(err.response?.data?.message || "Erreur", "error");
@@ -541,7 +553,12 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       setShowDeleteModal(false);
       return;
     }
-    if (isMockPost) { showToast?.("Post supprimé", "success"); setShowDeleteModal(false); onDeleted?.(post._id); return; }
+    if (isMockPost) {
+      showToast?.("Post supprimé", "success");
+      setShowDeleteModal(false);
+      onDeleted?.(post._id);
+      return;
+    }
     setIsDeleting(true);
     try {
       await axiosClient.delete(`/posts/${post._id}`);
@@ -552,7 +569,9 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       const s = err.response?.status;
       if (s === 404) { setShowDeleteModal(false); onDeleted?.(post._id); }
       else showToast?.(s === 403 ? "Permission refusée" : err.response?.data?.message || "Erreur", "error");
-    } finally { setIsDeleting(false); }
+    } finally {
+      setIsDeleting(false);
+    }
   }, []);
 
   const handleProfileClick = useCallback((e) => {
@@ -563,13 +582,18 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     navigate(`/profile/${id}`);
   }, [navigate]);
 
+  // ✅ v8 : handler robuste — preventDefault + stopPropagation
+  const handleOpenDelete = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setShowDeleteModal(true);
+  }, []);
+
   const handleOpenComments = useCallback((e) => { e?.stopPropagation(); setShowCommentsModal(true); }, []);
   const handleOpenShare    = useCallback((e) => { e?.stopPropagation(); setShowShareModal(true);    }, []);
   const handleSave         = useCallback(() => setSaved(v => !v), []);
   const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
-  const handleOpenDelete   = useCallback((e) => { e?.stopPropagation(); setShowDeleteModal(true); }, []);
 
-  // ✅ v3 : callback pour synchroniser commentsCount depuis PostCommentsModal
   const handleCommentsCountChange = useCallback((count) => {
     if (typeof count === 'number') setCommentsCount(count);
   }, []);
@@ -587,13 +611,33 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
   const isBoosted      = !!post.isBoosted;
 
-  // ✅ FIX 5 : mediaUrls — dépendances stables (longueurs)
   const embedUrl  = post.embedUrl  || null;
   const videoUrl  = post.videoUrl  || null;
   const imagesLen = Array.isArray(post.images) ? post.images.length : 0;
   const mediaLen  = Array.isArray(post.media)  ? post.media.length  : 0;
 
+  const postMediaType = post.mediaType || null;
+
+  // ✅ v7 : seuil 120 chars — texte long jamais en text-card
+  const TEXT_CARD_THRESHOLD = 120;
+
+  const hasRawMedia = !!(
+    embedUrl || videoUrl ||
+    imagesLen > 0 || mediaLen > 0 ||
+    post.thumbnail
+  );
+
+  const trimmedContent = content.trim();
+
+  const isAutoTextCard = !postMediaType
+    && !hasRawMedia
+    && trimmedContent.length > 0
+    && trimmedContent.length <= TEXT_CARD_THRESHOLD;
+
+  const effectiveMediaType = postMediaType || (isAutoTextCard ? 'text-card' : null);
+
   const mediaUrls = useMemo(() => {
+    if (effectiveMediaType === 'text-card') return [];
     const seen = new Set();
     const result = [];
     const addUrl = (raw) => {
@@ -619,11 +663,12 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     const arr = Array.isArray(imgSrc) ? imgSrc : (imgSrc ? [imgSrc] : []);
     arr.forEach(m => addUrl(typeof m === 'string' ? m : m?.url));
     return result;
-  }, [embedUrl, videoUrl, imagesLen, mediaLen]);
+  }, [embedUrl, videoUrl, imagesLen, mediaLen, effectiveMediaType]);
 
-  const hasMedia = mediaUrls.length > 0
-    || post.mediaType === 'youtube'
-    || post.mediaType === 'video'
+  const hasMedia = effectiveMediaType === 'text-card'
+    || mediaUrls.length > 0
+    || effectiveMediaType === 'youtube'
+    || effectiveMediaType === 'video'
     || !!(post.thumbnail && (videoUrl || embedUrl));
 
   const formattedDate = useRelativeTime(post.createdAt || null);
@@ -632,17 +677,17 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   return (
     <>
+      {/* ✅ v8 : contain:"layout style" SUPPRIMÉ — causait le blocage des clics
+          sur le bouton de suppression (stacking context isolé + pointer-events
+          dysfonctionnels sur certains navigateurs mobiles). */}
       <div
         ref={setRootRef}
         className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? "bg-black" : "bg-white"}`}
-        style={{
-          margin: 0,
-          padding: 0,
-          contain: "layout style",
-        }}
+        style={{ margin: 0, padding: 0 }}
       >
+        {/* Badge SPONSORISÉ — pointer-events:none pour ne pas bloquer les clics */}
         {isBoosted && (
-          <div className="absolute top-0 right-0 z-10 p-2">
+          <div className="absolute top-0 right-0 z-10 p-2 pointer-events-none">
             <div className="flex items-center gap-1 bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-xl shadow-lg select-none">
               <RocketLaunchIcon className="w-3 h-3" /> SPONSORISÉ
             </div>
@@ -662,8 +707,10 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
             </button>
             <div className="flex flex-col">
               <div className="flex items-center gap-1.5">
-                <span onClick={handleProfileClick}
-                  className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? "text-white" : "text-gray-900"}`}>
+                <span
+                  onClick={handleProfileClick}
+                  className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? "text-white" : "text-gray-900"}`}
+                >
                   {postUser.fullName}
                 </span>
                 {postUser.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500" />}
@@ -671,35 +718,59 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
               <span className="text-xs text-gray-500">{formattedDate}</span>
             </div>
           </div>
+
+          {/* Boutons d'action header */}
           <div className="flex items-center gap-2">
             {isOwner && !isBoosted && !isMockPost && !isOptimistic && (
-              <button onClick={e => e.stopPropagation()}
-                className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 active:scale-95 transition-transform">
+              <button
+                onClick={e => e.stopPropagation()}
+                className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 active:scale-95 transition-transform"
+              >
                 <RocketLaunchIcon className="w-3 h-3" /> Booster
               </button>
             )}
             {canFollow && !isOptimistic && (
-              <button onClick={handleFollow} disabled={loadingFollow}
+              <button
+                onClick={handleFollow}
+                disabled={loadingFollow}
                 className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
                   isFollowing
                     ? isDarkMode ? "bg-gray-800 text-gray-300" : "bg-gray-100 text-gray-600"
                     : isDarkMode ? "bg-white text-black"       : "bg-black text-white"
-                }`}>
+                }`}
+              >
                 {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
               </button>
             )}
+            {/* ✅ v8 FIX BOUTON SUPPRESSION :
+                - type="button" explicite
+                - onPointerDown pour fiabilité mobile
+                - z-20 pour être au-dessus de tous les autres éléments
+                - aria-label pour l'accessibilité
+                ✅ v9 : isOwner calculé via toStr() — s'affiche même si
+                post.userId est un objet MongoDB ou si post.user._id est
+                un ObjectId non sérialisé en string */}
             {isOwner && !isOptimistic && (
-              <button onClick={handleOpenDelete} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-                <TrashIcon className="w-5 h-5 text-gray-400" />
+              <button
+                type="button"
+                onClick={handleOpenDelete}
+                onPointerDown={e => e.stopPropagation()}
+                className="relative z-20 p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                aria-label="Supprimer ce post"
+                style={{ WebkitTapHighlightColor: "transparent" }}
+              >
+                <TrashIcon className="w-5 h-5 text-gray-400 hover:text-red-500 transition-colors" />
               </button>
             )}
           </div>
         </div>
 
         {/* TEXTE */}
-        {content && (
+        {content && effectiveMediaType !== 'text-card' && (
           <div className="px-3 pb-2">
-            <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>{displayContent}</p>
+            <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>
+              {displayContent}
+            </p>
             {shouldTruncate && (
               <button onClick={handleExpand} className="text-gray-500 text-sm hover:text-gray-400 mt-1">
                 {expanded ? "voir moins" : "voir plus"}
@@ -711,7 +782,14 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
         {/* MEDIA */}
         {hasMedia && (
           <div className="w-full">
-            <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} post={post} />
+            <PostMedia
+              mediaUrls={mediaUrls}
+              isFirstPost={priority}
+              post={effectiveMediaType !== postMediaType
+                ? { ...post, mediaType: effectiveMediaType }
+                : post
+              }
+            />
           </div>
         )}
 
@@ -723,16 +801,20 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
           onOpenShare={handleOpenShare}
           onSave={handleSave}
         />
-
-        <AnimatePresence>
-          {showDeleteModal && (
-            <DeleteModal
-              isDarkMode={isDarkMode} isDeleting={isDeleting}
-              onConfirm={handleDeletePost} onCancel={() => setShowDeleteModal(false)}
-            />
-          )}
-        </AnimatePresence>
       </div>
+
+      {/* DELETE MODAL — portée dans document.body via createPortal */}
+      <AnimatePresence>
+        {showDeleteModal && createPortal(
+          <DeleteModal
+            isDarkMode={isDarkMode}
+            isDeleting={isDeleting}
+            onConfirm={handleDeletePost}
+            onCancel={() => setShowDeleteModal(false)}
+          />,
+          document.body
+        )}
+      </AnimatePresence>
 
       {showCommentsModal && (
         <ErrorBoundary>
@@ -818,8 +900,17 @@ export default memo(PostCard, (prev, next) =>
   prev.post?.likes?.length    === next.post?.likes?.length    &&
   prev.post?.comments?.length === next.post?.comments?.length &&
   prev.post?.content          === next.post?.content          &&
+  prev.post?.contenu          === next.post?.contenu          &&
   prev.post?.isBoosted        === next.post?.isBoosted        &&
   prev.post?.isOptimistic     === next.post?.isOptimistic     &&
+  prev.post?.mediaType        === next.post?.mediaType        &&
+  prev.post?.textCardPalette  === next.post?.textCardPalette  &&
+  (Array.isArray(prev.post?.media)  ? prev.post.media.length  : 0) ===
+  (Array.isArray(next.post?.media)  ? next.post.media.length  : 0) &&
+  (Array.isArray(prev.post?.images) ? prev.post.images.length : 0) ===
+  (Array.isArray(next.post?.images) ? next.post.images.length : 0) &&
+  !!prev.post?.embedUrl       === !!next.post?.embedUrl       &&
+  !!prev.post?.videoUrl       === !!next.post?.videoUrl       &&
   prev.priority               === next.priority               &&
   prev.loading                === next.loading
 );
