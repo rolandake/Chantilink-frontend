@@ -326,6 +326,12 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
   // Barre de pertinence visuelle (score 0-100)
   const relevancePct = Math.round(Math.min(100, Math.max(0, relevanceScore || 50)));
 
+  // ✅ Style du bouton Suivre — fusionné en un seul objet
+  const followBtnStyle = useMemo(() => ({
+    WebkitTapHighlightColor: "transparent",
+    ...(following ? {} : { background: "linear-gradient(135deg,#f97316,#ec4899)" }),
+  }), [following]);
+
   return (
     <AnimatePresence>
       {!dismissed && (
@@ -379,8 +385,12 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
             <div className="h-full rounded-full" style={{ width: `${relevancePct}%`, background: "linear-gradient(90deg,#f97316,#ec4899)", transition: "width 0.6s ease" }} />
           </div>
 
-          {/* Bouton suivre */}
-          <button onClick={handleFollow} disabled={loading}
+          {/* ✅ Bouton suivre — style fusionné, plus de doublon */}
+          <button
+            onClick={handleFollow}
+            onMouseDown={(e) => e.stopPropagation()}
+            disabled={loading}
+            style={followBtnStyle}
             className={`w-full py-2 rounded-xl text-[12px] font-bold transition-all active:scale-95 flex items-center justify-center gap-1.5
               ${following
                 ? isDarkMode
@@ -388,10 +398,13 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
                   : "bg-gray-100 text-gray-500 border border-gray-200"
                 : "text-white shadow-md"
               }`}
-            style={following ? {} : { background: "linear-gradient(135deg,#f97316,#ec4899)" }}
-            onMouseDown={e => e.stopPropagation()}
-            style={{ WebkitTapHighlightColor: "transparent", ...(following ? {} : { background: "linear-gradient(135deg,#f97316,#ec4899)" }) }}>
-            {loading ? <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : following ? "✓ Suivi(e)" : <><UserPlusIcon className="w-3.5 h-3.5" />Suivre</>}
+          >
+            {loading
+              ? <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              : following
+                ? "✓ Suivi(e)"
+                : <><UserPlusIcon className="w-3.5 h-3.5" />Suivre</>
+            }
           </button>
         </motion.div>
       )}
