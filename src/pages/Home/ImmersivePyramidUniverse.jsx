@@ -1,12 +1,9 @@
 // 📁 src/pages/Home/ImmersivePyramidUniverse.jsx
-// ✅ MODAL PORTAL — rendu via createPortal dans document.body
-// ✅ Backdrop séparé avec AnimatePresence (comme PostCommentsModal)
-// ✅ Body scroll lock pendant l'ouverture
-// ✅ Fermeture via backdrop click ou bouton X
-// ✅ isOpen prop pour contrôler l'affichage depuis le parent
-// ✅ Toute la logique interne inchangée (parallaxe, constellation, stories)
+// ✅ FIX : fermeture de la Pyramid avant l'ouverture du StoryViewer
+//    → onOpenStory appelle d'abord onClose(), puis déclenche le viewer
+//      après le délai de l'animation de fermeture (250 ms)
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from "framer-motion";
 import { X, Plus, Sparkles, Zap } from "lucide-react";
@@ -22,20 +19,18 @@ const MEDIA_URL = (path) => {
 
 // ─────────────────────────────────────────────
 // CONTENU INTERNE DU MODAL
-// (extrait dans un sous-composant pour garder le code propre)
 // ─────────────────────────────────────────────
 const PyramidContent = ({
   stories = [],
   myStories = [],
   user,
   onClose,
-  onOpenStory,
+  onOpenStory,   // ✅ déjà wrappé dans le parent (close + délai + open)
   onOpenCreator,
   isDarkMode,
 }) => {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
-  // --- PARALLAXE ---
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
   const springX = useSpring(mouseX, { stiffness: 60, damping: 25 });
@@ -57,7 +52,6 @@ const PyramidContent = ({
     mouseY.set(clientY - centerY);
   };
 
-  // Coordonnées de la constellation (Pyramide)
   const levels = useMemo(() => [
     [{ x: 50, y: 18 }],
     [{ x: isMobile ? 32 : 38, y: 32 }, { x: isMobile ? 68 : 62, y: 32 }],
@@ -66,7 +60,6 @@ const PyramidContent = ({
     [{ x: 10, y: 74 }, { x: 30, y: 74 }, { x: 50, y: 74 }, { x: 70, y: 74 }, { x: 90, y: 74 }],
   ], [isMobile]);
 
-  // Regrouper les stories par utilisateur
   const groupedStories = useMemo(() => {
     const grouped = {};
     stories.forEach(story => {
@@ -123,7 +116,6 @@ const PyramidContent = ({
         overflow: "hidden",
       }}
       className="select-none touch-none"
-      // ⚠️ On arrête la propagation pour ne pas déclencher le backdrop
       onClick={e => e.stopPropagation()}
     >
       {/* Fond : Nébuleuse & Poussière d'étoiles */}
@@ -226,18 +218,18 @@ const PyramidContent = ({
                   whileTap={{ scale: 0.95 }}
                   onClick={(e) => {
                     e.stopPropagation();
+                    // ✅ FIX : onOpenStory est maintenant le wrapper qui ferme
+                    //    la pyramid EN PREMIER, puis ouvre le viewer
                     onOpenStory(storyData.stories, storyData.owner);
                   }}
                 >
                   <div className="relative group">
-                    {/* Halo lumineux si non vu */}
                     <motion.div
                       className={`absolute inset-[-8px] rounded-full blur-lg ${storyData.unviewed ? 'bg-orange-500/40' : 'bg-gray-400/20'}`}
                       animate={storyData.unviewed ? { opacity: [0.3, 0.6, 0.3] } : {}}
                       transition={{ duration: 3, repeat: Infinity }}
                     />
 
-                    {/* Avatar Bubble */}
                     <div
                       style={{ width: size, height: size }}
                       className={`relative rounded-full p-[3px] transition-all ${
@@ -262,7 +254,6 @@ const PyramidContent = ({
                       )}
                     </div>
 
-                    {/* Username */}
                     <div className="absolute -bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap">
                       <span className={`text-[9px] font-bold tracking-tight uppercase ${storyData.unviewed ? 'text-orange-300' : 'text-gray-500/70'}`}>
                         {storyData.owner?.username || storyData.owner?.fullName?.split(' ')[0] || 'Utilisateur'}
@@ -293,7 +284,7 @@ const PyramidContent = ({
 // MODAL PRINCIPAL — portal + backdrop + body lock
 // ─────────────────────────────────────────────
 const ImmersivePyramidUniverse = ({
-  isOpen,       // ✅ prop contrôlée depuis le parent
+  isOpen,
   onClose,
   stories = [],
   myStories = [],
@@ -309,6 +300,21 @@ const ImmersivePyramidUniverse = ({
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = prev; };
   }, [isOpen]);
+
+  // ✅ FIX PRINCIPAL : on ferme la Pyramid AVANT d'ouvrir le StoryViewer.
+  //    Sans ce délai, le StoryViewer (rendu dans Home.jsx, hors portal) est
+  //    masqué derrière le z-index de la Pyramid et n'apparaît qu'à la
+  //    fermeture de celle-ci.
+  const handleOpenStory = useCallback((stories, owner) => {
+    onClose();                                    // 1. ferme la Pyramid
+    setTimeout(() => onOpenStory(stories, owner), 280); // 2. ouvre le viewer après l'animation
+  }, [onClose, onOpenStory]);
+
+  // ✅ Pareil pour "Créer" : on ferme d'abord, puis on ouvre le Creator
+  const handleOpenCreator = useCallback(() => {
+    onClose();
+    setTimeout(() => onOpenCreator?.(), 280);
+  }, [onClose, onOpenCreator]);
 
   const content = (
     <AnimatePresence>
@@ -332,8 +338,8 @@ const ImmersivePyramidUniverse = ({
             myStories={myStories}
             user={user}
             onClose={onClose}
-            onOpenStory={onOpenStory}
-            onOpenCreator={onOpenCreator}
+            onOpenStory={handleOpenStory}       // ✅ wrapper avec délai
+            onOpenCreator={handleOpenCreator}   // ✅ wrapper avec délai
             isDarkMode={isDarkMode}
           />
         </>

@@ -298,6 +298,26 @@ const fmtNum = (n) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SILHOUETTE FALLBACK SVG
+// ─────────────────────────────────────────────────────────────────────────────
+const SilhouetteFallback = ({ height = 220 }) => (
+  <div
+    className="w-full flex items-center justify-center overflow-hidden"
+    style={{ height, background: "#2a2a2a" }}
+  >
+    <svg
+      viewBox="0 0 100 100"
+      style={{ width: height * 0.55, height: height * 0.55, opacity: 0.45 }}
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="50" cy="36" r="21" fill="#888" />
+      <ellipse cx="50" cy="86" rx="33" ry="23" fill="#888" />
+    </svg>
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AVATAR
 // ─────────────────────────────────────────────────────────────────────────────
 const Avatar = memo(({ username, photo, size = 44 }) => {
@@ -383,11 +403,8 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
     else            { vid.pause(); setPlaying(false); }
   }, []);
 
-  if (!post) return (
-    <div className="w-full flex items-center justify-center" style={{ height: 220, background: "linear-gradient(135deg,#f97316,#ec4899)" }}>
-      <span className="text-white text-5xl">✨</span>
-    </div>
-  );
+  // ── FALLBACK : pas de post ──
+  if (!post) return <SilhouetteFallback height={220} />;
 
   // ── VIDÉO ──
   if (post.type === "video" && post.videoUrl) return (

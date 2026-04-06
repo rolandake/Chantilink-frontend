@@ -193,6 +193,26 @@ const fmtFollowers = (n) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SILHOUETTE FALLBACK SVG
+// ─────────────────────────────────────────────────────────────────────────────
+const SilhouetteFallback = ({ height = 140, rounded = true }) => (
+  <div
+    className={`w-full flex items-center justify-center overflow-hidden cursor-pointer${rounded ? " rounded-xl" : ""}`}
+    style={{ height, background: "#2a2a2a" }}
+  >
+    <svg
+      viewBox="0 0 100 100"
+      style={{ width: height * 0.58, height: height * 0.58, opacity: 0.45 }}
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle cx="50" cy="36" r="21" fill="#888" />
+      <ellipse cx="50" cy="86" rx="33" ry="23" fill="#888" />
+    </svg>
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AVATAR
 // ─────────────────────────────────────────────────────────────────────────────
 const SuggestAvatar = memo(({ username, photo, size = 36 }) => {
@@ -224,9 +244,10 @@ const ContentPreview = memo(({ media, isDarkMode, onClick, loading }) => {
     <div className={`w-full rounded-xl animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} style={{ height: 140 }} />
   );
 
+  // ── FALLBACK silhouette (pas de media) ──
   if (!media || (!media.url && !media.text)) return (
-    <div onClick={onClick} className="w-full rounded-xl overflow-hidden cursor-pointer flex items-center justify-center" style={{ height: 140, background: "linear-gradient(135deg,#f97316,#ec4899)" }}>
-      <span className="text-white text-4xl opacity-70">✨</span>
+    <div onClick={onClick}>
+      <SilhouetteFallback height={140} rounded />
     </div>
   );
 

@@ -1,16 +1,17 @@
 // 📁 src/pages/Home/PostMedia.jsx
-// ✅ GRID LAYOUT v26-TEXT-CARD
+// ✅ GRID LAYOUT v27-LIGHTBOX
 //
-// NOUVEAUTÉS v26 :
-//   ✅ mediaType:"text-card" → shortcut direct vers TextOnlyCard
-//      sans aucune validation URL (post texte pur créé depuis CreatePost).
-//      Si post.textCardPalette est défini (0-7) → utilise cette palette
-//      au lieu du hash automatique.
-//      Compatible avec les posts optimistes (blob: URLs ignorées) et
-//      les vrais posts sauvegardés en base.
+// NOUVEAUTÉS v27 :
+//   ✅ Clic sur image/vidéo → lightbox plein écran (style Instagram/Facebook)
+//   ✅ Lightbox : zoom pinch + molette, double-tap/double-clic, drag, swipe,
+//      navigation multi-médias, miniatures, fermeture Escape/clic fond
+//   ✅ Import MediaLightbox depuis ./MediaLightbox.jsx
+//   ✅ Les embeds YouTube/Vimeo restent non-lightboxés (lecteur intégré)
+//   ✅ Les HLS restent non-lightboxés (lien externe)
 //
-//   ✅ TextOnlyCard accepte maintenant une prop `forceIndex` (0-7)
-//      pour forcer la palette sans recalcul de hash.
+// FIXES v26 (conservés) :
+//   - mediaType:"text-card" → shortcut direct vers TextOnlyCard
+//   - TextOnlyCard accepte forceIndex (0-7) pour palette explicite
 //
 // FIXES v25 (conservés) :
 //   - TextOnlyCard : fallback texte coloré quand tous les slots échouent
@@ -21,6 +22,8 @@
 import React, {
   useState, useRef, useEffect, useCallback, useMemo
 } from "react";
+import { AnimatePresence } from "framer-motion";
+import MediaLightbox from "./MediaLightbox";
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
 const IMG_BASE = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
@@ -159,17 +162,17 @@ const resolveSlotType = (url, postMediaType = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ v26 : TEXT ONLY CARD — supporte forceIndex pour palette explicite
+// ✅ v26 : TEXT ONLY CARD
 // ─────────────────────────────────────────────────────────────────────────────
 const TEXT_CARD_PALETTES = [
-  ['#1877F2', '#0D5FCC', '#ffffff'],   // 0 — bleu
-  ['#E4405F', '#C13584', '#ffffff'],   // 1 — rose
-  ['#FF6B35', '#F7C59F', '#ffffff'],   // 2 — orange
-  ['#2EC4B6', '#0B7A75', '#ffffff'],   // 3 — teal
-  ['#6A0572', '#AB83A1', '#ffffff'],   // 4 — violet
-  ['#1A1A2E', '#16213E', '#ffffff'],   // 5 — marine
-  ['#2D6A4F', '#52B788', '#ffffff'],   // 6 — vert
-  ['#8B2FC9', '#5A108F', '#ffffff'],   // 7 — pourpre
+  ['#1877F2', '#0D5FCC', '#ffffff'],
+  ['#E4405F', '#C13584', '#ffffff'],
+  ['#FF6B35', '#F7C59F', '#ffffff'],
+  ['#2EC4B6', '#0B7A75', '#ffffff'],
+  ['#6A0572', '#AB83A1', '#ffffff'],
+  ['#1A1A2E', '#16213E', '#ffffff'],
+  ['#2D6A4F', '#52B788', '#ffffff'],
+  ['#8B2FC9', '#5A108F', '#ffffff'],
 ];
 
 const hashText = (str) => {
@@ -197,17 +200,13 @@ const getCardHeight = (len) => {
 
 export const TextOnlyCard = React.memo(({ content, forceIndex }) => {
   if (!content || typeof content !== 'string' || !content.trim()) return null;
-
   const text       = content.trim();
-  // ✅ v26 : forceIndex prioritaire sur hash
   const paletteIdx = (typeof forceIndex === 'number' && forceIndex >= 0 && forceIndex <= 7)
-    ? forceIndex
-    : hashText(text);
+    ? forceIndex : hashText(text);
   const [from, to, textColor] = TEXT_CARD_PALETTES[paletteIdx];
   const { size, lineHeight, weight } = getFontSize(text.length);
   const height   = getCardHeight(text.length);
   const displayed = text.length > 500 ? text.slice(0, 497) + '…' : text;
-
   return (
     <div style={{
       width: '100%', minHeight: height,
@@ -366,7 +365,7 @@ HLSItem.displayName = 'HLSItem';
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
 
-const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRegisterVideoEl, slotIndex, showBadge = true, onVideoError }) => {
+const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRegisterVideoEl, slotIndex, showBadge = true, onVideoError, onOpenLightbox }) => {
   const videoRef      = useRef(null);
   const containerRef  = useRef(null);
   const muteButtonRef = useRef(null);
@@ -497,6 +496,27 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
           loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'} draggable="false" />
       )}
       {showBadge && <VideoSourceBadge url={url} />}
+
+      {/* ✅ v27 : bouton plein écran vidéo */}
+      {onOpenLightbox && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onOpenLightbox(); }}
+          style={{
+            position: 'absolute', top: 8, right: 8, zIndex: 20,
+            width: 30, height: 30, borderRadius: '50%',
+            background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', touchAction: 'manipulation',
+            WebkitTapHighlightColor: 'transparent',
+          }}
+          title="Plein écran"
+        >
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="white">
+            <path d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 4h-4v2h6v-6h-2v4z"/>
+          </svg>
+        </button>
+      )}
+
       <button ref={muteButtonRef} onClick={handleMuteClick}
         style={{ position: 'absolute', bottom: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: '50%', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.2)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', touchAction: 'manipulation', WebkitTapHighlightColor: 'transparent' }}
         dangerouslySetInnerHTML={{ __html: ICON_MUTED }} />
@@ -508,10 +528,13 @@ VideoItem.displayName = 'VideoItem';
 // ─────────────────────────────────────────────────────────────────────────────
 // IMAGE ITEM
 // ─────────────────────────────────────────────────────────────────────────────
-const ImageItem = React.memo(({ url, isLCP }) => {
+const ImageItem = React.memo(({ url, isLCP, onOpenLightbox }) => {
   const [loaded, setLoaded] = useState(isLCP);
   return (
-    <div style={{ position: 'absolute', inset: 0, background: '#111' }}>
+    <div
+      style={{ position: 'absolute', inset: 0, background: '#111', cursor: onOpenLightbox ? 'zoom-in' : 'default' }}
+      onClick={onOpenLightbox ? (e) => { e.stopPropagation(); onOpenLightbox(); } : undefined}
+    >
       <img src={url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', userSelect: 'none', opacity: isLCP ? 1 : (loaded ? 1 : 0), transition: isLCP ? 'none' : 'opacity 0.2s ease' }}
         loading={isLCP ? 'eager' : 'lazy'} decoding={isLCP ? 'sync' : 'async'}
         onLoad={() => setLoaded(true)} onError={() => setLoaded(true)} draggable="false" />
@@ -523,7 +546,7 @@ ImageItem.displayName = 'ImageItem';
 // ─────────────────────────────────────────────────────────────────────────────
 // MEDIA CELL
 // ─────────────────────────────────────────────────────────────────────────────
-const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideoEl, slotIndex, showBadge, post, paddingBottom = '75%', overlay = null, wrapperStyle = {}, onVideoError }) => {
+const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideoEl, slotIndex, showBadge, post, paddingBottom = '75%', overlay = null, wrapperStyle = {}, onVideoError, onOpenLightbox }) => {
   const embedThumbnail = useMemo(() => post?.thumbnail || getYouTubeThumbnail(url), [post?.thumbnail, url]);
   return (
     <div style={{ position: 'relative', paddingBottom, overflow: 'hidden', background: '#111', ...wrapperStyle }}>
@@ -533,12 +556,14 @@ const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideo
         ) : slotType === 'hls' ? (
           <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
         ) : slotType === 'video' ? (
-          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} initialMuted={true} onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge} onVideoError={onVideoError} />
+          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} initialMuted={true} onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge} onVideoError={onVideoError} onOpenLightbox={onOpenLightbox} />
         ) : (
-          <ImageItem url={url} isLCP={isLCP} />
+          <ImageItem url={url} isLCP={isLCP} onOpenLightbox={onOpenLightbox} />
         )}
         {overlay && (
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10, cursor: onOpenLightbox ? 'zoom-in' : 'default' }}
+            onClick={onOpenLightbox ? (e) => { e.stopPropagation(); onOpenLightbox(); } : undefined}
+          >
             <span style={{ color: 'white', fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{overlay}</span>
           </div>
         )}
@@ -612,23 +637,19 @@ const MediaPlaceholder = React.memo(({ total }) => {
 MediaPlaceholder.displayName = 'MediaPlaceholder';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST MEDIA v26
+// POST MEDIA v27 — avec Lightbox
 // ─────────────────────────────────────────────────────────────────────────────
 const GAP = 2;
 
 const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false, post = null }) => {
-  // ✅ v26 : SHORTCUT — mediaType "text-card" → TextOnlyCard directe, pas de validation
+  // ✅ v26 : SHORTCUT text-card
   if (post?.mediaType === 'text-card') {
     const content = post.content || post.contenu || '';
     if (content.trim()) {
       return (
         <TextOnlyCard
           content={content}
-          forceIndex={
-            typeof post.textCardPalette === 'number'
-              ? post.textCardPalette
-              : undefined
-          }
+          forceIndex={typeof post.textCardPalette === 'number' ? post.textCardPalette : undefined}
         />
       );
     }
@@ -648,6 +669,9 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const markSlotFailed = useCallback((slotIndex) => {
     setFailedSlots(prev => { const next = new Set(prev); next.add(slotIndex); return next; });
   }, []);
+
+  // ✅ v27 : état lightbox
+  const [lightboxIndex, setLightboxIndex] = useState(null);
 
   const safeMediaUrls = useMemo(() => {
     const seen = new Set(); const result = [];
@@ -683,69 +707,109 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   const validPosters   = activeIndices ? activeIndices.map(i => posterUrls[i]) : [];
   const validTotal     = validUrls.length;
 
-  const cellProps = useCallback((i, extra = {}) => ({
-    url: validUrls[i], slotType: validSlotTypes[i], posterUrl: validPosters[i],
-    isLCP: isLCPSlot && i === 0, onRegisterVideoEl,
-    slotIndex: activeIndices?.[i] ?? i, showBadge, post,
-    onVideoError: () => markSlotFailed(activeIndices?.[i] ?? i),
-    ...extra,
-  }), [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, activeIndices, markSlotFailed]); // eslint-disable-line
+  // ✅ v27 : URLs lightboxables (images + vidéos, pas les embeds/HLS)
+  const lightboxUrls = useMemo(() =>
+    validUrls.filter((_, i) => validSlotTypes[i] === 'image' || validSlotTypes[i] === 'video'),
+    [validUrls, validSlotTypes]
+  );
+
+  const getLightboxIndex = useCallback((slotIdx) => {
+    const url = validUrls[slotIdx];
+    return lightboxUrls.indexOf(url);
+  }, [validUrls, lightboxUrls]);
+
+  const openLightbox = useCallback((slotIdx) => {
+    const lbIdx = getLightboxIndex(slotIdx);
+    if (lbIdx >= 0) setLightboxIndex(lbIdx);
+  }, [getLightboxIndex]);
+
+  const cellProps = useCallback((i, extra = {}) => {
+    const type = validSlotTypes[i];
+    const canLightbox = type === 'image' || type === 'video';
+    return {
+      url: validUrls[i], slotType: type, posterUrl: validPosters[i],
+      isLCP: isLCPSlot && i === 0, onRegisterVideoEl,
+      slotIndex: activeIndices?.[i] ?? i, showBadge, post,
+      onVideoError: () => markSlotFailed(activeIndices?.[i] ?? i),
+      onOpenLightbox: canLightbox ? () => openLightbox(i) : undefined,
+      ...extra,
+    };
+  }, [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, activeIndices, markSlotFailed, openLightbox]); // eslint-disable-line
 
   if (!total) return null;
   if (activeIndices === null) return <MediaPlaceholder total={total} />;
 
-  // v25 : tous les slots ont échoué → TextOnlyCard si contenu
   if (validTotal === 0) {
     const content = post?.content || post?.contenu || '';
     if (content.trim()) return <TextOnlyCard content={content} />;
     return null;
   }
 
-  if (validTotal === 1) return <MediaCellAuto key="c0" {...cellProps(0)} />;
-  if (validTotal === 2) return (
-    <div style={{ display: 'flex', gap: GAP }}>
-      <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-      <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-    </div>
-  );
-  if (validTotal === 3) return (
-    <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
-      <MediaCell key="c0" {...cellProps(0)} paddingBottom="133%" wrapperStyle={{ flex: 2 }} />
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
-        <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" />
-        <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" />
-      </div>
-    </div>
-  );
-  if (validTotal === 4) return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
-      <div style={{ display: 'flex', gap: GAP }}>
-        <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-        <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-      </div>
-      <div style={{ display: 'flex', gap: GAP }}>
-        <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-        <MediaCell key="c3" {...cellProps(3)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
-      </div>
-    </div>
-  );
-
-  const hidden = validTotal - 5;
-  const overlay = hidden > 0 ? `+${hidden}` : null;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
-      <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
-        <MediaCell key="c0" {...cellProps(0)} paddingBottom="75%" wrapperStyle={{ flex: 2 }} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
-          <MediaCell key="c1" {...cellProps(1)} paddingBottom="75%" />
-          <MediaCell key="c2" {...cellProps(2)} paddingBottom="75%" />
+    <>
+      {/* ✅ v27 : Lightbox */}
+      <AnimatePresence>
+        {lightboxIndex !== null && lightboxUrls.length > 0 && (
+          <MediaLightbox
+            urls={lightboxUrls}
+            initialIndex={lightboxIndex}
+            onClose={() => setLightboxIndex(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {validTotal === 1 && <MediaCellAuto key="c0" {...cellProps(0)} />}
+
+      {validTotal === 2 && (
+        <div style={{ display: 'flex', gap: GAP }}>
+          <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+          <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
         </div>
-      </div>
-      <div style={{ display: 'flex', gap: GAP }}>
-        <MediaCell key="c3" {...cellProps(3)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} />
-        <MediaCell key="c4" {...cellProps(4)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} overlay={overlay} />
-      </div>
-    </div>
+      )}
+
+      {validTotal === 3 && (
+        <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
+          <MediaCell key="c0" {...cellProps(0)} paddingBottom="133%" wrapperStyle={{ flex: 2 }} />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
+            <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" />
+            <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" />
+          </div>
+        </div>
+      )}
+
+      {validTotal === 4 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+          <div style={{ display: 'flex', gap: GAP }}>
+            <MediaCell key="c0" {...cellProps(0)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+            <MediaCell key="c1" {...cellProps(1)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+          </div>
+          <div style={{ display: 'flex', gap: GAP }}>
+            <MediaCell key="c2" {...cellProps(2)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+            <MediaCell key="c3" {...cellProps(3)} paddingBottom="100%" wrapperStyle={{ flex: 1 }} />
+          </div>
+        </div>
+      )}
+
+      {validTotal >= 5 && (() => {
+        const hidden = validTotal - 5;
+        const overlay = hidden > 0 ? `+${hidden}` : null;
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+            <div style={{ display: 'flex', gap: GAP, alignItems: 'stretch' }}>
+              <MediaCell key="c0" {...cellProps(0)} paddingBottom="75%" wrapperStyle={{ flex: 2 }} />
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: GAP }}>
+                <MediaCell key="c1" {...cellProps(1)} paddingBottom="75%" />
+                <MediaCell key="c2" {...cellProps(2)} paddingBottom="75%" />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: GAP }}>
+              <MediaCell key="c3" {...cellProps(3)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} />
+              <MediaCell key="c4" {...cellProps(4)} paddingBottom="75%" wrapperStyle={{ flex: 1 }} overlay={overlay} />
+            </div>
+          </div>
+        );
+      })()}
+    </>
   );
 });
 
