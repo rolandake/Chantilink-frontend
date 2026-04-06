@@ -1,26 +1,16 @@
-// 📁 src/pages/Videos/VideosPage.jsx  — v8 PERSONNALISATION + FIX YOUTUBE
+// 📁 src/pages/Videos/VideosPage.jsx  — v9 YOUTUBE POOL
 //
 // ═══════════════════════════════════════════════════════════════════════════════
-// NOUVEAUTÉS v8
+// NOUVEAUTÉS v9
 //
-//  🧠 PERSONNALISATION COMPORTEMENTALE
-//     - notifyActive() envoie le watch score au backend quand l'utilisateur
-//       quitte une slide (seuil 15%) via POST /api/aggregated/:id/view
-//     - Le backend met à jour User.interests via user.updateInterests()
-//     - fetchAggregated() transmet les intérêts à multiSourceAggregator
-//       → ratio BTP adaptatif + scoring personnalisé
+//  🎬 YOUTUBE IFRAME POOL
+//     - YouTubePool.init() au premier chargement
+//     - extractYoutubeIds() lit le feed pour trouver les prochains embeds YT
+//     - notifyActive() appelle YouTubePool.warmup(nextIds) à chaque slide
+//       → les iframes des N slides suivantes chargent en arrière-plan
+//     - YouTubePool.destroy() dans le cleanup du composant
 //
-//  🗑️  SUPPRESSION DU DOUBLE FILTRE BTP FRONTEND
-//     - pickWeighted() et le split btp/other sont supprimés du frontend
-//     - Le backend (multiSourceAggregator) fait déjà le travail correctement
-//     - Gain : diversité accrue, moins d'items rejetés inutilement
-//
-//  🔇 FIX YOUTUBE DOUBLE VOIX
-//     - embedUrl propre (sans autoplay, sans mute) passé tel quel au cache
-//     - AggregatedCard gère l'autoplay via postMessage et isActive
-//     - Plus aucun autoplay=1 hardcodé côté VideosPage
-//
-//  🔒 HÉRITAGE v7 INTÉGRAL — rien de cassé
+//  🔒 HÉRITAGE v8 INTÉGRAL — rien de cassé
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -35,6 +25,7 @@ import VideoCard, { isFeedLocked } from './VideoCard';
 import AggregatedCard from './AggregatedCard';
 import VideoModal from './VideoModal';
 import VideoAd from './Publicite/VideoAd.jsx';
+import YouTubePool from './YouTubePool';
 import { FaPlus, FaSearch, FaArrowLeft, FaTimes, FaFire, FaCompass } from 'react-icons/fa';
 
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
@@ -50,21 +41,14 @@ const CONFIG = {
   bufferMin:     6,
   recycleMin:    8,
   preloadAhead:  3,
+  ytWarmupAhead: 3,   // nombre de slides YouTube à préchauffer en avance
   minFeedSize:   12,
   momentumLock:  280,
-  watchScoreMin: 0.15, // seuil pour envoyer le score au backend
+  watchScoreMin: 0.15,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🗑️  BTP côté FRONTEND SUPPRIMÉ (v8)
-// Le backend multiSourceAggregator applique déjà le ratio BTP personnalisé.
-// Appliquer un second filtre ici créait une double restriction inutile :
-//   - item non-BTP avait 0.05 × 0.05 = 0.25% de chance de passer
-//   - ça cassait la diversité et ignorait les préférences utilisateur
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 🔌 FILTRE DE JOUABILITÉ ÉTENDU — supporte embeds YouTube/Vimeo
+// 🔌 FILTRE DE JOUABILITÉ ÉTENDU
 // ─────────────────────────────────────────────────────────────────────────────
 const VALID_HOSTS  = [
   'cdn.pixabay.com/video', 'res.cloudinary.com',
@@ -96,7 +80,22 @@ const isPlayableCandidate = (item) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CSS GLOBAL (inchangé)
+// 🎬 HELPER — extrait les videoIds YouTube des N prochains items du feed
+// ─────────────────────────────────────────────────────────────────────────────
+const extractYoutubeIds = (items, fromIndex, count = 3) => {
+  const ids = [];
+  for (let i = fromIndex; i < items.length && ids.length < count; i++) {
+    const item = items[i];
+    if (!item?.data?.isEmbed) continue;
+    const embedUrl = item.data.embedUrl || item.data.videoUrl || '';
+    const match    = embedUrl.match(/youtube\.com\/embed\/([^?&/]+)/);
+    if (match?.[1]) ids.push(match[1]);
+  }
+  return ids;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CSS GLOBAL
 // ─────────────────────────────────────────────────────────────────────────────
 const VP_CSS = `
   @keyframes vp-spin    { to { transform: rotate(360deg); } }
@@ -136,7 +135,7 @@ const ensureCSS = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SMART RECYCLE (inchangé v7 — BTP bonus maintenu pour le recyclage local)
+// SMART RECYCLE
 // ─────────────────────────────────────────────────────────────────────────────
 const detectBTPLocal = (item) => {
   if (!item) return false;
@@ -149,7 +148,7 @@ const detectBTPLocal = (item) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROBES CLOUDINARY (inchangé)
+// PROBES CLOUDINARY
 // ─────────────────────────────────────────────────────────────────────────────
 const CLOUDINARY_PROBE_TIMEOUT = 5000;
 const probeCloudinaryVideo = (url, onInvalid) => {
@@ -176,7 +175,7 @@ const probeItemBackground = (item, onInvalid) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WATCH SCORE (inchangé)
+// WATCH SCORE
 // ─────────────────────────────────────────────────────────────────────────────
 class WatchScoreTracker {
   constructor() { this._map = new Map(); this._active = null; }
@@ -199,7 +198,7 @@ class WatchScoreTracker {
 const watchScore = new WatchScoreTracker();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ADAPTIVE BUFFER (inchangé)
+// ADAPTIVE BUFFER
 // ─────────────────────────────────────────────────────────────────────────────
 class AdaptiveBuffer {
   constructor() { this._times = []; this._value = CONFIG.bufferAhead; }
@@ -220,7 +219,7 @@ class AdaptiveBuffer {
 const adaptiveBuf = new AdaptiveBuffer();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PRELOAD (inchangé)
+// PRELOAD
 // ─────────────────────────────────────────────────────────────────────────────
 const _preloadedUrls = new Set();
 const injectPreload = (item) => {
@@ -235,7 +234,7 @@ const injectPreload = (item) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🏗️ SMART RECYCLE v2 — +0.3 score bonus BTP local
+// SMART RECYCLE v2
 // ─────────────────────────────────────────────────────────────────────────────
 let _recycleRound = 0;
 const smartRecycle = (pool) => {
@@ -258,7 +257,7 @@ const smartRecycle = (pool) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🏗️ VIRAL BOOST (inchangé)
+// VIRAL BOOST
 // ─────────────────────────────────────────────────────────────────────────────
 let _adCounter = 0;
 const applyViralBoost = (items) => {
@@ -277,7 +276,7 @@ const applyViralBoost = (items) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VH FIX (inchangé)
+// VH FIX
 // ─────────────────────────────────────────────────────────────────────────────
 const useVhFix = () => {
   useEffect(() => {
@@ -296,7 +295,7 @@ const SLIDE_STYLE = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONTEXTS (inchangés)
+// CONTEXTS
 // ─────────────────────────────────────────────────────────────────────────────
 const ActiveIndexContext = createContext(null);
 const ModalOpenContext   = createContext(false);
@@ -312,7 +311,7 @@ const useOnline = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UI COMPONENTS (inchangés)
+// UI COMPONENTS
 // ─────────────────────────────────────────────────────────────────────────────
 const ProgressRing = memo(({ progress = 0, size = 36, stroke = 2.5 }) => {
   const r = (size - stroke * 2) / 2, circ = 2 * Math.PI * r;
@@ -520,7 +519,7 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
 SlideItem.displayName = 'SlideItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEOS PAGE PRINCIPALE — v8
+// VIDEOS PAGE PRINCIPALE — v9
 // ─────────────────────────────────────────────────────────────────────────────
 const VideosPage = () => {
   ensureCSS();
@@ -551,9 +550,7 @@ const VideosPage = () => {
   const userHasMoreRef = useRef(userHasMore), userLoadingRef = useRef(userLoading);
   const loadingMoreRef = useRef(false), watchStreakRef = useRef(0);
   const ptrStartRef    = useRef(null), ptrActiveRef = useRef(false);
-
-  // ── Ref pour tracker quel item est actif (pour le watch score) ─────────────
-  const activeItemRef = useRef(null);
+  const activeItemRef  = useRef(null);
 
   useEffect(() => { userHasMoreRef.current = userHasMore; }, [userHasMore]);
   useEffect(() => { userLoadingRef.current = userLoading; }, [userLoading]);
@@ -565,17 +562,12 @@ const VideosPage = () => {
   }), []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 🧠 ENVOI WATCH SCORE AU BACKEND (Niveau 1)
-  // Déclenché quand l'utilisateur quitte un item (passage à la slide suivante)
-  // Si score > 15% → POST /api/aggregated/:id/view avec watchPct
+  // 🧠 ENVOI WATCH SCORE AU BACKEND
   // ─────────────────────────────────────────────────────────────────────────
   const sendWatchScore = useCallback(async (itemData, score) => {
     if (!itemData?._id || score < CONFIG.watchScoreMin) return;
-    // Uniquement pour les items agrégés (pas les vidéos user)
     if (!itemData._isAggregated) return;
-
     const watchPct = Math.round(score * 100);
-
     try {
       const token = await getToken();
       const headers = {
@@ -586,7 +578,7 @@ const VideosPage = () => {
         method: 'POST',
         headers,
         body: JSON.stringify({ watchPct }),
-      }).catch(() => {}); // fire-and-forget
+      }).catch(() => {});
     } catch { /* silencieux */ }
   }, [getToken]);
 
@@ -623,7 +615,13 @@ const VideosPage = () => {
     setSlideFlash(f => !f);
     adaptiveBuf.record(now);
 
+    // ── Preload vidéos directes ───────────────────────────────────────────
     for (let i = 1; i <= CONFIG.preloadAhead; i++) injectPreload(items[newIdx + i]);
+
+    // ── 🎬 Warmup YouTube pool pour les prochains embeds ──────────────────
+    const nextYtIds = extractYoutubeIds(items, newIdx + 1, CONFIG.ytWarmupAhead);
+    if (nextYtIds.length > 0) YouTubePool.warmup(nextYtIds);
+
     startTransition(() => {
       slideListeners.current[old]?.(false);
       slideListeners.current[newIdx]?.(true);
@@ -664,6 +662,12 @@ const VideosPage = () => {
       else if (feedItemsRef.current.length > 10) { setHasNewContent(true); setTimeout(() => setHasNewContent(false), 8000); }
     });
     if (feedItemsRef.current.length <= CONFIG.preloadAhead * 2) toAdd.slice(0, CONFIG.preloadAhead).forEach(injectPreload);
+
+    // Warmup YouTube pour les premiers items du feed (cold start)
+    if (wasEmpty) {
+      const firstYtIds = extractYoutubeIds(toAdd, 0, CONFIG.ytWarmupAhead);
+      if (firstYtIds.length > 0) YouTubePool.warmup(firstYtIds);
+    }
   }, [invalidateItem]);
 
   const recycle = useCallback(() => {
@@ -679,8 +683,7 @@ const VideosPage = () => {
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 🌐 fetchAggregated — v8 : PAS de filtre BTP frontend, juste isPlayableCandidate
-  // Le backend envoie déjà le bon ratio BTP personnalisé.
+  // 🌐 fetchAggregated
   // ─────────────────────────────────────────────────────────────────────────
   const fetchAggregated = useCallback(async (page = 1, limit = 40) => {
     if (!CONFIG.aggregated.enabled || aggLoadingRef.current) return;
@@ -696,14 +699,12 @@ const VideosPage = () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
 
-      // ── Étape 1 : filtre jouabilité seulement (plus de double filtre BTP) ─
       const finalItems = (json.data || [])
         .filter(isPlayableCandidate)
         .map(c => ({ ...c, _isAggregated: true }));
 
-      // ── Étape 2 : log meta ────────────────────────────────────────────────
       if (import.meta.env.DEV && json.meta) {
-        console.log(`[Feed v8] p${page} | sources: ${json.meta.sources?.join(',')} | BTP backend: ${json.meta.btpRatio}% | coldStart: ${json.meta.isColStart}`);
+        console.log(`[Feed v9] p${page} | sources: ${json.meta.sources?.join(',')} | BTP backend: ${json.meta.btpRatio}% | coldStart: ${json.meta.isColStart}`);
       }
 
       aggPool.current       = [...aggPool.current, ...finalItems];
@@ -735,6 +736,7 @@ const VideosPage = () => {
   useEffect(() => {
     if (!fetchTriggered.current) {
       fetchTriggered.current = true;
+      YouTubePool.init();  // 🎬 Initialiser le pool dès le premier chargement
       fetchUserVideos(true);
       fetchAggregated(1, CONFIG.aggregated.initialLoad);
     }
@@ -837,9 +839,13 @@ const VideosPage = () => {
     fetchAggregated(1, CONFIG.aggregated.initialLoad);
   }, [fetchUserVideos, fetchAggregated]);
 
+  // ── Cleanup complet au unmount ─────────────────────────────────────────
   useEffect(() => () => {
     document.getElementById('vp-styles')?.remove();
-    _cssInjected = false; watchScore.clear(); adaptiveBuf.reset();
+    _cssInjected = false;
+    watchScore.clear();
+    adaptiveBuf.reset();
+    YouTubePool.destroy(); // 🎬 Nettoyer toutes les iframes du pool
   }, []);
 
   const displayItems = useMemo(() => {
