@@ -1,20 +1,21 @@
-// 📁 src/pages/Home/Home.jsx — v15 OPTIMISÉ + CORRIGÉ (clés React dupliquées)
+// 📁 src/pages/Home/Home.jsx — v15 OPTIMISÉ + CORRIGÉ + PERSISTANCE FEED
 //
 // ══════════════════════════════════════════════════════════════════════════════
-// CORRECTIONS vs v15 original :
+// CORRECTIONS vs v15 précédent :
 //
-// 🐛 FIX 1 — _displayKey vraiment unique
-//    initFeed et loadMore : clé = `dk_${_id}_${index}_${timestamp}`
-//    → impossible d'avoir deux clés identiques même si le même post
-//      apparaît deux fois dans le pool
+// 🐛 FIX 1 — _displayKey vraiment unique (inchangé)
+// 🐛 FIX 2 — Déduplication finale dans rawPool (inchangé)
+// 🐛 FIX 3 — addLivePosts retire _displayKey avant d'enregistrer (inchangé)
 //
-// 🐛 FIX 2 — Déduplication finale dans rawPool (après smartBuildFeed)
-//    smartBuildFeed peut ré-injecter le même post via MIX_BLOCK/bots.
-//    On filtre sur _id après construction du pool.
+// 🆕 FIX 4 — livePostsRef persisté dans sessionStorage
+//    → à la reconnexion, le pool est restauré et non recalculé à vide
 //
-// 🐛 FIX 3 — addLivePosts retire _displayKey avant d'enregistrer
-//    Évite qu'une clé générée lors d'un render précédent soit portée
-//    par un post qui rentre dans livePostsRef et provoque un doublon.
+// 🆕 FIX 5 — seenIds persisté dans sessionStorage
+//    → smartBuildFeed reçoit un Set réel des posts déjà présentés
+//    → la pénalité seenDecay (×0.5) s'applique vraiment
+//
+// 🆕 FIX 6 — Feed remonte les IDs présentés via onPostsSeen
+//    → persistedSeenIdsRef est alimenté au fur et à mesure du scroll
 //
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -89,6 +90,39 @@ const SILENT_COOLDOWN_MS = 8_000;
 const SCROLL_IDLE_MS     = 2000;
 
 const EXPLORATION_RATE = 0.10;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🆕 FIX 4+5 — Persistence helpers (sessionStorage)
+// ══════════════════════════════════════════════════════════════════════════════
+const LIVE_POOL_KEY = "feed_live_pool_v15";
+const SEEN_IDS_KEY  = "feed_seen_ids_v15";
+
+const saveLivePool = (pool) => {
+  try {
+    const slim = pool.slice(0, 200).map(({ _displayKey, ...rest }) => rest);
+    sessionStorage.setItem(LIVE_POOL_KEY, JSON.stringify(slim));
+  } catch {}
+};
+
+const loadLivePool = () => {
+  try {
+    const raw = sessionStorage.getItem(LIVE_POOL_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+};
+
+const saveSeenIds = (ids) => {
+  try {
+    sessionStorage.setItem(SEEN_IDS_KEY, JSON.stringify([...ids].slice(0, 500)));
+  } catch {}
+};
+
+const loadSeenIds = () => {
+  try {
+    const raw = sessionStorage.getItem(SEEN_IDS_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch { return new Set(); }
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 🏗️ SCORE WEIGHTS — normalisés à 1.0
@@ -1146,8 +1180,7 @@ const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest
 PostCardWrapper.displayName = "PostCardWrapper";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 🐛 FIX 1+2 : compteur de clés unique et global au module
-//    Garantit l'unicité même si plusieurs feeds sont montés simultanément
+// Compteur de clés unique et global au module
 // ══════════════════════════════════════════════════════════════════════════════
 let _keyCounter = 0;
 const nextKey = () => ++_keyCounter;
@@ -1161,6 +1194,8 @@ const Feed = ({
   isLoading, newPostsCount, onShowNewPosts, resetSignal, topOffset,
   suggestedUsers, newsArticles=[], onScrollProgress, onNeedMorePosts,
   scrollContainerRef, followingIds,
+  // 🆕 FIX 6 — callback pour remonter les IDs présentés
+  onPostsSeen,
 }) => {
   const [displayed,     setDisplayed]     = useState([]);
   const [showAllSeen,   setShowAllSeen]   = useState(false);
@@ -1174,13 +1209,13 @@ const Feed = ({
   const cursorRef   = useRef(0);
   const onScrollProgressRef = useRef(onScrollProgress);
   const onNeedMorePostsRef  = useRef(onNeedMorePosts);
+  const onPostsSeenRef      = useRef(onPostsSeen);
 
   useEffect(()=>{ onScrollProgressRef.current=onScrollProgress; },[onScrollProgress]);
   useEffect(()=>{ onNeedMorePostsRef.current=onNeedMorePosts; },  [onNeedMorePosts]);
   useEffect(()=>{ postsRef.current=posts; },                      [posts]);
+  useEffect(()=>{ onPostsSeenRef.current=onPostsSeen; },          [onPostsSeen]);
 
-  // 🐛 FIX 1 : tag chaque post avec une clé garantie unique
-  //    On utilise un compteur monotone + _id pour le debug, jamais réutilisé
   const tagPost = useCallback((post) => ({
     ...post,
     _displayKey: `dk_${nextKey()}_${post._id || "x"}`,
@@ -1196,6 +1231,10 @@ const Feed = ({
     setShowAllSeen(false);
     setIsFetchingAPI(false);
     scheduleIdlePrefetch(pool, 0, PAGE_SIZE+PREFETCH_AHEAD, 20);
+    // 🆕 FIX 6 — notifie le parent des IDs initiaux
+    if (onPostsSeenRef.current) {
+      onPostsSeenRef.current(batch.map(p => p._id).filter(Boolean));
+    }
   }, [tagPost]);
 
   useEffect(()=>{
@@ -1246,9 +1285,13 @@ const Feed = ({
     setShowAllSeen(false);
     setIsFetchingAPI(false);
 
-    // 🐛 FIX 1 : clé unique via tagPost (compteur monotone)
     const tagged = batch.map(tagPost);
     cursorRef.current=cursor+tagged.length;
+
+    // 🆕 FIX 6 — notifie le parent des IDs présentés
+    if (onPostsSeenRef.current) {
+      onPostsSeenRef.current(tagged.map(p => p._id).filter(Boolean));
+    }
 
     const ctx=getScoringContext();
     tagged.forEach(p=>{ctx.fatigue.record(p);ctx.trend.record(p);ctx.session.recordView();});
@@ -1347,7 +1390,7 @@ const Feed = ({
 Feed.displayName = "Feed";
 
 // ═════════════════════════════════════════════════════════════════════════════
-// HOME v15
+// HOME v15 + persistance feed
 // ═════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
@@ -1372,9 +1415,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const [suggestedUsers, setSuggestedUsers] = useState([]);
   const [followingIds, setFollowingIds] = useState(new Set());
 
-  const livePostsRef = useRef([]);
+  // 🆕 FIX 4 — livePostsRef initialisé depuis sessionStorage
+  const livePostsRef = useRef(loadLivePool());
   const [livePostsVer, setLivePostsVer] = useState(0);
   const [resolved, setResolved]         = useState([]);
+
+  // 🆕 FIX 5 — seenIds persisté, chargé depuis sessionStorage
+  const persistedSeenIdsRef = useRef(loadSeenIds());
 
   const scrollRef    = useRef(null);
   const apiObsRef    = useRef(null);
@@ -1411,15 +1458,22 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return all.filter(a=>{const key=a._id||a.id||a.url;if(seen.has(key))return false;seen.add(key);return true;});
   },[newsGCLen,newsTechLen,newsEnvLen]);// eslint-disable-line
 
-  // 🐛 FIX 3 : retire _displayKey avant d'enregistrer dans livePostsRef
-  //    Empêche qu'une clé générée lors d'un render précédent soit réutilisée
+  // 🆕 FIX 6 — handler pour persister les IDs vus remontés par Feed
+  const handlePostsSeen = useCallback((ids) => {
+    ids.forEach(id => persistedSeenIdsRef.current.add(id));
+    saveSeenIds(persistedSeenIdsRef.current);
+  }, []);
+
+  // FIX 3 — retire _displayKey avant d'enregistrer dans livePostsRef
   const addLivePosts=useCallback((list)=>{
     const ids=new Set(livePostsRef.current.map(p=>p._id));
     const fresh=list
       .filter(p=>p?._id&&!ids.has(p._id))
-      .map(({ _displayKey, ...rest })=>rest); // retire _displayKey
+      .map(({ _displayKey, ...rest })=>rest);
     if(!fresh.length)return false;
     livePostsRef.current=[...livePostsRef.current,...fresh].slice(0,MAX_POOL);
+    // 🆕 FIX 4 — persiste le pool mis à jour
+    saveLivePool(livePostsRef.current);
     startTransition(()=>setLivePostsVer(v=>v+1));
     return true;
   },[]);
@@ -1525,9 +1579,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if(!rawPosts.length)return;
     const ids=new Set(rawPosts.map(p=>p._id));
     const filtered=livePostsRef.current.filter(p=>!ids.has(p._id));
-    // 🐛 FIX 3 : nettoie _displayKey des rawPosts entrants aussi
+    // FIX 3 — nettoie _displayKey des rawPosts entrants
     const cleanRaw=rawPosts.map(({ _displayKey, ...rest })=>rest);
     livePostsRef.current=[...filtered,...cleanRaw].slice(0,MAX_POOL);
+    // 🆕 FIX 4 — persiste après mise à jour
+    saveLivePool(livePostsRef.current);
     startTransition(()=>setLivePostsVer(v=>v+1));
   },[rawPosts]);
 
@@ -1556,19 +1612,21 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     const vReal=valid.filter(p=>!p.isBot&&!p.user?.isBot);
     const vBots=valid.filter(p=> p.isBot|| p.user?.isBot);
 
+    // 🆕 FIX 5 — seenIds réel (chargé depuis sessionStorage) passé à smartBuildFeed
+    const seenIds = persistedSeenIdsRef.current;
+
     let built;
     if(!showMock){
-      built = smartBuildFeed(vReal, vBots, new Set(), followingIds, ctx);
+      built = smartBuildFeed(vReal, vBots, seenIds, followingIds, ctx);
     } else {
       const mocks=dedup(MOCK_POSTS.slice(0,mockCount));
       if(MOCK_CONFIG.mixWithRealPosts&&vReal.length>0)
-        built = smartBuildFeed(vReal, [...vBots,...mocks], new Set(), followingIds, ctx);
+        built = smartBuildFeed(vReal, [...vBots,...mocks], seenIds, followingIds, ctx);
       else
         built = seededShuffle(mocks, seed);
     }
 
-    // 🐛 FIX 2 : déduplication finale après smartBuildFeed
-    //    smartBuildFeed peut ré-insérer le même _id via MIX_BLOCK/bots
+    // FIX 2 — déduplication finale après smartBuildFeed
     const seen = new Set();
     return built.filter(p => {
       const key = p._id;
@@ -1688,9 +1746,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         const ids=new Set(livePostsRef.current.map(p=>p._id));
         const fresh=newer.filter(p=>!ids.has(p._id));if(!fresh.length)return;
         latestId.current=fresh[0]._id;
-        // 🐛 FIX 3 : nettoie _displayKey avant insertion
+        // FIX 3 — nettoie _displayKey avant insertion
         const cleanFresh=fresh.map(({ _displayKey, ...rest })=>rest);
         livePostsRef.current=[...cleanFresh,...livePostsRef.current].slice(0,MAX_POOL);
+        // 🆕 FIX 4 — persiste
+        saveLivePool(livePostsRef.current);
         setNewPosts(newer.length);startTransition(()=>setLivePostsVer(v=>v+1));
       }catch{}
     };
@@ -1796,6 +1856,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
             onNeedMorePosts={handleNeedMorePosts}
             scrollContainerRef={scrollRef}
             followingIds={followingIds}
+            onPostsSeen={handlePostsSeen}
           />
         </div>
       </div>
