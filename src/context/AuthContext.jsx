@@ -1,20 +1,8 @@
-// src/context/AuthContext.jsx - VERSION PERSISTANTE LONGUE DURÉE ⚡
-// ✅ Auto-login via cookie httpOnly (refresh token)
-// ✅ Access token court (1h) en mémoire seulement — jamais en localStorage
-// ✅ Refresh token longue durée (90j) dans cookie httpOnly — géré par le navigateur
-// ✅ "Se souvenir de moi" → 90 jours | sinon → session navigateur
-// ✅ Même appareil = connecté automatiquement | Nouvel appareil = connexion requise
-//
-// 🔥 FIX LCP COLD START :
-//    - ready=true est émis IMMÉDIATEMENT au démarrage
-//    - loadSession() tourne en arrière-plan sans bloquer le render
-//    - sessionLoading=true pendant le refresh-token → AuthRoute affiche un skeleton
-//    - L'app est visible instantanément même si Render met 5s à répondre
-//
-// ✅ FIX updateUserProfile : supporte les deux signatures utilisées dans le projet
-//    - AuthContext interne : updateUserProfile(updates)        → 1 argument
-//    - Messages.jsx        : updateUserProfile(userId, updates) → 2 arguments
-//    La fonction détecte automatiquement la forme appelée.
+// src/context/AuthContext.jsx - VERSION AVEC SYNC LANGUE ⚡
+// ✅ Toutes les fonctionnalités précédentes conservées
+// ✅ NOUVEAU : après login/register/refresh → applyLanguage(user.language)
+//    → La langue de l'utilisateur est appliquée automatiquement à la connexion
+// ✅ NOUVEAU : AuthContext exporté pour AppBridge
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -24,8 +12,10 @@ import axios from "axios";
 import { io } from "socket.io-client";
 import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
+import { applyLanguage } from "../i18n"; // ← NOUVEAU
 
-const AuthContext = createContext({
+// ✅ Export nommé du contexte (pour AppLanguageBridge dans main.jsx)
+export const AuthContext = createContext({
   user: null, token: null, socket: null, loading: false, ready: false,
   isAuthenticated: false, notifications: [],
   login: async () => ({ success: false, message: "Auth not ready" }),
@@ -46,7 +36,7 @@ export const useAuth = () => {
 };
 
 // ============================================
-// 🔥 URL — identique à apiService.js
+// 🔥 URL
 // ============================================
 const isProd = import.meta.env.PROD;
 
@@ -58,7 +48,7 @@ const BACKEND_URL = API_URL.replace("/api", "");
 const SOCKET_URL  = BACKEND_URL;
 
 // ============================================
-// 🔥 DEBUG HELPER
+// DEBUG
 // ============================================
 const debugLog = (level, context, message, data = null) => {
   const prefix    = `[AuthContext:${context}]`;
@@ -73,17 +63,11 @@ const debugLog = (level, context, message, data = null) => {
 console.log(`🔧 [AuthContext] ${isProd ? "PRODUCTION" : "DÉVELOPPEMENT"} — ${API_URL}`);
 
 const summarizeAxiosError = (err) => ({
-  message:    err?.message,
-  status:     err?.response?.status,
-  statusText: err?.response?.statusText,
-  data:       err?.response?.data,
-  code:       err?.code,
-  url:        err?.config?.url,
-  baseURL:    err?.config?.baseURL,
-  method:     err?.config?.method?.toUpperCase(),
-  withCreds:  err?.config?.withCredentials,
-  isNetwork:  !err?.response && !!err?.request,
-  isCORS:     err?.message?.includes("CORS") || err?.message?.includes("Network"),
+  message:   err?.message,
+  status:    err?.response?.status,
+  data:      err?.response?.data,
+  code:      err?.code,
+  isNetwork: !err?.response && !!err?.request,
 });
 
 const CONFIG = {
@@ -118,17 +102,24 @@ const authAxios = axios.create({
   headers:         { "Content-Type": "application/json" },
 });
 
+// ============================================
+// HELPER : applique la langue du user si disponible
+// ============================================
+function applyUserLanguage(user) {
+  if (user?.language) {
+    applyLanguage(user.language);
+    debugLog("log", "Language", `✅ Langue appliquée depuis user: ${user.language}`);
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser]                     = useState(null);
   const [token, setToken]                   = useState(null);
   const [tokenExpiresAt, setTokenExpiresAt] = useState(null);
   const [notifications, setNotifications]   = useState([]);
   const [loading, setLoading]               = useState(false);
-
-  // 🔥 FIX LCP : deux états distincts
   const [ready, setReady]                   = useState(false);
   const [sessionLoading, setSessionLoading] = useState(true);
-
   const [loginAttempts, setLoginAttempts]   = useState({});
 
   const isMounted          = useRef(true);
@@ -233,10 +224,7 @@ export function AuthProvider({ children }) {
   // ============================================
   const refreshAccessToken = useCallback(async (retryCount = 0) => {
     const now = Date.now();
-    if (now - lastRefreshAttempt.current < CONFIG.REFRESH_COOLDOWN_MS) {
-      debugLog("warn", "Refresh", "Cooldown actif, skip");
-      return false;
-    }
+    if (now - lastRefreshAttempt.current < CONFIG.REFRESH_COOLDOWN_MS) return false;
     lastRefreshAttempt.current = now;
 
     if (isRefreshing.current) {
@@ -244,7 +232,6 @@ export function AuthProvider({ children }) {
     }
 
     isRefreshing.current = true;
-    debugLog("log", "Refresh", `Tentative #${retryCount + 1}`);
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
@@ -259,9 +246,10 @@ export function AuthProvider({ children }) {
         setUser(updatedUser);
         secureSetItem(STORAGE_KEYS.USER_INFO, updatedUser);
         await syncUserToIDB(updatedUser);
+        // ✅ NOUVEAU : appliquer la langue du user au refresh
+        applyUserLanguage(updatedUser);
       }
 
-      debugLog("log", "Refresh", "✅ Access token renouvelé");
       const queue = [...refreshQueue.current]; refreshQueue.current = [];
       queue.forEach((resolve) => resolve(true));
       return true;
@@ -299,16 +287,12 @@ export function AuthProvider({ children }) {
   }, [token, tokenExpiresAt, refreshAccessToken]);
 
   // ============================================
-  // AUTO-LOGIN — NON-BLOQUANT
+  // AUTO-LOGIN
   // ============================================
   const loadSession = useCallback(async () => {
     const storedAttempts = secureGetItem(STORAGE_KEYS.LOGIN_ATTEMPTS) || {};
     setLoginAttempts(storedAttempts);
-
-    debugLog("log", "AutoLogin", "🔍 Démarrage auto-login (non-bloquant)");
-
-    // 🔥 FIX LCP : app visible immédiatement
-    setReady(true);
+    setReady(true); // FIX LCP : visible immédiatement
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
@@ -319,38 +303,25 @@ export function AuthProvider({ children }) {
         setToken(newToken); setTokenExpiresAt(expiresAt); setUser(userData);
         secureSetItem(STORAGE_KEYS.USER_INFO, userData);
         await syncUserToIDB(userData);
-        debugLog("log", "AutoLogin", `✅ Reconnecté: ${userData?.email}`);
-      } else {
-        debugLog("log", "AutoLogin", "ℹ️ Pas de session active");
+        // ✅ NOUVEAU : appliquer la langue sauvegardée en base
+        applyUserLanguage(userData);
+        debugLog("log", "AutoLogin", `✅ Reconnecté: ${userData?.email} (lang: ${userData?.language})`);
       }
     } catch (err) {
       const summary = summarizeAxiosError(err);
-      if (err.response?.status === 401) {
-        debugLog("log", "AutoLogin", "ℹ️ Pas de session (401 — cookie absent ou expiré)");
-      } else {
-        debugLog("error", "AutoLogin", "❌ Erreur inattendue", {
-          ...summary,
-          diagnostic: summary.isNetwork
-            ? "🔴 ERREUR RÉSEAU — backend endormi (cold start) ou CORS"
-            : summary.status === 403
-            ? "🔴 CORS BLOQUÉ — vérifier CLIENT_URL dans Render"
-            : summary.status >= 500
-            ? "🔴 ERREUR SERVEUR — vérifier les logs Render"
-            : "🟡 Erreur inconnue",
-        });
+      if (err.response?.status !== 401) {
+        debugLog("error", "AutoLogin", "❌ Erreur inattendue", summary);
       }
 
-      // Fallback offline : charger depuis IDB
       if (!navigator.onLine) {
         const idbUser = await idbGet("users", "user_active").catch(() => null);
         if (idbUser?._id) {
           setUser(idbUser);
-          debugLog("log", "AutoLogin", "📴 Mode offline — utilisateur chargé depuis IDB");
+          applyUserLanguage(idbUser); // ✅ Appliquer la langue même en offline
         }
       }
     } finally {
       setSessionLoading(false);
-      debugLog("log", "AutoLogin", "🏁 loadSession terminé");
     }
   }, [syncUserToIDB]);
 
@@ -373,7 +344,9 @@ export function AuthProvider({ children }) {
       await syncUserToIDB(userData);
       resetLoginAttempts(safeEmail);
       addNotification("success", "Connecté avec succès");
-      debugLog("log", "Login", `✅ Connecté: ${userData?.email}`);
+      // ✅ NOUVEAU : appliquer la langue préférée de l'utilisateur
+      applyUserLanguage(userData);
+      debugLog("log", "Login", `✅ Connecté: ${userData?.email} (lang: ${userData?.language})`);
       return { success: true, user: userData };
     } catch (err) {
       const summary = summarizeAxiosError(err);
@@ -390,11 +363,12 @@ export function AuthProvider({ children }) {
   // ============================================
   // INSCRIPTION
   // ============================================
-  const register = useCallback(async (fullName, email, password, rememberMe = false) => {
+  const register = useCallback(async (fullName, email, password, rememberMe = false, language = "fr") => {
+    // ✅ NOUVEAU : language passé en paramètre
     setLoading(true);
     try {
       const res = await authAxios.post("/api/auth/register", {
-        fullName, email, password, rememberMe,
+        fullName, email, password, rememberMe, language,
       });
       if (!res.data.success) throw new Error(res.data?.message || "Erreur inscription");
 
@@ -404,10 +378,11 @@ export function AuthProvider({ children }) {
       secureSetItem(STORAGE_KEYS.USER_INFO, userData);
       await syncUserToIDB(userData);
       addNotification("success", "Compte créé avec succès !");
+      // ✅ NOUVEAU : appliquer la langue choisie à l'inscription
+      applyUserLanguage(userData);
       return { success: true, user: userData };
     } catch (err) {
-      const summary = summarizeAxiosError(err);
-      debugLog("error", "Register", "❌ Échec inscription", summary);
+      debugLog("error", "Register", "❌ Échec inscription", summarizeAxiosError(err));
       const msg = err.response?.data?.message || err.message || "Erreur inscription";
       addNotification("error", msg);
       return { success: false, message: msg };
@@ -418,33 +393,14 @@ export function AuthProvider({ children }) {
 
   // ============================================
   // MISE À JOUR PROFIL
-  // ✅ FIX : supporte les deux signatures utilisées dans le projet
-  //
-  //   Forme 1 (AuthContext interne, refresh, etc.) :
-  //     updateUserProfile(updates)           → updates = objet de champs
-  //
-  //   Forme 2 (Messages.jsx onboarding) :
-  //     updateUserProfile(userId, updates)   → userId = string, updates = objet
-  //
-  //   La fonction détecte automatiquement en testant typeof du 1er argument.
-  //   Le userId est ignoré ici car l'utilisateur courant est toujours user.
   // ============================================
   const updateUserProfile = useCallback(async (userIdOrUpdates, maybeUpdates) => {
-    // Détection de la signature appelée
-    const updates = typeof userIdOrUpdates === "string"
-      ? maybeUpdates   // updateUserProfile(userId, updates)
-      : userIdOrUpdates; // updateUserProfile(updates)
-
+    const updates = typeof userIdOrUpdates === "string" ? maybeUpdates : userIdOrUpdates;
     if (!updates) return;
 
     setUser((prev) => {
       if (!prev) return prev;
-      const updated = {
-        ...prev,
-        ...updates,
-        following: updates.following !== undefined ? updates.following : prev.following,
-      };
-      // Persister en arrière-plan sans bloquer le render
+      const updated = { ...prev, ...updates };
       setTimeout(() => {
         secureSetItem(STORAGE_KEYS.USER_INFO, updated);
         syncUserToIDB(updated);
@@ -481,8 +437,6 @@ export function AuthProvider({ children }) {
     if (socketRef.current?.connected && socketRef.current?.auth?.token === token) return;
 
     cleanupSocket();
-    debugLog("log", "Socket", `Connexion à ${SOCKET_URL}`);
-
     const newSocket = io(SOCKET_URL, {
       auth:                 { token },
       transports:           ["websocket", "polling"],
@@ -495,10 +449,6 @@ export function AuthProvider({ children }) {
 
     newSocket.on("connect",       ()    => debugLog("log",  "Socket", `✅ Connecté: ${newSocket.id}`));
     newSocket.on("connect_error", (err) => debugLog("warn", "Socket", `⚠️ Erreur: ${err.message}`));
-    newSocket.on("disconnect",    (reason) => {
-      if (reason !== "io client disconnect")
-        debugLog("log", "Socket", `🔌 Déconnecté: ${reason}`);
-    });
 
     socketRef.current = newSocket;
     return () => cleanupSocket();

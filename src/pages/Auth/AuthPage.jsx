@@ -1,14 +1,16 @@
 // src/pages/Auth/AuthPage.jsx
-// ✅ Login + Register + Forgot Password — transitions fluides sans page reload
-// ✅ Indicateur force mot de passe, validation inline, show/hide password
-// ✅ Remember me 90j, optimistic UI, feedback immédiat
-// ✅ Mode "forgot" : envoi email de reset avec countdown anti-spam
-// ✅ Design sombre raffiné — typographie Syne + DM Sans
-// ✅ Connexion Google OAuth
+// ✅ Login + Register + Forgot Password
+// ✅ NOUVEAU : Sélecteur de langue à l'inscription
+//    → La langue choisie est envoyée au backend avec le register
+//    → Appliquée immédiatement via i18n + persistée en base
+// ✅ Tous les textes traduits via useTranslation()
 
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useAuth } from "../../context/AuthContext";
+import { useLanguage } from "../../context/LanguageContext";
+import { SUPPORTED_LANGUAGES } from "../../i18n";
 
 // ============================================================
 // ICONS
@@ -44,6 +46,12 @@ const GoogleIcon = () => (
     <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
   </svg>
 );
+const GlobeIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
+    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+  </svg>
+);
 
 // ============================================================
 // HELPERS
@@ -58,7 +66,6 @@ const pwStrength = (pw) => {
   return s;
 };
 const S_COLORS = ["","#f87171","#fb923c","#facc15","#34d399"];
-const S_LABELS = ["","Faible","Moyen","Bon","Fort 💪"];
 
 // ============================================================
 // CSS
@@ -69,7 +76,6 @@ const CSS = `
 @keyframes cl-in      { from{opacity:0;transform:translateY(18px) scale(.97)} to{opacity:1;transform:none} }
 @keyframes cl-fade    { from{opacity:0;transform:translateY(-5px)} to{opacity:1;transform:none} }
 @keyframes cl-slide-up{ from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:none} }
-@keyframes cl-pulse   { 0%,100%{opacity:1} 50%{opacity:.5} }
 
 .cla{
   --bg:#09090b; --surf:#111115; --brd:rgba(255,255,255,.07);
@@ -112,7 +118,7 @@ const CSS = `
 .cla-f{margin-bottom:13px}
 .cla-lbl{display:block;font-size:11.5px;font-weight:500;color:var(--mut);letter-spacing:.07em;text-transform:uppercase;margin-bottom:6px}
 .cla-iw{position:relative}
-.cla-i{width:100%;padding:13px 16px;background:rgba(255,255,255,.04);border:1px solid var(--brd);border-radius:12px;color:var(--txt);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:400;outline:none;transition:border-color .2s,box-shadow .2s,background .2s;-webkit-appearance:none;}
+.cla-i{width:100%;padding:13px 16px;background:rgba(255,255,255,.04);border:1px solid var(--brd);border-radius:12px;color:var(--txt);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:400;outline:none;transition:border-color .2s,box-shadow .2s,background .2s;-webkit-appearance:none;box-sizing:border-box;}
 .cla-i::placeholder{color:#2d2d3a}
 .cla-i:focus{border-color:rgba(249,115,22,.5);background:rgba(249,115,22,.03);box-shadow:0 0 0 3px rgba(249,115,22,.07)}
 .cla-i.pr{padding-right:46px}
@@ -121,6 +127,38 @@ const CSS = `
 .cla-eye{position:absolute;right:13px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--mut);display:flex;align-items:center;padding:0;transition:color .15s}
 .cla-eye:hover{color:var(--txt)}
 .cla-ok-badge{position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--ok);display:flex;align-items:center}
+
+/* ── Sélecteur de langue ── */
+.cla-lang-select{
+  width:100%;padding:11px 16px;
+  background:rgba(255,255,255,.04);border:1px solid var(--brd);
+  border-radius:12px;color:var(--txt);
+  font-family:'DM Sans',sans-serif;font-size:14px;font-weight:400;
+  outline:none;cursor:pointer;
+  transition:border-color .2s,box-shadow .2s;
+  appearance:none;-webkit-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L6 7L11 1' stroke='%235c5c6e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 14px center;
+  padding-right:36px;
+}
+.cla-lang-select:focus{border-color:rgba(249,115,22,.5);box-shadow:0 0 0 3px rgba(249,115,22,.07)}
+.cla-lang-select option{background:#111115;color:#f0f0f0}
+.cla-lang-iw{position:relative;display:flex;align-items:center}
+.cla-lang-icon{position:absolute;left:12px;color:var(--mut);pointer-events:none;display:flex}
+.cla-lang-select.with-icon{padding-left:36px}
+
+/* ── Lang pills (mini selector pour login) ── */
+.cla-lang-pills{display:flex;gap:6px;margin-bottom:20px}
+.cla-lang-pill{
+  flex:1;padding:7px 6px;border:1px solid var(--brd);border-radius:9px;
+  background:rgba(255,255,255,.03);color:var(--mut);
+  font-family:'DM Sans',sans-serif;font-size:12px;font-weight:500;
+  cursor:pointer;text-align:center;transition:all .18s;
+  display:flex;align-items:center;justify-content:center;gap:4px;
+}
+.cla-lang-pill.on{border-color:rgba(249,115,22,.4);background:rgba(249,115,22,.1);color:var(--ora)}
+.cla-lang-pill:hover:not(.on){border-color:rgba(255,255,255,.13);background:rgba(255,255,255,.05);color:var(--txt)}
 
 .cla-bars{display:flex;gap:4px;margin-top:7px}
 .cla-bar{flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.07);transition:background .3s}
@@ -152,7 +190,6 @@ const CSS = `
 .cla-sepl{flex:1;height:1px;background:var(--brd)}
 .cla-sept{font-size:12px;color:var(--mut);font-weight:300;white-space:nowrap}
 
-/* ── Bouton Google pleine largeur ── */
 .cla-google-btn{
   width:100%;padding:13px 16px;
   border:1px solid var(--brd);border-radius:12px;
@@ -162,7 +199,6 @@ const CSS = `
   transition:all .2s;
 }
 .cla-google-btn:hover{border-color:rgba(255,255,255,.18);background:rgba(255,255,255,.07);transform:translateY(-1px);}
-.cla-google-btn:active{transform:scale(.99);}
 .cla-google-btn:disabled{opacity:.5;cursor:not-allowed;}
 
 .cla-foot{text-align:center;margin-top:22px;font-size:12px;color:var(--mut);line-height:1.7}
@@ -191,29 +227,32 @@ const CSS = `
 // COMPONENT
 // ============================================================
 export default function AuthPage() {
+  const { t, i18n }                = useTranslation();
   const { login, register, loading: authLoading } = useAuth();
-  const navigate       = useNavigate();
-  const [searchParams] = useSearchParams();
+  const { language, changeLanguage } = useLanguage();
+  const navigate                   = useNavigate();
+  const [searchParams]             = useSearchParams();
 
-  // "login" | "register" | "forgot" | "forgot-sent"
   const [mode, setMode]         = useState("login");
   const [busy, setBusy]         = useState(false);
   const [alert, setAlert]       = useState(null);
   const [googleBusy, setGoogleBusy] = useState(false);
 
-  // ── Login fields
+  // Login
   const [email, setEmail]       = useState("");
   const [pw, setPw]             = useState("");
   const [showPw, setShowPw]     = useState(false);
   const [remember, setRemember] = useState(true);
 
-  // ── Register fields
+  // Register
   const [name, setName]         = useState("");
   const [rEmail, setREmail]     = useState("");
   const [rPw, setRPw]           = useState("");
   const [showRPw, setShowRPw]   = useState(false);
+  // ✅ NOUVEAU : langue choisie à l'inscription (initialisée avec la langue courante)
+  const [regLang, setRegLang]   = useState(language);
 
-  // ── Forgot fields
+  // Forgot
   const [fEmail, setFEmail]     = useState("");
   const [sentTo, setSentTo]     = useState("");
   const [cooldown, setCooldown] = useState(0);
@@ -222,20 +261,22 @@ export default function AuthPage() {
   const nameRef   = useRef(null);
   const fEmailRef = useRef(null);
 
-  // ✅ Affiche les erreurs Google venant de l'URL (?msg=...)
+  // Sync regLang si la langue globale change depuis l'extérieur
+  useEffect(() => {
+    setRegLang(language);
+  }, [language]);
+
   useEffect(() => {
     const msg = searchParams.get("msg");
     if (msg) setAlert({ t: "err", msg: decodeURIComponent(msg) });
   }, []);
 
-  // Focus auto selon le mode
   useEffect(() => {
     const map = { login: emailRef, register: nameRef, forgot: fEmailRef };
     const el = map[mode]?.current;
     if (el) setTimeout(() => el.focus(), 120);
   }, [mode]);
 
-  // Countdown "renvoyer l'email"
   useEffect(() => {
     if (cooldown <= 0) return;
     const id = setTimeout(() => setCooldown(c => c - 1), 1000);
@@ -244,16 +285,19 @@ export default function AuthPage() {
 
   const clear = useCallback(() => setAlert(null), []);
 
-  // ── Validation
   const emailOk  = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   const rEmailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rEmail);
   const fEmailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fEmail);
   const str      = pwStrength(rPw);
+  const S_LABELS = [
+    "", t("auth.pw_strength.weak"), t("auth.pw_strength.medium"),
+    t("auth.pw_strength.good"), t("auth.pw_strength.strong"),
+  ];
   const canLog   = email.length > 3 && pw.length >= 6;
   const canReg   = name.trim().length >= 2 && rEmailOk && rPw.length >= 6;
   const isLoading = busy || authLoading;
 
-  // ── Handlers
+  // ── Handlers ──
   const handleLogin = useCallback(async (e) => {
     e?.preventDefault();
     if (!canLog || isLoading) return;
@@ -261,22 +305,26 @@ export default function AuthPage() {
     try {
       const res = await login(email.trim().toLowerCase(), pw, remember);
       if (res.success) navigate("/", { replace: true });
-      else setAlert({ t: "err", msg: res.message || "Email ou mot de passe incorrect." });
-    } catch { setAlert({ t: "err", msg: "Une erreur est survenue." }); }
+      else setAlert({ t: "err", msg: res.message || t("auth.login.error_default") });
+    } catch { setAlert({ t: "err", msg: t("auth.login.error_generic") }); }
     finally { setBusy(false); }
-  }, [canLog, isLoading, login, email, pw, remember, navigate]);
+  }, [canLog, isLoading, login, email, pw, remember, navigate, t]);
 
   const handleReg = useCallback(async (e) => {
     e?.preventDefault();
     if (!canReg || isLoading) return;
     setBusy(true); setAlert(null);
     try {
-      const res = await register(name.trim(), rEmail.trim().toLowerCase(), rPw, true);
-      if (res.success) navigate("/", { replace: true });
-      else setAlert({ t: "err", msg: res.message || "Impossible de créer le compte." });
-    } catch { setAlert({ t: "err", msg: "Une erreur est survenue." }); }
+      // ✅ NOUVEAU : on passe regLang au register (5ème paramètre)
+      const res = await register(name.trim(), rEmail.trim().toLowerCase(), rPw, true, regLang);
+      if (res.success) {
+        // Appliquer la langue immédiatement (register() l'applique déjà via AuthContext)
+        navigate("/", { replace: true });
+      }
+      else setAlert({ t: "err", msg: res.message || t("auth.register.error_default") });
+    } catch { setAlert({ t: "err", msg: t("auth.register.error_generic") }); }
     finally { setBusy(false); }
-  }, [canReg, isLoading, register, name, rEmail, rPw, navigate]);
+  }, [canReg, isLoading, register, name, rEmail, rPw, regLang, navigate, t]);
 
   const handleForgot = useCallback(async (e) => {
     e?.preventDefault();
@@ -290,18 +338,18 @@ export default function AuthPage() {
       });
       const data = await res.json();
       if (res.status === 429) {
-        setAlert({ t: "err", msg: data.message || "Trop de tentatives. Patientez avant de réessayer." });
+        setAlert({ t: "err", msg: data.message || t("auth.forgot.error_spam") });
         return;
       }
       setSentTo(fEmail.trim().toLowerCase());
       setCooldown(120);
       setMode("forgot-sent");
     } catch {
-      setAlert({ t: "err", msg: "Une erreur est survenue. Réessayez." });
+      setAlert({ t: "err", msg: t("auth.forgot.error_generic") });
     } finally {
       setBusy(false);
     }
-  }, [fEmailOk, isLoading, cooldown, fEmail]);
+  }, [fEmailOk, isLoading, cooldown, fEmail, t]);
 
   const handleResend = useCallback(async () => {
     if (cooldown > 0 || busy) return;
@@ -313,21 +361,25 @@ export default function AuthPage() {
         body: JSON.stringify({ email: sentTo }),
       });
       setCooldown(120);
-      setAlert({ t: "suc", msg: "Email renvoyé ! Vérifiez votre boîte de réception." });
+      setAlert({ t: "suc", msg: t("auth.forgot_sent.resend_success") });
     } catch {
-      setAlert({ t: "err", msg: "Impossible de renvoyer l'email." });
+      setAlert({ t: "err", msg: t("auth.forgot_sent.resend_error") });
     } finally {
       setBusy(false);
     }
-  }, [cooldown, busy, sentTo]);
+  }, [cooldown, busy, sentTo, t]);
 
-  // ✅ Connexion Google — redirige vers le backend OAuth
   const handleGoogleLogin = useCallback(() => {
     if (googleBusy) return;
     setGoogleBusy(true);
-    // Redirige vers le backend qui redirige vers Google
     window.location.href = "/api/auth/google";
   }, [googleBusy]);
+
+  // ✅ NOUVEAU : changer la langue depuis les pills (login) ou select (register)
+  const handleLangChange = useCallback((langCode) => {
+    changeLanguage(langCode, { sync: false }); // Pas de sync backend (non connecté)
+    if (mode === "register") setRegLang(langCode);
+  }, [changeLanguage, mode]);
 
   const goTo = (m) => { setMode(m); setAlert(null); };
 
@@ -352,19 +404,36 @@ export default function AuthPage() {
             <div className="cla-logo-text">CHANTI<b>LINK</b></div>
           </div>
 
+          {/* ── Sélecteur de langue rapide (pills) — visible sur toutes les vues ── */}
+          <div className="cla-lang-pills">
+            {SUPPORTED_LANGUAGES.map((lang) => (
+              <button
+                key={lang.code}
+                type="button"
+                className={`cla-lang-pill${i18n.language === lang.code ? " on" : ""}`}
+                onClick={() => handleLangChange(lang.code)}
+              >
+                <span>{lang.flag}</span>
+                <span>{lang.label}</span>
+              </button>
+            ))}
+          </div>
+
           {/* ══════════════════════════════════════
               MODE : FORGOT-SENT
           ══════════════════════════════════════ */}
           {mode === "forgot-sent" && (
             <div className="cla-success-screen">
               <div className="cla-success-icon"><MailIcon /></div>
-              <div className="cla-success-title">Vérifie ta boîte mail 📬</div>
+              <div className="cla-success-title">{t("auth.forgot_sent.title")}</div>
               <div className="cla-success-body">
-                Un lien de réinitialisation valable <strong style={{color:"#f97316"}}>15 minutes</strong> a été envoyé à :
+                {t("auth.forgot_sent.body_1")}{" "}
+                <strong style={{color:"#f97316"}}>{t("auth.forgot_sent.body_duration")}</strong>{" "}
+                {t("auth.forgot_sent.body_2")}
                 <br/>
                 <span className="cla-success-email">{sentTo}</span>
                 <br/><br/>
-                Si tu ne vois pas l'email, pense à vérifier tes <strong>spams</strong>.
+                {t("auth.forgot_sent.spam_hint")} <strong>{t("auth.forgot_sent.spam_word")}</strong>.
               </div>
 
               {alert && (
@@ -376,19 +445,19 @@ export default function AuthPage() {
 
               <div className="cla-countdown">
                 {cooldown > 0 ? (
-                  <>Renvoyer l'email dans <span>{cooldown}s</span></>
+                  <>{t("auth.forgot_sent.countdown", { count: cooldown }).replace("{{count}}", cooldown)}</>
                 ) : (
                   <>
-                    Email non reçu ?{" "}
+                    {t("auth.forgot_sent.not_received")}{" "}
                     <button className="cla-resend-btn" onClick={handleResend} disabled={busy}>
-                      {busy ? "Envoi…" : "Renvoyer l'email"}
+                      {busy ? t("auth.forgot_sent.resending") : t("auth.forgot_sent.resend")}
                     </button>
                   </>
                 )}
               </div>
 
               <button className="cla-btn-ghost" onClick={() => goTo("login")} style={{marginTop:20}}>
-                <ArrowLeftIcon /> Retour à la connexion
+                <ArrowLeftIcon /> {t("auth.forgot_sent.back_login")}
               </button>
             </div>
           )}
@@ -399,26 +468,30 @@ export default function AuthPage() {
           {mode !== "forgot-sent" && (
             <>
               <div className="cla-title">
-                {mode === "login"    && "Bon retour 👋"}
-                {mode === "register" && "Rejoins-nous"}
-                {mode === "forgot"   && "Mot de passe oublié ?"}
+                {mode === "login"    && t("auth.login.title")}
+                {mode === "register" && t("auth.register.title")}
+                {mode === "forgot"   && t("auth.forgot.title")}
               </div>
               <div className="cla-sub">
-                {mode === "login"    && "Connecte-toi à ton espace professionnel"}
-                {mode === "register" && "Crée ton compte en quelques secondes"}
-                {mode === "forgot"   && "Saisis ton email pour recevoir un lien de réinitialisation"}
+                {mode === "login"    && t("auth.login.subtitle")}
+                {mode === "register" && t("auth.register.subtitle")}
+                {mode === "forgot"   && t("auth.forgot.subtitle")}
               </div>
 
               {(mode === "login" || mode === "register") && (
                 <div className="cla-tabs">
-                  <button className={`cla-tab ${mode==="login"?"on":""}`} onClick={() => goTo("login")}>Connexion</button>
-                  <button className={`cla-tab ${mode==="register"?"on":""}`} onClick={() => goTo("register")}>Inscription</button>
+                  <button className={`cla-tab ${mode==="login"?"on":""}`} onClick={() => goTo("login")}>
+                    {t("auth.login.tab")}
+                  </button>
+                  <button className={`cla-tab ${mode==="register"?"on":""}`} onClick={() => goTo("register")}>
+                    {t("auth.register.tab")}
+                  </button>
                 </div>
               )}
 
               {mode === "forgot" && (
                 <button className="cla-back" onClick={() => goTo("login")}>
-                  <ArrowLeftIcon /> Retour à la connexion
+                  <ArrowLeftIcon /> {t("auth.forgot.back")}
                 </button>
               )}
 
@@ -433,7 +506,7 @@ export default function AuthPage() {
               {mode === "login" && (
                 <form onSubmit={handleLogin} noValidate>
                   <div className="cla-f">
-                    <label className="cla-lbl">Email</label>
+                    <label className="cla-lbl">{t("auth.login.email")}</label>
                     <div className="cla-iw">
                       <input ref={emailRef} type="email" inputMode="email" autoComplete="email"
                         className={`cla-i${emailOk?" ok pr":email.length>3&&!emailOk?" er":""}`}
@@ -444,7 +517,7 @@ export default function AuthPage() {
                   </div>
 
                   <div className="cla-f">
-                    <label className="cla-lbl">Mot de passe</label>
+                    <label className="cla-lbl">{t("auth.login.password")}</label>
                     <div className="cla-iw">
                       <input type={showPw?"text":"password"} autoComplete="current-password"
                         className="cla-i pr" placeholder="••••••••" value={pw}
@@ -456,15 +529,15 @@ export default function AuthPage() {
                   <div className="cla-row">
                     <label className="cla-rem" onClick={()=>setRemember(v=>!v)}>
                       <div className={`cla-box${remember?" on":""}`}>{remember&&<CheckIcon/>}</div>
-                      Se souvenir 90j
+                      {t("auth.login.remember")}
                     </label>
                     <button type="button" className="cla-forgot" onClick={() => goTo("forgot")}>
-                      Mot de passe oublié ?
+                      {t("auth.login.forgot")}
                     </button>
                   </div>
 
                   <button type="submit" className="cla-btn" disabled={!canLog||isLoading}>
-                    {isLoading ? <><SpinnerIcon/>Connexion…</> : "Se connecter →"}
+                    {isLoading ? <><SpinnerIcon/>{t("auth.login.submitting")}</> : t("auth.login.submit")}
                   </button>
                 </form>
               )}
@@ -473,32 +546,32 @@ export default function AuthPage() {
               {mode === "register" && (
                 <form onSubmit={handleReg} noValidate>
                   <div className="cla-f">
-                    <label className="cla-lbl">Nom complet</label>
+                    <label className="cla-lbl">{t("auth.register.fullname")}</label>
                     <div className="cla-iw">
                       <input ref={nameRef} type="text" autoComplete="name"
                         className={`cla-i${name.trim().length>=2?" ok":""}`}
-                        placeholder="Jean Kouassi" value={name}
+                        placeholder={t("auth.register.fullname_placeholder")} value={name}
                         onChange={e=>{setName(e.target.value);clear();}} disabled={isLoading}/>
                       {name.trim().length>=2 && <span className="cla-ok-badge"><CheckIcon/></span>}
                     </div>
                   </div>
 
                   <div className="cla-f">
-                    <label className="cla-lbl">Email professionnel</label>
+                    <label className="cla-lbl">{t("auth.register.email")}</label>
                     <div className="cla-iw">
                       <input type="email" inputMode="email" autoComplete="email"
                         className={`cla-i${rEmailOk?" ok pr":rEmail.length>3&&!rEmailOk?" er":""}`}
-                        placeholder="prenom@entreprise.com" value={rEmail}
+                        placeholder={t("auth.register.email_placeholder")} value={rEmail}
                         onChange={e=>{setREmail(e.target.value);clear();}} disabled={isLoading}/>
                       {rEmailOk && <span className="cla-ok-badge"><CheckIcon/></span>}
                     </div>
                   </div>
 
                   <div className="cla-f">
-                    <label className="cla-lbl">Mot de passe</label>
+                    <label className="cla-lbl">{t("auth.register.password")}</label>
                     <div className="cla-iw">
                       <input type={showRPw?"text":"password"} autoComplete="new-password"
-                        className="cla-i pr" placeholder="Min. 6 caractères" value={rPw}
+                        className="cla-i pr" placeholder={t("auth.register.password_placeholder")} value={rPw}
                         onChange={e=>{setRPw(e.target.value);clear();}} disabled={isLoading}/>
                       <button type="button" className="cla-eye" onClick={()=>setShowRPw(v=>!v)} tabIndex={-1}><EyeIcon open={showRPw}/></button>
                     </div>
@@ -510,14 +583,40 @@ export default function AuthPage() {
                           ))}
                         </div>
                         <div className="cla-hint" style={{color:S_COLORS[str]}}>
-                          {S_LABELS[str]}{str<3?" — ajoute chiffres & majuscules":""}
+                          {S_LABELS[str]}{str<3?` ${t("auth.pw_strength.hint")}` :""}
                         </div>
                       </>
                     )}
                   </div>
 
+                  {/* ✅ NOUVEAU : Sélecteur de langue à l'inscription */}
+                  <div className="cla-f">
+                    <label className="cla-lbl">
+                      <GlobeIcon style={{display:"inline",verticalAlign:"middle",marginRight:4}} />
+                      {t("auth.register.language")}
+                    </label>
+                    <div className="cla-lang-iw">
+                      <span className="cla-lang-icon"><GlobeIcon/></span>
+                      <select
+                        className="cla-lang-select with-icon"
+                        value={regLang}
+                        onChange={e => {
+                          setRegLang(e.target.value);
+                          handleLangChange(e.target.value);
+                        }}
+                        disabled={isLoading}
+                      >
+                        {SUPPORTED_LANGUAGES.map((lang) => (
+                          <option key={lang.code} value={lang.code}>
+                            {lang.flag} {lang.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
                   <button type="submit" className="cla-btn" disabled={!canReg||isLoading} style={{marginTop:6}}>
-                    {isLoading ? <><SpinnerIcon/>Création…</> : "Créer mon compte →"}
+                    {isLoading ? <><SpinnerIcon/>{t("auth.register.submitting")}</> : t("auth.register.submit")}
                   </button>
                 </form>
               )}
@@ -526,7 +625,7 @@ export default function AuthPage() {
               {mode === "forgot" && (
                 <form onSubmit={handleForgot} noValidate>
                   <div className="cla-f">
-                    <label className="cla-lbl">Ton email</label>
+                    <label className="cla-lbl">{t("auth.forgot.email")}</label>
                     <div className="cla-iw">
                       <input
                         ref={fEmailRef}
@@ -534,7 +633,7 @@ export default function AuthPage() {
                         inputMode="email"
                         autoComplete="email"
                         className={`cla-i${fEmailOk?" ok pr":fEmail.length>3&&!fEmailOk?" er":""}`}
-                        placeholder="prenom@entreprise.com"
+                        placeholder={t("auth.register.email_placeholder")}
                         value={fEmail}
                         onChange={e=>{setFEmail(e.target.value);clear();}}
                         disabled={isLoading}
@@ -553,54 +652,43 @@ export default function AuthPage() {
                     marginBottom:16,
                     lineHeight:1.6
                   }}>
-                    💡 Si un compte existe avec cet email, tu recevras un lien valable <strong style={{color:"#f97316"}}>15 minutes</strong>.
+                    💡 {t("auth.forgot.info")} <strong style={{color:"#f97316"}}>{t("auth.forgot.info_duration")}</strong>.
                   </div>
 
-                  <button
-                    type="submit"
-                    className="cla-btn"
-                    disabled={!fEmailOk || isLoading || cooldown > 0}
-                  >
+                  <button type="submit" className="cla-btn" disabled={!fEmailOk || isLoading || cooldown > 0}>
                     {isLoading
-                      ? <><SpinnerIcon/>Envoi en cours…</>
+                      ? <><SpinnerIcon/>{t("auth.forgot.submitting")}</>
                       : cooldown > 0
-                        ? `Réessayer dans ${cooldown}s`
-                        : "Envoyer le lien →"
+                        ? t("auth.forgot.retry").replace("{{count}}", cooldown)
+                        : t("auth.forgot.submit")
                     }
                   </button>
                 </form>
               )}
 
-              {/* ── SÉPARATEUR + GOOGLE — seulement pour login/register ── */}
+              {/* ── SÉPARATEUR + GOOGLE ── */}
               {(mode === "login" || mode === "register") && (
                 <>
                   <div className="cla-sep">
                     <div className="cla-sepl"/>
-                    <span className="cla-sept">ou continuer avec</span>
+                    <span className="cla-sept">{t("auth.google.separator")}</span>
                     <div className="cla-sepl"/>
                   </div>
 
-                  {/* ✅ Bouton Google pleine largeur */}
-                  <button
-                    className="cla-google-btn"
-                    type="button"
-                    onClick={handleGoogleLogin}
-                    disabled={googleBusy || isLoading}
-                  >
+                  <button className="cla-google-btn" type="button" onClick={handleGoogleLogin} disabled={googleBusy || isLoading}>
                     {googleBusy
-                      ? <><SpinnerIcon /> Redirection…</>
-                      : <><GoogleIcon /> Continuer avec Google</>
+                      ? <><SpinnerIcon /> {t("auth.google.redirecting")}</>
+                      : <><GoogleIcon /> {t("auth.google.button")}</>
                     }
                   </button>
                 </>
               )}
 
               <div className="cla-foot">
-                En continuant tu acceptes nos <a href="#">CGU</a> et notre <a href="#">Politique de confidentialité</a>.
+                {t("auth.footer")} <a href="#">{t("auth.footer_cgu")}</a> {t("auth.footer_and")} <a href="#">{t("auth.footer_privacy")}</a>.
               </div>
             </>
           )}
-
         </div>
       </div>
     </>

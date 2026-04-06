@@ -11,7 +11,7 @@
 //   → Cause 2 : le badge SPONSORISÉ (absolute) captait les clics sur le header.
 //     → pointer-events:none ajouté sur le badge décoratif.
 //   → Cause 3 : manque de robustesse du bouton TrashIcon.
-//     → type="button" explicite + onPointerDown + z-20 + aria-label ajoutés.
+//     → type="button" explicite + z-20 + aria-label ajoutés.
 //   → La DeleteModal reste portée via createPortal(document.body) (fix v5 conservé).
 //
 // ✅ v9 — FIX isOwner SILENCIEUSEMENT FALSE (cause racine du bouton invisible) :
@@ -27,7 +27,25 @@
 //     JWT middleware n'injecte pas le bon champ.
 //   → Fix côté frontend : on envoie le header Authorization via axiosClient
 //     (déjà configuré) — rien à changer ici. Le vrai fix est dans postRoutes.js.
-//   → Voir commentaire dans postRoutes.js v9 pour le détail.
+//
+// ✅ v10 — FIX onClick ne se déclenche pas :
+//   → onPointerDown={e => e.stopPropagation()} supprimé — interrompait la
+//     séquence pointerDown→pointerUp→click avant émission du click.
+//   → Handler inline direct dans onClick.
+//   → touchAction:"manipulation" : supprime le délai 300ms iOS double-tap zoom.
+//
+// ✅ v11 — FIX CLIC INTERCEPTÉ PAR LE PARENT :
+//   → onClick ne se déclenche toujours pas malgré le bouton visible.
+//   → Cause : un ancêtre dans l'arbre React (liste de posts, scroll container,
+//     gesture handler natif) appelle e.preventDefault() ou stopPropagation()
+//     sur touchstart/touchend, ce qui annule la synthèse du click par le browser.
+//   → Solution : remplacer onClick par onPointerUp qui est émis AVANT que
+//     le browser synthétise click — il échappe aux intercepteurs de niveau click.
+//   → e.preventDefault() dans onPointerUp empêche le browser de re-émettre
+//     un click fantôme en double.
+//   → onPointerDown stoppe la propagation SANS preventDefault (ne bloque pas
+//     la séquence pointer native, bloque la propagation vers les ancêtres React
+//     qui pourraient réagir au pointerDown).
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -58,15 +76,6 @@ const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✅ v9 : helper robuste pour comparer des IDs MongoDB
-// Gère les cas : string brute, objet { _id }, objet { id }, null, undefined.
-//
-// POURQUOI : post.userId (envoyé par le backend) peut être :
-//   - une string "507f1f77bcf86cd799439011"     → String() OK
-//   - un ObjectId mongoose sérialisé en objet   → String() → "[object Object]" ❌
-//   - un objet { _id: "507f..." }               → String() → "[object Object]" ❌
-//   - null / undefined                          → String() → "null" / "undefined" ❌
-//
-// toStr() normalise tout ça en string brute comparable.
 // ─────────────────────────────────────────────────────────────────────────────
 const toStr = (v) => {
   if (v === null || v === undefined) return "";
@@ -318,6 +327,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
       </div>
       <div className="flex gap-3">
         <button
+          type="button"
           onClick={onCancel}
           disabled={isDeleting}
           className={`flex-1 py-3 rounded-xl font-bold ${isDarkMode ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} disabled:opacity-50`}
@@ -325,6 +335,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
           Annuler
         </button>
         <button
+          type="button"
           onClick={onConfirm}
           disabled={isDeleting}
           className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold hover:bg-red-600 disabled:opacity-50"
@@ -470,10 +481,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
-  // ✅ v9 : utilisation de toStr() pour comparer les IDs de manière robuste.
-  // Avant : String(post.userId) échouait si post.userId était un objet MongoDB
-  // ({ _id: "..." }) → "[object Object]" ≠ "abc" → isOwner toujours false
-  // → le bouton TrashIcon n'était jamais rendu.
+  // ✅ v9 : isOwner via toStr() — robuste aux ObjectId MongoDB
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
     const cuid = toStr(currentUser._id);
@@ -582,13 +590,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     navigate(`/profile/${id}`);
   }, [navigate]);
 
-  // ✅ v8 : handler robuste — preventDefault + stopPropagation
-  const handleOpenDelete = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setShowDeleteModal(true);
-  }, []);
-
   const handleOpenComments = useCallback((e) => { e?.stopPropagation(); setShowCommentsModal(true); }, []);
   const handleOpenShare    = useCallback((e) => { e?.stopPropagation(); setShowShareModal(true);    }, []);
   const handleSave         = useCallback(() => setSaved(v => !v), []);
@@ -618,7 +619,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   const postMediaType = post.mediaType || null;
 
-  // ✅ v7 : seuil 120 chars — texte long jamais en text-card
   const TEXT_CARD_THRESHOLD = 120;
 
   const hasRawMedia = !!(
@@ -677,9 +677,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   return (
     <>
-      {/* ✅ v8 : contain:"layout style" SUPPRIMÉ — causait le blocage des clics
-          sur le bouton de suppression (stacking context isolé + pointer-events
-          dysfonctionnels sur certains navigateurs mobiles). */}
       <div
         ref={setRootRef}
         className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? "bg-black" : "bg-white"}`}
@@ -723,6 +720,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
           <div className="flex items-center gap-2">
             {isOwner && !isBoosted && !isMockPost && !isOptimistic && (
               <button
+                type="button"
                 onClick={e => e.stopPropagation()}
                 className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 active:scale-95 transition-transform"
               >
@@ -742,22 +740,34 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
                 {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
               </button>
             )}
-            {/* ✅ v8 FIX BOUTON SUPPRESSION :
-                - type="button" explicite
-                - onPointerDown pour fiabilité mobile
-                - z-20 pour être au-dessus de tous les autres éléments
-                - aria-label pour l'accessibilité
-                ✅ v9 : isOwner calculé via toStr() — s'affiche même si
-                post.userId est un objet MongoDB ou si post.user._id est
-                un ObjectId non sérialisé en string */}
+
+            {/* ✅ v11 FIX CLIC INTERCEPTÉ PAR LE PARENT :
+                - onPointerUp remplace onClick — émis avant la synthèse click
+                  par le browser, échappe aux intercepteurs parents qui annulent
+                  click via preventDefault sur touchend/touchstart.
+                - e.preventDefault() dans onPointerUp empêche l'émission d'un
+                  click fantôme en double par le browser.
+                - onPointerDown avec stopPropagation uniquement (sans
+                  preventDefault) : bloque la propagation vers les ancêtres
+                  React sans casser la séquence pointer native du browser.
+                - touchAction:"manipulation" : supprime le délai 300ms iOS. */}
             {isOwner && !isOptimistic && (
               <button
                 type="button"
-                onClick={handleOpenDelete}
-                onPointerDown={e => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onPointerUp={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowDeleteModal(true);
+                }}
                 className="relative z-20 p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                 aria-label="Supprimer ce post"
-                style={{ WebkitTapHighlightColor: "transparent" }}
+                style={{
+                  WebkitTapHighlightColor: "transparent",
+                  touchAction: "manipulation",
+                }}
               >
                 <TrashIcon className="w-5 h-5 text-gray-400 hover:text-red-500 transition-colors" />
               </button>

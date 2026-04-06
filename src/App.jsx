@@ -1,8 +1,4 @@
 // 📁 src/App.jsx
-// ✅ Header + navbar + sidebar uniquement sur la Home
-// ✅ Bouton retour flottant sur toutes les pages non-Home authentifiées
-//    (sauf /videos qui gère son propre bouton retour)
-
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
 } from "react";
@@ -10,6 +6,7 @@ import {
   Routes, Route, Navigate, useLocation, useNavigate
 } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import { useTranslation } from "react-i18next";
 import {
   Home, MessageSquare, Video, Calculator, Mail, User, Menu, ArrowLeft, Shield, Bell, X
 } from "lucide-react";
@@ -73,37 +70,38 @@ PageSkeleton.displayName = "PageSkeleton";
 
 // ============================================
 // BOUTON RETOUR FLOTTANT
-// Affiché sur toutes les pages non-Home authentifiées,
-// sauf /videos qui possède déjà son propre bouton retour interne.
 // ============================================
-const FloatingBackButton = memo(({ isDarkMode, onBack }) => (
-  <motion.button
-    initial={{ opacity: 0, x: -12 }}
-    animate={{ opacity: 1, x: 0 }}
-    exit={{ opacity: 0, x: -12 }}
-    transition={{ duration: 0.18, ease: "easeOut" }}
-    onClick={onBack}
-    className="fixed z-[60] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full transition-all active:scale-95"
-    style={{
-      top:             "max(16px, env(safe-area-inset-top, 16px))",
-      left:            16,
-      background:      "transparent",
-      border:          "none",
-      color:           isDarkMode ? "rgba(255,255,255,0.75)" : "rgba(0,0,0,0.55)",
-    }}
-  >
-    <span className="flex items-center justify-center w-7 h-7 rounded-full"
-      style={{ background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}
+const FloatingBackButton = memo(({ isDarkMode, onBack }) => {
+  const { t } = useTranslation();
+  return (
+    <motion.button
+      initial={{ opacity: 0, x: -12 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -12 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      onClick={onBack}
+      className="fixed z-[60] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full transition-all active:scale-95"
+      style={{
+        top:             "max(16px, env(safe-area-inset-top, 16px))",
+        left:            16,
+        background:      "transparent",
+        border:          "none",
+        color:           isDarkMode ? "rgba(255,255,255,0.75)" : "rgba(0,0,0,0.55)",
+      }}
     >
-      <ArrowLeft size={16} strokeWidth={2.5} />
-    </span>
-    <span className="text-sm font-semibold">Retour</span>
-  </motion.button>
-));
+      <span className="flex items-center justify-center w-7 h-7 rounded-full"
+        style={{ background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}
+      >
+        <ArrowLeft size={16} strokeWidth={2.5} />
+      </span>
+      <span className="text-sm font-semibold">{t("common.back")}</span>
+    </motion.button>
+  );
+});
 FloatingBackButton.displayName = "FloatingBackButton";
 
 // ============================================
-// SCROLL — masque la navbar au scroll bas
+// SCROLL
 // ============================================
 function useSmartScroll(threshold = 10) {
   const [isVisible, setIsVisible] = useState(true);
@@ -115,7 +113,6 @@ function useSmartScroll(threshold = 10) {
     const update = (currentScrollY) => {
       if (ticking.current) return;
       ticking.current = true;
-
       window.requestAnimationFrame(() => {
         if (currentScrollY < 80) {
           setIsVisible(true);
@@ -123,9 +120,7 @@ function useSmartScroll(threshold = 10) {
           ticking.current = false;
           return;
         }
-
         const diff = currentScrollY - lastScrollY.current;
-
         if (diff > threshold && scrollDirection.current !== "down") {
           scrollDirection.current = "down";
           setIsVisible(false);
@@ -133,18 +128,14 @@ function useSmartScroll(threshold = 10) {
           scrollDirection.current = "up";
           setIsVisible(true);
         }
-
         lastScrollY.current = currentScrollY;
         ticking.current = false;
       });
     };
-
     const onAppScroll    = (e) => update(e.detail?.scrollTop ?? 0);
     const onWindowScroll = ()  => update(window.scrollY || document.documentElement.scrollTop || 0);
-
     window.addEventListener("app:scroll", onAppScroll,    { passive: true });
     window.addEventListener("scroll",     onWindowScroll, { passive: true });
-
     return () => {
       window.removeEventListener("app:scroll", onAppScroll);
       window.removeEventListener("scroll",     onWindowScroll);
@@ -166,7 +157,6 @@ function useBackendReady() {
 
   useEffect(() => {
     mountedRef.current = true;
-
     const ping = async () => {
       try {
         const controller = new AbortController();
@@ -187,14 +177,11 @@ function useBackendReady() {
         firstPingDone.current = true;
       }
     };
-
     const showDelay = setTimeout(() => {
       if (!firstPingDone.current && mountedRef.current) setShowWakeUp(true);
     }, 1500);
-
     ping();
     pollingRef.current = setInterval(ping, 3000);
-
     return () => {
       mountedRef.current = false;
       clearInterval(pollingRef.current);
@@ -215,12 +202,10 @@ export default function App() {
 
   useEffect(() => {
     setReady(true);
-
     Promise.all([
       setupIndexedDB().catch(() => console.warn("IDB init failed")),
       initializeStorage().catch((err) => console.error("❌ [App] Erreur init storage:", err)),
     ]).catch(() => {});
-
     const fixVh = () =>
       document.documentElement.style.setProperty("--vh", `${window.innerHeight * 0.01}px`);
     fixVh();
@@ -241,6 +226,7 @@ export default function App() {
 function AppContent() {
   const { user, token, socket, ready: authReady } = useAuth();
   const { isDarkMode }  = useDarkMode();
+  const { t }           = useTranslation();
   const location        = useLocation();
   const navigate        = useNavigate();
   const { deleteSlide } = useStories();
@@ -306,7 +292,7 @@ function AppContent() {
       Object.entries(grouped).forEach(([type, notifs]) => {
         const count   = notifs.length;
         const message = count > 1
-          ? `${count} nouveaux ${type === "message" ? "messages" : "stories"}`
+          ? `${count} ${type === "message" ? t("messages.title").toLowerCase() : "stories"}`
           : notifs[0].message;
         const id = Date.now() + Math.random();
         setLiveNotifications((prev) => [...prev.slice(-4), { id, type, message, timestamp: Date.now() }]);
@@ -314,12 +300,18 @@ function AppContent() {
       });
       notificationQueue.current = [];
     }, 300);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (!socket) return;
-    const onMsg   = (d) => { if (location.pathname !== "/messages") addNotification({ type: "message", message: `${d.senderName || "Quelqu'un"} vous a envoyé un message` }); };
-    const onStory = (d) => { if (location.pathname !== "/")         addNotification({ type: "story",   message: `${d.userName  || "Quelqu'un"} a publié une story` });          };
+    const onMsg   = (d) => {
+      if (location.pathname !== "/messages")
+        addNotification({ type: "message", message: `${d.senderName || t("common.someone")} ${t("common.sent_message")}` });
+    };
+    const onStory = (d) => {
+      if (location.pathname !== "/")
+        addNotification({ type: "story", message: `${d.userName || t("common.someone")} ${t("common.posted_story")}` });
+    };
     socket.on("new_message", onMsg);
     socket.on("new_story",   onStory);
     return () => {
@@ -327,7 +319,7 @@ function AppContent() {
       socket.off("new_story",   onStory);
       if (notificationTimer.current) clearTimeout(notificationTimer.current);
     };
-  }, [socket, location.pathname, addNotification]);
+  }, [socket, location.pathname, addNotification, t]);
 
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
 
@@ -346,33 +338,20 @@ function AppContent() {
     }
   }, [location.pathname, navigate]);
 
-  // ── Flags de route ──
   const isHome   = location.pathname === "/";
   const isAuth   = location.pathname === "/auth";
   const isVideos = location.pathname === "/videos";
   const isAdmin  = user?.role === "admin" || user?.role === "superadmin";
 
-  // ── Header + navbar + sidebar : Home uniquement ──
   const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
   const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
-
-  // ── Bouton retour flottant :
-  //    - uniquement pages authentifiées
-  //    - pas sur Home (pas besoin)
-  //    - pas sur /auth
-  //    - pas sur /videos (ActionBar interne gère le retour)
-  //    - pas quand StoryViewer est ouvert (il a son propre close)
   const showBackButton = !!user && !isAuth && !isHome && !isVideos && !storyViewerOpen;
 
   const handleBack = useCallback(() => {
-    if (window.history.length > 1) {
-      navigate(-1);
-    } else {
-      navigate("/");
-    }
+    if (window.history.length > 1) navigate(-1);
+    else navigate("/");
   }, [navigate]);
 
-  // ── mainStyle ──
   const mainStyle = useMemo(() => ({
     top:                     showHeader ? 72 : 0,
     bottom:                  showNav    ? 64 : 0,
@@ -385,7 +364,7 @@ function AppContent() {
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
 
-      {/* ── NOTIFICATIONS LIVE ── */}
+      {/* NOTIFICATIONS LIVE */}
       <AnimatePresence>
         {liveNotifications.map((notif) => (
           <LiveNotification
@@ -397,7 +376,7 @@ function AppContent() {
         ))}
       </AnimatePresence>
 
-      {/* ── HEADER — Home uniquement ── */}
+      {/* HEADER */}
       {showHeader && (
         <div
           className="fixed top-0 left-0 right-0 z-40"
@@ -412,7 +391,7 @@ function AppContent() {
         </div>
       )}
 
-      {/* ── BOUTON RETOUR FLOTTANT ── */}
+      {/* BOUTON RETOUR FLOTTANT */}
       <AnimatePresence>
         {showBackButton && (
           <FloatingBackButton
@@ -423,7 +402,7 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      {/* ── SIDEBAR DESKTOP — Home uniquement ── */}
+      {/* SIDEBAR DESKTOP */}
       {showNav && (
         <SidebarDesktopMemo
           isDarkMode={isDarkMode}
@@ -433,7 +412,7 @@ function AppContent() {
         />
       )}
 
-      {/* ── CONTENU PRINCIPAL ── */}
+      {/* CONTENU PRINCIPAL */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
         <div className={`lg:ml-64 max-w-[630px] lg:max-w-none lg:px-8 mx-auto ${isHome ? "h-full" : ""}`}>
           <Suspense fallback={<LoadingSpinner />}>
@@ -470,7 +449,7 @@ function AppContent() {
         </div>
       </main>
 
-      {/* ── NAVBAR MOBILE — Home uniquement ── */}
+      {/* NAVBAR MOBILE */}
       {showNav && (
         <div
           className="fixed bottom-0 left-0 right-0 z-50"
@@ -491,7 +470,7 @@ function AppContent() {
         </div>
       )}
 
-      {/* ── STORY VIEWER ── */}
+      {/* STORY VIEWER */}
       {storyViewerOpen && (
         <StoryViewer
           stories={storyViewerData.stories}
@@ -507,35 +486,38 @@ function AppContent() {
 // ============================================
 // LIVE NOTIFICATION
 // ============================================
-const LiveNotification = memo(({ notification, isDarkMode, onClose }) => (
-  <motion.div
-    initial={{ opacity: 0, y: -20, x: 100 }}
-    animate={{ opacity: 1, y: 0, x: 0 }}
-    exit={{ opacity: 0, x: 100 }}
-    transition={{ duration: 0.2, ease: "easeOut" }}
-    className="fixed top-20 right-4 z-[100] max-w-sm"
-    onClick={onClose}
-  >
-    <div className={`relative flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-xl border cursor-pointer overflow-hidden ${
-      isDarkMode ? "bg-gray-800/95 border-gray-700" : "bg-white/95 border-gray-200"
-    }`}>
-      <div className={`flex-shrink-0 p-2 rounded-full ${
-        notification.type === "message" ? "bg-orange-500/20 text-orange-500" : "bg-blue-500/20 text-blue-500"
+const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
+  const { t } = useTranslation();
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -20, x: 100 }}
+      animate={{ opacity: 1, y: 0, x: 0 }}
+      exit={{ opacity: 0, x: 100 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+      className="fixed top-20 right-4 z-[100] max-w-sm"
+      onClick={onClose}
+    >
+      <div className={`relative flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-xl border cursor-pointer overflow-hidden ${
+        isDarkMode ? "bg-gray-800/95 border-gray-700" : "bg-white/95 border-gray-200"
       }`}>
-        {notification.type === "message" ? <MessageSquare size={18} /> : <Bell size={18} />}
+        <div className={`flex-shrink-0 p-2 rounded-full ${
+          notification.type === "message" ? "bg-orange-500/20 text-orange-500" : "bg-blue-500/20 text-blue-500"
+        }`}>
+          {notification.type === "message" ? <MessageSquare size={18} /> : <Bell size={18} />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className={`text-sm font-medium ${isDarkMode ? "text-white" : "text-gray-900"}`}>{notification.message}</p>
+          <p className={`text-xs mt-0.5 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>{t("common.just_now")}</p>
+        </div>
+        <div
+          className="absolute bottom-0 left-0 right-0 h-0.5 origin-left rounded-b-2xl"
+          style={{ background: "linear-gradient(90deg, #f97316, #ec4899)", animation: "notif-progress 5s linear forwards" }}
+        />
+        <style>{`@keyframes notif-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }`}</style>
       </div>
-      <div className="flex-1 min-w-0">
-        <p className={`text-sm font-medium ${isDarkMode ? "text-white" : "text-gray-900"}`}>{notification.message}</p>
-        <p className={`text-xs mt-0.5 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>À l'instant</p>
-      </div>
-      <div
-        className="absolute bottom-0 left-0 right-0 h-0.5 origin-left rounded-b-2xl"
-        style={{ background: "linear-gradient(90deg, #f97316, #ec4899)", animation: "notif-progress 5s linear forwards" }}
-      />
-      <style>{`@keyframes notif-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }`}</style>
-    </div>
-  </motion.div>
-));
+    </motion.div>
+  );
+});
 LiveNotification.displayName = "LiveNotification";
 
 // ============================================
@@ -584,6 +566,7 @@ const NavBtn = memo(({ icon: Icon, label, active, onClick, badge, isDarkMode }) 
 NavBtn.displayName = "NavBtn";
 
 const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unreadCount, onHomeClick }) => {
+  const { t }     = useTranslation();
   const navigate  = useNavigate();
   const [isMenuOpen, setMenuOpen] = useState(false);
   const isActive  = useCallback((path) => location.pathname === path, [location.pathname]);
@@ -598,10 +581,10 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unread
         className={`lg:hidden flex justify-around items-stretch border-t ${isDarkMode ? "bg-gray-900/95 border-gray-800/80" : "bg-white/95 border-gray-100"}`}
         style={{ height: 64, backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)", paddingBottom: "env(safe-area-inset-bottom)" }}
       >
-        <NavBtn icon={Home}          label="Accueil" active={isActive("/")}       onClick={onHomeClick} isDarkMode={isDarkMode} />
-        <NavBtn icon={Video}         label="Vidéos"  active={isActive("/videos")} onClick={goVideos}    isDarkMode={isDarkMode} />
-        <NavBtn icon={MessageSquare} label="Chat"    active={isActive("/chat")}   onClick={goChat}      isDarkMode={isDarkMode} />
-        <NavBtn icon={Menu}          label="Plus"    active={false}               onClick={openMenu}    badge={unreadCount} isDarkMode={isDarkMode} />
+        <NavBtn icon={Home}          label={t("navbar.home")}   active={isActive("/")}       onClick={onHomeClick} isDarkMode={isDarkMode} />
+        <NavBtn icon={Video}         label={t("videos.title")}  active={isActive("/videos")} onClick={goVideos}    isDarkMode={isDarkMode} />
+        <NavBtn icon={MessageSquare} label={t("navbar.chat")}   active={isActive("/chat")}   onClick={goChat}      isDarkMode={isDarkMode} />
+        <NavBtn icon={Menu}          label={t("navbar.more")}   active={false}               onClick={openMenu}    badge={unreadCount} isDarkMode={isDarkMode} />
       </nav>
       {isMenuOpen && (
         <MenuOverlay user={user} isAdminUser={isAdminUser} isDarkMode={isDarkMode} onClose={closeMenu} unreadCount={unreadCount} />
@@ -645,6 +628,7 @@ const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, i
 NavItemDesktop.displayName = "NavItemDesktop";
 
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick }) => {
+  const { t }    = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const isActive   = useCallback((path) => location.pathname === path, [location.pathname]);
@@ -660,12 +644,12 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
       className={`hidden lg:flex fixed left-0 bottom-0 w-64 flex-col py-6 px-4 gap-1 z-30 border-r ${isDarkMode ? "bg-gray-900/60 border-gray-800/60" : "bg-white border-gray-100"}`}
       style={{ top: 72, backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)" }}
     >
-      <NavItemDesktop icon={Home}          label="Accueil"    onClick={onHomeClick} isDarkMode={isDarkMode} active={isActive("/")} />
-      <NavItemDesktop icon={MessageSquare} label="Chat"       onClick={goChat}      isDarkMode={isDarkMode} active={isActive("/chat")} />
-      <NavItemDesktop icon={Video}         label="Vidéos"     onClick={goVideos}    isDarkMode={isDarkMode} active={isActive("/videos")} />
-      <NavItemDesktop icon={Calculator}    label="Calculs"    onClick={goCalculs}   isDarkMode={isDarkMode} active={isActive("/calculs")} />
-      <NavItemDesktop icon={Mail}          label="Messagerie" onClick={goMessages}  isDarkMode={isDarkMode} active={isActive("/messages")} badge={unreadCount} />
-      <NavItemDesktop icon={User}          label="Profil"     onClick={goProfile}   isDarkMode={isDarkMode} active={location.pathname.includes("/profile")} />
+      <NavItemDesktop icon={Home}          label={t("navbar.home")}     onClick={onHomeClick} isDarkMode={isDarkMode} active={isActive("/")} />
+      <NavItemDesktop icon={MessageSquare} label={t("navbar.chat")}     onClick={goChat}      isDarkMode={isDarkMode} active={isActive("/chat")} />
+      <NavItemDesktop icon={Video}         label={t("videos.title")}    onClick={goVideos}    isDarkMode={isDarkMode} active={isActive("/videos")} />
+      <NavItemDesktop icon={Calculator}    label={t("navbar.calculs")}  onClick={goCalculs}   isDarkMode={isDarkMode} active={isActive("/calculs")} />
+      <NavItemDesktop icon={Mail}          label={t("navbar.messages")} onClick={goMessages}  isDarkMode={isDarkMode} active={isActive("/messages")} badge={unreadCount} />
+      <NavItemDesktop icon={User}          label={t("navbar.profile")}  onClick={goProfile}   isDarkMode={isDarkMode} active={location.pathname.includes("/profile")} />
       {isAdminUser && (
         <>
           <div className={`w-full h-px my-3 ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
@@ -681,16 +665,17 @@ SidebarDesktopMemo.displayName = "SidebarDesktopMemo";
 // MENU OVERLAY
 // ============================================
 const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount }) => {
+  const { t }    = useTranslation();
   const navigate = useNavigate();
   const items = useMemo(() => {
     const base = [
-      { label: "Profil",   icon: User,       path: `/profile/${user?._id}`, color: "#8b5cf6" },
-      { label: "Calculs",  icon: Calculator, path: "/calculs",              color: "#06b6d4" },
-      { label: "Messages", icon: Mail,       path: "/messages",             color: "#f97316", badge: unreadCount },
+      { label: t("navbar.profile"),  icon: User,       path: `/profile/${user?._id}`, color: "#8b5cf6" },
+      { label: t("navbar.calculs"),  icon: Calculator, path: "/calculs",              color: "#06b6d4" },
+      { label: t("navbar.messages"), icon: Mail,       path: "/messages",             color: "#f97316", badge: unreadCount },
     ];
     if (isAdminUser) base.push({ label: "Admin", icon: Shield, path: "/admin", color: "#f43f5e" });
     return base;
-  }, [user?._id, isAdminUser, unreadCount]);
+  }, [user?._id, isAdminUser, unreadCount, t]);
 
   return (
     <div className="fixed inset-0 z-[110] flex items-end">
@@ -713,7 +698,9 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
         >
           <X size={16} />
         </button>
-        <p className={`text-xs font-bold uppercase tracking-widest mb-4 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>Navigation</p>
+        <p className={`text-xs font-bold uppercase tracking-widest mb-4 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
+          {t("messages.nav_label")}
+        </p>
         <div className="grid grid-cols-3 gap-3">
           {items.map((item) => (
             <button
