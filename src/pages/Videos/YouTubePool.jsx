@@ -2,11 +2,12 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // YOUTUBE IFRAME POOL — zéro reload, lecture instantanée
 //
-// Problème : chaque <iframe> YouTube charge ~500kb de JS + négocie avec
-// les serveurs YT avant de jouer. Contrairement aux vidéos directes, on
-// ne peut pas précharger via fetch(). La seule solution : maintenir un pool
-// d'iframes vivantes dans le DOM (off-screen), prêtes à être déplacées dans
-// le container de la slide active.
+// ✅ FIX — suppression du conflit allowFullscreen / allow="fullscreen"
+//    → allowFullscreen retiré du constructeur
+//    → allow="fullscreen" injecté dynamiquement dans mountTo()
+//    → allow sans fullscreen dans returnToPool() (off-screen)
+//    → élimine le warning :
+//      "Allow attribute will take precedence over 'allowfullscreen'."
 //
 // Architecture :
 //   - POOL_SIZE iframes off-screen montées dès l'init (ou à la demande)
@@ -27,9 +28,14 @@
 //   }, [videoId]);
 // ═══════════════════════════════════════════════════════════════════════════
 
-const POOL_SIZE   = 3;   // iframes maintenues en vie simultanément
-const MAX_POOL    = 6;   // plafond absolu (mémoire)
+const POOL_SIZE     = 3;     // iframes maintenues en vie simultanément
+const MAX_POOL      = 6;     // plafond absolu (mémoire)
 const READY_TIMEOUT = 12000; // ms avant abandon si onReady ne répond pas
+
+// Attribut allow pour les iframes OFF-SCREEN (pas de fullscreen)
+const ALLOW_OFFSCREEN = 'autoplay; picture-in-picture; encrypted-media';
+// Attribut allow pour les iframes ACTIVES (fullscreen autorisé)
+const ALLOW_ACTIVE    = 'autoplay; fullscreen; picture-in-picture; encrypted-media';
 
 // Container off-screen partagé par toutes les iframes du pool
 let _container = null;
@@ -39,15 +45,15 @@ const getContainer = () => {
   _container = document.createElement('div');
   _container.id = 'yt-pool-container';
   Object.assign(_container.style, {
-    position:   'fixed',
-    top:        '-9999px',
-    left:       '-9999px',
-    width:      '1px',
-    height:     '1px',
-    overflow:   'hidden',
+    position:      'fixed',
+    top:           '-9999px',
+    left:          '-9999px',
+    width:         '1px',
+    height:        '1px',
+    overflow:      'hidden',
     pointerEvents: 'none',
-    visibility: 'hidden',
-    zIndex:     '-1',
+    visibility:    'hidden',
+    zIndex:        '-1',
   });
   document.body.appendChild(_container);
   return _container;
@@ -58,16 +64,19 @@ const getContainer = () => {
 // ─────────────────────────────────────────────────────────────────────────
 class Slot {
   constructor() {
-    this.iframe    = document.createElement('iframe');
-    this.videoId   = null;
-    this.state     = 'idle';    // idle | warming | ready | active
+    this.iframe     = document.createElement('iframe');
+    this.videoId    = null;
+    this.state      = 'idle'; // idle | warming | ready | active
     this.readyTimer = null;
 
-    Object.assign(this.iframe, {
-      allow:      'autoplay; fullscreen; picture-in-picture; encrypted-media',
-      frameBorder:'0',
-      allowFullscreen: true,
-    });
+    // ✅ FIX : utiliser setAttribute au lieu de Object.assign pour éviter
+    // le conflit entre la propriété DOM allowFullscreen (booléenne) et
+    // l'attribut HTML allow="fullscreen".
+    // Off-screen → pas de fullscreen dans allow.
+    this.iframe.setAttribute('allow', ALLOW_OFFSCREEN);
+    this.iframe.setAttribute('frameborder', '0');
+    // allowFullscreen N'EST PAS défini ici — il sera ajouté dans mountTo()
+
     Object.assign(this.iframe.style, {
       position: 'absolute',
       width:    '100%',
@@ -87,7 +96,9 @@ class Slot {
   _handleMessage(event) {
     if (!event.origin?.includes('youtube.com')) return;
     let data;
-    try { data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; }
+    try {
+      data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+    } catch { return; }
 
     // Vérifier que ce message vient bien de cette iframe
     if (event.source !== this.iframe.contentWindow) return;
@@ -149,6 +160,10 @@ class Slot {
       if (this.state === 'warming') this.state = 'ready'; // on tente quand même
     }, READY_TIMEOUT);
 
+    // Off-screen : pas de fullscreen
+    this.iframe.setAttribute('allow', ALLOW_OFFSCREEN);
+    this.iframe.removeAttribute('allowfullscreen');
+
     this.iframe.src = this._buildSrc(videoId);
   }
 
@@ -156,6 +171,13 @@ class Slot {
   mountTo(container) {
     if (!container) return;
     this.state = 'active';
+
+    // ✅ FIX : activer fullscreen UNIQUEMENT quand l'iframe est visible
+    // → on utilise setAttribute (pas la propriété DOM) pour cohérence
+    this.iframe.setAttribute('allow', ALLOW_ACTIVE);
+    // Ne PAS ajouter allowfullscreen en tant que propriété booléenne
+    // car cela recréerait le conflit. setAttribute suffit pour les navigateurs modernes.
+
     container.appendChild(this.iframe);
     Object.assign(this.iframe.style, {
       position: 'absolute',
@@ -170,6 +192,11 @@ class Slot {
     this.state = 'ready'; // garde le player chargé
     this._postCmd('pauseVideo');
     this._postCmd('mute');
+
+    // ✅ FIX : retirer fullscreen quand off-screen pour éviter le warning
+    this.iframe.setAttribute('allow', ALLOW_OFFSCREEN);
+    this.iframe.removeAttribute('allowfullscreen');
+
     // Remettre dans le container off-screen
     const c = getContainer();
     if (c && this.iframe.parentElement !== c) {
@@ -193,6 +220,11 @@ class Slot {
     this.readyTimer = setTimeout(() => {
       if (this.state === 'warming') this.state = 'ready';
     }, READY_TIMEOUT);
+
+    // Off-screen pendant le reload
+    this.iframe.setAttribute('allow', ALLOW_OFFSCREEN);
+    this.iframe.removeAttribute('allowfullscreen');
+
     this.iframe.src = this._buildSrc(videoId);
   }
 
@@ -225,7 +257,7 @@ class YouTubePoolSingleton {
   warmup(videoIds = []) {
     if (!this._initDone) this.init();
 
-    videoIds.slice(0, POOL_SIZE).forEach((id, i) => {
+    videoIds.slice(0, POOL_SIZE).forEach((id) => {
       if (!id) return;
       // Déjà warm pour cet id ?
       const existing = this._slots.find(s => s.videoId === id && s.state !== 'idle');
@@ -287,7 +319,7 @@ class YouTubePoolSingleton {
     slot.returnToPool();
   }
 
-  // Destruire proprement tous les slots (cleanup VideosPage)
+  // Détruire proprement tous les slots (cleanup VideosPage)
   destroy() {
     this._slots.forEach(s => s.destroy());
     this._slots    = [];
