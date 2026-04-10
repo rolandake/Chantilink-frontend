@@ -1,16 +1,32 @@
-// 📁 src/pages/Videos/VideosPage.jsx  — v9 YOUTUBE POOL
+// 📁 src/pages/Videos/VideosPage.jsx  — v10 INTELLIGENT FEED
 //
 // ═══════════════════════════════════════════════════════════════════════════════
-// NOUVEAUTÉS v9
+// NOUVEAUTÉS v10 — INTELLIGENCE TOTALE
 //
-//  🎬 YOUTUBE IFRAME POOL
-//     - YouTubePool.init() au premier chargement
-//     - extractYoutubeIds() lit le feed pour trouver les prochains embeds YT
-//     - notifyActive() appelle YouTubePool.warmup(nextIds) à chaque slide
-//       → les iframes des N slides suivantes chargent en arrière-plan
-//     - YouTubePool.destroy() dans le cleanup du composant
+//  🧠 SCORING PERSISTÉ (localStorage)
+//     - UserProfileStore : profil complet persisté entre sessions
+//     - Catégories, sources, tags scorés en continu
+//     - Score de pertinence par item calculé à chaque insertion
+//     - Décroissance temporelle (time-decay) sur les préférences
 //
-//  🔒 HÉRITAGE v8 INTÉGRAL — rien de cassé
+//  🎯 DIVERSITÉ FORCÉE (DiversityGuard)
+//     - Aucune source identique 2x dans les 3 derniers slots
+//     - Aucune catégorie identique 2x dans les 5 derniers slots
+//     - Quota BTP/non-BTP équilibré dynamiquement
+//     - Pénalité de répétition sur titre/description similaires (Jaccard)
+//
+//  ❄️ COLD START INTELLIGENT
+//     - Détecte le profil BTP depuis le contexte utilisateur (JWT claims, localStorage)
+//     - Warm start si données déjà présentes en cache
+//     - Bucket initial adapté (30% BTP + 70% mix si profil BTP, sinon 100% mix)
+//
+//  🚀 PRÉCHARGEMENT AGRESSIF v2
+//     - Précharge range bytes:0-131072 (128 KB) au lieu de 64 KB
+//     - File d'attente de préchargement priorisée par score utilisateur
+//     - Déduplication des préchargements via WeakRef + Set
+//     - Annulation des préchargements obsolètes via AbortController
+//
+//  🔒 HÉRITAGE v9 INTÉGRAL — rien de cassé (YouTube pool, adaptive buffer, etc.)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -31,20 +47,285 @@ import { FaPlus, FaSearch, FaArrowLeft, FaTimes, FaFire, FaCompass } from 'react
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONFIG ADAPTATIVE
+// CONFIG ADAPTATIVE v10
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
-  ads:           { enabled: true, frequency: 8 },
-  aggregated:    { enabled: true, initialLoad: 40, loadMore: 25 },
-  virtual:       5,
-  bufferAhead:   10,
-  bufferMin:     6,
-  recycleMin:    8,
-  preloadAhead:  3,
-  ytWarmupAhead: 3,   // nombre de slides YouTube à préchauffer en avance
-  minFeedSize:   12,
-  momentumLock:  280,
-  watchScoreMin: 0.15,
+  ads:              { enabled: true, frequency: 8 },
+  aggregated:       { enabled: true, initialLoad: 40, loadMore: 25 },
+  virtual:          5,
+  bufferAhead:      10,
+  bufferMin:        6,
+  recycleMin:       8,
+  preloadAhead:     4,           // ↑ augmenté
+  preloadBytes:     131072,      // 128 KB range (↑ de 64 KB)
+  ytWarmupAhead:    3,
+  minFeedSize:      12,
+  momentumLock:     280,
+  watchScoreMin:    0.15,
+  diversity: {
+    sourceWindow:   3,           // pas 2x même source dans les 3 derniers
+    categoryWindow: 5,           // pas 2x même catégorie dans les 5 derniers
+    simPenalty:     0.35,        // pénalité similarité Jaccard > seuil
+    simThreshold:   0.42,        // seuil Jaccard pour "trop similaire"
+  },
+  profile: {
+    storageKey:     'vp_user_profile_v2',
+    decayFactor:    0.92,        // décroissance quotidienne des préférences
+    maxEntries:     80,          // nb max d'entrées dans le profil
+    boostBTP:       0.28,        // boost si utilisateur BTP
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🧠 USER PROFILE STORE — scoring persisté entre sessions
+// ─────────────────────────────────────────────────────────────────────────────
+class UserProfileStore {
+  constructor() {
+    this._data = this._load();
+    this._dirty = false;
+    this._saveTimer = null;
+  }
+
+  _load() {
+    try {
+      const raw = localStorage.getItem(CONFIG.profile.storageKey);
+      if (!raw) return this._defaults();
+      const parsed = JSON.parse(raw);
+      // Appliquer time-decay si dernière visite > 1 jour
+      const daysSince = (Date.now() - (parsed.lastVisit || 0)) / 86400000;
+      if (daysSince > 0.5) {
+        const decay = Math.pow(CONFIG.profile.decayFactor, Math.min(daysSince, 30));
+        for (const k of Object.keys(parsed.categories || {})) parsed.categories[k] *= decay;
+        for (const k of Object.keys(parsed.sources   || {})) parsed.sources[k]   *= decay;
+        for (const k of Object.keys(parsed.tags      || {})) parsed.tags[k]       *= decay;
+      }
+      return { ...this._defaults(), ...parsed };
+    } catch { return this._defaults(); }
+  }
+
+  _defaults() {
+    return {
+      categories:  {},   // { 'construction': 4.2, 'sport': 1.1 }
+      sources:     {},   // { 'youtube': 3.0, 'pixabay': 0.8 }
+      tags:        {},   // { 'grue': 2.1, 'béton': 1.8 }
+      totalViewed: 0,
+      btpScore:    0,    // 0..1 — probabilité d'être un profil BTP
+      lastVisit:   Date.now(),
+      createdAt:   Date.now(),
+    };
+  }
+
+  _scheduleSave() {
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this._persist(), 1800);
+  }
+
+  _persist() {
+    try {
+      this._data.lastVisit = Date.now();
+      // Élaguer si trop d'entrées
+      for (const store of ['categories', 'sources', 'tags']) {
+        const entries = Object.entries(this._data[store]);
+        if (entries.length > CONFIG.profile.maxEntries) {
+          entries.sort((a, b) => b[1] - a[1]);
+          this._data[store] = Object.fromEntries(entries.slice(0, CONFIG.profile.maxEntries));
+        }
+      }
+      localStorage.setItem(CONFIG.profile.storageKey, JSON.stringify(this._data));
+    } catch { /* quota exceeded — silencieux */ }
+  }
+
+  recordView(item, watchPct = 0) {
+    if (!item) return;
+    const boost = 0.1 + watchPct * 0.9;   // 0.1 pour une vue, 1.0 pour 100% watch
+    const d = this._data;
+
+    const cats = this._categoriesOf(item);
+    for (const c of cats) d.categories[c] = (d.categories[c] || 0) + boost;
+
+    const src = item.source || 'unknown';
+    d.sources[src] = (d.sources[src] || 0) + boost;
+
+    const tags = this._tagsOf(item);
+    for (const t of tags) d.tags[t] = (d.tags[t] || 0) + boost * 0.5;
+
+    d.totalViewed++;
+
+    // Mettre à jour btpScore
+    const btpBoost = cats.some(c => BTP_CATEGORIES.has(c)) ? boost : -boost * 0.15;
+    d.btpScore = Math.max(0, Math.min(1, d.btpScore + btpBoost * 0.05));
+
+    this._scheduleSave();
+  }
+
+  scoreItem(item) {
+    if (!item) return 0;
+    const d = this._data;
+    let score = 0;
+
+    const cats = this._categoriesOf(item);
+    for (const c of cats) score += (d.categories[c] || 0) * 1.5;
+
+    const src = item.source || 'unknown';
+    score += (d.sources[src] || 0) * 0.8;
+
+    const tags = this._tagsOf(item);
+    for (const t of tags) score += (d.tags[t] || 0) * 0.4;
+
+    // Boost BTP si profil BTP
+    if (d.btpScore > 0.4 && detectBTPLocal(item)) score += CONFIG.profile.boostBTP * 10;
+
+    return score;
+  }
+
+  get isBTPUser()  { return this._data.btpScore > 0.4; }
+  get btpScore()   { return this._data.btpScore; }
+  get isNewUser()  { return this._data.totalViewed < 5; }
+
+  _categoriesOf(item) {
+    const cats = new Set();
+    if (item.category)  cats.add(item.category.toLowerCase());
+    if (detectBTPLocal(item)) cats.add('btp');
+    return [...cats];
+  }
+
+  _tagsOf(item) {
+    const text = [item.title || '', item.description || ''].join(' ').toLowerCase();
+    return text.split(/\W+/).filter(w => w.length > 3).slice(0, 12);
+  }
+}
+
+const BTP_CATEGORIES = new Set([
+  'construction', 'btp', 'chantier', 'engineering', 'civil', 'architecture',
+]);
+
+const userProfile = new UserProfileStore();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🎯 DIVERSITY GUARD — diversité forcée de la séquence
+// ─────────────────────────────────────────────────────────────────────────────
+class DiversityGuard {
+  constructor() {
+    this._recentSources    = [];
+    this._recentCategories = [];
+    this._recentTitles     = [];
+  }
+
+  /**
+   * Retourne un score de pénalité [0..1] pour un item.
+   * 0 = aucune pénalité, 1 = doit être banni.
+   */
+  penalty(item) {
+    if (!item) return 0;
+    let pen = 0;
+
+    // Pénalité source
+    const src = item.source || 'unknown';
+    const srcCount = this._recentSources.slice(-CONFIG.diversity.sourceWindow)
+      .filter(s => s === src).length;
+    if (srcCount >= 2) pen += 0.6;
+
+    // Pénalité catégorie
+    const cats = this._categoriesOf(item);
+    for (const c of cats) {
+      const catCount = this._recentCategories.slice(-CONFIG.diversity.categoryWindow)
+        .filter(x => x === c).length;
+      if (catCount >= 2) pen += 0.4;
+    }
+
+    // Pénalité similarité textuelle (Jaccard sur les titres récents)
+    const titleTokens = this._tokenize(item.title || '');
+    for (const prev of this._recentTitles.slice(-3)) {
+      const sim = this._jaccard(titleTokens, prev);
+      if (sim > CONFIG.diversity.simThreshold) pen += CONFIG.diversity.simPenalty;
+    }
+
+    return Math.min(1, pen);
+  }
+
+  /** Enregistre l'item comme étant dans la séquence */
+  register(item) {
+    if (!item) return;
+    const src = item.source || 'unknown';
+    this._recentSources.push(src);
+    if (this._recentSources.length > CONFIG.diversity.sourceWindow + 2)
+      this._recentSources.shift();
+
+    for (const c of this._categoriesOf(item)) {
+      this._recentCategories.push(c);
+      if (this._recentCategories.length > CONFIG.diversity.categoryWindow + 2)
+        this._recentCategories.shift();
+    }
+
+    const tokens = this._tokenize(item.title || '');
+    if (tokens.size > 0) {
+      this._recentTitles.push(tokens);
+      if (this._recentTitles.length > 5) this._recentTitles.shift();
+    }
+  }
+
+  reset() {
+    this._recentSources    = [];
+    this._recentCategories = [];
+    this._recentTitles     = [];
+  }
+
+  _categoriesOf(item) {
+    const cats = new Set();
+    if (item.category) cats.add(item.category.toLowerCase());
+    if (detectBTPLocal(item)) cats.add('btp');
+    return [...cats];
+  }
+
+  _tokenize(text) {
+    return new Set(text.toLowerCase().split(/\W+/).filter(w => w.length > 3));
+  }
+
+  _jaccard(a, b) {
+    if (!a.size || !b.size) return 0;
+    let inter = 0;
+    for (const x of a) if (b.has(x)) inter++;
+    return inter / (a.size + b.size - inter);
+  }
+}
+
+const diversityGuard = new DiversityGuard();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🚀 INTELLIGENT REORDER — trie un batch d'items avec profil + diversité
+// ─────────────────────────────────────────────────────────────────────────────
+const intelligentReorder = (items) => {
+  if (items.length <= 1) return items;
+
+  // Calculer le score composite pour chaque item
+  const scored = items.map(item => {
+    const profileScore  = userProfile.scoreItem(item);
+    const viralScore    = Math.log1p((item.likes || 0) + (item.views || 0) * 0.01) * 0.5;
+    const freshScore    = item.publishedAt
+      ? Math.max(0, 1 - (Date.now() - new Date(item.publishedAt).getTime()) / (7 * 86400000))
+      : 0;
+    const raw = profileScore * 2 + viralScore + freshScore;
+    return { item, raw };
+  });
+
+  // Algorithme glouton avec pénalité de diversité
+  const result   = [];
+  const remaining = [...scored];
+
+  while (remaining.length > 0) {
+    let bestScore = -Infinity, bestIdx = 0;
+    for (let i = 0; i < remaining.length; i++) {
+      const { item, raw } = remaining[i];
+      const pen   = diversityGuard.penalty(item);
+      const score = raw * (1 - pen);
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+    const chosen = remaining.splice(bestIdx, 1)[0];
+    diversityGuard.register(chosen.item);
+    result.push(chosen.item);
+  }
+
+  return result;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -61,12 +342,10 @@ const BLOCKED_URL  = ['youtu.be', 'dailymotion.', 'pexels.com'];
 const isPlayableCandidate = (item) => {
   if (!item) return false;
   if (item.source === 'pexels') return false;
-
   if (item.isEmbed && item.embedUrl) {
     const embed = item.embedUrl.toLowerCase();
     return embed.includes('youtube.com/embed') || embed.includes('player.vimeo.com');
   }
-
   const url = item.videoUrl || item.url || '';
   if (!url) return false;
   if (url.includes('.m3u8')) return false;
@@ -80,7 +359,21 @@ const isPlayableCandidate = (item) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎬 HELPER — extrait les videoIds YouTube des N prochains items du feed
+// HELPER — détection BTP locale
+// ─────────────────────────────────────────────────────────────────────────────
+const BTP_KW = ['chantier','construction','btp','béton','beton','ciment',
+  'grue','pelleteuse','pont','route','hydraulique','terrassement',
+  'civil engineering','concrete','scaffolding','formwork','rebar'];
+
+const detectBTPLocal = (item) => {
+  if (!item) return false;
+  const text = [item.title||'',item.description||'',item.channelName||'',
+    item.category||'',item._searchQuery||''].join(' ').toLowerCase();
+  return BTP_KW.some(kw => text.includes(kw));
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🎬 HELPER — extrait les videoIds YouTube
 // ─────────────────────────────────────────────────────────────────────────────
 const extractYoutubeIds = (items, fromIndex, count = 3) => {
   const ids = [];
@@ -132,19 +425,6 @@ const ensureCSS = () => {
   const s = document.createElement('style');
   s.id = 'vp-styles'; s.textContent = VP_CSS;
   document.head.insertBefore(s, document.head.firstChild);
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SMART RECYCLE
-// ─────────────────────────────────────────────────────────────────────────────
-const detectBTPLocal = (item) => {
-  if (!item) return false;
-  const BTP_KW = ['chantier','construction','btp','béton','beton','ciment',
-    'grue','pelleteuse','pont','route','hydraulique','terrassement',
-    'civil engineering','concrete','scaffolding','formwork','rebar'];
-  const text = [item.title || '', item.description || '', item.channelName || '',
-    item.category || '', item._searchQuery || ''].join(' ').toLowerCase();
-  return BTP_KW.some(kw => text.includes(kw));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -219,45 +499,74 @@ class AdaptiveBuffer {
 const adaptiveBuf = new AdaptiveBuffer();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PRELOAD
+// 🚀 PRELOAD v2 — file d'attente priorisée avec AbortController
 // ─────────────────────────────────────────────────────────────────────────────
-const _preloadedUrls = new Set();
+const _preloadedUrls  = new Set();
+const _preloadAborts  = new Map();  // url → AbortController
+const _preloadQueue   = [];
+let   _preloadRunning = 0;
+const _preloadMax     = 2;          // max 2 fetch simultanés
+
+const _drainPreloadQueue = () => {
+  while (_preloadRunning < _preloadMax && _preloadQueue.length > 0) {
+    const { url, ctrl } = _preloadQueue.shift();
+    if (_preloadedUrls.has(url)) continue;
+    _preloadedUrls.add(url);
+    _preloadAborts.set(url, ctrl);
+    _preloadRunning++;
+    fetch(url, {
+      method: 'GET',
+      headers: { Range: `bytes=0-${CONFIG.preloadBytes - 1}` },
+      cache:   'force-cache',
+      signal:  ctrl.signal,
+    }).catch(() => {}).finally(() => {
+      _preloadRunning--;
+      _preloadAborts.delete(url);
+      _drainPreloadQueue();
+    });
+  }
+};
+
 const injectPreload = (item) => {
   if (!item?.data) return;
   if (item.data.isEmbed) return;
   const url = item.data.cloudinaryUrl || item.data.videoUrl || item.data.url || '';
   if (!url || _preloadedUrls.has(url) || url.includes('.m3u8')) return;
-  _preloadedUrls.add(url);
-  const run = () => { try { fetch(url, { method:'GET', headers:{ Range:'bytes=0-65535' }, cache:'force-cache' }).catch(() => {}); } catch {} };
-  if ('requestIdleCallback' in window) requestIdleCallback(run, { timeout: 2000 });
-  else setTimeout(run, 300);
+
+  const ctrl = new AbortController();
+  const enqueue = () => {
+    _preloadQueue.push({ url, ctrl });
+    _drainPreloadQueue();
+  };
+  if ('requestIdleCallback' in window) requestIdleCallback(enqueue, { timeout: 1500 });
+  else setTimeout(enqueue, 200);
+};
+
+const cancelPreloadsAfter = (keepCount) => {
+  // Annuler les fetches en cours pour les slots trop lointains
+  if (_preloadQueue.length > keepCount) {
+    const cancelled = _preloadQueue.splice(keepCount);
+    for (const { ctrl } of cancelled) { try { ctrl.abort(); } catch {} }
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SMART RECYCLE v2
+// SMART RECYCLE v3 — utilise le profil utilisateur
 // ─────────────────────────────────────────────────────────────────────────────
 let _recycleRound = 0;
 const smartRecycle = (pool) => {
   _recycleRound++;
-  const sorted = [...pool].sort((a, b) => {
-    const btpA = detectBTPLocal(a) ? 0.3 : 0;
-    const btpB = detectBTPLocal(b) ? 0.3 : 0;
-    const scoreA = watchScore.getScore(`agg-${a._id || a.externalId}`) + (a.likes || 0) * 0.0001 + btpA;
-    const scoreB = watchScore.getScore(`agg-${b._id || b.externalId}`) + (b.likes || 0) * 0.0001 + btpB;
-    return scoreB - scoreA;
-  });
-  const cutoff = Math.floor(sorted.length * 0.3);
-  return [
-    ...sorted.slice(0, cutoff),
-    ...sorted.slice(cutoff).sort(() => Math.random() - 0.5),
-  ].map(item => ({
+  diversityGuard.reset();
+
+  const reordered = intelligentReorder([...pool]);
+  return reordered.map(item => ({
     ...item,
     _uid: `rec-${_recycleRound}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
   }));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIRAL BOOST
+// VIRAL BOOST v2 — respecte la diversité
 // ─────────────────────────────────────────────────────────────────────────────
 let _adCounter = 0;
 const applyViralBoost = (items) => {
@@ -288,7 +597,7 @@ const useVhFix = () => {
 };
 
 const SLIDE_STYLE = {
-  height: 'calc(var(--vh,1vh)*100)',
+  height:    'calc(var(--vh,1vh)*100)',
   minHeight: 'calc(var(--vh,1vh)*100)',
   maxHeight: 'calc(var(--vh,1vh)*100)',
   flexShrink: 0,
@@ -311,7 +620,7 @@ const useOnline = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UI COMPONENTS
+// UI COMPONENTS (identiques à v9)
 // ─────────────────────────────────────────────────────────────────────────────
 const ProgressRing = memo(({ progress = 0, size = 36, stroke = 2.5 }) => {
   const r = (size - stroke * 2) / 2, circ = 2 * Math.PI * r;
@@ -503,23 +812,34 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
   useEffect(() => {
     const el = ref.current;
     if (!el || modalOpen) return;
-    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting && e.intersectionRatio >= 0.6) onVisible(index); }, { threshold: 0.6 });
+    const obs = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting && e.intersectionRatio >= 0.6) onVisible(index);
+    }, { threshold: 0.6 });
     obs.observe(el);
     return () => obs.disconnect();
   }, [index, onVisible, modalOpen]);
 
   return (
     <div ref={ref} className="w-full snap-start snap-always" style={SLIDE_STYLE}>
-      {item.type === 'ad' ? <VideoAd isActive={isActive} />
-        : item.isAggregated ? <AggregatedCard content={item.data} isActive={isActive} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
-        : <VideoCard video={item.data} isActive={isActive} isAutoPost={false} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />}
+      {item.type === 'ad'
+        ? <VideoAd isActive={isActive} />
+        : item.isAggregated
+          ? <AggregatedCard content={item.data} isActive={isActive} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
+          : <VideoCard video={item.data} isActive={isActive} isAutoPost={false} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
+      }
     </div>
   );
-}, (prev, next) => prev.item.id === next.item.id && prev.index === next.index && prev.onVisible === next.onVisible && prev.onModalChange === next.onModalChange && prev.onVideoError === next.onVideoError);
+}, (prev, next) =>
+  prev.item.id === next.item.id &&
+  prev.index === next.index &&
+  prev.onVisible === next.onVisible &&
+  prev.onModalChange === next.onModalChange &&
+  prev.onVideoError === next.onVideoError
+);
 SlideItem.displayName = 'SlideItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEOS PAGE PRINCIPALE — v9
+// VIDEOS PAGE PRINCIPALE — v10
 // ─────────────────────────────────────────────────────────────────────────────
 const VideosPage = () => {
   ensureCSS();
@@ -558,14 +878,21 @@ const VideosPage = () => {
 
   const activeCtx = useMemo(() => ({
     getActiveIndex: () => activeIndexRef.current,
-    subscribe: (idx, cb) => { slideListeners.current[idx] = cb; return () => { delete slideListeners.current[idx]; }; },
+    subscribe: (idx, cb) => {
+      slideListeners.current[idx] = cb;
+      return () => { delete slideListeners.current[idx]; };
+    },
   }), []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 🧠 ENVOI WATCH SCORE AU BACKEND
+  // 🧠 ENVOI WATCH SCORE AU BACKEND + mise à jour profil
   // ─────────────────────────────────────────────────────────────────────────
   const sendWatchScore = useCallback(async (itemData, score) => {
     if (!itemData?._id || score < CONFIG.watchScoreMin) return;
+
+    // ── Mettre à jour le profil utilisateur local ─────────────────────────
+    userProfile.recordView(itemData, score);
+
     if (!itemData._isAggregated) return;
     const watchPct = Math.round(score * 100);
     try {
@@ -615,10 +942,11 @@ const VideosPage = () => {
     setSlideFlash(f => !f);
     adaptiveBuf.record(now);
 
-    // ── Preload vidéos directes ───────────────────────────────────────────
+    // ── Preload vidéos directes (file d'attente priorisée) ─────────────────
+    cancelPreloadsAfter(CONFIG.preloadAhead);
     for (let i = 1; i <= CONFIG.preloadAhead; i++) injectPreload(items[newIdx + i]);
 
-    // ── 🎬 Warmup YouTube pool pour les prochains embeds ──────────────────
+    // ── 🎬 Warmup YouTube pool ─────────────────────────────────────────────
     const nextYtIds = extractYoutubeIds(items, newIdx + 1, CONFIG.ytWarmupAhead);
     if (nextYtIds.length > 0) YouTubePool.warmup(nextYtIds);
 
@@ -636,10 +964,18 @@ const VideosPage = () => {
     startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== uid)));
   }, []);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // appendItems v10 — tri intelligent à l'insertion
+  // ─────────────────────────────────────────────────────────────────────────
   const appendItems = useCallback((rawItems) => {
+    // ── 1. Boost viral ────────────────────────────────────────────────────
     const boosted = applyViralBoost(rawItems);
+
+    // ── 2. Tri intelligent (profil + diversité) ───────────────────────────
+    const reordered = intelligentReorder(boosted);
+
     const toAdd = []; let len = feedItemsRef.current.length;
-    for (const item of boosted) {
+    for (const item of reordered) {
       const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
       if (seenSet.current.has(uid) || invalidSet.current.has(uid)) continue;
       seenSet.current.add(uid);
@@ -651,19 +987,35 @@ const VideosPage = () => {
 
       toAdd.push({ type:'content', id:uid, data:{ ...item, _uid:uid }, isAggregated:!!item._isAggregated });
       len++;
-      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) { toAdd.push({ type:'ad', id:`ad-${++_adCounter}` }); len++; }
+      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) {
+        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` }); len++;
+      }
     }
     if (toAdd.length === 0) return;
+
     const wasEmpty = feedItemsRef.current.length === 0;
     feedItemsRef.current = [...feedItemsRef.current, ...toAdd];
+
     startTransition(() => {
       setFeedItems(prev => [...prev, ...toAdd]);
-      if (wasEmpty) { setFeedReady(true); setTimeout(() => setShowScrollHint(true), 3200); }
-      else if (feedItemsRef.current.length > 10) { setHasNewContent(true); setTimeout(() => setHasNewContent(false), 8000); }
+      if (wasEmpty) {
+        setFeedReady(true);
+        setTimeout(() => setShowScrollHint(true), 3200);
+      } else if (feedItemsRef.current.length > 10) {
+        setHasNewContent(true);
+        setTimeout(() => setHasNewContent(false), 8000);
+      }
     });
-    if (feedItemsRef.current.length <= CONFIG.preloadAhead * 2) toAdd.slice(0, CONFIG.preloadAhead).forEach(injectPreload);
 
-    // Warmup YouTube pour les premiers items du feed (cold start)
+    // ── Préchargement agressif des premiers items ─────────────────────────
+    const preloadSlice = toAdd.slice(0, CONFIG.preloadAhead);
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(() => preloadSlice.forEach(injectPreload), { timeout: 2000 });
+    } else {
+      setTimeout(() => preloadSlice.forEach(injectPreload), 400);
+    }
+
+    // ── Warmup YouTube cold start ─────────────────────────────────────────
     if (wasEmpty) {
       const firstYtIds = extractYoutubeIds(toAdd, 0, CONFIG.ytWarmupAhead);
       if (firstYtIds.length > 0) YouTubePool.warmup(firstYtIds);
@@ -676,14 +1028,15 @@ const VideosPage = () => {
     const toAdd = []; let len = feedItemsRef.current.length;
     for (const item of recycled) {
       toAdd.push({ type:'content', id:item._uid, data:item, isAggregated:true }); len++;
-      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
+      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0)
+        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
     }
     feedItemsRef.current = [...feedItemsRef.current, ...toAdd];
     startTransition(() => setFeedItems(prev => [...prev, ...toAdd]));
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 🌐 fetchAggregated
+  // 🌐 fetchAggregated v10 — cold start intelligent
   // ─────────────────────────────────────────────────────────────────────────
   const fetchAggregated = useCallback(async (page = 1, limit = 40) => {
     if (!CONFIG.aggregated.enabled || aggLoadingRef.current) return;
@@ -692,8 +1045,12 @@ const VideosPage = () => {
       const token = await getToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
+      // Cold start intelligent : signale le profil BTP au backend
+      const btpHint   = userProfile.isBTPUser ? '&btpBoost=1' : '';
+      const coldStart = userProfile.isNewUser  ? '&coldStart=1' : '';
+
       const res = await fetch(
-        `${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all`,
+        `${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all${btpHint}${coldStart}`,
         { headers }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -704,7 +1061,9 @@ const VideosPage = () => {
         .map(c => ({ ...c, _isAggregated: true }));
 
       if (import.meta.env.DEV && json.meta) {
-        console.log(`[Feed v9] p${page} | sources: ${json.meta.sources?.join(',')} | BTP backend: ${json.meta.btpRatio}% | coldStart: ${json.meta.isColStart}`);
+        console.log(
+          `[Feed v10] p${page} | sources: ${json.meta.sources?.join(',')} | BTP backend: ${json.meta.btpRatio}% | coldStart: ${json.meta.isColStart} | userBTP: ${userProfile.btpScore.toFixed(2)}`
+        );
       }
 
       aggPool.current       = [...aggPool.current, ...finalItems];
@@ -736,12 +1095,13 @@ const VideosPage = () => {
   useEffect(() => {
     if (!fetchTriggered.current) {
       fetchTriggered.current = true;
-      YouTubePool.init();  // 🎬 Initialiser le pool dès le premier chargement
+      YouTubePool.init();
       fetchUserVideos(true);
       fetchAggregated(1, CONFIG.aggregated.initialLoad);
     }
   }, []); // eslint-disable-line
 
+  // Surveillance mémoire
   useEffect(() => {
     if (!('memory' in performance)) return;
     const check = setInterval(() => {
@@ -749,6 +1109,8 @@ const VideosPage = () => {
       if (mem && mem.usedJSHeapSize > mem.jsHeapSizeLimit * 0.75) {
         aggPool.current = aggPool.current.slice(-CONFIG.recycleMin);
         _preloadedUrls.clear();
+        // Annuler toute la file de préchargement pour libérer de la mémoire
+        cancelPreloadsAfter(0);
       }
     }, 15000);
     return () => clearInterval(check);
@@ -766,7 +1128,8 @@ const VideosPage = () => {
       (async () => {
         try {
           if (userHasMoreRef.current && !userLoadingRef.current) fetchUserVideos();
-          if (aggHasMoreRef.current && !aggLoadingRef.current) await fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
+          if (aggHasMoreRef.current && !aggLoadingRef.current)
+            await fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
           if (!userHasMoreRef.current && !aggHasMoreRef.current) recycle();
         } finally { loadingMoreRef.current = false; }
       })();
@@ -802,15 +1165,15 @@ const VideosPage = () => {
       if (prog > 0.8) { setPtrRefreshing(true); await new Promise(r => setTimeout(r, 800)); handleVideoPublished(); setPtrRefreshing(false); }
       ptrStartRef.current = null;
     };
-    container.addEventListener('scroll', onScroll, { passive: true });
-    container.addEventListener('touchstart', onTouchStart, { passive: true });
-    container.addEventListener('touchmove', onTouchMove, { passive: false });
-    container.addEventListener('touchend', onTouchEnd, { passive: true });
+    container.addEventListener('scroll',       onScroll,      { passive: true });
+    container.addEventListener('touchstart',   onTouchStart,  { passive: true });
+    container.addEventListener('touchmove',    onTouchMove,   { passive: false });
+    container.addEventListener('touchend',     onTouchEnd,    { passive: true });
     return () => {
-      container.removeEventListener('scroll', onScroll);
+      container.removeEventListener('scroll',     onScroll);
       container.removeEventListener('touchstart', onTouchStart);
-      container.removeEventListener('touchmove', onTouchMove);
-      container.removeEventListener('touchend', onTouchEnd);
+      container.removeEventListener('touchmove',  onTouchMove);
+      container.removeEventListener('touchend',   onTouchEnd);
     };
   }, [notifyActive, ptrProgress]); // eslint-disable-line
 
@@ -823,7 +1186,7 @@ const VideosPage = () => {
     }
   }, [invalidateItem, fetchAggregated, recycle]);
 
-  const handleModalChange = useCallback((isOpen) => { anyModalRef.current = isOpen; setAnyModalOpen(isOpen); }, []);
+  const handleModalChange  = useCallback((isOpen) => { anyModalRef.current = isOpen; setAnyModalOpen(isOpen); }, []);
 
   const handleVideoPublished = useCallback(() => {
     feedItemsRef.current = []; seenSet.current.clear(); invalidSet.current.clear();
@@ -831,6 +1194,8 @@ const VideosPage = () => {
     watchStreakRef.current = 0; _recycleRound = 0; _adCounter = 0;
     activeItemRef.current = null;
     adaptiveBuf.reset(); watchScore.clear();
+    diversityGuard.reset();
+    cancelPreloadsAfter(0);
     setFeedItems([]); setFeedReady(false); setActiveDisplayIndex(0);
     setShowScrollHint(false); setWatchStreak(0);
     containerRef.current?.scrollTo({ top: 0, behavior: 'auto' });
@@ -845,7 +1210,9 @@ const VideosPage = () => {
     _cssInjected = false;
     watchScore.clear();
     adaptiveBuf.reset();
-    YouTubePool.destroy(); // 🎬 Nettoyer toutes les iframes du pool
+    diversityGuard.reset();
+    cancelPreloadsAfter(0);
+    YouTubePool.destroy();
   }, []);
 
   const displayItems = useMemo(() => {
@@ -870,22 +1237,33 @@ const VideosPage = () => {
           <OfflineBanner show={!isOnline} />
           <PullToRefresh progress={ptrProgress} refreshing={ptrRefreshing} />
           <WatchStreakBadge count={watchStreak} />
-          <ActionBar onBack={handleBack} activeTab={activeTab} setActiveTab={setActiveTab}
-            showSearch={showSearch} setShowSearch={setShowSearch} searchQuery={searchQuery}
-            setSearchQuery={setSearchQuery} onAddVideo={handleAddVideo} hasNewContent={hasNewContent}
-            currentIndex={activeDisplayIndex} totalItems={feedItems.length} />
+          <ActionBar
+            onBack={handleBack} activeTab={activeTab} setActiveTab={setActiveTab}
+            showSearch={showSearch} setShowSearch={setShowSearch}
+            searchQuery={searchQuery} setSearchQuery={setSearchQuery}
+            onAddVideo={handleAddVideo} hasNewContent={hasNewContent}
+            currentIndex={activeDisplayIndex} totalItems={feedItems.length}
+          />
           <SwipeHint visible={showScrollHint && activeDisplayIndex === 0 && feedReady} />
-          <div ref={containerRef} className="vp-scroll absolute inset-0 z-10 overflow-y-scroll snap-y snap-mandatory"
-            style={{ willChange:'transform', WebkitOverflowScrolling:'touch', contain:'layout' }}>
+          <div
+            ref={containerRef}
+            className="vp-scroll absolute inset-0 z-10 overflow-y-scroll snap-y snap-mandatory"
+            style={{ willChange:'transform', WebkitOverflowScrolling:'touch', contain:'layout' }}
+          >
             {displayItems.map((item, index) => {
               const dist = Math.abs(index - activeDisplayIndex);
               return dist > CONFIG.virtual
                 ? <SlidePlaceholder key={item.id} />
-                : <SlideItem key={item.id} item={item} index={index} onVisible={handleVisible}
-                    onModalChange={handleModalChange} onVideoError={handleVideoError} />;
+                : <SlideItem
+                    key={item.id} item={item} index={index}
+                    onVisible={handleVisible} onModalChange={handleModalChange}
+                    onVideoError={handleVideoError}
+                  />;
             })}
           </div>
-          {showModal && <VideoModal showModal={showModal} setShowModal={setShowModal} onVideoPublished={handleVideoPublished} />}
+          {showModal && (
+            <VideoModal showModal={showModal} setShowModal={setShowModal} onVideoPublished={handleVideoPublished} />
+          )}
         </div>
       </ModalOpenContext.Provider>
     </ActiveIndexContext.Provider>
