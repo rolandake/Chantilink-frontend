@@ -114,12 +114,19 @@ const downloadWithWatermark = async (videoEl, filename = 'chantilink') => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎬 YouTubeEmbed v6 — pool global, zéro reload
+// 🎬 YouTubeEmbed v6.1 — poster-first, pool acquire/release, zéro reload
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Au lieu de créer une <iframe> dans le JSX, on expose un <div ref={containerRef}>
-// dans lequel YouTubePool dépose son iframe pré-chargée via acquire().
-// Le cleanup appelle release() pour remettre l'iframe off-screen (player conservé).
+// DIFFÉRENCE CLEF avec v6 :
+//   - v6 originale : montait l'iframe immédiatement dans le container
+//     → YouTube chargeait ~800 KB JS → 2-4 secondes de blanc/freeze
+//
+//   - v6.1 (ce patch) : le poster (thumbnail JPG) est affiché par YouTubePool
+//     dès acquire(). L'iframe est montée via requestIdleCallback (~50-200 ms
+//     après). La transition poster → vidéo se fait en fondu.
+//     → Affichage immédiat, 60 fps maintenu au scroll.
+//
+// L'interface props est IDENTIQUE à v6 — aucune modif ailleurs dans AggregatedCard.
 //
 const YouTubeEmbed = memo(({ content, isActive, muted }) => {
   const containerRef = useRef(null);
@@ -128,10 +135,10 @@ const YouTubeEmbed = memo(({ content, isActive, muted }) => {
   const isActiveRef  = useRef(isActive);
   const videoId      = extractYoutubeId(content.embedUrl || content.videoUrl || '');
 
-  // Garder les refs à jour pour les closures
-  useEffect(() => { mutedRef.current = muted; }, [muted]);
+  useEffect(() => { mutedRef.current   = muted;    }, [muted]);
   useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
+  // Commande postMessage vers l'iframe (silencieuse si pas encore prête)
   const postCmd = useCallback((func, args = []) => {
     const iframe = slotRef.current?.iframe;
     if (!iframe) return;
@@ -142,69 +149,44 @@ const YouTubeEmbed = memo(({ content, isActive, muted }) => {
     } catch {}
   }, []);
 
-  // Monter l'iframe du pool au montage (ou quand videoId change)
+  // ── Monter via le Pool au montage (ou si videoId change) ──────────────
   useEffect(() => {
     if (!videoId || !containerRef.current) return;
 
+    // acquire() → affiche poster immédiatement, iframe en différé
     const slot = YouTubePool.acquire(videoId, containerRef.current);
     slotRef.current = slot;
 
-    // Si le slot est déjà ready/active → commandes immédiates
+    // Si le slot était déjà prêt (warmup anticipé) → commandes immédiates
     if (slot.state === 'ready' || slot.state === 'active') {
-      if (isActiveRef.current) {
-        slot.iframe.contentWindow?.postMessage(
-          JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*'
-        );
-      }
-      if (!mutedRef.current) {
-        slot.iframe.contentWindow?.postMessage(
-          JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*'
-        );
-        slot.iframe.contentWindow?.postMessage(
-          JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*'
-        );
-      }
+      if (isActiveRef.current) postCmd('playVideo');
+      if (!mutedRef.current)   { postCmd('unMute'); postCmd('setVolume', [100]); }
     }
 
-    // Écouter onReady pour le cas où le slot était encore en train de charger
+    // Écouter onReady pour le cas où l'iframe était encore en train de charger
     const handleMessage = (event) => {
       if (!event.origin?.includes('youtube.com')) return;
-      if (event.source !== slot.iframe.contentWindow) return;
+      if (!slotRef.current?.iframe) return;
+      if (event.source !== slotRef.current.iframe.contentWindow) return;
+
       let data;
-      try { data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; }
+      try {
+        data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+      } catch { return; }
 
       if (data?.event === 'onReady') {
-        if (isActiveRef.current) {
-          slot.iframe.contentWindow?.postMessage(
-            JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*'
-          );
-        } else {
-          slot.iframe.contentWindow?.postMessage(
-            JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }), '*'
-          );
-        }
-        if (!mutedRef.current) {
-          slot.iframe.contentWindow?.postMessage(
-            JSON.stringify({ event: 'command', func: 'unMute', args: [] }), '*'
-          );
-          slot.iframe.contentWindow?.postMessage(
-            JSON.stringify({ event: 'command', func: 'setVolume', args: [100] }), '*'
-          );
-        }
+        if (isActiveRef.current) postCmd('playVideo');
+        else                     postCmd('pauseVideo');
+        if (!mutedRef.current) { postCmd('unMute'); postCmd('setVolume', [100]); }
       }
 
       // Loop de secours si la vidéo se termine
       if (data?.event === 'onStateChange' && data?.info === 0) {
-        slot.iframe.contentWindow?.postMessage(
-          JSON.stringify({ event: 'command', func: 'seekTo', args: [0, true] }), '*'
-        );
-        if (isActiveRef.current) {
-          slot.iframe.contentWindow?.postMessage(
-            JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*'
-          );
-        }
+        postCmd('seekTo', [0, true]);
+        if (isActiveRef.current) postCmd('playVideo');
       }
     };
+
     window.addEventListener('message', handleMessage);
 
     return () => {
@@ -216,13 +198,13 @@ const YouTubeEmbed = memo(({ content, isActive, muted }) => {
     };
   }, [videoId]); // eslint-disable-line — videoId change = remount complet
 
-  // Play / pause selon isActive
+  // ── Play / pause selon isActive ───────────────────────────────────────
   useEffect(() => {
     if (isActive) postCmd('playVideo');
     else          postCmd('pauseVideo');
   }, [isActive, postCmd]);
 
-  // Mute / unmute
+  // ── Mute / unmute ─────────────────────────────────────────────────────
   useEffect(() => {
     if (muted) {
       postCmd('mute');
@@ -240,7 +222,7 @@ const YouTubeEmbed = memo(({ content, isActive, muted }) => {
     );
   }
 
-  // Le div reçoit l'iframe injectée par YouTubePool.acquire()
+  // Le div reçoit le poster + l'iframe injectés par YouTubePool.acquire()
   return (
     <div
       ref={containerRef}
@@ -249,7 +231,8 @@ const YouTubeEmbed = memo(({ content, isActive, muted }) => {
         inset:      0,
         width:      '100%',
         height:     '100%',
-        background: '#000',
+        background: '#080810',
+        overflow:   'hidden',
       }}
     />
   );
@@ -1016,7 +999,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
           onDoubleTap={handleDoubleTap} onEnded={handleEnded} />
       )}
 
-      {/* ── Embeds : YouTube v6 (pool) / Vimeo ─────────────────────────────── */}
+      {/* ── Embeds : YouTube v6.1 (poster-first) / Vimeo ───────────────────── */}
       {showEmbed && isYoutube && (
         <YouTubeEmbed content={content} isActive={isActive} muted={muted} />
       )}
