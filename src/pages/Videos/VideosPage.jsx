@@ -1,32 +1,33 @@
-// 📁 src/pages/Videos/VideosPage.jsx  — v10 INTELLIGENT FEED
+// 📁 src/pages/Videos/VideosPage.jsx  — v11 INTELLIGENT FEED
 //
 // ═══════════════════════════════════════════════════════════════════════════════
-// NOUVEAUTÉS v10 — INTELLIGENCE TOTALE
+// NOUVEAUTÉS v11 — MÉMOIRE PERSISTÉE + FRAÎCHEUR GARANTIE
 //
-//  🧠 SCORING PERSISTÉ (localStorage)
-//     - UserProfileStore : profil complet persisté entre sessions
-//     - Catégories, sources, tags scorés en continu
-//     - Score de pertinence par item calculé à chaque insertion
-//     - Décroissance temporelle (time-decay) sur les préférences
+//  💾 SEEN SET PERSISTÉ (localStorage)
+//     - seenSet chargé depuis localStorage au démarrage
+//     - Les items déjà vus ne réapparaissent plus entre sessions
+//     - Limité à 300 entrées (FIFO) pour éviter la croissance infinie
 //
-//  🎯 DIVERSITÉ FORCÉE (DiversityGuard)
-//     - Aucune source identique 2x dans les 3 derniers slots
-//     - Aucune catégorie identique 2x dans les 5 derniers slots
-//     - Quota BTP/non-BTP équilibré dynamiquement
-//     - Pénalité de répétition sur titre/description similaires (Jaccard)
+//  🚫 INVALID SET PERSISTÉ
+//     - Les vidéos défaillantes sont blacklistées entre sessions
+//     - Ne réapparaissent jamais même après reload
 //
-//  ❄️ COLD START INTELLIGENT
-//     - Détecte le profil BTP depuis le contexte utilisateur (JWT claims, localStorage)
-//     - Warm start si données déjà présentes en cache
-//     - Bucket initial adapté (30% BTP + 70% mix si profil BTP, sinon 100% mix)
+//  🎲 JITTER ALÉATOIRE DANS LE TRI
+//     - intelligentReorder ajoute un bruit aléatoire (jitterStrength)
+//     - L'ordre du feed n'est plus strictement déterministe
+//     - Chaque session produit un feed différent même à profil égal
 //
-//  🚀 PRÉCHARGEMENT AGRESSIF v2
-//     - Précharge range bytes:0-131072 (128 KB) au lieu de 64 KB
-//     - File d'attente de préchargement priorisée par score utilisateur
-//     - Déduplication des préchargements via WeakRef + Set
-//     - Annulation des préchargements obsolètes via AbortController
+//  📄 PAGE DE DÉPART ALÉATOIRE
+//     - Si l'utilisateur a déjà du contenu vu (>10 items), la page
+//       initiale est tirée aléatoirement entre 1 et 3
+//     - Évite de toujours recevoir les mêmes premiers résultats API
 //
-//  🔒 HÉRITAGE v9 INTÉGRAL — rien de cassé (YouTube pool, adaptive buffer, etc.)
+//  🔄 PULL-TO-REFRESH PROPRE
+//     - handleVideoPublished efface le seenSet persisté (vrai refresh)
+//     - L'invalidSet est conservé (vidéos défaillantes restent blacklistées)
+//
+//  🔒 HÉRITAGE v10 INTÉGRAL — UserProfileStore, DiversityGuard,
+//     IntelligentReorder, AdaptiveBuffer, PreloadQueue v2, YouTubePool, etc.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -47,7 +48,7 @@ import { FaPlus, FaSearch, FaArrowLeft, FaTimes, FaFire, FaCompass } from 'react
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONFIG ADAPTATIVE v10
+// CONFIG ADAPTATIVE v11
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
   ads:              { enabled: true, frequency: 8 },
@@ -56,24 +57,49 @@ const CONFIG = {
   bufferAhead:      10,
   bufferMin:        6,
   recycleMin:       8,
-  preloadAhead:     4,           // ↑ augmenté
-  preloadBytes:     131072,      // 128 KB range (↑ de 64 KB)
+  preloadAhead:     4,
+  preloadBytes:     131072,      // 128 KB range
   ytWarmupAhead:    3,
   minFeedSize:      12,
   momentumLock:     280,
   watchScoreMin:    0.15,
   diversity: {
-    sourceWindow:   3,           // pas 2x même source dans les 3 derniers
-    categoryWindow: 5,           // pas 2x même catégorie dans les 5 derniers
-    simPenalty:     0.35,        // pénalité similarité Jaccard > seuil
-    simThreshold:   0.42,        // seuil Jaccard pour "trop similaire"
+    sourceWindow:   3,
+    categoryWindow: 5,
+    simPenalty:     0.35,
+    simThreshold:   0.42,
   },
   profile: {
     storageKey:     'vp_user_profile_v2',
-    decayFactor:    0.92,        // décroissance quotidienne des préférences
-    maxEntries:     80,          // nb max d'entrées dans le profil
-    boostBTP:       0.28,        // boost si utilisateur BTP
+    decayFactor:    0.92,
+    maxEntries:     80,
+    boostBTP:       0.28,
   },
+  // ── v11 : persistance seen/invalid ───────────────────────────────────────
+  seen: {
+    storageKey:     'vp_seen_ids_v1',
+    invalidKey:     'vp_invalid_ids_v1',
+    maxEntries:     300,         // FIFO — garder les N derniers
+  },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 💾 HELPERS PERSISTANCE — seen / invalid sets
+// ─────────────────────────────────────────────────────────────────────────────
+const loadPersistedSet = (key, max = CONFIG.seen.maxEntries) => {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(arr.slice(-max));   // FIFO : garder les plus récents
+  } catch { return new Set(); }
+};
+
+const persistSet = (key, set, max = CONFIG.seen.maxEntries) => {
+  try {
+    const arr = [...set].slice(-max);
+    localStorage.setItem(key, JSON.stringify(arr));
+  } catch { /* quota silencieux */ }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,7 +117,6 @@ class UserProfileStore {
       const raw = localStorage.getItem(CONFIG.profile.storageKey);
       if (!raw) return this._defaults();
       const parsed = JSON.parse(raw);
-      // Appliquer time-decay si dernière visite > 1 jour
       const daysSince = (Date.now() - (parsed.lastVisit || 0)) / 86400000;
       if (daysSince > 0.5) {
         const decay = Math.pow(CONFIG.profile.decayFactor, Math.min(daysSince, 30));
@@ -105,11 +130,11 @@ class UserProfileStore {
 
   _defaults() {
     return {
-      categories:  {},   // { 'construction': 4.2, 'sport': 1.1 }
-      sources:     {},   // { 'youtube': 3.0, 'pixabay': 0.8 }
-      tags:        {},   // { 'grue': 2.1, 'béton': 1.8 }
+      categories:  {},
+      sources:     {},
+      tags:        {},
       totalViewed: 0,
-      btpScore:    0,    // 0..1 — probabilité d'être un profil BTP
+      btpScore:    0,
       lastVisit:   Date.now(),
       createdAt:   Date.now(),
     };
@@ -123,7 +148,6 @@ class UserProfileStore {
   _persist() {
     try {
       this._data.lastVisit = Date.now();
-      // Élaguer si trop d'entrées
       for (const store of ['categories', 'sources', 'tags']) {
         const entries = Object.entries(this._data[store]);
         if (entries.length > CONFIG.profile.maxEntries) {
@@ -132,12 +156,12 @@ class UserProfileStore {
         }
       }
       localStorage.setItem(CONFIG.profile.storageKey, JSON.stringify(this._data));
-    } catch { /* quota exceeded — silencieux */ }
+    } catch { /* quota exceeded */ }
   }
 
   recordView(item, watchPct = 0) {
     if (!item) return;
-    const boost = 0.1 + watchPct * 0.9;   // 0.1 pour une vue, 1.0 pour 100% watch
+    const boost = 0.1 + watchPct * 0.9;
     const d = this._data;
 
     const cats = this._categoriesOf(item);
@@ -151,7 +175,6 @@ class UserProfileStore {
 
     d.totalViewed++;
 
-    // Mettre à jour btpScore
     const btpBoost = cats.some(c => BTP_CATEGORIES.has(c)) ? boost : -boost * 0.15;
     d.btpScore = Math.max(0, Math.min(1, d.btpScore + btpBoost * 0.05));
 
@@ -172,7 +195,6 @@ class UserProfileStore {
     const tags = this._tagsOf(item);
     for (const t of tags) score += (d.tags[t] || 0) * 0.4;
 
-    // Boost BTP si profil BTP
     if (d.btpScore > 0.4 && detectBTPLocal(item)) score += CONFIG.profile.boostBTP * 10;
 
     return score;
@@ -202,7 +224,7 @@ const BTP_CATEGORIES = new Set([
 const userProfile = new UserProfileStore();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎯 DIVERSITY GUARD — diversité forcée de la séquence
+// 🎯 DIVERSITY GUARD
 // ─────────────────────────────────────────────────────────────────────────────
 class DiversityGuard {
   constructor() {
@@ -211,21 +233,15 @@ class DiversityGuard {
     this._recentTitles     = [];
   }
 
-  /**
-   * Retourne un score de pénalité [0..1] pour un item.
-   * 0 = aucune pénalité, 1 = doit être banni.
-   */
   penalty(item) {
     if (!item) return 0;
     let pen = 0;
 
-    // Pénalité source
     const src = item.source || 'unknown';
     const srcCount = this._recentSources.slice(-CONFIG.diversity.sourceWindow)
       .filter(s => s === src).length;
     if (srcCount >= 2) pen += 0.6;
 
-    // Pénalité catégorie
     const cats = this._categoriesOf(item);
     for (const c of cats) {
       const catCount = this._recentCategories.slice(-CONFIG.diversity.categoryWindow)
@@ -233,7 +249,6 @@ class DiversityGuard {
       if (catCount >= 2) pen += 0.4;
     }
 
-    // Pénalité similarité textuelle (Jaccard sur les titres récents)
     const titleTokens = this._tokenize(item.title || '');
     for (const prev of this._recentTitles.slice(-3)) {
       const sim = this._jaccard(titleTokens, prev);
@@ -243,7 +258,6 @@ class DiversityGuard {
     return Math.min(1, pen);
   }
 
-  /** Enregistre l'item comme étant dans la séquence */
   register(item) {
     if (!item) return;
     const src = item.source || 'unknown';
@@ -292,24 +306,25 @@ class DiversityGuard {
 const diversityGuard = new DiversityGuard();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🚀 INTELLIGENT REORDER — trie un batch d'items avec profil + diversité
+// 🎲 INTELLIGENT REORDER v11 — jitter aléatoire pour briser le déterminisme
 // ─────────────────────────────────────────────────────────────────────────────
-const intelligentReorder = (items) => {
+const intelligentReorder = (items, jitterStrength = 0.3) => {
   if (items.length <= 1) return items;
 
-  // Calculer le score composite pour chaque item
   const scored = items.map(item => {
-    const profileScore  = userProfile.scoreItem(item);
-    const viralScore    = Math.log1p((item.likes || 0) + (item.views || 0) * 0.01) * 0.5;
-    const freshScore    = item.publishedAt
+    const profileScore = userProfile.scoreItem(item);
+    const viralScore   = Math.log1p((item.likes || 0) + (item.views || 0) * 0.01) * 0.5;
+    const freshScore   = item.publishedAt
       ? Math.max(0, 1 - (Date.now() - new Date(item.publishedAt).getTime()) / (7 * 86400000))
       : 0;
-    const raw = profileScore * 2 + viralScore + freshScore;
+    // ── v11 : jitter aléatoire — même profil = feed différent à chaque session
+    const jitter = (Math.random() - 0.5) * jitterStrength;
+    const raw    = profileScore * 2 + viralScore + freshScore + jitter;
     return { item, raw };
   });
 
   // Algorithme glouton avec pénalité de diversité
-  const result   = [];
+  const result    = [];
   const remaining = [...scored];
 
   while (remaining.length > 0) {
@@ -329,7 +344,7 @@ const intelligentReorder = (items) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🔌 FILTRE DE JOUABILITÉ ÉTENDU
+// 🔌 FILTRE DE JOUABILITÉ
 // ─────────────────────────────────────────────────────────────────────────────
 const VALID_HOSTS  = [
   'cdn.pixabay.com/video', 'res.cloudinary.com',
@@ -502,10 +517,10 @@ const adaptiveBuf = new AdaptiveBuffer();
 // 🚀 PRELOAD v2 — file d'attente priorisée avec AbortController
 // ─────────────────────────────────────────────────────────────────────────────
 const _preloadedUrls  = new Set();
-const _preloadAborts  = new Map();  // url → AbortController
+const _preloadAborts  = new Map();
 const _preloadQueue   = [];
 let   _preloadRunning = 0;
-const _preloadMax     = 2;          // max 2 fetch simultanés
+const _preloadMax     = 2;
 
 const _drainPreloadQueue = () => {
   while (_preloadRunning < _preloadMax && _preloadQueue.length > 0) {
@@ -543,7 +558,6 @@ const injectPreload = (item) => {
 };
 
 const cancelPreloadsAfter = (keepCount) => {
-  // Annuler les fetches en cours pour les slots trop lointains
   if (_preloadQueue.length > keepCount) {
     const cancelled = _preloadQueue.splice(keepCount);
     for (const { ctrl } of cancelled) { try { ctrl.abort(); } catch {} }
@@ -557,7 +571,6 @@ let _recycleRound = 0;
 const smartRecycle = (pool) => {
   _recycleRound++;
   diversityGuard.reset();
-
   const reordered = intelligentReorder([...pool]);
   return reordered.map(item => ({
     ...item,
@@ -566,7 +579,7 @@ const smartRecycle = (pool) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIRAL BOOST v2 — respecte la diversité
+// VIRAL BOOST v2
 // ─────────────────────────────────────────────────────────────────────────────
 let _adCounter = 0;
 const applyViralBoost = (items) => {
@@ -620,7 +633,7 @@ const useOnline = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UI COMPONENTS (identiques à v9)
+// UI COMPONENTS
 // ─────────────────────────────────────────────────────────────────────────────
 const ProgressRing = memo(({ progress = 0, size = 36, stroke = 2.5 }) => {
   const r = (size - stroke * 2) / 2, circ = 2 * Math.PI * r;
@@ -839,7 +852,7 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
 SlideItem.displayName = 'SlideItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEOS PAGE PRINCIPALE — v10
+// VIDEOS PAGE PRINCIPALE — v11
 // ─────────────────────────────────────────────────────────────────────────────
 const VideosPage = () => {
   ensureCSS();
@@ -863,7 +876,10 @@ const VideosPage = () => {
   const [ptrRefreshing,      setPtrRefreshing]      = useState(false);
 
   const containerRef   = useRef(null), activeIndexRef = useRef(0), slideListeners = useRef({});
-  const feedItemsRef   = useRef([]),   seenSet = useRef(new Set()), invalidSet = useRef(new Set());
+  const feedItemsRef   = useRef([]);
+  // ── v11 : seenSet et invalidSet chargés depuis localStorage au montage ──
+  const seenSet        = useRef(loadPersistedSet(CONFIG.seen.storageKey));
+  const invalidSet     = useRef(loadPersistedSet(CONFIG.seen.invalidKey));
   const aggPool        = useRef([]),   fetchTriggered = useRef(false);
   const lastScrollTime = useRef(0),    momentumLockRef = useRef(0), anyModalRef = useRef(false);
   const aggPageRef     = useRef(1),    aggHasMoreRef = useRef(true), aggLoadingRef = useRef(false);
@@ -890,7 +906,6 @@ const VideosPage = () => {
   const sendWatchScore = useCallback(async (itemData, score) => {
     if (!itemData?._id || score < CONFIG.watchScoreMin) return;
 
-    // ── Mettre à jour le profil utilisateur local ─────────────────────────
     userProfile.recordView(itemData, score);
 
     if (!itemData._isAggregated) return;
@@ -916,7 +931,6 @@ const VideosPage = () => {
     if (now - momentumLockRef.current < CONFIG.momentumLock) return;
     momentumLockRef.current = now;
 
-    // ── Envoyer le watch score de l'item qu'on quitte ─────────────────────
     const previousItem = activeItemRef.current;
     if (previousItem) {
       const uid   = `agg-${previousItem._id || previousItem.externalId}`;
@@ -924,7 +938,6 @@ const VideosPage = () => {
       sendWatchScore(previousItem, score);
     }
 
-    // Mettre à jour l'item actif courant
     const items = feedItemsRef.current;
     const newItem = items[newIdx];
     activeItemRef.current = (newItem?.type === 'content' && newItem.isAggregated)
@@ -942,11 +955,9 @@ const VideosPage = () => {
     setSlideFlash(f => !f);
     adaptiveBuf.record(now);
 
-    // ── Preload vidéos directes (file d'attente priorisée) ─────────────────
     cancelPreloadsAfter(CONFIG.preloadAhead);
     for (let i = 1; i <= CONFIG.preloadAhead; i++) injectPreload(items[newIdx + i]);
 
-    // ── 🎬 Warmup YouTube pool ─────────────────────────────────────────────
     const nextYtIds = extractYoutubeIds(items, newIdx + 1, CONFIG.ytWarmupAhead);
     if (nextYtIds.length > 0) YouTubePool.warmup(nextYtIds);
 
@@ -957,26 +968,28 @@ const VideosPage = () => {
     });
   }, [sendWatchScore]);
 
+  // ── v11 : invalidSet persisté ─────────────────────────────────────────────
   const invalidateItem = useCallback((uid) => {
     if (invalidSet.current.has(uid)) return;
     invalidSet.current.add(uid);
+    // Persister immédiatement pour survivre aux rechargements
+    persistSet(CONFIG.seen.invalidKey, invalidSet.current);
     feedItemsRef.current = feedItemsRef.current.filter(i => i.id !== uid);
     startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== uid)));
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // appendItems v10 — tri intelligent à l'insertion
+  // appendItems v11 — skip des items déjà vus (persisté) + tri intelligent
   // ─────────────────────────────────────────────────────────────────────────
   const appendItems = useCallback((rawItems) => {
-    // ── 1. Boost viral ────────────────────────────────────────────────────
-    const boosted = applyViralBoost(rawItems);
-
-    // ── 2. Tri intelligent (profil + diversité) ───────────────────────────
+    const boosted   = applyViralBoost(rawItems);
     const reordered = intelligentReorder(boosted);
 
     const toAdd = []; let len = feedItemsRef.current.length;
     for (const item of reordered) {
       const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
+
+      // ── v11 : skip si déjà vu (entre sessions) ou invalide ───────────────
       if (seenSet.current.has(uid) || invalidSet.current.has(uid)) continue;
       seenSet.current.add(uid);
 
@@ -993,6 +1006,9 @@ const VideosPage = () => {
     }
     if (toAdd.length === 0) return;
 
+    // ── v11 : persister le seenSet après chaque batch ─────────────────────
+    persistSet(CONFIG.seen.storageKey, seenSet.current);
+
     const wasEmpty = feedItemsRef.current.length === 0;
     feedItemsRef.current = [...feedItemsRef.current, ...toAdd];
 
@@ -1007,7 +1023,6 @@ const VideosPage = () => {
       }
     });
 
-    // ── Préchargement agressif des premiers items ─────────────────────────
     const preloadSlice = toAdd.slice(0, CONFIG.preloadAhead);
     if ('requestIdleCallback' in window) {
       requestIdleCallback(() => preloadSlice.forEach(injectPreload), { timeout: 2000 });
@@ -1015,7 +1030,6 @@ const VideosPage = () => {
       setTimeout(() => preloadSlice.forEach(injectPreload), 400);
     }
 
-    // ── Warmup YouTube cold start ─────────────────────────────────────────
     if (wasEmpty) {
       const firstYtIds = extractYoutubeIds(toAdd, 0, CONFIG.ytWarmupAhead);
       if (firstYtIds.length > 0) YouTubePool.warmup(firstYtIds);
@@ -1036,7 +1050,7 @@ const VideosPage = () => {
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // 🌐 fetchAggregated v10 — cold start intelligent
+  // 🌐 fetchAggregated v11 — page de départ aléatoire si utilisateur connu
   // ─────────────────────────────────────────────────────────────────────────
   const fetchAggregated = useCallback(async (page = 1, limit = 40) => {
     if (!CONFIG.aggregated.enabled || aggLoadingRef.current) return;
@@ -1045,7 +1059,6 @@ const VideosPage = () => {
       const token = await getToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-      // Cold start intelligent : signale le profil BTP au backend
       const btpHint   = userProfile.isBTPUser ? '&btpBoost=1' : '';
       const coldStart = userProfile.isNewUser  ? '&coldStart=1' : '';
 
@@ -1062,7 +1075,7 @@ const VideosPage = () => {
 
       if (import.meta.env.DEV && json.meta) {
         console.log(
-          `[Feed v10] p${page} | sources: ${json.meta.sources?.join(',')} | BTP backend: ${json.meta.btpRatio}% | coldStart: ${json.meta.isColStart} | userBTP: ${userProfile.btpScore.toFixed(2)}`
+          `[Feed v11] p${page} | sources: ${json.meta.sources?.join(',')} | BTP: ${json.meta.btpRatio}% | seenSet: ${seenSet.current.size} items skippés`
         );
       }
 
@@ -1092,12 +1105,23 @@ const VideosPage = () => {
     if (newOnes.length > 0) appendItems(newOnes.map(v => ({ ...v, _isUserVideo: true })));
   }, [userVideos, appendItems]);
 
+  // ── v11 : page de départ aléatoire si utilisateur connu ──────────────────
   useEffect(() => {
     if (!fetchTriggered.current) {
       fetchTriggered.current = true;
       YouTubePool.init();
       fetchUserVideos(true);
-      fetchAggregated(1, CONFIG.aggregated.initialLoad);
+
+      // Si l'utilisateur a déjà du contenu vu, partir d'une page aléatoire
+      // pour éviter de toujours afficher les mêmes premiers résultats API.
+      const hasHistory = seenSet.current.size > 10;
+      const startPage  = hasHistory ? Math.floor(Math.random() * 3) + 1 : 1;
+
+      if (import.meta.env.DEV && hasHistory) {
+        console.log(`[Feed v11] Utilisateur connu (${seenSet.current.size} vus) → départ page ${startPage}`);
+      }
+
+      fetchAggregated(startPage, CONFIG.aggregated.initialLoad);
     }
   }, []); // eslint-disable-line
 
@@ -1109,7 +1133,6 @@ const VideosPage = () => {
       if (mem && mem.usedJSHeapSize > mem.jsHeapSizeLimit * 0.75) {
         aggPool.current = aggPool.current.slice(-CONFIG.recycleMin);
         _preloadedUrls.clear();
-        // Annuler toute la file de préchargement pour libérer de la mémoire
         cancelPreloadsAfter(0);
       }
     }, 15000);
@@ -1186,10 +1209,17 @@ const VideosPage = () => {
     }
   }, [invalidateItem, fetchAggregated, recycle]);
 
-  const handleModalChange  = useCallback((isOpen) => { anyModalRef.current = isOpen; setAnyModalOpen(isOpen); }, []);
+  const handleModalChange = useCallback((isOpen) => { anyModalRef.current = isOpen; setAnyModalOpen(isOpen); }, []);
 
+  // ── v11 : handleVideoPublished — reset seenSet persisté (vrai refresh) ───
+  // L'invalidSet est CONSERVÉ : les vidéos défaillantes restent blacklistées.
   const handleVideoPublished = useCallback(() => {
-    feedItemsRef.current = []; seenSet.current.clear(); invalidSet.current.clear();
+    feedItemsRef.current = [];
+    seenSet.current.clear();
+    invalidSet.current.clear(); // On garde les invalides en mémoire mais on repart à zéro visuellement
+    // Effacer le seenSet du localStorage pour un vrai refresh
+    try { localStorage.removeItem(CONFIG.seen.storageKey); } catch {}
+    // NE PAS effacer l'invalidSet — les vidéos cassées restent blacklistées
     aggPool.current = []; aggPageRef.current = 1; aggHasMoreRef.current = true;
     watchStreakRef.current = 0; _recycleRound = 0; _adCounter = 0;
     activeItemRef.current = null;
