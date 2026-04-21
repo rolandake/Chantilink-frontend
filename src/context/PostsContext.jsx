@@ -1,29 +1,15 @@
 // src/context/PostsContext.jsx
-// ✅ OPTIMISÉ LCP
-// ✅ FIX PEXELS v2 : filtre toutes les URLs videos.pexels.com
-// ✅ FIX PIXABAY v3 : filtre toutes les URLs cdn.pixabay.com/video
-// ✅ FIX POSTS PROFIL NON AFFICHÉS
-// 🚀 FIX PUBLICATION LENTE : addPostOptimistic / replaceOptimisticPost / removeOptimisticPost
+// ✅ MIGRATION R2 COMPLÈTE
+// ✅ SUPPRESSION IMG_BASE / CLOUD_NAME / VITE_CLOUDINARY_CLOUD_NAME
+// ✅ SUPPRESSION getVideoPosterUrlFast (Cloudinary-only)
+// ✅ SUPPRESSION getOptimizedImageUrl (transformations Cloudinary)
+// ✅ preloadFirstPostLCP simplifié — URL déjà absolues (R2)
+// ✅ FIX CHARGEMENT INITIAL : sessionLoadDone (vs tokenUsedRef)
+// ✅ FIX PUBLICATION LENTE : addPostOptimistic / replaceOptimisticPost / removeOptimisticPost
 // ✅ FIX TDZ : fetchPosts déclaré AVANT replaceOptimisticPost
 // ✅ FIX HTTP 400 : garde ObjectId sur fetchUserPosts
 // ✅ FIX RE-RENDER / SAUT VIDÉOS : tokenRef stable, replaceOptimisticPost sans fetchPosts
-//
-// ✅ FIX CHARGEMENT INITIAL (ce commit) :
-//
-//   SYMPTÔME : les posts ne s'affichent pas au premier chargement sans refresh manuel.
-//
-//   CAUSE RACINE :
-//     tokenUsedRef comparait les 20 premiers caractères du token.
-//     Si le token JWT était identique entre sessions (long-lived token),
-//     initialLoadDone.current restait true → init() ne se relançait jamais
-//     → fetchPosts n'était jamais appelé → feed vide jusqu'au refresh manuel.
-//
-//   FIX :
-//     On remplace tokenUsedRef par un simple flag de session (sessionLoadDone).
-//     Ce flag est false au montage du composant (nouvelle session React),
-//     donc init() s'exécute TOUJOURS une fois par montage, peu importe le token.
-//     Le guard contre les re-renders dûs au token refresh est conservé via
-//     isLoadingRef (bloque fetchPosts si déjà en cours).
+// ✅ FIX PEXELS v2 / PIXABAY v3 : filtre URLs vidéos bloquées
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -33,9 +19,7 @@ import { useAuth }     from "./AuthContext";
 import { idbGetPosts, idbSetPosts } from "../utils/idbMigration";
 import { syncNewPost, syncDeletePost, syncUpdatePost } from "../utils/cacheSync";
 
-const API_URL    = import.meta.env.VITE_API_URL    || "http://localhost:5000/api";
-const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
-const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 const PostsContext = createContext();
 export const usePosts = () => useContext(PostsContext);
@@ -72,7 +56,8 @@ function filterBlockedPosts(posts) {
 }
 
 // ─────────────────────────────────────────────
-// HELPERS LCP PRELOAD
+// LCP PRELOAD
+// ✅ R2 : les URLs sont déjà absolues, on injecte directement
 // ─────────────────────────────────────────────
 const _preloadInjected = new Set();
 
@@ -88,76 +73,25 @@ function injectPreload(url) {
   document.head.appendChild(link);
 }
 
-function isVideoUrl(url)     { return url && /\.(mp4|webm|mov|avi)$/i.test(url.split("?")[0]); }
-function isPexelsVideo(url)  { return url && url.includes("videos.pexels.com"); }
-function isPixabayVideo(url) { return url && url.includes("cdn.pixabay.com/video"); }
-
-function getVideoPosterUrlFast(videoUrl) {
-  if (!videoUrl) return null;
-  try {
-    if (videoUrl.includes("res.cloudinary.com")) {
-      const uploadIndex = videoUrl.indexOf("/upload/");
-      if (uploadIndex === -1) return null;
-      const afterUpload   = videoUrl.substring(uploadIndex + 8);
-      const segments      = afterUpload.split("/");
-      const publicIdParts = [];
-      for (const seg of segments) {
-        const isTransform = seg.includes(",") || (/^[a-z]+_[a-z]/.test(seg) && !seg.includes("."));
-        if (!isTransform) publicIdParts.push(seg);
-      }
-      const publicId = publicIdParts.join("/").replace(/\.(mp4|webm|mov|avi)$/i, "");
-      if (!publicId) return null;
-      return `${IMG_BASE}q_auto:good,f_jpg,w_1080,c_limit,so_0/${publicId}.jpg`;
-    }
-    if (isPexelsVideo(videoUrl)) {
-      const match = videoUrl.match(/video-files\/(\d+)\//);
-      if (match) return `https://images.pexels.com/videos/${match[1]}/pictures/preview-0.jpg`;
-    }
-    if (isPixabayVideo(videoUrl)) {
-      return videoUrl
-        .replace("_large.mp4",  "_tiny.jpg")
-        .replace("_medium.mp4", "_tiny.jpg")
-        .replace("_small.mp4",  "_tiny.jpg");
-    }
-    return null;
-  } catch { return null; }
-}
-
-function getOptimizedImageUrl(url) {
-  if (!url || url.startsWith("data:")) return url;
-  if (url.startsWith("http") && !url.includes("res.cloudinary.com")) return url;
-  if (url.includes("res.cloudinary.com")) {
-    if (url.includes("q_auto") || url.includes("w_1080")) return url;
-    try {
-      const uploadIndex = url.indexOf("/upload/");
-      if (uploadIndex !== -1) {
-        const afterUpload = url.substring(uploadIndex + 8);
-        const firstPart   = afterUpload.split("/")[0];
-        const publicId    = firstPart.includes(",") || /^[a-z]_/.test(firstPart)
-          ? afterUpload.substring(firstPart.length + 1)
-          : afterUpload;
-        return `${IMG_BASE}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${publicId}`;
-      }
-    } catch { return url; }
-  }
-  const id = url.replace(/^\/+/, "");
-  return `${IMG_BASE}q_auto:good,f_auto,fl_progressive:steep,w_1080,c_limit/${id}`;
-}
-
+// ✅ CORRIGÉ : plus de Cloudinary — on preload l'URL telle quelle (déjà absolue R2)
+// Pour les vidéos, on preload post.thumbnail si disponible (généré côté back-end).
 function preloadFirstPostLCP(posts) {
   if (!posts?.length) return;
   const first = posts[0];
   if (!first) return;
+
+  // Priorité 1 : thumbnail pré-généré (upload back-end ffmpeg → R2)
+  if (first.thumbnail) {
+    injectPreload(first.thumbnail);
+    return;
+  }
+
+  // Priorité 2 : première image/media
   const mediaSrc = first.images?.[0] || first.media?.[0];
   const rawUrl   = typeof mediaSrc === "string" ? mediaSrc : mediaSrc?.url;
-  if (!rawUrl) return;
-  let lcpUrl;
-  if (isVideoUrl(rawUrl) || isPexelsVideo(rawUrl) || isPixabayVideo(rawUrl)) {
-    lcpUrl = first.thumbnail || getVideoPosterUrlFast(rawUrl);
-  } else {
-    lcpUrl = getOptimizedImageUrl(rawUrl);
+  if (rawUrl && rawUrl.startsWith("http")) {
+    injectPreload(rawUrl);
   }
-  if (lcpUrl) injectPreload(lcpUrl);
 }
 
 // ─────────────────────────────────────────────
@@ -184,9 +118,8 @@ export const PostsProvider = ({ children }) => {
   useEffect(() => { userIdRef.current = userId; }, [userId]);
 
   // ✅ FIX CHARGEMENT INITIAL :
-  // sessionLoadDone = false AU MONTAGE (pas un ref initialisé à false une seule fois
-  // pour tout le cycle de vie de l'app — contrairement à initialLoadDone.current).
-  // Garanti false à chaque nouveau montage du Provider → init() s'exécute toujours.
+  // sessionLoadDone = false AU MONTAGE → init() s'exécute toujours une fois par montage,
+  // peu importe que le token JWT soit identique entre sessions (long-lived token).
   const sessionLoadDone = useRef(false);
 
   const waitForToken = useCallback(async (maxWaitMs = 3000) => {
@@ -196,7 +129,7 @@ export const PostsProvider = ({ children }) => {
     return new Promise((resolve) => {
       const check = setInterval(() => {
         elapsed += interval;
-        if (tokenRef.current)    { clearInterval(check); resolve(tokenRef.current); }
+        if (tokenRef.current)      { clearInterval(check); resolve(tokenRef.current); }
         else if (elapsed >= maxWaitMs) { clearInterval(check); resolve(null); }
       }, interval);
     });
@@ -297,8 +230,8 @@ export const PostsProvider = ({ children }) => {
   // ============================================
   // FETCH NEXT PAGE
   // ============================================
-  const pageRef     = useRef(page);
-  const hasMoreRef  = useRef(hasMore);
+  const pageRef    = useRef(page);
+  const hasMoreRef = useRef(hasMore);
   useEffect(() => { pageRef.current    = page;    }, [page]);
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
 
@@ -494,30 +427,16 @@ export const PostsProvider = ({ children }) => {
   }, []);
 
   // ============================================
-  // ✅ FIX CHARGEMENT INITIAL
-  //
-  // AVANT (bugué) :
-  //   tokenUsedRef.current === tokenKey && initialLoadDone.current → return
-  //   Si le token JWT ne change pas entre sessions (long-lived token),
-  //   tokenKey est identique → init() bloqué → feed vide au premier chargement.
-  //
-  // APRÈS (corrigé) :
-  //   sessionLoadDone.current est false à chaque montage du Provider.
-  //   → init() s'exécute TOUJOURS une fois par montage React, peu importe le token.
-  //   → Le guard contre les re-renders dûs au token refresh est assuré par
-  //     isLoadingRef (bloque fetchPosts si déjà en cours) et par le check
-  //     sessionLoadDone qui empêche un double-fetch en mode StrictMode.
+  // INIT — sessionLoadDone garantit l'exécution à chaque montage
   // ============================================
   useEffect(() => {
     if (!token) return;
 
-    // ✅ Guard StrictMode / double-mount : ne lance init() qu'une fois par session
     if (sessionLoadDone.current) return;
     sessionLoadDone.current = true;
 
     const init = async () => {
       try {
-        // 1. Affiche le cache IDB immédiatement (0ms de délai perçu)
         const cached = await idbGetPosts("allPosts");
         if (cached?.length) {
           const cleanCached = filterBlockedPosts(cached);
@@ -526,11 +445,9 @@ export const PostsProvider = ({ children }) => {
           setLoading(false);
           console.log(`⚡ [PostsContext] Cache IDB : ${cleanCached.length} posts`);
         } else {
-          // Pas de cache → affiche le spinner
           setLoading(true);
         }
 
-        // 2. Fetch réseau en parallèle (ou après le cache si offline)
         if (navigator.onLine) {
           await fetchPosts(1, false);
         } else {
@@ -545,9 +462,6 @@ export const PostsProvider = ({ children }) => {
 
     init();
   }, [token, fetchPosts]);
-  // Note : token dans les deps est intentionnel — si l'utilisateur se déconnecte
-  // puis se reconnecte avec un autre compte, sessionLoadDone se remet à false
-  // via le démontage/remontage du Provider (AuthContext efface le user → Provider remonte).
 
   // ============================================
   // CLEANUP

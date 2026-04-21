@@ -1,26 +1,16 @@
 // 📁 src/pages/Home/SuggestedAccounts.jsx
-// ✨ v5 — INTELLIGENCE PREMIUM MONDIALE
+// ✨ v6 — R2 MIGRATION
 //
-//  🧠 Scoring utilisateur multi-critères :
-//     - Score de pertinence (mutuals, followers, activité récente)
-//     - Affinité catégorielle (croise les intérêts LTM avec le profil)
-//     - Pénalité de fatigue (évite de re-proposer les mêmes profils)
-//     - Bonus verified / premium
+// MIGRATION v6 (R2) :
+//   → Suppression de IMG_BASE Cloudinary et de toutes ses transformations
+//   → resolveThumb() simplifié : URL directe R2, chemin relatif préfixé par VITE_R2_PUBLIC_URL
+//   → resolveExpired() / pickBestMedia() : logique inchangée, URLs retournées telles quelles
+//   → SuggestAvatar : URL photo directe, plus de crop/thumb Cloudinary
 //
-//  ⚡ Performance :
-//     - IntersectionObserver lazy-load des cartes (ne charge que ce qui est visible)
-//     - Résolution URL async non-bloquante (même système que Home v14)
-//     - Cache sessionStorage partagé avec Home
-//     - Batching des requêtes posts (une par carte, étalées aléatoirement)
-//     - Abort des requêtes si composant démonté
-//
-//  🎨 UX améliorée :
-//     - Badge follower count formaté
-//     - Indicateur "X amis en commun" avec avatars miniatures
-//     - Animation de dismiss fluide (spring)
-//     - Scroll snap + boutons flèche desktop
-//     - Gradient ring premium
-//     - Skeleton shimmer pendant le chargement
+// v5 (conservé) :
+//   🧠 Scoring multi-critères, pénalité fatigue, bonus verified/premium
+//   ⚡ IntersectionObserver lazy-load, AbortController, cache sessionStorage
+//   🎨 Scroll snap, flèches desktop, dismiss, gradient ring premium
 
 import React, {
   useState, useEffect, useRef, useCallback, useMemo, memo,
@@ -35,17 +25,17 @@ import { useAuth } from "../../context/AuthContext";
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────────────────────────────────────
-const CLOUD_NAME      = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
-const IMG_BASE        = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
+// ✅ v6 : R2_PUBLIC_URL remplace IMG_BASE Cloudinary
+const R2_PUBLIC_URL   = import.meta.env.VITE_R2_PUBLIC_URL || "";
 const URL_CACHE_PFX   = "murl_";
 const URL_CACHE_TTL   = 80 * 60 * 1000;
 const DISMISSED_KEY   = "sug_dismissed_v5";
 const SHOWN_KEY       = "sug_shown_v5";
-const FATIGUE_WINDOW  = 10;  // max profils affichés avant pénalité
+const FATIGUE_WINDOW  = 10;
 const CARD_W          = 178;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// URL HELPERS (partagés avec Home v14)
+// URL HELPERS — v6 R2
 // ─────────────────────────────────────────────────────────────────────────────
 const EXPIRABLE = [
   (u) => u.includes("videos.pexels.com/video-files/"),
@@ -60,7 +50,18 @@ const isDead      = (u) => typeof u === "string" && DEAD.some(p => u.includes(p)
 const isValid     = (u) => { if (!u || typeof u !== "string" || u.length < 10) return false; if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("/")) return true; try { const x = new URL(u); return !!(x.hostname && x.pathname !== "/"); } catch { return false; } };
 const isUsable    = (u) => u && !isExpirable(u) && !isDead(u) && isValid(u);
 const isVideoUrl  = (u) => u && /\.(mp4|webm|mov|avi)$/i.test(u.split("?")[0]);
-const resolveThumb = (u) => { if (!u || typeof u !== "string") return null; if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("http")) return u; return `${IMG_BASE}q_auto,f_auto,w_300,c_fill/${u.replace(/^\/+/, "")}`; };
+
+/**
+ * resolveThumb — v6 R2
+ * Retourne l'URL directement si elle est absolue.
+ * Pour les chemins relatifs (ex: "users/abc.jpg"), préfixe avec R2_PUBLIC_URL.
+ */
+const resolveThumb = (u) => {
+  if (!u || typeof u !== "string") return null;
+  if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("http")) return u;
+  if (R2_PUBLIC_URL) return `${R2_PUBLIC_URL}/${u.replace(/^\/+/, "")}`;
+  return u;
+};
 
 const extractPexelsId = (u) => { const m = (u || "").match(/video-files\/(\d+)\//) || (u || "").match(/^pexels_(\d+)$/); return m?.[1] || null; };
 
@@ -86,27 +87,19 @@ const getFirstMediaUrl = (post) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCORING UTILISATEUR — pertinence multi-critères
+// SCORING UTILISATEUR (inchangé)
 // ─────────────────────────────────────────────────────────────────────────────
 const scoreUser = (u, currentUser, shownIds) => {
   let score = 50;
-
-  // Mutuals — signal social fort
   const mutuals = u.mutualCount || u.mutualFollowers?.length || 0;
   score += Math.min(30, mutuals * 8);
-
-  // Followers (popularité)
   const fl = u.followersCount || u.followers?.length || 0;
   if      (fl > 100_000) score += 20;
   else if (fl > 10_000)  score += 14;
   else if (fl > 1_000)   score += 8;
   else if (fl > 100)     score += 3;
-
-  // Vérifié / Premium
   if (u.isVerified) score += 12;
   if (u.isPremium)  score += 8;
-
-  // Activité récente
   const lastSeen = u.lastActivity || u.updatedAt;
   if (lastSeen) {
     const ageH = (Date.now() - new Date(lastSeen).getTime()) / 3_600_000;
@@ -114,23 +107,15 @@ const scoreUser = (u, currentUser, shownIds) => {
     else if (ageH < 24)  score += 8;
     else if (ageH < 168) score += 3;
   }
-
-  // Bio renseignée → contenu de qualité probable
   if (u.bio && u.bio.length > 20) score += 5;
-
-  // Pénalité de fatigue — si déjà beaucoup montré
   const shown = shownIds.filter(id => id === u._id).length;
   score -= shown * 15;
-
-  // Pénalité si l'user est déjà suivi (ne devrait pas apparaître, double check)
   if (currentUser?.following?.includes(u._id)) score -= 100;
-
   return Math.max(0, Math.min(100, score));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// pickBestMedia — sélection intelligente (vidéo > image > texte)
-// avec résolution async des URLs expirées
+// pickBestMedia — v6 R2 : resolveThumb retourne l'URL directe
 // ─────────────────────────────────────────────────────────────────────────────
 const pickBestMedia = async (posts, signal) => {
   if (!posts?.length) return null;
@@ -141,7 +126,7 @@ const pickBestMedia = async (posts, signal) => {
 
   for (const post of posts.slice(0, 12)) {
     const videoUrl = post.videoUrl || post.embedUrl;
-    if (post.hasAudio === false) continue;  // skip silencieux
+    if (post.hasAudio === false) continue;
 
     if (videoUrl || isVideoUrl(getFirstMediaUrl(post))) {
       const url = videoUrl || getFirstMediaUrl(post);
@@ -157,7 +142,6 @@ const pickBestMedia = async (posts, signal) => {
     const imgUrl = getFirstMediaUrl(post);
     if (imgUrl) {
       if (isUsable(imgUrl)) {
-        // Score image = engagement
         const eng = (post.likesCount || 0) + (post.commentsCount || 0) * 2;
         imageCandidates.push({ url: resolveThumb(imgUrl), isVid: false, text: post.content || post.contenu || "", postId: post._id, eng });
       } else if (isExpirable(imgUrl)) {
@@ -172,7 +156,6 @@ const pickBestMedia = async (posts, signal) => {
     }
   }
 
-  // Priorité vidéo > meilleure image > texte
   if (videoCandidates.length) return videoCandidates[Math.floor(Math.random() * Math.min(videoCandidates.length, 3))];
   if (imageCandidates.length) {
     imageCandidates.sort((a, b) => (b.eng || 0) - (a.eng || 0));
@@ -213,7 +196,7 @@ const SilhouetteFallback = ({ height = 140, rounded = true }) => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AVATAR
+// AVATAR — v6 R2 : URL directe, plus de transformation Cloudinary
 // ─────────────────────────────────────────────────────────────────────────────
 const SuggestAvatar = memo(({ username, photo, size = 36 }) => {
   const [err, setErr] = useState(false);
@@ -228,14 +211,16 @@ const SuggestAvatar = memo(({ username, photo, size = 36 }) => {
     for (let i = 0; i < (username || "").length; i++) h = username.charCodeAt(i) + ((h << 5) - h);
     return c[Math.abs(h) % c.length];
   }, [username]);
-  if (err || !photo)
+  // ✅ v6 : URL directe R2
+  const resolvedPhoto = useMemo(() => resolveThumb(photo), [photo]);
+  if (err || !resolvedPhoto)
     return <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0" style={{ width: size, height: size, backgroundColor: bg, fontSize: size * 0.38 }}>{initials}</div>;
-  return <img src={photo} alt={username} className="rounded-full object-cover flex-shrink-0" style={{ width: size, height: size }} onError={() => setErr(true)} loading="lazy" />;
+  return <img src={resolvedPhoto} alt={username} className="rounded-full object-cover flex-shrink-0" style={{ width: size, height: size }} onError={() => setErr(true)} loading="lazy" />;
 });
 SuggestAvatar.displayName = "SuggestAvatar";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONTENT PREVIEW
+// CONTENT PREVIEW (inchangé)
 // ─────────────────────────────────────────────────────────────────────────────
 const ContentPreview = memo(({ media, isDarkMode, onClick, loading }) => {
   const [imgErr, setImgErr] = useState(false);
@@ -244,7 +229,6 @@ const ContentPreview = memo(({ media, isDarkMode, onClick, loading }) => {
     <div className={`w-full rounded-xl animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} style={{ height: 140 }} />
   );
 
-  // ── FALLBACK silhouette (pas de media) ──
   if (!media || (!media.url && !media.text)) return (
     <div onClick={onClick}>
       <SilhouetteFallback height={140} rounded />
@@ -278,7 +262,7 @@ const ContentPreview = memo(({ media, isDarkMode, onClick, loading }) => {
 ContentPreview.displayName = "ContentPreview";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CARTE UTILISATEUR
+// CARTE UTILISATEUR (inchangé sauf avatar)
 // ─────────────────────────────────────────────────────────────────────────────
 const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevanceScore }) => {
   const navigate = useNavigate();
@@ -292,7 +276,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
   const fetchedRef = useRef(false);
   const abortRef   = useRef(null);
 
-  // Lazy-load via IntersectionObserver — ne charge que quand la carte est visible
   useEffect(() => {
     const el = cardRef.current;
     if (!el || fetchedRef.current) return;
@@ -344,10 +327,8 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
     return user.bio ? user.bio.substring(0, 40) + (user.bio.length > 40 ? "…" : "") : "Suggéré pour toi";
   }, [user]);
 
-  // Barre de pertinence visuelle (score 0-100)
   const relevancePct = Math.round(Math.min(100, Math.max(0, relevanceScore || 50)));
 
-  // ✅ Style du bouton Suivre — fusionné en un seul objet
   const followBtnStyle = useMemo(() => ({
     WebkitTapHighlightColor: "transparent",
     ...(following ? {} : { background: "linear-gradient(135deg,#f97316,#ec4899)" }),
@@ -374,7 +355,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
           }}
           onClick={goProfile}
         >
-          {/* Dismiss */}
           <button onClick={handleDismiss}
             className={`absolute top-2 right-2 z-20 w-5 h-5 rounded-full flex items-center justify-center transition-colors
               ${isDarkMode ? "text-gray-600 hover:text-gray-300 hover:bg-white/10" : "text-gray-400 hover:text-gray-700 hover:bg-gray-100"}`}
@@ -382,10 +362,8 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
             <XMarkIcon className="w-3.5 h-3.5" />
           </button>
 
-          {/* Preview contenu */}
           <ContentPreview media={media} isDarkMode={isDarkMode} onClick={goProfile} loading={!mediaReady} />
 
-          {/* Avatar + info */}
           <div className="flex items-center gap-2 pr-5">
             <div className={`rounded-full flex-shrink-0 ${user.isPremium || user.isVerified ? "p-[2px] bg-gradient-to-tr from-orange-400 via-pink-500 to-purple-500" : ""}`}>
               <div className={`rounded-full ${(user.isPremium || user.isVerified) ? `p-[1.5px] ${isDarkMode ? "bg-gray-900" : "bg-white"}` : ""}`}>
@@ -401,12 +379,10 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
             </div>
           </div>
 
-          {/* Barre de pertinence discrète */}
           <div className={`w-full h-0.5 rounded-full overflow-hidden ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
             <div className="h-full rounded-full" style={{ width: `${relevancePct}%`, background: "linear-gradient(90deg,#f97316,#ec4899)", transition: "width 0.6s ease" }} />
           </div>
 
-          {/* ✅ Bouton suivre — style fusionné, plus de doublon */}
           <button
             onClick={handleFollow}
             onMouseDown={(e) => e.stopPropagation()}
@@ -435,7 +411,7 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
 SuggestedUserCard.displayName = "SuggestedUserCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPOSANT PRINCIPAL
+// COMPOSANT PRINCIPAL (inchangé)
 // ─────────────────────────────────────────────────────────────────────────────
 const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
   const { user: currentUser, updateUserProfile } = useAuth();
@@ -460,13 +436,10 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
         const { data } = await axiosClient.get("/users/suggestions?limit=20");
         const list = Array.isArray(data) ? data : (data?.users || data?.suggestions || []);
         const filtered = list.filter(u => u?._id && u._id !== currentUser._id);
-
-        // Scoring + tri par pertinence
         const scored = filtered.map(u => ({
           ...u,
           _relevanceScore: scoreUser(u, currentUser, shownIds),
         })).sort((a, b) => b._relevanceScore - a._relevanceScore);
-
         setUsers(scored);
       } catch {
         try {
@@ -480,7 +453,6 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
     fetchUsers();
   }, [currentUser]); // eslint-disable-line
 
-  // Enregistre les IDs montrés (pour pénalité fatigue future)
   useEffect(() => {
     if (!users.length) return;
     const ids = users.slice(0, 6).map(u => u._id);
@@ -536,7 +508,6 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
 
   return (
     <div className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
-      {/* Header */}
       <div className="flex items-center gap-3 px-4 pt-5 pb-3">
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
         <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
@@ -545,9 +516,7 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
       </div>
 
-      {/* Scroll container */}
       <div className="relative px-4 pb-5">
-        {/* Flèche gauche (desktop) */}
         <button onClick={() => scrollByDir(-1)}
           className={`hidden sm:flex absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full items-center justify-center shadow-lg border transition-all hover:scale-105 active:scale-95
             ${isDarkMode ? "bg-gray-800 text-white border-gray-700 hover:bg-gray-700" : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"}`}
@@ -557,7 +526,7 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
 
         <div
           ref={scrollRef}
-          className="flex gap-3 overflow-x-auto"
+          className="flex gap-3 overflow-x-auto sug-scroll"
           style={{ scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch", scrollbarWidth: "none", msOverflowStyle: "none", paddingBottom: 2 }}
         >
           <style>{`.sug-scroll::-webkit-scrollbar{display:none}`}</style>
@@ -574,7 +543,6 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
           ))}
         </div>
 
-        {/* Flèche droite (desktop) */}
         <button onClick={() => scrollByDir(1)}
           className={`hidden sm:flex absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full items-center justify-center shadow-lg border transition-all hover:scale-105 active:scale-95
             ${isDarkMode ? "bg-gray-800 text-white border-gray-700 hover:bg-gray-700" : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"}`}

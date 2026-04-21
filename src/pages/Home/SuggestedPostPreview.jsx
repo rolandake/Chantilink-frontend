@@ -1,26 +1,18 @@
 // 📁 src/pages/Home/SuggestedPostPreview.jsx
-// ✨ v5 — INTELLIGENCE PREMIUM MONDIALE
+// ✨ v6 — R2 MIGRATION
 //
-//  🧠 Sélection du post la PLUS PERTINENTE (pas aléatoire) :
-//     - Score composite : engagement rate + récence + qualité rédactionnelle
-//     - Préférence contextuelle selon l'heure (même logique que Home v14)
-//     - Bonus type contenu selon préférence utilisateur (LTM via localStorage)
-//     - Anti-répétition : ne re-propose pas un post déjà vu en session
+// MIGRATION v6 (R2) :
+//   → Suppression de IMG_BASE / VID_BASE Cloudinary
+//   → resolveMediaUrl() simplifié : URL directe R2
+//   → getVideoPoster() : plus de manipulation d'URL Cloudinary
+//     → utilise post.thumbnail si disponible, Pexels/Pixabay sinon, null pour R2
+//   → Avatar : URL photo directe
+//   → Toute la logique de scoring, LazyLoad, MediaBlock conservée
 //
-//  ⚡ Performance :
-//     - IntersectionObserver : le fetch se déclenche seulement à l'entrée écran
-//     - AbortController : annule les requêtes si le composant est démonté
-//     - Autoplay vidéo silencieux déclenché par IntersectionObserver (0.4 seuil)
-//     - Poster vidéo calculé dynamiquement (Cloudinary / Pexels / Pixabay)
-//     - Résolution URL async non-bloquante (système Home v14)
-//
-//  🎨 UX premium :
-//     - MediaBlock pleine largeur avec overlay stats
-//     - Badge "Pertinent pour vous" si score > seuil
-//     - Animation entrée spring naturelle
-//     - Toggle mute/play avec animation
-//     - Barre de score pertinence discrète
-//     - Stat bar likes / commentaires / vues
+// v5 (conservé) :
+//   🧠 Scoring composite récence + engagement + vélocité + contexte temporel
+//   ⚡ IntersectionObserver, AbortController, anti-répétition sessionStorage
+//   🎨 Badge "Pertinent pour vous", stat bar, barre de pertinence
 
 import React, {
   useState, useEffect, useRef, useCallback, useMemo, memo,
@@ -39,50 +31,52 @@ import { useAuth } from "../../context/AuthContext";
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG & CONSTANTS
 // ─────────────────────────────────────────────────────────────────────────────
-const CLOUD_NAME    = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
-const IMG_BASE      = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
-const VID_BASE      = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
+// ✅ v6 : R2_PUBLIC_URL remplace IMG_BASE / VID_BASE Cloudinary
+const R2_PUBLIC_URL = import.meta.env.VITE_R2_PUBLIC_URL || "";
 const URL_CACHE_PFX = "murl_";
 const URL_CACHE_TTL = 80 * 60 * 1000;
-const SEEN_KEY      = "spp_seen_v5";     // posts déjà montrés
-const HIGH_SCORE    = 72;               // seuil badge "Pertinent"
+const SEEN_KEY      = "spp_seen_v5";
+const HIGH_SCORE    = 72;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// URL HELPERS
+// URL HELPERS — v6 R2
 // ─────────────────────────────────────────────────────────────────────────────
 const urlRead  = (k) => { try { const r = sessionStorage.getItem(URL_CACHE_PFX + k); if (!r) return null; const { url, exp } = JSON.parse(r); if (Date.now() > exp) { sessionStorage.removeItem(URL_CACHE_PFX + k); return null; } return url; } catch { return null; } };
 const urlWrite = (k, u) => { try { sessionStorage.setItem(URL_CACHE_PFX + k, JSON.stringify({ url: u, exp: Date.now() + URL_CACHE_TTL })); } catch {} };
 
-const isVideoUrl   = (u) => u && /\.(mp4|webm|mov|avi)$/i.test((u || "").split("?")[0]);
-const isEmbedUrl   = (u) => u && (u.includes("youtube") || u.includes("youtu.be") || u.includes("vimeo"));
-const isCloudinary = (u) => u && u.includes("res.cloudinary.com");
-const EXPIRABLE    = [(u) => u.includes("videos.pexels.com/video-files/"), (u) => /cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\//.test(u)];
-const DEAD         = ["youtube.com/watch", "youtu.be/", "dailymotion.com/video", "tiktok.com/@"];
-const isExpirable  = (u) => typeof u === "string" && EXPIRABLE.some(fn => fn(u));
-const isDead       = (u) => typeof u === "string" && DEAD.some(p => u.includes(p));
+const isVideoUrl    = (u) => u && /\.(mp4|webm|mov|avi)$/i.test((u || "").split("?")[0]);
+const isEmbedUrl    = (u) => u && (u.includes("youtube") || u.includes("youtu.be") || u.includes("vimeo"));
+const EXPIRABLE     = [(u) => u.includes("videos.pexels.com/video-files/"), (u) => /cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\//.test(u)];
+const DEAD          = ["youtube.com/watch", "youtu.be/", "dailymotion.com/video", "tiktok.com/@"];
+const isExpirable   = (u) => typeof u === "string" && EXPIRABLE.some(fn => fn(u));
+const isDead        = (u) => typeof u === "string" && DEAD.some(p => u.includes(p));
 const isStructValid = (u) => { if (!u || typeof u !== "string" || u.length < 10) return false; if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("/")) return true; try { const x = new URL(u); return !!(x.hostname && x.pathname !== "/"); } catch { return false; } };
-const isUsable     = (u) => u && !isExpirable(u) && !isDead(u) && isStructValid(u);
+const isUsable      = (u) => u && !isExpirable(u) && !isDead(u) && isStructValid(u);
 
+/**
+ * resolveMediaUrl — v6 R2
+ * URL complète → retour direct.
+ * Chemin relatif → préfixe R2_PUBLIC_URL.
+ */
 const resolveMediaUrl = (url) => {
   if (!url || typeof url !== "string") return null;
   if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("http")) return url;
-  const id = url.replace(/^\/+/, "");
-  return isVideoUrl(id)
-    ? `${VID_BASE}q_auto:good,f_auto,w_800,c_limit/${id}`
-    : `${IMG_BASE}q_auto,f_auto,w_800,c_limit/${id}`;
+  if (R2_PUBLIC_URL) return `${R2_PUBLIC_URL}/${url.replace(/^\/+/, "")}`;
+  return url;
 };
 
-const getVideoPoster = (videoUrl) => {
+/**
+ * getVideoPoster — v6 R2
+ * R2 ne génère pas de thumbnails auto.
+ * → post.thumbnail en priorité (stocké explicitement par le backend)
+ * → Pexels / Pixabay : logique URL conservée
+ * → Cloudinary legacy : logique conservée pour les anciens posts
+ * → R2 : null (le lecteur vidéo affiche la première frame)
+ */
+const getVideoPoster = (videoUrl, postThumbnail) => {
+  if (postThumbnail && postThumbnail !== videoUrl) return postThumbnail;
   if (!videoUrl) return null;
   try {
-    if (isCloudinary(videoUrl)) {
-      const idx = videoUrl.indexOf("/upload/");
-      if (idx === -1) return null;
-      const after = videoUrl.substring(idx + 8);
-      const segs  = after.split("/").filter(s => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes(".")));
-      const pub   = segs.join("/").replace(/\.(mp4|webm|mov|avi)$/i, "");
-      return pub ? `${IMG_BASE}q_auto:good,f_jpg,w_800,c_limit,so_0/${pub}.jpg` : null;
-    }
     if (videoUrl.includes("videos.pexels.com")) {
       const m = videoUrl.match(/video-files\/(\d+)\//);
       if (m) return `https://images.pexels.com/videos/${m[1]}/pictures/preview-0.jpg`;
@@ -90,7 +84,20 @@ const getVideoPoster = (videoUrl) => {
     if (videoUrl.includes("cdn.pixabay.com")) {
       return videoUrl.replace(/_large\.mp4$/i, "_tiny.jpg").replace(/_medium\.mp4$/i, "_tiny.jpg");
     }
+    // Anciens posts Cloudinary legacy
+    if (videoUrl.includes("res.cloudinary.com")) {
+      const CLOUD_NAME_LEGACY = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "";
+      if (!CLOUD_NAME_LEGACY) return null;
+      const IMG_BASE_LEGACY = `https://res.cloudinary.com/${CLOUD_NAME_LEGACY}/image/upload/`;
+      const idx = videoUrl.indexOf("/upload/");
+      if (idx === -1) return null;
+      const after = videoUrl.substring(idx + 8);
+      const segs  = after.split("/").filter(s => !s.includes(",") && !(/^[a-z]+_[a-z]/.test(s) && !s.includes(".")));
+      const pub   = segs.join("/").replace(/\.(mp4|webm|mov|avi)$/i, "");
+      return pub ? `${IMG_BASE_LEGACY}q_auto:good,f_jpg,w_800,c_limit,so_0/${pub}.jpg` : null;
+    }
   } catch {}
+  // R2 : pas de thumbnail auto
   return null;
 };
 
@@ -110,10 +117,8 @@ const resolveExpired = async (url, externalId, signal) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCORING POST — choisit le post le plus pertinent à montrer
+// SCORING POST (inchangé)
 // ─────────────────────────────────────────────────────────────────────────────
-
-/** Bucket horaire (0=nuit … 5=tard) */
 const getTimeBucket = () => {
   const h = new Date().getHours();
   if (h < 6)  return 0;
@@ -124,7 +129,6 @@ const getTimeBucket = () => {
   return 5;
 };
 
-/** Multiplicateur contexte temporel × type */
 const TIME_MATRIX = {
   0: { video: 0.8,  image: 0.9,  text: 0.7  },
   1: { video: 0.9,  image: 1.0,  text: 1.3  },
@@ -134,7 +138,6 @@ const TIME_MATRIX = {
   5: { video: 1.2,  image: 1.0,  text: 0.8  },
 };
 
-/** Préférences type utilisateur depuis LTM localStorage */
 const getUserTypePref = () => {
   try {
     const raw = localStorage.getItem("feedLTM_fallback");
@@ -144,12 +147,6 @@ const getUserTypePref = () => {
   } catch { return {}; }
 };
 
-const getPostType = (post) => {
-  if (post.videoUrl || isVideoUrl(getFirstUrl(post))) return "video";
-  if (getFirstUrl(post) && !isEmbedUrl(getFirstUrl(post))) return "image";
-  return "text";
-};
-
 const getFirstUrl = (post) => {
   const imgs = post.images || post.media;
   const arr  = Array.isArray(imgs) ? imgs : (imgs ? [imgs] : []);
@@ -157,21 +154,21 @@ const getFirstUrl = (post) => {
   return (typeof raw === "string" ? raw : raw?.url) || post.videoUrl || post.embedUrl || null;
 };
 
+const getPostType = (post) => {
+  if (post.videoUrl || isVideoUrl(getFirstUrl(post))) return "video";
+  if (getFirstUrl(post) && !isEmbedUrl(getFirstUrl(post))) return "image";
+  return "text";
+};
+
 const scorePostForSuggestion = (post, seenIds) => {
   let score = 0;
-
-  // Ne pas re-montrer
   if (seenIds.has(post._id)) return -1;
-
-  // Récence (0-30 pts)
   const ageH = (Date.now() - new Date(post.createdAt || 0).getTime()) / 3_600_000;
   if      (ageH < 1)  score += 30;
   else if (ageH < 6)  score += 22;
   else if (ageH < 24) score += 15;
   else if (ageH < 72) score += 8;
   else                score += 2;
-
-  // Engagement rate (0-30 pts)
   const likes    = post.likesCount    || post.likes?.length    || 0;
   const comments = post.commentsCount || post.comments?.length || 0;
   const shares   = post.sharesCount   || post.shares           || 0;
@@ -179,68 +176,45 @@ const scorePostForSuggestion = (post, seenIds) => {
   const fl       = post.user?.followersCount || 1;
   const engRate  = eng / Math.max(fl, 1);
   score += Math.min(30, engRate * 1000);
-
-  // Vélocité (eng / âge) — 0-20 pts
   const velocity = eng / Math.max(ageH, 0.1);
   score += Math.min(20, Math.log1p(velocity) * 8);
-
-  // Type × contexte temporel (0-15 pts)
-  const bucket = getTimeBucket();
-  const type   = getPostType(post);
+  const bucket  = getTimeBucket();
+  const type    = getPostType(post);
   const timeMul = (TIME_MATRIX[bucket] || TIME_MATRIX[2])[type] || 1.0;
   score += (timeMul - 0.7) / 0.7 * 15;
-
-  // Préférence utilisateur pour ce type
-  const prefs = getUserTypePref();
+  const prefs    = getUserTypePref();
   const typePref = prefs[type] || 0;
   score += typePref * 10;
-
-  // Qualité rédactionnelle légère
   const text = post.content || post.contenu || "";
   if (text.length > 100 && text.length < 1000) score += 8;
   const hasClickbait = /\!\!\!|[A-Z]{5,}|😱{2,}/.test(text);
   if (hasClickbait) score -= 10;
-
-  // Pénalité mocks
   if (post._isMock || post.isMockPost) score -= 15;
-
   return Math.max(0, Math.min(100, score));
 };
 
-/** Choisit le post optimal + résout les URLs */
+/** pickBestPost — v6 R2 : resolveMediaUrl retourne l'URL directe */
 const pickBestPost = async (posts, signal) => {
   if (!posts?.length) return null;
-
-  // Récupère les IDs déjà montrés
   let seenIds = new Set();
   try { seenIds = new Set(JSON.parse(sessionStorage.getItem(SEEN_KEY) || "[]")); } catch {}
-
-  // Score tous les posts
   const scored = posts
     .map(p => ({ post: p, score: scorePostForSuggestion(p, seenIds) }))
     .filter(s => s.score >= 0)
     .sort((a, b) => b.score - a.score);
-
   if (!scored.length) return null;
-
-  // On prend le meilleur
   const best = scored[0];
-
-  // Marque comme vu
   try {
     const prev = JSON.parse(sessionStorage.getItem(SEEN_KEY) || "[]");
     const next = [...prev, best.post._id].slice(-100);
     sessionStorage.setItem(SEEN_KEY, JSON.stringify(next));
   } catch {}
-
   const post  = best.post;
   const score = best.score;
   const type  = getPostType(post);
-
   const imgs   = post.images || post.media;
   const arr    = Array.isArray(imgs) ? imgs : (imgs ? [imgs] : []);
   const rawUrl = arr[0] ? (typeof arr[0] === "string" ? arr[0] : arr[0]?.url) : null;
-
   let videoUrl = null;
   let mediaUrl = null;
   let poster   = null;
@@ -251,10 +225,10 @@ const pickBestPost = async (posts, signal) => {
     if (raw) {
       if (isUsable(raw)) {
         videoUrl = resolveMediaUrl(raw);
-        poster   = post.thumbnail || getVideoPoster(videoUrl);
+        poster   = getVideoPoster(videoUrl, post.thumbnail);
       } else if (isExpirable(raw)) {
         const fresh = await resolveExpired(raw, post.externalId, signal);
-        if (fresh) { videoUrl = resolveMediaUrl(fresh); poster = post.thumbnail || getVideoPoster(videoUrl); }
+        if (fresh) { videoUrl = resolveMediaUrl(fresh); poster = getVideoPoster(videoUrl, post.thumbnail); }
       }
     }
   } else if (type === "image") {
@@ -318,7 +292,7 @@ const SilhouetteFallback = ({ height = 220 }) => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AVATAR
+// AVATAR — v6 R2 : URL directe
 // ─────────────────────────────────────────────────────────────────────────────
 const Avatar = memo(({ username, photo, size = 44 }) => {
   const [err, setErr] = useState(false);
@@ -333,14 +307,16 @@ const Avatar = memo(({ username, photo, size = 44 }) => {
     for (let i = 0; i < (username || "").length; i++) h = username.charCodeAt(i) + ((h << 5) - h);
     return c[Math.abs(h) % c.length];
   }, [username]);
-  if (err || !photo)
+  // ✅ v6 : URL directe R2
+  const resolvedPhoto = useMemo(() => resolveMediaUrl(photo), [photo]);
+  if (err || !resolvedPhoto)
     return <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0" style={{ width: size, height: size, backgroundColor: bg, fontSize: size * 0.38 }}>{initials}</div>;
-  return <img src={photo} alt={username} className="rounded-full object-cover flex-shrink-0" style={{ width: size, height: size }} onError={() => setErr(true)} loading="lazy" />;
+  return <img src={resolvedPhoto} alt={username} className="rounded-full object-cover flex-shrink-0" style={{ width: size, height: size }} onError={() => setErr(true)} loading="lazy" />;
 });
 Avatar.displayName = "Avatar";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STAT BAR
+// STAT BAR (inchangé)
 // ─────────────────────────────────────────────────────────────────────────────
 const StatBar = memo(({ likes, comments, views, isDarkMode }) => (
   <div className={`flex items-center gap-4 px-4 py-2.5 border-t text-[12px] ${isDarkMode ? "border-gray-800 text-gray-500" : "border-gray-100 text-gray-400"}`}>
@@ -364,7 +340,7 @@ const StatBar = memo(({ likes, comments, views, isDarkMode }) => (
 StatBar.displayName = "StatBar";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MEDIA BLOCK
+// MEDIA BLOCK — v6 R2 : poster via getVideoPoster()
 // ─────────────────────────────────────────────────────────────────────────────
 const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
   const videoRef  = useRef(null);
@@ -373,7 +349,6 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
   const [imgErr,  setImgErr]  = useState(false);
   const [hovered, setHovered] = useState(false);
 
-  // Autoplay au scroll (IntersectionObserver)
   useEffect(() => {
     if (post?.type !== "video" || !videoRef.current) return;
     const vid = videoRef.current;
@@ -403,10 +378,8 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
     else            { vid.pause(); setPlaying(false); }
   }, []);
 
-  // ── FALLBACK : pas de post ──
   if (!post) return <SilhouetteFallback height={220} />;
 
-  // ── VIDÉO ──
   if (post.type === "video" && post.videoUrl) return (
     <div
       className="relative w-full bg-black"
@@ -426,7 +399,6 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
       />
       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent pointer-events-none" />
 
-      {/* Play/Pause overlay */}
       <AnimatePresence>
         {(hovered || !playing) && (
           <motion.div
@@ -446,7 +418,6 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
         )}
       </AnimatePresence>
 
-      {/* Mute */}
       <button
         onClick={toggleMute}
         className="absolute bottom-3 right-3 z-10 w-8 h-8 rounded-full bg-black/60 backdrop-blur-sm flex items-center justify-center text-white border border-white/20 hover:bg-black/80 transition-colors"
@@ -455,7 +426,6 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
         {muted ? <SpeakerXMarkIcon className="w-4 h-4" /> : <SpeakerWaveIcon className="w-4 h-4" />}
       </button>
 
-      {/* Stats overlay bas-gauche */}
       {(post.likes > 0 || post.comments > 0) && (
         <div className="absolute bottom-3 left-3 flex items-center gap-3 pointer-events-none">
           {post.likes    > 0 && <span className="text-white text-xs font-bold drop-shadow">❤️ {fmtNum(post.likes)}</span>}
@@ -465,7 +435,6 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
     </div>
   );
 
-  // ── IMAGE ──
   if (post.type === "image" && post.mediaUrl && !imgErr) return (
     <div className="relative w-full" style={{ aspectRatio: "4/3", cursor: "pointer" }} onClick={onNavigate}>
       <img src={post.mediaUrl} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setImgErr(true)} />
@@ -479,7 +448,6 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
     </div>
   );
 
-  // ── TEXTE ──
   return (
     <div
       className="relative w-full flex items-center justify-center p-8 cursor-pointer"
@@ -491,7 +459,6 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
       }}
       onClick={onNavigate}
     >
-      {/* Décoration */}
       <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ background: "radial-gradient(circle at 30% 50%,#f97316 0%,transparent 60%), radial-gradient(circle at 70% 50%,#ec4899 0%,transparent 60%)" }} />
       <p className={`relative text-[15px] leading-relaxed text-center line-clamp-5 font-medium ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
         {post.text || "Voir ce profil"}
@@ -508,7 +475,7 @@ const MediaBlock = memo(({ post, isDarkMode, onNavigate }) => {
 MediaBlock.displayName = "MediaBlock";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPOSANT PRINCIPAL
+// COMPOSANT PRINCIPAL (inchangé sauf pickBestPost)
 // ─────────────────────────────────────────────────────────────────────────────
 const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 }) => {
   const navigate = useNavigate();
@@ -525,7 +492,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
   const fetchedRef   = useRef(false);
   const abortRef     = useRef(null);
 
-  // Lazy-load déclenché par IntersectionObserver
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !userPool.length) return;
@@ -573,7 +539,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
   const goProfile  = useCallback(() => { if (user?._id) navigate(`/profile/${user._id}`); }, [navigate, user]);
   const handleHide = useCallback((e) => { e.stopPropagation(); setHidden(true); }, []);
 
-  // ── Skeleton ──
   if (!ready) return (
     <div ref={containerRef} className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
       <div className="flex items-center gap-3 px-4 pt-5 pb-3">
@@ -601,7 +566,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
           transition={{ type: "spring", damping: 28, stiffness: 260 }}
           className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}
         >
-          {/* Header séparateur */}
           <div className="flex items-center gap-3 px-4 pt-5 pb-3">
             <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
             <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
@@ -610,7 +574,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
             <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
           </div>
 
-          {/* Carte principale */}
           <div className="px-4 pb-5">
             <div
               className={`relative w-full rounded-2xl overflow-hidden
@@ -620,7 +583,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
                 }`}
               style={{ boxShadow: isDarkMode ? "0 4px 32px rgba(0,0,0,0.6)" : "0 4px 24px rgba(0,0,0,0.09)" }}
             >
-              {/* Badge "Pertinent pour vous" */}
               {post?.isHighRelevance && (
                 <motion.div
                   initial={{ opacity: 0, y: -8 }}
@@ -632,7 +594,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
                 </motion.div>
               )}
 
-              {/* Bouton masquer */}
               <button
                 onClick={handleHide}
                 className="absolute top-3 right-3 z-20 w-7 h-7 rounded-full flex items-center justify-center bg-black/50 backdrop-blur-sm text-white hover:bg-black/70 transition-colors"
@@ -641,17 +602,14 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
                 <XMarkIcon className="w-4 h-4" />
               </button>
 
-              {/* Media */}
               <div onClick={goProfile} style={{ cursor: "pointer" }}>
                 <MediaBlock post={post} isDarkMode={isDarkMode} onNavigate={goProfile} />
               </div>
 
-              {/* Stats bar */}
               {post && (post.likes > 0 || post.comments > 0 || post.views > 0) && (
                 <StatBar likes={post.likes} comments={post.comments} views={post.views} isDarkMode={isDarkMode} />
               )}
 
-              {/* Infos profil */}
               <div className="p-4 flex items-center gap-3" onClick={goProfile} style={{ cursor: "pointer" }}>
                 <div className={`rounded-full flex-shrink-0 ${user.isPremium || user.isVerified ? "p-[2.5px] bg-gradient-to-tr from-orange-400 via-pink-500 to-purple-500" : ""}`}>
                   <div className={`rounded-full ${(user.isPremium || user.isVerified) ? `p-[2px] ${isDarkMode ? "bg-gray-900" : "bg-white"}` : ""}`}>
@@ -666,7 +624,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
                   <p className={`text-[12px] mt-0.5 truncate ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
                     {user.bio ? `${user.bio.substring(0, 55)}${user.bio.length > 55 ? "…" : ""}` : "Suggéré pour toi"}
                   </p>
-                  {/* Barre de pertinence */}
                   {relevancePct > 0 && (
                     <div className={`mt-1.5 w-full h-0.5 rounded-full overflow-hidden ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
                       <motion.div
@@ -680,7 +637,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
                   )}
                 </div>
 
-                {/* Bouton Suivre */}
                 <button
                   onClick={handleFollow}
                   disabled={loadFollow}
@@ -702,7 +658,6 @@ const SuggestedPostPreview = memo(({ isDarkMode, userPool = [], slotIndex = 0 })
                 </button>
               </div>
 
-              {/* CTA voir profil */}
               <div className="px-4 pb-4">
                 <button
                   onClick={goProfile}

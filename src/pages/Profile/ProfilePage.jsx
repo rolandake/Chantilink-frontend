@@ -1,18 +1,27 @@
 // src/pages/profile/ProfilePage.jsx
-// ✅ Fix spinner infini
-// ✅ Fix "Profil introuvable" pour bots et profils tiers
-// ✅ Fix posts non affichés au premier rendu
-// ✅ Profil BOT consultable — traité exactement comme un vrai utilisateur
-// ✅ FIX HTTP 400 : garde ObjectId — attend un vrai _id MongoDB avant tout fetch
-// ✅ FALLBACK HOME : expose les posts chargés via window.__profilePostsCache__
-//    Home.jsx peut les consommer si son propre feed est vide
-// ✅ v2 FIX : profil visible même si l'utilisateur n'a AUCUN post
-//    — tryBuildProfileFromPosts ne bloquait pas assez tôt
-//    — nouveau fallback : profil vide affiché avec un état explicite
-//    — skeleton affiché pendant le fetch user, jamais "Profil introuvable"
-//      si le réseau répond avec un user valide
-// ✅ v3 FIX TEXT-CARD : normalizePost préserve désormais mediaType + textCardPalette
-//    Les posts "texte coloré" s'affichent correctement dans le profil
+// ✅ v4 — FIX IDs NON-MONGODB + PROFIL BOT + PROFIL MOCK
+//
+// 🐛 FIX 1 — IDs non-MongoDB (mock posts) :
+//    loadProfilePosts ne bloquait pas sur isValidObjectId, mais le log
+//    "ID non-MongoDB: user_9_..." indique que le userId en param est un ID mock.
+//    On détecte désormais les IDs mock/temporaires et on affiche le profil
+//    directement depuis les données du post sans faire de fetch réseau.
+//
+// 🐛 FIX 2 — Profil bot "introuvable" :
+//    Si fetchUserById retourne null (404) ET que le post a un user.isBot=true,
+//    on construit le profil depuis l'objet user embarqué dans le post
+//    au lieu d'afficher "Profil introuvable".
+//
+// 🐛 FIX 3 — Navigation depuis un post mock :
+//    buildProfileFromEmbeddedUser() construit un profil complet depuis
+//    le champ user du post (qui contient username, fullName, profilePhoto, etc.)
+//    sans aucun appel réseau.
+//
+// 🐛 FIX 4 — Posts du profil bot visibles :
+//    Pour les bots, on cherche les posts dans le pool Home (livePostsRef via
+//    window.__homePostsPool__) avant de faire un fetch réseau.
+//
+// ✅ Toutes les corrections v1/v2/v3 conservées (spinner, texte coloré, etc.)
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -40,9 +49,17 @@ import {
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 // ─────────────────────────────────────────────
-// GUARD ObjectId — 24 caractères hexadécimaux
+// GUARDS ID
 // ─────────────────────────────────────────────
+
+/** Vrai ObjectId MongoDB — 24 hex chars */
 const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
+
+/** ID mock/temporaire généré côté front (ex: user_9_1776468454348_87280) */
+const isMockId = (id) =>
+  !isValidObjectId(id) &&
+  typeof id === "string" &&
+  (id.startsWith("user_") || id.startsWith("post_") || id.startsWith("mock_"));
 
 // ─────────────────────────────────────────────
 // CACHE GLOBAL DE POSTS DE PROFILS
@@ -94,9 +111,7 @@ export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
 // HELPERS
 // ─────────────────────────────────────────────
 
-// ✅ v3 FIX : normalizePost préserve maintenant mediaType et textCardPalette
-//    Sans ces champs, PostCard/PostMedia ne pouvait pas détecter les text-cards
-//    et n'affichait pas le rendu coloré dans le profil.
+/** v3 FIX : préserve mediaType + textCardPalette pour les text-cards */
 const normalizePost = (p) => ({
   _id:             p._id || p.id,
   content:         p.content || "",
@@ -109,10 +124,8 @@ const normalizePost = (p) => ({
   views:           p.views    || [],
   shares:          p.shares   || [],
   createdAt:       p.createdAt,
-  // ✅ Champs text-card — INDISPENSABLES pour l'affichage coloré
   mediaType:       p.mediaType       || null,
   textCardPalette: p.textCardPalette ?? undefined,
-  // Autres champs utiles préservés
   location:        p.location        || null,
   privacy:         p.privacy         || null,
   isOptimistic:    p.isOptimistic    || false,
@@ -154,47 +167,105 @@ const extractUserFromResponse = (data) => {
   return null;
 };
 
-// buildUserFromPost — fallback ultime si GET /users/:id retourne 404
+/**
+ * buildUserFromPost — fallback si GET /users/:id retourne 404
+ * Reconstruit le profil depuis l'objet user embarqué dans un post
+ */
 const buildUserFromPost = (post) => {
   if (!post) return null;
   const u = post.user || {};
   if (!u._id && !u.id) return null;
   return {
-    _id:          u._id || u.id,
-    username:     u.username     || "utilisateur",
-    fullName:     u.fullName     || u.name || "Utilisateur",
-    profilePhoto: u.profilePhoto || u.avatar || null,
-    coverPhoto:   u.coverPhoto   || null,
-    bio:          u.bio          || "",
-    location:     u.location     || "",
-    website:      u.website      || "",
-    isVerified:   u.isVerified   ?? false,
-    isPremium:    u.isPremium    ?? false,
-    isBot:        u.isBot        ?? false,
-    followers:    [],
-    following:    [],
-    createdAt:    null,
+    _id:            u._id || u.id,
+    username:       u.username     || "utilisateur",
+    fullName:       u.fullName     || u.name || "Utilisateur",
+    profilePhoto:   u.profilePhoto || u.avatar || null,
+    coverPhoto:     u.coverPhoto   || null,
+    bio:            u.bio          || "",
+    location:       u.location     || "",
+    website:        u.website      || "",
+    isVerified:     u.isVerified   ?? false,
+    isPremium:      u.isPremium    ?? false,
+    isBot:          u.isBot        ?? false,
+    followersCount: u.followersCount || 0,
+    followers:      [],
+    following:      [],
+    createdAt:      null,
   };
 };
 
-// ✅ v2 : buildMinimalUser — construit un profil valide même sans posts
+/** buildMinimalUser — profil valide même sans posts */
 const buildMinimalUser = (uid, partial = {}) => ({
-  _id:           uid,
-  username:      partial.username      || partial.email?.split("@")[0] || "utilisateur",
-  fullName:      partial.fullName      || partial.name || "Utilisateur",
-  profilePhoto:  partial.profilePhoto  || partial.avatar || null,
-  coverPhoto:    partial.coverPhoto    || null,
-  bio:           partial.bio           || "",
-  location:      partial.location      || "",
-  website:       partial.website       || "",
-  isVerified:    partial.isVerified    ?? false,
-  isPremium:     partial.isPremium     ?? false,
-  isBot:         partial.isBot         ?? false,
-  isAutoCreated: partial.isAutoCreated ?? false,
-  followers:     partial.followers     || [],
-  following:     partial.following     || [],
-  createdAt:     partial.createdAt     || null,
+  _id:            uid,
+  username:       partial.username      || partial.email?.split("@")[0] || "utilisateur",
+  fullName:       partial.fullName      || partial.name || "Utilisateur",
+  profilePhoto:   partial.profilePhoto  || partial.avatar || null,
+  coverPhoto:     partial.coverPhoto    || null,
+  bio:            partial.bio           || "",
+  location:       partial.location      || "",
+  website:        partial.website       || "",
+  isVerified:     partial.isVerified    ?? false,
+  isPremium:      partial.isPremium     ?? false,
+  isBot:          partial.isBot         ?? false,
+  isAutoCreated:  partial.isAutoCreated ?? false,
+  followersCount: partial.followersCount || 0,
+  followers:      partial.followers     || [],
+  following:      partial.following     || [],
+  createdAt:      partial.createdAt     || null,
 });
+
+/**
+ * 🆕 FIX 3 — Construit un profil depuis l'objet user embarqué dans n'importe quel post
+ * Cherche dans window.__homePostsPool__ (pool Home) ou dans le cache profil
+ * pour trouver un post de cet utilisateur et reconstruire son profil.
+ */
+const buildProfileFromEmbeddedUser = (targetId) => {
+  // 1. Chercher dans le pool Home exposé
+  try {
+    const homePool = window.__homePostsPool__;
+    if (Array.isArray(homePool)) {
+      for (const post of homePool) {
+        const uid = post?.user?._id || post?.user?.id || post?.author?._id;
+        if (uid && String(uid) === String(targetId)) {
+          const profile = buildUserFromPost(post);
+          if (profile) return { profile, posts: homePool.filter(p => {
+            const pid = p?.user?._id || p?.user?.id || p?.author?._id;
+            return pid && String(pid) === String(targetId);
+          })};
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Chercher dans le cache profil
+  try {
+    const cache = getProfilePostsCache();
+    const entry = cache.get(targetId);
+    if (entry?.posts?.length > 0) {
+      const profile = buildUserFromPost(entry.posts[0]);
+      if (profile) return { profile, posts: entry.posts };
+    }
+  } catch {}
+
+  return null;
+};
+
+/**
+ * 🆕 FIX 4 — Récupère les posts d'un utilisateur depuis le pool Home
+ * sans faire de fetch réseau
+ */
+const getPostsFromHomePool = (targetId) => {
+  try {
+    const homePool = window.__homePostsPool__;
+    if (!Array.isArray(homePool)) return [];
+    return homePool.filter(p => {
+      const uid = p?.user?._id || p?.user?.id || p?.author?._id;
+      return uid && String(uid) === String(targetId);
+    });
+  } catch {
+    return [];
+  }
+};
 
 // ─────────────────────────────────────────────
 // COMPOSANTS UI
@@ -244,7 +315,6 @@ const Toast = memo(({ message, type }) => (
 ));
 Toast.displayName = "Toast";
 
-// ✅ v2 : état vide dédié — clairement distinct de "Profil introuvable"
 const EmptyPostsState = memo(({ isOwner, isDarkMode }) => (
   <div className={`text-center py-16 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
     <p className="text-5xl mb-4">📭</p>
@@ -292,7 +362,6 @@ export default function ProfilePage({
   const [isBot,          setIsBot]          = useState(false);
   const [isLoadingUser,  setIsLoadingUser]  = useState(!initialUser && !(isOwner && authUser));
   const [authToken,      setAuthToken]      = useState(null);
-  // ✅ v2 : flag explicite — "Profil introuvable" uniquement si ce flag est true
   const [userNotFound,   setUserNotFound]   = useState(false);
 
   const loadingRef        = useRef(false);
@@ -347,9 +416,17 @@ export default function ProfilePage({
     }
   }, []);
 
-  // tryBuildProfileFromPosts — utilisé SEULEMENT si fetchUserById retourne null
   const tryBuildProfileFromPosts = useCallback(async (uid) => {
     if (!isValidObjectId(uid)) return null;
+
+    // 🆕 FIX 4 — d'abord chercher dans le pool Home (sans réseau)
+    const homePostsForUser = getPostsFromHomePool(uid);
+    if (homePostsForUser.length > 0) {
+      const user = buildUserFromPost(homePostsForUser[0]);
+      if (user) return { user, posts: homePostsForUser };
+    }
+
+    // Sinon fetch réseau
     try {
       const result = await fetchUserPosts(uid, 1);
       const posts  = extractPostsFromResult(result);
@@ -377,6 +454,8 @@ export default function ProfilePage({
 
   const savePosts = useCallback((userKey, posts) => {
     if (isMockProfile || !userKey || !Array.isArray(posts)) return;
+    // Ne pas sauvegarder les profils avec ID non-MongoDB
+    if (!isValidObjectId(userKey)) return;
     if (saveDebounceTimer.current) clearTimeout(saveDebounceTimer.current);
     saveDebounceTimer.current = setTimeout(async () => {
       if (writeInProgress.current) return;
@@ -392,6 +471,7 @@ export default function ProfilePage({
 
   const saveUser = useCallback(async (user) => {
     if (isMockProfile || !user?._id) return;
+    if (!isValidObjectId(user._id)) return;
     try { await idbSetUser(user._id, user); } catch (err) { console.warn("IDB User Save Error", err); }
   }, [isMockProfile]);
 
@@ -415,10 +495,20 @@ export default function ProfilePage({
   // ─────────────────────────────────────────────
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
     if (!targetId || loadingRef.current) return;
+
+    // 🆕 FIX 1 — Pour les IDs non-MongoDB, on ne fait pas de fetch réseau
     if (!isValidObjectId(targetId)) {
-      console.warn(`[Profile] loadProfilePosts ignoré — ID non-MongoDB: ${targetId}`);
+      console.warn(`[Profile] loadProfilePosts — ID non-MongoDB: ${targetId} — pool local uniquement`);
+
+      // Chercher des posts dans le pool Home
+      const localPosts = getPostsFromHomePool(targetId);
+      if (localPosts.length > 0) {
+        startTransition(() => setProfilePosts(localPosts.map(normalizePost)));
+        storeProfilePostsInCache(targetId, localPosts);
+      }
       return;
     }
+
     loadingRef.current = true;
     setIsLoadingPosts(true);
 
@@ -450,11 +540,21 @@ export default function ProfilePage({
         }
       }
 
+      // 🆕 FIX 4 — Pour les bots, chercher aussi dans le pool Home d'abord
+      if (!append && !prefetchedPosts && postsArray.length === 0) {
+        const homePostsForUser = getPostsFromHomePool(targetId);
+        if (homePostsForUser.length > 0) {
+          postsArray = homePostsForUser;
+          startTransition(() => setProfilePosts(homePostsForUser.map(normalizePost)));
+          storeProfilePostsInCache(targetId, homePostsForUser);
+        }
+      }
+
       if (navigator.onLine && !prefetchedPosts) {
         try {
           const result  = await fetchUserPosts(targetId, pageNumber);
           const fetched = extractPostsFromResult(result);
-          postsArray = fetched;
+          if (fetched.length > 0) postsArray = fetched;
         } catch (networkErr) {
           console.error("[Profile] Erreur fetch posts réseau:", networkErr);
           if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info");
@@ -468,12 +568,11 @@ export default function ProfilePage({
           const base        = append ? prev : [];
           const merged      = [...base, ...postsArray];
           const seen        = new Set();
-          // ✅ normalizePost préserve mediaType + textCardPalette à chaque merge
           const uniquePosts = merged
-            .filter(p => { if (seen.has(p._id)) return false; seen.add(p._id); return true; })
+            .filter(p => { if (!p?._id || seen.has(p._id)) return false; seen.add(p._id); return true; })
             .map(normalizePost)
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          if (!isMockProfile) savePosts(targetId, uniquePosts);
+          if (!isMockProfile && isValidObjectId(targetId)) savePosts(targetId, uniquePosts);
           storeProfilePostsInCache(targetId, uniquePosts);
           return uniquePosts;
         });
@@ -569,7 +668,7 @@ export default function ProfilePage({
   }, [profileUser?._id, loadProfilePosts]);
 
   // ─────────────────────────────────────────────
-  // useEffect principal — v2
+  // useEffect principal — v4
   // ─────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return;
@@ -592,15 +691,52 @@ export default function ProfilePage({
       return;
     }
 
-    if (isOwner && !isValidObjectId(targetUserId)) {
-      console.warn(`[Profile] ID temporaire (${targetUserId}) — affichage authUser direct`);
-      setProfileUser(authUser);
-      setIsBot(false);
-      setIsLoadingUser(false);
-      setUserNotFound(false);
+    // ─────────────────────────────────────────────
+    // 🆕 FIX 1 — ID mock/temporaire (ex: user_9_...)
+    // Pas de fetch réseau, on reconstruit depuis le pool Home
+    // ─────────────────────────────────────────────
+    if (isMockId(targetUserId)) {
+      console.log(`[Profile] ID mock détecté (${targetUserId}) — reconstruction depuis pool local`);
+      const result = buildProfileFromEmbeddedUser(targetUserId);
+
+      if (result) {
+        setProfileUser(result.profile);
+        setIsBot(!!result.profile.isBot);
+        setIsLoadingUser(false);
+        setUserNotFound(false);
+        if (result.posts.length > 0) {
+          startTransition(() => setProfilePosts(result.posts.map(normalizePost)));
+          storeProfilePostsInCache(targetUserId, result.posts);
+        }
+      } else {
+        // Profil mock non trouvé dans le pool — afficher un profil vide plutôt que "introuvable"
+        setProfileUser(buildMinimalUser(targetUserId, { username: "utilisateur", fullName: "Utilisateur" }));
+        setIsBot(false);
+        setIsLoadingUser(false);
+        setUserNotFound(false);
+        showLocalToast("Profil de démonstration", "info");
+      }
       return;
     }
 
+    // ID non-MongoDB non-mock (cas improbable)
+    if (!isValidObjectId(targetUserId)) {
+      if (isOwner) {
+        // Si c'est le compte courant avec ID temporaire
+        setProfileUser(authUser);
+        setIsBot(false);
+        setIsLoadingUser(false);
+        setUserNotFound(false);
+      } else {
+        setIsLoadingUser(false);
+        setUserNotFound(true);
+      }
+      return;
+    }
+
+    // ─────────────────────────────────────────────
+    // Flux normal — ID MongoDB valide
+    // ─────────────────────────────────────────────
     (async () => {
       setIsLoadingUser(true);
       setUserNotFound(false);
@@ -637,6 +773,25 @@ export default function ProfilePage({
               saveUser(fetchedUser);
 
             } else if (!cachedUser) {
+              // 🆕 FIX 2 — Chercher d'abord dans le pool Home (bots + posts récents)
+              const embeddedResult = buildProfileFromEmbeddedUser(targetUserId);
+              if (embeddedResult) {
+                setProfileUser(embeddedResult.profile);
+                setIsBot(!!embeddedResult.profile.isBot);
+                setUserNotFound(false);
+                saveUser(embeddedResult.profile);
+                if (embeddedResult.posts.length > 0) {
+                  startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost)));
+                  storeProfilePostsInCache(targetUserId, embeddedResult.posts);
+                }
+                // Essayer quand même de charger plus de posts réseau
+                setPage(1);
+                setHasMore(true);
+                await loadProfilePosts(targetUserId, 1, false);
+                return;
+              }
+
+              // Fallback fetch posts réseau
               const fallback = await tryBuildProfileFromPosts(targetUserId);
 
               if (fallback) {
@@ -650,7 +805,7 @@ export default function ProfilePage({
                 return;
               } else {
                 if (isValidObjectId(targetUserId)) {
-                  console.warn(`[Profile] Profil réseau indisponible pour ${targetUserId} — affichage profil vide`);
+                  console.warn(`[Profile] Profil réseau indisponible pour ${targetUserId} — profil vide`);
                   setProfileUser(buildMinimalUser(targetUserId));
                   setIsBot(false);
                   setUserNotFound(false);
@@ -663,10 +818,21 @@ export default function ProfilePage({
 
           } else if (!cachedUser) {
             if (isValidObjectId(targetUserId)) {
-              setProfileUser(buildMinimalUser(targetUserId));
-              setIsBot(false);
-              setUserNotFound(false);
-              showLocalToast("Profil non disponible hors ligne", "info");
+              // Hors ligne — tenter le pool Home
+              const embeddedResult = buildProfileFromEmbeddedUser(targetUserId);
+              if (embeddedResult) {
+                setProfileUser(embeddedResult.profile);
+                setIsBot(!!embeddedResult.profile.isBot);
+                setUserNotFound(false);
+                if (embeddedResult.posts.length > 0) {
+                  startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost)));
+                }
+              } else {
+                setProfileUser(buildMinimalUser(targetUserId));
+                setIsBot(false);
+                setUserNotFound(false);
+                showLocalToast("Profil non disponible hors ligne", "info");
+              }
             } else {
               setUserNotFound(true);
             }
@@ -737,11 +903,10 @@ export default function ProfilePage({
     };
   }, [socket, profileUser?._id, savePosts, isMockProfile, isBot]);
 
-  // ── Stats ──────────────────────────────────────────────────────────────────
   const stats = {
     posts:     profilePosts.length,
-    followers: profileUser?.followers?.length || 0,
-    following: profileUser?.following?.length || 0,
+    followers: profileUser?.followers?.length || profileUser?.followersCount || 0,
+    following: profileUser?.following?.length || profileUser?.followingCount || 0,
   };
 
   // ── Rendu ──────────────────────────────────────────────────────────────────

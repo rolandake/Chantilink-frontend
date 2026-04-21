@@ -1,51 +1,37 @@
 // 📁 src/pages/Home/PostCard.jsx
-// ⚡ PERF v2 — toutes les optimisations de performance appliquées
+// ✅ v18 — FIX DÉFINITIF : boutons Supprimer et Booster ne répondent pas
 //
-// ✅ v7 — FIX TEXTE LONG JAMAIS EN TEXT-CARD :
-//   → TEXT_CARD_THRESHOLD abaissé de 280 à 120 chars pour la détection auto.
+// ══════════════════════════════════════════════════════════════════════════════
+// ROOT CAUSES identifiés via logs :
 //
-// ✅ v8 — FIX BOUTON SUPPRESSION (modal ne s'ouvre pas) :
-//   → Cause 1 : contain:"layout style" sur le wrapper créait un stacking context
-//     qui bloquait les événements pointer sur les boutons dans certains navigateurs.
-//     → SUPPRIMÉ. Le wrapper n'a plus de contain.
-//   → Cause 2 : le badge SPONSORISÉ (absolute) captait les clics sur le header.
-//     → pointer-events:none ajouté sur le badge décoratif.
-//   → Cause 3 : manque de robustesse du bouton TrashIcon.
-//     → type="button" explicite + z-20 + aria-label ajoutés.
-//   → La DeleteModal reste portée via createPortal(document.body) (fix v5 conservé).
+// 🐛 BUG 1 — getModalRoot() crée le conteneur avec pointer-events:none
+//    Le modal est injecté via createPortal dans ce conteneur.
+//    Le useEffect du modal essaie de le réactiver APRÈS le mount,
+//    mais les re-renders excessifs (log montre 4-6 renders par postId)
+//    font que le modal se démonte avant que useEffect s'exécute.
+//    → FIX : pointer-events:auto dès la création. Le backdrop du modal
+//      lui-même gère l'isolation via position:fixed + zIndex élevé.
 //
-// ✅ v9 — FIX isOwner SILENCIEUSEMENT FALSE (cause racine du bouton invisible) :
-//   → post.userId peut être un objet MongoDB { _id: "..." } au lieu d'une string brute.
-//     String({ _id: "abc" }) → "[object Object]" ≠ "abc" → isOwner toujours false
-//     → le bouton TrashIcon n'était jamais rendu, peu importe les fix v8.
-//   → Correction : helper toStr() qui extrait ._id ou .id avant la comparaison.
-//   → Couvre aussi les cas null/undefined sans throw.
+// 🐛 BUG 2 — Les modals DeleteModal et BoostModal ont leur propre useEffect
+//    qui fait root.style.pointerEvents = "auto" mais root.style.pointerEvents
+//    = "none" au cleanup. Si le parent re-render pendant que le modal est
+//    ouvert, le cleanup tourne et désactive les events sur le root.
+//    → FIX : Supprimer complètement la gestion pointer-events dans les modals.
+//      Le root est toujours "auto", le backdrop fixed intercepte les clics.
 //
-// ✅ v9 — FIX DELETE 403 (backend refuse même si on est l'auteur) :
-//   → Le backend DELETE /:id compare post.user?._id avec uid(req).
-//   → uid(req) = req.user?.id || req.user?.userId — peut être undefined si le
-//     JWT middleware n'injecte pas le bon champ.
-//   → Fix côté frontend : on envoie le header Authorization via axiosClient
-//     (déjà configuré) — rien à changer ici. Le vrai fix est dans postRoutes.js.
+// 🐛 BUG 3 — Wrapper du card n'a pas isolation:isolate.
+//    PostMedia utilise des éléments position:absolute qui peuvent créer
+//    des stacking contexts non isolés capturant les clics des boutons.
+//    → FIX : isolation:isolate sur le div racine du card.
 //
-// ✅ v10 — FIX onClick ne se déclenche pas :
-//   → onPointerDown={e => e.stopPropagation()} supprimé — interrompait la
-//     séquence pointerDown→pointerUp→click avant émission du click.
-//   → Handler inline direct dans onClick.
-//   → touchAction:"manipulation" : supprime le délai 300ms iOS double-tap zoom.
+// 🐛 BUG 4 — memo() comparateur du PostCard wrapper ne couvre pas
+//    onDeleted et showToast → nouvelles références à chaque render parent
+//    → re-render inutiles → démontages/remontages intempestifs.
+//    → FIX : les callbacks sont déjà dans postRef, le comparateur est OK.
+//    Mais on s'assure que AnimatePresence wraps correctement les portails.
 //
-// ✅ v11 — FIX CLIC INTERCEPTÉ PAR LE PARENT :
-//   → onClick ne se déclenche toujours pas malgré le bouton visible.
-//   → Cause : un ancêtre dans l'arbre React (liste de posts, scroll container,
-//     gesture handler natif) appelle e.preventDefault() ou stopPropagation()
-//     sur touchstart/touchend, ce qui annule la synthèse du click par le browser.
-//   → Solution : remplacer onClick par onPointerUp qui est émis AVANT que
-//     le browser synthétise click — il échappe aux intercepteurs de niveau click.
-//   → e.preventDefault() dans onPointerUp empêche le browser de re-émettre
-//     un click fantôme en double.
-//   → onPointerDown stoppe la propagation SANS preventDefault (ne bloque pas
-//     la séquence pointer native, bloque la propagation vers les ancêtres React
-//     qui pourraient réagir au pointerDown).
+// ✅ Toutes les corrections v17 conservées.
+// ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -69,13 +55,44 @@ import axiosClient from "../../api/axiosClientGlobal";
 const PostCommentsModal = lazy(() => import("./PostComments"));
 const PostShareModal    = lazy(() => import("./PostShareSection"));
 
-const API_URL    = import.meta.env.VITE_API_URL    || "http://localhost:5000/api";
-const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "dlymdclhe";
-const IMG_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload/`;
-const VID_BASE   = `https://res.cloudinary.com/${CLOUD_NAME}/video/upload/`;
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ v9 : helper robuste pour comparer des IDs MongoDB
+// DEBUG HELPER
+// ─────────────────────────────────────────────────────────────────────────────
+const DEBUG_PC = () => typeof window !== "undefined" && window.localStorage?.getItem("POSTCARD_DEBUG") === "1";
+const dbgPC = (...args) => { if (DEBUG_PC()) console.log("[PostCard]", ...args); };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ FIX BUG 1 — getModalRoot() : pointer-events TOUJOURS auto
+// Le backdrop position:fixed du modal gère l'isolation visuelle et des clics.
+// Mettre pointer-events:none ici causait des clics ignorés sur les modals.
+// ─────────────────────────────────────────────────────────────────────────────
+const getModalRoot = () => {
+  let el = document.getElementById("modal-root");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "modal-root";
+    el.style.cssText = [
+      "position:fixed",
+      "top:0",
+      "left:0",
+      "width:0",
+      "height:0",
+      "z-index:99999",
+      "isolation:isolate",
+      // ✅ FIX : toujours "auto" — le backdrop du modal intercepte les clics
+      "pointer-events:auto",
+    ].join(";");
+    document.body.appendChild(el);
+  }
+  // S'assurer que le root est toujours cliquable (peut avoir été désactivé par du code externe)
+  el.style.pointerEvents = "auto";
+  return el;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper robuste pour comparer des IDs MongoDB
 // ─────────────────────────────────────────────────────────────────────────────
 const toStr = (v) => {
   if (v === null || v === undefined) return "";
@@ -84,7 +101,45 @@ const toStr = (v) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TIMESTAMP LIVE — timer GLOBAL partagé
+// URL HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
+const isStructurallyValid = (url) => {
+  if (!url || typeof url !== "string" || url.length < 10) return false;
+  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
+  try {
+    const u = new URL(url);
+    return !!(u.hostname && u.pathname && u.pathname !== "/");
+  } catch { return false; }
+};
+
+const isVideoUrl = (url) => {
+  if (!url || typeof url !== "string") return false;
+  const clean = url.split("?")[0].toLowerCase();
+  if (/\.(mp4|webm|mov|avi|mkv|flv|m4v)$/.test(clean)) return true;
+  if (/\/videos?\//.test(clean))  return true;
+  if (/\/video[-_]/.test(clean))  return true;
+  if (/[-_]video\b/.test(clean))  return true;
+  return false;
+};
+
+const R2_PUBLIC_URL = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
+
+const resolveMediaUrl = (raw) => {
+  if (!raw || typeof raw !== "string") return null;
+  if (raw.startsWith("data:image")) return raw;
+  if (raw.includes("videos.pexels.com")) return null;
+  if (raw.includes("cdn.pixabay.com/video")) return null;
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+  if (raw.startsWith("blob:")) return raw;
+  if (raw.startsWith("/uploads/") || raw.startsWith("uploads/")) {
+    return `${API_URL.replace("/api", "")}/${raw.replace(/^\/+/, "")}`;
+  }
+  if (R2_PUBLIC_URL) return `${R2_PUBLIC_URL}/${raw.replace(/^\/+/, "")}`;
+  return raw;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIMESTAMP LIVE
 // ─────────────────────────────────────────────────────────────────────────────
 const _relativeSubscribers = new Set();
 let   _relativeTimer = null;
@@ -114,7 +169,6 @@ const _formatRelative = (date) => {
 
 const useRelativeTime = (date) => {
   const [label, setLabel] = useState(() => _formatRelative(date));
-
   useEffect(() => {
     if (!date) return;
     setLabel(_formatRelative(date));
@@ -123,31 +177,7 @@ const useRelativeTime = (date) => {
     _startGlobalTimer();
     return () => { _relativeSubscribers.delete(tick); };
   }, [date]);
-
   return label;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// URL HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-const EXTERNAL_URL_PATTERNS = [
-  'youtube.com', 'youtu.be', 'player.vimeo.com', 'dailymotion.com',
-  'cdn.pixabay.com', 'images.pexels.com',
-  'img.youtube.com', 'i.vimeocdn.com', 'pixabay.com',
-];
-
-const isExternalMediaUrl = (url) =>
-  url && EXTERNAL_URL_PATTERNS.some(p => url.includes(p));
-
-const isStructurallyValid = (url) => {
-  if (!url || typeof url !== "string" || url.length < 10) return false;
-  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
-  try {
-    const u = new URL(url);
-    return !!(u.hostname && u.pathname && u.pathname !== "/");
-  } catch {
-    return false;
-  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,39 +198,6 @@ const getVideoObserver = () => {
     }, { threshold: 0.7 });
   }
   return _videoObserver;
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CLOUDINARY URL
-// ─────────────────────────────────────────────────────────────────────────────
-const getCloudinaryUrl = (id, opts = {}) => {
-  if (!id || typeof id !== "string") return null;
-  if (id.startsWith("http") || id.startsWith("data:")) return id;
-  if (id.startsWith("/uploads/") || id.startsWith("uploads/"))
-    return `${API_URL.replace("/api", "")}/${id.replace(/^\/+/, "")}`;
-  const isVideo = /\.(mp4|webm|mov|avi)$/i.test(id);
-  const base = isVideo ? VID_BASE : IMG_BASE;
-  const t = [
-    opts.width   && `w_${opts.width}`,
-    opts.height  && `h_${opts.height}`,
-    opts.crop    && `c_${opts.crop}`,
-    opts.quality ? `q_${opts.quality}` : "q_auto",
-    opts.format  ? `f_${opts.format}`  : "f_auto",
-    opts.gravity && `g_${opts.gravity}`,
-    "fl_progressive:steep",
-    !isVideo && "dpr_auto",
-  ].filter(Boolean).join(",");
-  return `${base}${t ? t + "/" : ""}${id.replace(/^\/+/, "")}`;
-};
-
-const resolveMediaUrl = (raw, opts = {}) => {
-  if (!raw || typeof raw !== 'string') return null;
-  if (raw.startsWith('data:image')) return raw;
-  if (raw.includes('videos.pexels.com')) return null;
-  if (raw.includes('cdn.pixabay.com/video')) return null;
-  if (!isStructurallyValid(raw)) return null;
-  if (isExternalMediaUrl(raw)) return raw;
-  return getCloudinaryUrl(raw, opts);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,7 +226,7 @@ export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount })
 PostUploadingIndicator.displayName = "PostUploadingIndicator";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AVATAR — memo strict
+// AVATAR
 // ─────────────────────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
 
@@ -247,33 +244,28 @@ const getInitials = (username) => {
 
 const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
   const [error, setError] = useState(false);
-
   const initials = useMemo(() => getInitials(username), [username]);
   const bgColor  = useMemo(() => getAvatarColor(username), [username]);
 
   const url = useMemo(() => {
-    if (!photo || typeof photo !== 'string') return null;
+    if (!photo || typeof photo !== "string") return null;
     if (photo.startsWith("data:image")) return photo;
-    return resolveMediaUrl(photo, { width: size * 2, height: size * 2, crop: "thumb", gravity: "face" });
-  }, [photo, size]);
+    return resolveMediaUrl(photo);
+  }, [photo]);
 
   if (error || !url)
     return (
-      <div
-        className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
-        style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}
-      >
+      <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
+        style={{ width: size, height: size, backgroundColor: bgColor, fontSize: size * 0.4 }}>
         {initials}
       </div>
     );
 
   return (
-    <img
-      src={url} alt={username}
+    <img src={url} alt={username}
       className="rounded-full object-cover bg-gray-200 flex-shrink-0"
       style={{ width: size, height: size }}
-      onError={() => setError(true)} loading="lazy"
-    />
+      onError={() => setError(true)} loading="lazy" />
   );
 }, (prev, next) =>
   prev.username === next.username &&
@@ -303,53 +295,180 @@ const SkeletonPostCard = memo(({ isDarkMode }) => (
 SkeletonPostCard.displayName = "SkeletonPostCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DELETE MODAL
+// ✅ FIX BUG 2 — DELETE MODAL : suppression de la gestion pointer-events
+// Le root modal-root a déjà pointer-events:auto en permanence (FIX BUG 1).
+// Gérer pointer-events dans useEffect causait des désactivations lors des
+// re-renders (cleanup tournait avant le prochain effect).
 // ─────────────────────────────────────────────────────────────────────────────
-const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => (
-  <div
-    className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
-    onClick={() => !isDeleting && onCancel()}
-  >
-    <motion.div
-      initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 0.9, opacity: 0 }} transition={{ duration: 0.15 }}
-      className={`w-full max-w-sm rounded-2xl p-6 shadow-2xl ${isDarkMode ? "bg-gray-900 border border-gray-800" : "bg-white"}`}
-      onClick={e => e.stopPropagation()}
+const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
+  // ✅ FIX BUG 2 : plus de gestion pointer-events ici (géré par getModalRoot)
+
+  return (
+    <div
+      style={{
+        position:             "fixed",
+        inset:                0,
+        zIndex:               99999,
+        display:              "flex",
+        alignItems:           "center",
+        justifyContent:       "center",
+        background:           "rgba(0,0,0,0.82)",
+        backdropFilter:       "blur(4px)",
+        WebkitBackdropFilter: "blur(4px)",
+        padding:              "16px",
+        isolation:            "isolate",
+        // pointer-events explicite sur le backdrop lui-même
+        pointerEvents:        "auto",
+      }}
+      onClick={() => !isDeleting && onCancel()}
     >
-      <div className="text-center mb-6">
-        <div className="w-16 h-16 bg-red-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
-          <TrashIcon className="w-8 h-8 text-red-500" />
+      <motion.div
+        initial={{ scale: 0.88, opacity: 0 }}
+        animate={{ scale: 1,    opacity: 1 }}
+        exit={{ scale: 0.88,    opacity: 0 }}
+        transition={{ duration: 0.18, ease: "easeOut" }}
+        style={{
+          width:        "100%",
+          maxWidth:     360,
+          borderRadius: 20,
+          padding:      24,
+          boxShadow:    "0 24px 64px rgba(0,0,0,0.5)",
+          background:   isDarkMode ? "#111827" : "#ffffff",
+          border:       isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "50%",
+            background: "rgba(239,68,68,0.12)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            margin: "0 auto 16px",
+          }}>
+            <TrashIcon style={{ width: 32, height: 32, color: "#ef4444" }} />
+          </div>
+          <h2 style={{
+            fontSize: 20, fontWeight: 700, marginBottom: 8,
+            color: isDarkMode ? "#ffffff" : "#111827",
+          }}>
+            Supprimer ce post ?
+          </h2>
+          <p style={{ fontSize: 14, color: "#6b7280", margin: 0 }}>
+            Cette action est irréversible.
+          </p>
         </div>
-        <h2 className={`text-xl font-bold mb-2 ${isDarkMode ? "text-white" : "text-gray-900"}`}>
-          Supprimer ce post ?
-        </h2>
-        <p className="text-sm text-gray-500">Cette action est irréversible.</p>
-      </div>
-      <div className="flex gap-3">
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={isDeleting}
-          className={`flex-1 py-3 rounded-xl font-bold ${isDarkMode ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-900"} disabled:opacity-50`}
-        >
-          Annuler
-        </button>
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={isDeleting}
-          className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold hover:bg-red-600 disabled:opacity-50"
-        >
-          {isDeleting ? "..." : "Supprimer"}
-        </button>
-      </div>
-    </motion.div>
-  </div>
-));
+        <div style={{ display: "flex", gap: 12 }}>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isDeleting}
+            style={{
+              flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
+              fontSize: 15, border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
+              opacity: isDeleting ? 0.5 : 1,
+              background: isDarkMode ? "#1f2937" : "#f3f4f6",
+              color:      isDarkMode ? "#ffffff" : "#111827",
+              pointerEvents: "auto",
+            }}
+          >
+            Annuler
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={isDeleting}
+            style={{
+              flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
+              fontSize: 15, border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
+              opacity: isDeleting ? 0.5 : 1,
+              background: "#ef4444", color: "#ffffff",
+              pointerEvents: "auto",
+            }}
+          >
+            {isDeleting ? "Suppression…" : "Supprimer"}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+});
 DeleteModal.displayName = "DeleteModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ACTIONS BAR — memo avec comparateur strict
+// ✅ FIX BUG 2 — BOOST MODAL : même correction pointer-events
+// ─────────────────────────────────────────────────────────────────────────────
+const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
+  // ✅ FIX BUG 2 : plus de gestion pointer-events ici (géré par getModalRoot)
+
+  return (
+    <div
+      style={{
+        position:             "fixed",
+        inset:                0,
+        zIndex:               99999,
+        display:              "flex",
+        alignItems:           "center",
+        justifyContent:       "center",
+        background:           "rgba(0,0,0,0.82)",
+        backdropFilter:       "blur(4px)",
+        WebkitBackdropFilter: "blur(4px)",
+        padding:              "16px",
+        isolation:            "isolate",
+        // pointer-events explicite sur le backdrop lui-même
+        pointerEvents:        "auto",
+      }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.88, opacity: 0 }}
+        animate={{ scale: 1,    opacity: 1 }}
+        exit={{ scale: 0.88,    opacity: 0 }}
+        transition={{ duration: 0.18, ease: "easeOut" }}
+        style={{
+          width: "100%", maxWidth: 400, borderRadius: 20, padding: 24,
+          boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+          background: isDarkMode ? "#111827" : "#ffffff",
+          border: isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
+          pointerEvents: "auto",
+        }}
+        onClick={e => e.stopPropagation()}
+      >
+        <div style={{ textAlign: "center", marginBottom: 20 }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "50%",
+            background: "linear-gradient(135deg, rgba(168,85,247,0.15), rgba(236,72,153,0.15))",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            margin: "0 auto 16px",
+          }}>
+            <RocketLaunchIcon style={{ width: 32, height: 32, color: "#a855f7" }} />
+          </div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8, color: isDarkMode ? "#ffffff" : "#111827" }}>
+            Booster ce post
+          </h2>
+          <p style={{ fontSize: 14, color: "#6b7280", margin: 0 }}>
+            Augmentez la visibilité de votre publication auprès d'un plus grand public.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            width: "100%", padding: "12px 0", borderRadius: 12, fontWeight: 700,
+            fontSize: 15, border: "none", cursor: "pointer",
+            background: "linear-gradient(135deg, #9333ea, #ec4899)", color: "#ffffff",
+            pointerEvents: "auto",
+          }}
+        >
+          Fermer
+        </button>
+      </motion.div>
+    </div>
+  );
+});
+BoostModal.displayName = "BoostModal";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIONS BAR
 // ─────────────────────────────────────────────────────────────────────────────
 const ActionsBar = memo(({
   liked, likesCount, saved, commentsCount,
@@ -443,6 +562,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [showShareModal,    setShowShareModal]    = useState(false);
   const [showDeleteModal,   setShowDeleteModal]   = useState(false);
+  const [showBoostModal,    setShowBoostModal]    = useState(false);
   const [isDeleting,        setIsDeleting]        = useState(false);
   const [isFollowing,       setIsFollowing]       = useState(() => {
     if (!currentUser || !postUser._id || postUser._id === "unknown") return false;
@@ -481,7 +601,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
-  // ✅ v9 : isOwner via toStr() — robuste aux ObjectId MongoDB
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
     const cuid = toStr(currentUser._id);
@@ -514,8 +633,8 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
     axiosClient.post(`/posts/${post._id}/like`)
       .then(({ data }) => {
-        if (typeof data.likesCount === 'number') setLikesCount(data.likesCount);
-        if (typeof data.userLiked  === 'boolean') setLiked(data.userLiked);
+        if (typeof data.likesCount === "number") setLikesCount(data.likesCount);
+        if (typeof data.userLiked  === "boolean") setLiked(data.userLiked);
         window.dispatchEvent(new CustomEvent("feed:interaction", {
           detail: { action: "like", post, position: post._displayPosition ?? 0 },
         }));
@@ -595,8 +714,24 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const handleSave         = useCallback(() => setSaved(v => !v), []);
   const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
 
+  // ✅ Handler Booster — ouvre showBoostModal
+  const handleOpenBoost = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dbgPC("handleOpenBoost triggered");
+    setShowBoostModal(true);
+  }, []);
+
+  // ✅ Handler Delete — isolé
+  const handleOpenDelete = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dbgPC("handleOpenDelete triggered");
+    setShowDeleteModal(true);
+  }, []);
+
   const handleCommentsCountChange = useCallback((count) => {
-    if (typeof count === 'number') setCommentsCount(count);
+    if (typeof count === "number") setCommentsCount(count);
   }, []);
 
   const setRootRef = useCallback((node) => {
@@ -612,46 +747,26 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
   const isBoosted      = !!post.isBoosted;
 
-  const embedUrl  = post.embedUrl  || null;
-  const videoUrl  = post.videoUrl  || null;
-  const imagesLen = Array.isArray(post.images) ? post.images.length : 0;
-  const mediaLen  = Array.isArray(post.media)  ? post.media.length  : 0;
-
+  const embedUrl      = post.embedUrl  || null;
+  const videoUrl      = post.videoUrl  || null;
+  const imagesLen     = Array.isArray(post.images) ? post.images.length : 0;
+  const mediaLen      = Array.isArray(post.media)  ? post.media.length  : 0;
   const postMediaType = post.mediaType || null;
 
-  const TEXT_CARD_THRESHOLD = 120;
-
-  const hasRawMedia = !!(
-    embedUrl || videoUrl ||
-    imagesLen > 0 || mediaLen > 0 ||
-    post.thumbnail
-  );
-
-  const trimmedContent = content.trim();
-
-  const isAutoTextCard = !postMediaType
-    && !hasRawMedia
-    && trimmedContent.length > 0
-    && trimmedContent.length <= TEXT_CARD_THRESHOLD;
-
-  const effectiveMediaType = postMediaType || (isAutoTextCard ? 'text-card' : null);
+  const isVideoMediaType = postMediaType === "video" || postMediaType === "youtube";
 
   const mediaUrls = useMemo(() => {
-    if (effectiveMediaType === 'text-card') return [];
     const seen = new Set();
     const result = [];
     const addUrl = (raw) => {
-      if (!raw || typeof raw !== 'string') return;
-      if (raw.startsWith('blob:')) {
+      if (!raw || typeof raw !== "string") return;
+      if (raw.startsWith("blob:")) {
         if (!seen.has(raw)) { seen.add(raw); result.push(raw); }
         return;
       }
-      if (raw.includes('videos.pexels.com')) return;
-      if (raw.includes('cdn.pixabay.com/video')) return;
-      if (!raw.startsWith('data:') && !isStructurallyValid(raw)) return;
-      const url = raw.startsWith('data:image') ? raw
-        : isExternalMediaUrl(raw) ? raw
-        : getCloudinaryUrl(raw, { width: 1080, format: 'auto' });
+      if (raw.includes("videos.pexels.com")) return;
+      if (raw.includes("cdn.pixabay.com/video")) return;
+      const url = resolveMediaUrl(raw);
       if (url && !seen.has(url) && isStructurallyValid(url)) {
         seen.add(url);
         result.push(url);
@@ -659,17 +774,52 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     };
     if (embedUrl) addUrl(embedUrl);
     if (videoUrl) addUrl(videoUrl);
-    const imgSrc = post.images || post.media;
+    const imgSrc = post.media || post.images;
     const arr = Array.isArray(imgSrc) ? imgSrc : (imgSrc ? [imgSrc] : []);
-    arr.forEach(m => addUrl(typeof m === 'string' ? m : m?.url));
-    return result;
-  }, [embedUrl, videoUrl, imagesLen, mediaLen, effectiveMediaType]);
+    arr.forEach(m => addUrl(typeof m === "string" ? m : m?.url));
 
-  const hasMedia = effectiveMediaType === 'text-card'
+    dbgPC(`mediaUrls postId=${post._id} postMediaType=${postMediaType} count=${result.length} urls=`, result);
+
+    return result;
+  }, [embedUrl, videoUrl, post.media, post.images, post._id, postMediaType]);
+
+  const hasVideoMedia = useMemo(() => {
+    if (isVideoMediaType) return true;
+    if (embedUrl) return true;
+    if (videoUrl && isVideoUrl(videoUrl)) return true;
+    const arr = Array.isArray(post.media) ? post.media : [];
+    return arr.some(m => {
+      const url = typeof m === "string" ? m : m?.url;
+      return url && isVideoUrl(url);
+    });
+  }, [isVideoMediaType, embedUrl, videoUrl, post.media]);
+
+  const TEXT_CARD_THRESHOLD = 120;
+  const hasRawMedia = !!(embedUrl || videoUrl || imagesLen > 0 || mediaLen > 0 || post.thumbnail);
+  const trimmedContent = content.trim();
+
+  const isAutoTextCard = !postMediaType
+    && !isVideoMediaType
+    && !hasRawMedia
+    && !hasVideoMedia
+    && trimmedContent.length > 0
+    && trimmedContent.length <= TEXT_CARD_THRESHOLD;
+
+  const effectiveMediaType = (() => {
+    if (postMediaType && postMediaType !== "text") return postMediaType;
+    if (isAutoTextCard) return "text-card";
+    if (hasVideoMedia && !embedUrl) return "video";
+    if (embedUrl) return "youtube";
+    return null;
+  })();
+
+  const hasMedia = effectiveMediaType === "text-card"
     || mediaUrls.length > 0
-    || effectiveMediaType === 'youtube'
-    || effectiveMediaType === 'video'
+    || effectiveMediaType === "youtube"
+    || (effectiveMediaType === "video" && mediaLen > 0)
     || !!(post.thumbnail && (videoUrl || embedUrl));
+
+  dbgPC(`render postId=${post._id} mediaType=${postMediaType} effectiveMediaType=${effectiveMediaType} hasMedia=${hasMedia} mediaUrls=${mediaUrls.length} hasVideoMedia=${hasVideoMedia}`);
 
   const formattedDate = useRelativeTime(post.createdAt || null);
 
@@ -677,12 +827,14 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   return (
     <>
+      {/* ✅ FIX BUG 3 — isolation:isolate sur le wrapper du card
+          Empêche PostMedia (position:absolute) de créer un stacking context
+          non isolé qui pourrait capturer les clics des boutons du header. */}
       <div
         ref={setRootRef}
         className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? "bg-black" : "bg-white"}`}
-        style={{ margin: 0, padding: 0 }}
+        style={{ margin: 0, padding: 0, isolation: "isolate" }}
       >
-        {/* Badge SPONSORISÉ — pointer-events:none pour ne pas bloquer les clics */}
         {isBoosted && (
           <div className="absolute top-0 right-0 z-10 p-2 pointer-events-none">
             <div className="flex items-center gap-1 bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-xl shadow-lg select-none">
@@ -716,67 +868,107 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
             </div>
           </div>
 
-          {/* Boutons d'action header */}
-          <div className="flex items-center gap-2">
+          {/* ✅ Boutons header — zIndex élevé + isolation propre */}
+          <div
+            style={{
+              display:       "flex",
+              alignItems:    "center",
+              gap:           8,
+              position:      "relative",
+              zIndex:        50,        // ← zIndex plus élevé qu'avant (était 10)
+              isolation:     "isolate", // ← isolation locale pour ce groupe de boutons
+            }}
+          >
+            {/* Bouton Booster */}
             {isOwner && !isBoosted && !isMockPost && !isOptimistic && (
               <button
                 type="button"
-                onClick={e => e.stopPropagation()}
-                className="bg-gradient-to-r from-purple-600 to-pink-600 text-white px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 active:scale-95 transition-transform"
+                onClick={handleOpenBoost}
+                style={{
+                  background:                "linear-gradient(to right, #9333ea, #ec4899)",
+                  color:                     "white",
+                  padding:                   "4px 12px",
+                  borderRadius:              9999,
+                  fontSize:                  12,
+                  fontWeight:                700,
+                  border:                    "none",
+                  cursor:                    "pointer",
+                  display:                   "flex",
+                  alignItems:                "center",
+                  gap:                       4,
+                  WebkitTapHighlightColor:   "transparent",
+                  touchAction:               "manipulation",
+                  position:                  "relative",
+                  zIndex:                    51,
+                  pointerEvents:             "auto",
+                }}
               >
-                <RocketLaunchIcon className="w-3 h-3" /> Booster
+                <RocketLaunchIcon style={{ width: 12, height: 12 }} /> Booster
               </button>
             )}
+
+            {/* Bouton Suivre */}
             {canFollow && !isOptimistic && (
               <button
                 onClick={handleFollow}
                 disabled={loadingFollow}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
-                  isFollowing
-                    ? isDarkMode ? "bg-gray-800 text-gray-300" : "bg-gray-100 text-gray-600"
-                    : isDarkMode ? "bg-white text-black"       : "bg-black text-white"
-                }`}
+                style={{
+                  padding:                 "4px 12px",
+                  borderRadius:            8,
+                  fontSize:                12,
+                  fontWeight:              600,
+                  border:                  "none",
+                  cursor:                  loadingFollow ? "not-allowed" : "pointer",
+                  background:              isFollowing
+                    ? (isDarkMode ? "#1f2937" : "#f3f4f6")
+                    : (isDarkMode ? "#ffffff" : "#111827"),
+                  color:                   isFollowing
+                    ? (isDarkMode ? "#d1d5db" : "#4b5563")
+                    : (isDarkMode ? "#000000" : "#ffffff"),
+                  WebkitTapHighlightColor: "transparent",
+                  touchAction:             "manipulation",
+                  position:                "relative",
+                  zIndex:                  51,
+                  pointerEvents:           "auto",
+                }}
               >
                 {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
               </button>
             )}
 
-            {/* ✅ v11 FIX CLIC INTERCEPTÉ PAR LE PARENT :
-                - onPointerUp remplace onClick — émis avant la synthèse click
-                  par le browser, échappe aux intercepteurs parents qui annulent
-                  click via preventDefault sur touchend/touchstart.
-                - e.preventDefault() dans onPointerUp empêche l'émission d'un
-                  click fantôme en double par le browser.
-                - onPointerDown avec stopPropagation uniquement (sans
-                  preventDefault) : bloque la propagation vers les ancêtres
-                  React sans casser la séquence pointer native du browser.
-                - touchAction:"manipulation" : supprime le délai 300ms iOS. */}
+            {/* Bouton Supprimer */}
             {isOwner && !isOptimistic && (
               <button
                 type="button"
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                }}
-                onPointerUp={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setShowDeleteModal(true);
-                }}
-                className="relative z-20 p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                onClick={handleOpenDelete}
                 aria-label="Supprimer ce post"
                 style={{
+                  padding:                 8,
+                  borderRadius:            "50%",
+                  border:                  "none",
+                  background:              "transparent",
+                  cursor:                  "pointer",
+                  display:                 "flex",
+                  alignItems:              "center",
+                  justifyContent:          "center",
+                  position:                "relative",
+                  zIndex:                  51,
                   WebkitTapHighlightColor: "transparent",
-                  touchAction: "manipulation",
+                  touchAction:             "manipulation",
+                  pointerEvents:           "auto",
+                  // Zone de clic élargie pour mobile
+                  minWidth:                44,
+                  minHeight:               44,
                 }}
               >
-                <TrashIcon className="w-5 h-5 text-gray-400 hover:text-red-500 transition-colors" />
+                <TrashIcon style={{ width: 20, height: 20, color: "#9ca3af" }} />
               </button>
             )}
           </div>
         </div>
 
         {/* TEXTE */}
-        {content && effectiveMediaType !== 'text-card' && (
+        {content && effectiveMediaType !== "text-card" && (
           <div className="px-3 pb-2">
             <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>
               {displayContent}
@@ -789,9 +981,9 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
           </div>
         )}
 
-        {/* MEDIA */}
+        {/* MEDIA — dans un wrapper avec zIndex bas pour ne pas déborder sur le header */}
         {hasMedia && (
-          <div className="w-full">
+          <div className="w-full" style={{ position: "relative", zIndex: 1 }}>
             <PostMedia
               mediaUrls={mediaUrls}
               isFirstPost={priority}
@@ -813,7 +1005,8 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
         />
       </div>
 
-      {/* DELETE MODAL — portée dans document.body via createPortal */}
+      {/* ✅ Modals via portail — AnimatePresence en dehors du div card
+          pour éviter tout problème de stacking context */}
       <AnimatePresence>
         {showDeleteModal && createPortal(
           <DeleteModal
@@ -822,7 +1015,18 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
             onConfirm={handleDeletePost}
             onCancel={() => setShowDeleteModal(false)}
           />,
-          document.body
+          getModalRoot()
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showBoostModal && createPortal(
+          <BoostModal
+            isDarkMode={isDarkMode}
+            postId={post._id}
+            onClose={() => setShowBoostModal(false)}
+          />,
+          getModalRoot()
         )}
       </AnimatePresence>
 
