@@ -1,9 +1,7 @@
 // ============================================
 // 📁 src/Pages/chat/Messages.jsx
-// ✅ ONBOARDING : au 1er accès, modal numéro de téléphone
-//    → après soumission, sync contacts automatique (comme WhatsApp)
-// ✅ Contacts venant du profil → sauvegardés dans onAppContacts
-// ✅ Tout le reste inchangé
+// ✅ Navigation par modales — header compact
+//    Conforme Google Play Policy (avril 2026)
 // ============================================
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -11,8 +9,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   ArrowLeft, X, Users, MessageSquare, Lock, ShieldCheck,
-  Home, List, Phone, Video, Smartphone, CheckCircle, Shield,
-  ChevronRight, Loader
+  Phone, Video, CheckCircle, Shield,
+  ChevronRight, Loader, UserPlus, Bell
 } from "lucide-react";
 
 import { useAuth } from "../../context/AuthContext";
@@ -27,7 +25,6 @@ import { ContactSidebar } from "./ContactSidebar";
 import { ChatHeader } from "./components/ChatHeader";
 import { MessagesList } from "./components/MessagesList";
 import { ChatInput } from "./components/ChatInput";
-import { AddContactModal } from "./AddContactModal";
 import { PendingMessagesModal } from "./PendingMessagesModal";
 
 import { useAudioRecording } from "../../hooks/useAudioRecording";
@@ -44,7 +41,7 @@ import {
 } from "../../utils/callSounds";
 
 // ─────────────────────────────────────────────
-// HELPER — sauvegarder un contact dans onAppContacts (localStorage)
+// HELPERS
 // ─────────────────────────────────────────────
 const saveContactToOnApp = (contact) => {
   if (!contact?.id) return;
@@ -58,11 +55,7 @@ const saveContactToOnApp = (contact) => {
   }
 };
 
-// ─────────────────────────────────────────────
-// HELPER — lire les contacts natifs du téléphone (Web Contacts API)
-// Retourne [] si la permission est refusée ou l'API indisponible
-// ─────────────────────────────────────────────
-const readNativeContacts = async () => {
+const openContactPicker = async () => {
   try {
     if (!("contacts" in navigator && "ContactsManager" in window)) return [];
     const props = ["name", "tel"];
@@ -72,25 +65,24 @@ const readNativeContacts = async () => {
       (c.tel || []).map((phone) => ({ name: c.name?.[0] || "Inconnu", phone }))
     );
   } catch (err) {
-    console.warn("Contacts natifs indisponibles:", err.message);
+    console.info("Contact Picker:", err.message);
     return [];
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPOSANT : OnboardingPhoneScreen
-// Affiché au 1er accès → saisie du numéro → sync contacts
+// ONBOARDING
 // ─────────────────────────────────────────────────────────────────────────────
 const OnboardingPhoneScreen = ({ onComplete, user }) => {
-  const [step, setStep]       = useState("intro");   // intro | phone | syncing | done
+  const [step, setStep]       = useState("intro");
   const [phone, setPhone]     = useState("");
   const [error, setError]     = useState("");
+  const [syncing, setSyncing] = useState(false);
   const [syncStats, setSyncStats] = useState(null);
   const { token, updateUserProfile } = useAuth();
   const { showToast } = useToast();
 
   const formatPhone = (value) => {
-    // Garder uniquement chiffres et +
     let v = value.replace(/[^\d+]/g, "");
     if (!v.startsWith("+") && v.length > 0) v = "+225" + v.replace(/^0/, "");
     return v;
@@ -103,63 +95,65 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
       return;
     }
     setError("");
-    setStep("syncing");
-
+    setSyncing(true);
     try {
-      // 1. Enregistrer le numéro
       const resp = await API.updatePhone(token, formatted);
       if (!resp.success) throw new Error(resp.message || "Erreur serveur");
       if (updateUserProfile) updateUserProfile(user.id, resp.user);
-
-      // 2. Lire les contacts natifs
-      const nativeContacts = await readNativeContacts();
-
-      let stats = { total: 0, onApp: 0 };
-
-      if (nativeContacts.length > 0) {
-        // 3. Synchroniser avec le backend
-        const syncResp = await API.syncContacts(token, nativeContacts);
-        stats = {
-          total: syncResp.stats?.total  || nativeContacts.length,
-          onApp: syncResp.stats?.onApp  || syncResp.onChantilink?.length || 0,
-        };
-        // Sauvegarder les contacts trouvés sur l'app
-        (syncResp.onChantilink || []).forEach((c) => saveContactToOnApp(c));
-      }
-
-      setSyncStats(stats);
-      setStep("done");
+      setSyncing(false);
+      setStep("picker");
     } catch (err) {
-      console.error("Onboarding error:", err);
       setError(err.message || "Une erreur est survenue");
-      setStep("phone");
+      setSyncing(false);
     }
   };
 
-  const handleSkipSync = () => {
+  const handlePickContacts = async () => {
+    setSyncing(true);
+    try {
+      const picked = await openContactPicker();
+      if (picked.length === 0) {
+        setSyncStats({ total: 0, onApp: 0 });
+        setStep("done");
+        setSyncing(false);
+        return;
+      }
+      const syncResp = await API.syncContacts(token, picked);
+      const stats = {
+        total: picked.length,
+        onApp: syncResp.stats?.onApp || syncResp.onChantilink?.length || 0,
+      };
+      (syncResp.onChantilink || []).forEach((c) => saveContactToOnApp(c));
+      setSyncStats(stats);
+      setStep("done");
+    } catch (err) {
+      console.error("Picker sync error:", err);
+      setSyncStats({ total: 0, onApp: 0 });
+      setStep("done");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleSkip = () => {
     setSyncStats({ total: 0, onApp: 0 });
     setStep("done");
   };
 
   return (
     <div className="fixed inset-0 z-50 bg-gradient-to-br from-gray-950 via-blue-950 to-gray-950 flex items-center justify-center p-4">
-      {/* Cercles décoratifs */}
       <div className="absolute top-0 right-0 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-64 h-64 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none" />
 
       <AnimatePresence mode="wait">
 
-        {/* ── ÉTAPE 1 : Intro ─────────────────────────────────────── */}
         {step === "intro" && (
           <motion.div
             key="intro"
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
+            initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.4 }}
             className="w-full max-w-sm text-center"
           >
-            {/* Icône principale */}
             <motion.div
               animate={{ scale: [1, 1.06, 1] }}
               transition={{ duration: 2.5, repeat: Infinity }}
@@ -167,7 +161,6 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
             >
               <MessageSquare size={44} className="text-white" />
             </motion.div>
-
             <h1 className="text-3xl font-black text-white mb-3 leading-tight">
               Restez connecté<br />
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-400">
@@ -175,20 +168,17 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
               </span>
             </h1>
             <p className="text-gray-400 mb-10 leading-relaxed">
-              Chantilink synchronise vos contacts téléphoniques pour retrouver vos amis en un instant.
+              Trouvez vos amis sur Chantilink en sélectionnant vos contacts depuis votre téléphone.
             </p>
-
-            {/* Features */}
             <div className="space-y-3 mb-10 text-left">
               {[
-                { icon: <Smartphone size={18} />, color: "blue", title: "Contacts automatiques", desc: "Retrouvez vos amis déjà sur Chantilink" },
-                { icon: <Shield size={18} />, color: "green", title: "Chiffrement SHA-256", desc: "Vos numéros ne sont jamais stockés en clair" },
+                { icon: <UserPlus size={18} />, color: "blue",   title: "Vous choisissez",       desc: "Sélectionnez uniquement les contacts que vous voulez" },
+                { icon: <Shield size={18} />,   color: "green",  title: "Chiffrement SHA-256",    desc: "Vos numéros ne sont jamais stockés en clair" },
                 { icon: <MessageSquare size={18} />, color: "purple", title: "Messagerie sécurisée", desc: "Discussions privées de bout en bout" },
               ].map((f, i) => (
                 <motion.div
                   key={i}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
+                  initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: 0.2 + i * 0.1 }}
                   className="flex items-center gap-3 p-3 bg-white/5 rounded-2xl border border-white/5"
                 >
@@ -202,7 +192,6 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
                 </motion.div>
               ))}
             </div>
-
             <motion.button
               whileTap={{ scale: 0.97 }}
               onClick={() => setStep("phone")}
@@ -210,44 +199,31 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
             >
               Commencer <ChevronRight size={20} />
             </motion.button>
-
-            <button
-              onClick={() => onComplete()}
-              className="mt-4 w-full py-3 text-gray-500 text-sm hover:text-gray-400 transition-colors"
-            >
+            <button onClick={handleSkip} className="mt-4 w-full py-3 text-gray-500 text-sm hover:text-gray-400 transition-colors">
               Passer pour l'instant
             </button>
           </motion.div>
         )}
 
-        {/* ── ÉTAPE 2 : Saisie du numéro ──────────────────────────── */}
         {step === "phone" && (
           <motion.div
             key="phone"
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
+            initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.4 }}
             className="w-full max-w-sm"
           >
-            <button
-              onClick={() => { setStep("intro"); setError(""); }}
-              className="flex items-center gap-2 text-gray-400 hover:text-white mb-8 transition-colors"
-            >
+            <button onClick={() => { setStep("intro"); setError(""); }} className="flex items-center gap-2 text-gray-400 hover:text-white mb-8 transition-colors">
               <ArrowLeft size={18} /> Retour
             </button>
-
             <div className="mb-8">
               <div className="w-16 h-16 rounded-2xl bg-blue-600/20 flex items-center justify-center mb-6">
                 <Phone size={30} className="text-blue-400" />
               </div>
               <h2 className="text-2xl font-black text-white mb-2">Votre numéro</h2>
               <p className="text-gray-400 text-sm leading-relaxed">
-                Entrez votre numéro de téléphone pour synchroniser vos contacts et être trouvable par vos amis.
+                Entrez votre numéro pour être trouvable par vos contacts.
               </p>
             </div>
-
-            {/* Input téléphone */}
             <div className="mb-6">
               <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">
                 Numéro de téléphone
@@ -268,139 +244,112 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
               </div>
               <AnimatePresence>
                 {error && (
-                  <motion.p
-                    initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                    className="mt-2 text-sm text-red-400"
-                  >
+                  <motion.p initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-2 text-sm text-red-400">
                     {error}
                   </motion.p>
                 )}
               </AnimatePresence>
-              <p className="mt-2 text-xs text-gray-600">
-                Format international requis — ex: +225 07 12 34 56 78
-              </p>
+              <p className="mt-2 text-xs text-gray-600">Format international — ex: +225 07 12 34 56 78</p>
             </div>
-
-            {/* Bloc sécurité */}
             <div className="p-4 bg-green-500/5 border border-green-500/15 rounded-2xl mb-6">
               <div className="flex items-start gap-2">
                 <ShieldCheck size={16} className="text-green-500 flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-gray-400 leading-relaxed">
-                  Votre numéro est chiffré avec SHA-256 avant toute comparaison. <strong className="text-white">Il n'est jamais stocké en clair.</strong>
+                  Votre numéro est chiffré avec SHA-256. <strong className="text-white">Il n'est jamais stocké en clair.</strong>
                 </p>
               </div>
             </div>
-
             <motion.button
               whileTap={{ scale: 0.97 }}
               onClick={handlePhoneSubmit}
-              disabled={!phone.trim()}
+              disabled={!phone.trim() || syncing}
               className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black rounded-2xl shadow-xl shadow-blue-900/40 flex items-center justify-center gap-2 transition-all"
             >
-              Continuer <ChevronRight size={20} />
+              {syncing ? <Loader size={20} className="animate-spin" /> : <><span>Continuer</span> <ChevronRight size={20} /></>}
             </motion.button>
-
-            <button
-              onClick={handleSkipSync}
-              className="mt-4 w-full py-3 text-gray-500 text-sm hover:text-gray-400 transition-colors"
-            >
-              Passer la synchronisation
+            <button onClick={handleSkip} className="mt-4 w-full py-3 text-gray-500 text-sm hover:text-gray-400 transition-colors">
+              Passer
             </button>
           </motion.div>
         )}
 
-        {/* ── ÉTAPE 3 : Synchronisation en cours ──────────────────── */}
-        {step === "syncing" && (
+        {step === "picker" && (
           <motion.div
-            key="syncing"
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0 }}
+            key="picker"
+            initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.4 }}
             className="w-full max-w-sm text-center"
           >
             <motion.div
-              animate={{ rotate: 360 }}
-              transition={{ duration: 1.5, repeat: Infinity, ease: "linear" }}
-              className="mx-auto mb-8 w-20 h-20 rounded-full border-4 border-blue-600/20 border-t-blue-500"
-            />
-            <h2 className="text-xl font-black text-white mb-2">Synchronisation…</h2>
-            <p className="text-gray-400 text-sm">On recherche vos amis sur Chantilink</p>
-
-            <div className="mt-8 space-y-3">
-              {[
-                "Enregistrement du numéro",
-                "Lecture des contacts",
-                "Chiffrement SHA-256",
-                "Correspondances trouvées",
-              ].map((label, i) => (
-                <motion.div
-                  key={label}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.4 }}
-                  className="flex items-center gap-3 p-3 bg-white/5 rounded-xl"
-                >
-                  <motion.div
-                    initial={{ scale: 0 }}
-                    animate={{ scale: 1 }}
-                    transition={{ delay: i * 0.4 + 0.2 }}
-                    className="w-5 h-5 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center"
-                  >
-                    <motion.div
-                      animate={{ backgroundColor: ["#3b82f6", "#6366f1", "#3b82f6"] }}
-                      transition={{ duration: 1.5, repeat: Infinity, delay: i * 0.2 }}
-                      className="w-2 h-2 rounded-full bg-blue-500"
-                    />
-                  </motion.div>
-                  <span className="text-sm text-gray-300">{label}</span>
-                </motion.div>
-              ))}
+              animate={{ scale: [1, 1.04, 1] }}
+              transition={{ duration: 2, repeat: Infinity }}
+              className="mx-auto mb-8 w-24 h-24 rounded-3xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-2xl shadow-indigo-900/50"
+            >
+              <Users size={44} className="text-white" />
+            </motion.div>
+            <h2 className="text-2xl font-black text-white mb-3">Trouvez vos amis</h2>
+            <p className="text-gray-400 mb-8 leading-relaxed text-sm">
+              Sélectionnez les contacts à retrouver sur Chantilink.{" "}
+              <strong className="text-white">Vous choisissez qui partager.</strong>
+            </p>
+            <div className="p-4 bg-blue-500/5 border border-blue-500/15 rounded-2xl mb-8 text-left space-y-2">
+              <p className="text-xs font-bold text-blue-400">Comment ça fonctionne</p>
+              <p className="text-xs text-gray-400 leading-relaxed">
+                1. Un sélecteur de contacts s'ouvre<br />
+                2. Vous choisissez les contacts à vérifier<br />
+                3. Leurs numéros sont hachés (SHA-256) localement<br />
+                4. Comparaison sécurisée avec notre base<br />
+                5. <strong className="text-white">Aucun numéro n'est stocké en clair</strong>
+              </p>
             </div>
+            <motion.button
+              whileTap={{ scale: 0.97 }}
+              onClick={handlePickContacts}
+              disabled={syncing}
+              className="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-black rounded-2xl shadow-xl shadow-indigo-900/40 flex items-center justify-center gap-2 transition-all"
+            >
+              {syncing
+                ? <><Loader size={20} className="animate-spin" /> Recherche en cours…</>
+                : <><Users size={20} /> Sélectionner mes contacts</>
+              }
+            </motion.button>
+            <button onClick={handleSkip} disabled={syncing} className="mt-4 w-full py-3 text-gray-500 text-sm hover:text-gray-400 transition-colors disabled:opacity-40">
+              Passer cette étape
+            </button>
           </motion.div>
         )}
 
-        {/* ── ÉTAPE 4 : Terminé ───────────────────────────────────── */}
         {step === "done" && (
           <motion.div
             key="done"
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
+            initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
             transition={{ type: "spring", damping: 20, stiffness: 200 }}
             className="w-full max-w-sm text-center"
           >
-            {/* Checkmark animé */}
             <motion.div
-              initial={{ scale: 0, rotate: -20 }}
-              animate={{ scale: 1, rotate: 0 }}
+              initial={{ scale: 0, rotate: -20 }} animate={{ scale: 1, rotate: 0 }}
               transition={{ type: "spring", damping: 15, stiffness: 200 }}
               className="mx-auto mb-8 w-24 h-24 rounded-full bg-gradient-to-br from-green-500/20 to-emerald-500/20 border border-green-500/30 flex items-center justify-center"
             >
               <CheckCircle size={52} className="text-green-400" />
             </motion.div>
-
             <h2 className="text-2xl font-black text-white mb-3">
               {syncStats?.onApp > 0 ? "Amis trouvés ! 🎉" : "C'est tout bon !"}
             </h2>
-
             {syncStats?.onApp > 0 ? (
               <p className="text-gray-400 mb-8">
                 <span className="text-white font-black text-xl">{syncStats.onApp}</span>{" "}
                 {syncStats.onApp === 1 ? "ami utilise" : "amis utilisent"} déjà Chantilink
                 {syncStats.total > 0 && (
-                  <span className="block text-sm mt-1 text-gray-500">
-                    sur {syncStats.total} contacts analysés
-                  </span>
+                  <span className="block text-sm mt-1 text-gray-500">sur {syncStats.total} contacts sélectionnés</span>
                 )}
               </p>
             ) : (
               <p className="text-gray-400 mb-8 leading-relaxed">
                 Votre compte est configuré.<br />
-                <span className="text-sm text-gray-500">
-                  Invitez vos proches à rejoindre Chantilink.
-                </span>
+                <span className="text-sm text-gray-500">Ajoutez des contacts depuis l'onglet Contacts.</span>
               </p>
             )}
-
             <motion.button
               whileTap={{ scale: 0.97 }}
               onClick={() => onComplete()}
@@ -417,6 +366,103 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MODALE CONVERSATIONS
+// ─────────────────────────────────────────────────────────────────────────────
+const ConversationsModal = ({ conversations, loading, onSelect, onClose, unreadCounts }) => (
+  <motion.div
+    initial={{ opacity: 0 }}
+    animate={{ opacity: 1 }}
+    exit={{ opacity: 0 }}
+    className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+    onClick={onClose}
+  >
+    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+    <motion.div
+      initial={{ y: 60, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      exit={{ y: 60, opacity: 0 }}
+      transition={{ type: "spring", damping: 28, stiffness: 300 }}
+      className="relative z-10 w-full max-w-md bg-[#13161c] border border-white/10 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-white/5">
+        <MessageSquare size={18} className="text-purple-400 flex-shrink-0" />
+        <div className="flex-1">
+          <h2 className="text-base font-black text-white">Conversations</h2>
+          <p className="text-[11px] text-gray-500">{conversations.length} active(s)</p>
+        </div>
+        <button onClick={onClose} className="p-1.5 hover:bg-white/5 rounded-xl transition-colors">
+          <X size={18} className="text-gray-400" />
+        </button>
+      </div>
+
+      {/* Liste */}
+      <div className="overflow-y-auto max-h-[60vh] custom-scrollbar">
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="w-7 h-7 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+          </div>
+        ) : conversations.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12">
+            <MessageSquare size={36} className="text-gray-700 mb-3" />
+            <p className="text-sm text-gray-500">Aucune conversation active</p>
+          </div>
+        ) : (
+          <div className="p-2 space-y-1">
+            {conversations.map((conv) => (
+              <button
+                key={conv.id}
+                onClick={() => { onSelect(conv); onClose(); }}
+                className="w-full flex items-center gap-3 p-3 hover:bg-white/[0.04] rounded-xl transition-all group"
+              >
+                <div className="relative flex-shrink-0">
+                  <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-lg font-black overflow-hidden">
+                    {conv.profilePhoto
+                      ? <img src={conv.profilePhoto} alt="" className="w-full h-full object-cover" />
+                      : conv.fullName?.[0]?.toUpperCase() || "?"}
+                  </div>
+                  {conv.isOnline && (
+                    <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-[#13161c]" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="flex items-center justify-between mb-0.5">
+                    <h3 className="text-sm font-bold text-white truncate">{conv.fullName}</h3>
+                    {conv.lastMessageTime && (
+                      <span className="text-[10px] text-gray-600 flex-shrink-0 ml-2">
+                        {new Date(conv.lastMessageTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-gray-500 truncate flex-1">
+                      {conv.lastMessage || "Aucun message"}
+                    </p>
+                    {conv.unreadCount > 0 && (
+                      <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full flex-shrink-0">
+                        {conv.unreadCount}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <ChevronRight size={13} className="text-gray-700 group-hover:text-gray-500 flex-shrink-0" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="p-4 border-t border-white/5">
+        <button onClick={onClose} className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-gray-400 text-sm font-bold rounded-xl transition-all">
+          Fermer
+        </button>
+      </div>
+    </motion.div>
+  </motion.div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // COMPOSANT PRINCIPAL : Messages
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Messages() {
@@ -425,14 +471,15 @@ export default function Messages() {
   const navigate  = useNavigate();
   const location  = useLocation();
 
-  // ── Refs ──
   const messagesEndRef = useRef(null);
   const textareaRef    = useRef(null);
   const fileInputRef   = useRef(null);
   const ringtoneRef    = useRef(null);
 
-  // ── States UI ──
-  const [view, setView]                   = useState("contacts");
+  // ── ÉTAT VUE ──
+  const [view, setView] = useState("contacts"); // contacts | chat
+  const [modal, setModal] = useState(null);     // null | 'conversations' | 'pending'
+
   const [contacts, setContacts]           = useState([]);
   const [conversations, setConversations] = useState([]);
   const [messages, setMessages]           = useState([]);
@@ -440,32 +487,26 @@ export default function Messages() {
   const [unreadCounts, setUnreadCounts]   = useState({});
   const [onlineUsers, setOnlineUsers]     = useState([]);
 
-  const [showPhoneModal, setShowPhoneModal]   = useState(false);
-  const [showAddContact, setShowAddContact]   = useState(false);
-  const [showPendingModal, setShowPendingModal] = useState(false);
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
 
   const [input, setInput]         = useState("");
   const [loading, setLoading]     = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [typingUsers, setTypingUsers] = useState([]);
 
-  // ── ONBOARDING : afficher l'écran si l'user n'a pas encore de téléphone ──
-  // On mémorise dans localStorage qu'il a déjà vu l'onboarding (même sans numéro)
-  const onboardingKey = user?.id ? `chantilink_onboarding_done_${user.id}` : null;
+  // ── ONBOARDING ──
+  const onboardingKey     = user?.id ? `chantilink_onboarding_done_${user.id}` : null;
   const hasSeenOnboarding = onboardingKey ? !!localStorage.getItem(onboardingKey) : true;
   const needsOnboarding   = !hasSeenOnboarding && !user?.phone;
-
   const [showOnboarding, setShowOnboarding] = useState(needsOnboarding);
 
   const handleOnboardingComplete = useCallback(() => {
     if (onboardingKey) localStorage.setItem(onboardingKey, "1");
     setShowOnboarding(false);
-    // Recharger les contacts après l'onboarding
     loadContacts();
     loadConversations();
   }, [onboardingKey]); // eslint-disable-line
 
-  // ── Audio ──
   const {
     recording, audioBlob, audioUrl, isPlaying,
     startRecording, stopRecording, cancelRecording,
@@ -498,7 +539,6 @@ export default function Messages() {
     connected, initiateCall, socketEndCall, sendMessageSocket, showToast
   );
 
-  // ── Data loading ──
   const loadContacts = useCallback(async () => {
     if (!token) return;
     try {
@@ -565,10 +605,10 @@ export default function Messages() {
     }
   }, [token, socket, showToast, user]);
 
-  const handleSyncComplete = useCallback((newContacts) => {
+  const handlePickerSync = useCallback((newContacts) => {
     loadContacts();
     loadConversations();
-    if (newContacts.length > 0) showToast(`${newContacts.length} nouveaux amis trouvés !`, "success");
+    if (newContacts.length > 0) showToast(`${newContacts.length} ami(s) trouvé(s) !`, "success");
   }, [loadContacts, loadConversations, showToast]);
 
   const handleContactSelect = useCallback((contact) => {
@@ -585,6 +625,7 @@ export default function Messages() {
     setMessages([]);
     loadMessages(normalized.id);
     setView("chat");
+    setModal(null);
     setUnreadCounts((prev) => { const n = { ...prev }; delete n[normalized.id]; return n; });
   }, [loadMessages]);
 
@@ -662,19 +703,11 @@ export default function Messages() {
     }
   }, [token, updateUserProfile, user, showToast]);
 
-  const handleAddContact = useCallback(async (contactData) => {
-    const result = await API.addContact(token, contactData);
-    if (result.success) {
-      showToast("✅ Contact ajouté !", "success");
-      loadContacts(); loadConversations(); setShowAddContact(false);
-    } else if (result.canInvite) showToast("Contact hors app - invitation disponible", "info");
-  }, [token, loadContacts, loadConversations, showToast]);
-
   const handleAcceptPendingRequest = useCallback(async (request) => {
     try {
       await API.acceptMessageRequest(token, request._id);
       showToast("✅ Demande acceptée !", "success");
-      loadContacts(); loadConversations(); setShowPendingModal(false);
+      loadContacts(); loadConversations(); setModal(null);
     } catch { showToast("❌ Impossible d'accepter", "error"); }
   }, [token, loadContacts, loadConversations, showToast]);
 
@@ -717,11 +750,11 @@ export default function Messages() {
   }, [incomingCall, socket, sendMissedCallMessage, setIncomingCall, cleanupCallRingtone]);
 
   const handleBack = useCallback(() => {
-    if (view === "chat") { setView("conversations"); setSelectedContact(null); setMessages([]); }
-    else if (view === "conversations") setView("contacts");
-  }, [view]);
+    setView("contacts");
+    setSelectedContact(null);
+    setMessages([]);
+  }, []);
 
-  const handleGoHome = useCallback(() => navigate("/"), [navigate]);
 
   const handleDeleteMessage = useCallback(async (messageId) => {
     if (!selectedContact || !user?.id) return;
@@ -733,12 +766,11 @@ export default function Messages() {
     } catch { showToast("Erreur lors de la suppression", "error"); }
   }, [selectedContact, user, socket, showToast]);
 
-  // ── Effects ──
+  // ── EFFECTS ──
   useEffect(() => {
     if (!showOnboarding) { loadContacts(); loadConversations(); }
   }, [loadContacts, loadConversations, showOnboarding]);
 
-  // Ouverture auto depuis ProfileHeader
   useEffect(() => {
     if (location.state?.selectedContact && location.state?.openChat) {
       const contact = location.state.selectedContact;
@@ -848,157 +880,45 @@ export default function Messages() {
     return () => clearInterval(id);
   }, []);
 
-  // ─────────────────────────────────────────────
-  // RENDU : écran onboarding affiché en overlay
-  // ─────────────────────────────────────────────
+  const totalUnread = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+
   return (
     <>
-      {/* ── ONBOARDING OVERLAY ── */}
       <AnimatePresence>
         {showOnboarding && (
-          <OnboardingPhoneScreen
-            user={user}
-            onComplete={handleOnboardingComplete}
-          />
+          <OnboardingPhoneScreen user={user} onComplete={handleOnboardingComplete} />
         )}
       </AnimatePresence>
 
-      {/* ── APP PRINCIPALE ── */}
       <div className={`flex h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 text-white overflow-hidden ${showOnboarding ? "pointer-events-none" : ""}`}>
 
-        {/* VUE CONTACTS */}
+        {/* ══ VUE CONTACTS ══ */}
         {view === "contacts" && (
           <motion.div
-            initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: -20, opacity: 0 }}
+            initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
             className="w-full h-full flex flex-col"
           >
-            <div className="bg-[#12151a]/90 backdrop-blur-xl border-b border-white/5 p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <button onClick={handleGoHome} className="p-2 hover:bg-white/5 rounded-full transition-colors">
-                  <Home size={20} />
-                </button>
-                <div className="flex items-center gap-2">
-                  <Users size={22} className="text-blue-500" />
-                  <h1 className="text-xl font-bold">Mes Contacts</h1>
-                </div>
-              </div>
-              <button
-                onClick={() => setView("conversations")}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl transition-all"
-              >
-                <MessageSquare size={18} />
-                <span className="text-sm font-semibold">Conversations</span>
-                {conversations.length > 0 && (
-                  <span className="bg-white/20 text-white text-xs font-bold px-2 py-0.5 rounded-full">
-                    {conversations.length}
-                  </span>
-                )}
-              </button>
-            </div>
-            <div className="flex-1 overflow-hidden">
-              <ContactSidebar
-                token={token}
-                contacts={contacts}
-                selectedContact={selectedContact}
-                onContactSelect={handleContactSelect}
-                unreadCounts={unreadCounts}
-                onlineUsers={onlineUsers}
-                user={user}
-                onSyncComplete={handleSyncComplete}
-                onShowAddContact={() => setShowAddContact(true)}
-                onShowPending={() => setShowPendingModal(true)}
-              />
-            </div>
+            <ContactSidebar
+              token={token}
+              contacts={contacts}
+              selectedContact={selectedContact}
+              onContactSelect={handleContactSelect}
+              unreadCounts={unreadCounts}
+              onlineUsers={onlineUsers}
+              user={user}
+              onPickerSync={handlePickerSync}
+              onShowPending={() => setModal('pending')}
+              onShowConversations={() => setModal('conversations')}
+              conversations={conversations}
+              totalUnread={totalUnread}
+            />
           </motion.div>
         )}
 
-        {/* VUE CONVERSATIONS */}
-        {view === "conversations" && (
-          <motion.div
-            initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 20, opacity: 0 }}
-            className="w-full h-full flex flex-col"
-          >
-            <div className="bg-[#12151a]/90 backdrop-blur-xl border-b border-white/5 p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <button onClick={handleBack} className="p-2 hover:bg-white/5 rounded-full transition-colors">
-                  <ArrowLeft size={20} />
-                </button>
-                <div className="flex items-center gap-2">
-                  <MessageSquare size={22} className="text-purple-500" />
-                  <h1 className="text-xl font-bold">Conversations</h1>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setView("contacts")} className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl transition-all">
-                  <Users size={18} /><span className="text-sm font-semibold">Contacts</span>
-                </button>
-                <button onClick={handleGoHome} className="p-2 hover:bg-white/5 rounded-full transition-colors">
-                  <Home size={20} />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
-              {loading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="w-8 h-8 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
-                </div>
-              ) : conversations.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full">
-                  <MessageSquare size={64} className="text-gray-600 mb-4" />
-                  <p className="text-gray-500 text-center">
-                    Aucune conversation active<br />
-                    <span className="text-sm">Synchronisez vos contacts pour commencer</span>
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {conversations.map((conv) => (
-                    <button
-                      key={conv.id}
-                      onClick={() => handleContactSelect(conv)}
-                      className="w-full flex items-center gap-4 p-4 bg-white/5 hover:bg-white/10 rounded-2xl transition-all border border-white/5"
-                    >
-                      <div className="relative flex-shrink-0">
-                        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-xl font-black overflow-hidden">
-                          {conv.profilePhoto
-                            ? <img src={conv.profilePhoto} alt="" className="w-full h-full object-cover" />
-                            : conv.fullName?.[0]?.toUpperCase() || "?"}
-                        </div>
-                        {conv.isOnline && <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-[#12151a]" />}
-                      </div>
-                      <div className="flex-1 text-left min-w-0">
-                        <div className="flex items-center justify-between mb-1">
-                          <h3 className="font-bold text-white truncate">{conv.fullName}</h3>
-                          {conv.lastMessageTime && (
-                            <span className="text-xs text-gray-500 flex-shrink-0 ml-2">
-                              {new Date(conv.lastMessageTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm text-gray-400 truncate flex-1">
-                            {conv.lastMessageType === "system" && "📱 "}{conv.lastMessage || "Aucun message"}
-                          </p>
-                          {conv.unreadCount > 0 && (
-                            <span className="bg-blue-600 text-white text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ml-2">
-                              {conv.unreadCount}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-
-        {/* VUE CHAT */}
+        {/* ══ VUE CHAT ══ */}
         {view === "chat" && selectedContact && (
           <motion.div
-            initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 20, opacity: 0 }}
+            initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
             className="w-full h-full flex flex-col"
           >
             <ChatHeader
@@ -1020,42 +940,54 @@ export default function Messages() {
             />
           </motion.div>
         )}
+      </div>
 
-        {/* MODALES */}
-        {showPhoneModal && (
-          <PhoneNumberModal isOpen={showPhoneModal} onClose={() => setShowPhoneModal(false)} onSubmit={handlePhoneSubmit} canSkip />
+      {/* ══ MODALES ══ */}
+      <AnimatePresence>
+        {modal === 'conversations' && (
+          <ConversationsModal
+            key="modal-conversations"
+            conversations={conversations}
+            loading={loading}
+            onSelect={handleContactSelect}
+            onClose={() => setModal(null)}
+            unreadCounts={unreadCounts}
+          />
         )}
-        {showAddContact && (
-          <AddContactModal isOpen={showAddContact} onClose={() => setShowAddContact(false)} onAdd={handleAddContact} />
-        )}
-        {showPendingModal && (
+        {modal === 'pending' && (
           <PendingMessagesModal
-            isOpen={showPendingModal} onClose={() => setShowPendingModal(false)}
+            key="modal-pending"
+            isOpen
+            onClose={() => setModal(null)}
             onAccept={handleAcceptPendingRequest}
             onReject={async (requestId) => {
               try { await API.rejectMessageRequest(token, requestId); showToast("Demande rejetée", "info"); loadConversations(); }
               catch { showToast("Erreur", "error"); }
             }}
-            onOpenConversation={(request) => { handleContactSelect(request.sender); setShowPendingModal(false); }}
+            onOpenConversation={(request) => { handleContactSelect(request.sender); }}
           />
         )}
-        {call.on && (
-          <CallManager
-            call={call} onEndCall={endCall}
-            onToggleMute={() => setCall((p) => ({ ...p, mute: !p.mute }))}
-            onToggleVideo={() => setCall((p) => ({ ...p, video: !p.video }))}
-          />
-        )}
-        {incomingCall && (
-          <IncomingCallModal caller={incomingCall.caller} callType={incomingCall.type} onAccept={handleAcceptCall} onReject={handleRejectCall} />
-        )}
-        {missedCallNotification && (
-          <div className="fixed bottom-4 right-4 bg-red-500/90 backdrop-blur-sm text-white px-6 py-3 rounded-lg shadow-lg z-50">
-            <p className="font-semibold">Appel manqué</p>
-            <p className="text-sm">{missedCallNotification.caller?.name}</p>
-          </div>
-        )}
-      </div>
+      </AnimatePresence>
+
+      {showPhoneModal && (
+        <PhoneNumberModal isOpen onClose={() => setShowPhoneModal(false)} onSubmit={handlePhoneSubmit} canSkip />
+      )}
+      {call.on && (
+        <CallManager
+          call={call} onEndCall={endCall}
+          onToggleMute={() => setCall((p) => ({ ...p, mute: !p.mute }))}
+          onToggleVideo={() => setCall((p) => ({ ...p, video: !p.video }))}
+        />
+      )}
+      {incomingCall && (
+        <IncomingCallModal caller={incomingCall.caller} callType={incomingCall.type} onAccept={handleAcceptCall} onReject={handleRejectCall} />
+      )}
+      {missedCallNotification && (
+        <div className="fixed bottom-4 right-4 bg-red-500/90 backdrop-blur-sm text-white px-6 py-3 rounded-lg shadow-lg z-50">
+          <p className="font-semibold">Appel manqué</p>
+          <p className="text-sm">{missedCallNotification.caller?.name}</p>
+        </div>
+      )}
     </>
   );
 }

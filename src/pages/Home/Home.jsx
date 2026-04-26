@@ -123,7 +123,6 @@ const getCachedScore = (post, ctx, seenIds, followingIds, now) => {
   const key = `${id}_${SCORE_CACHE_VERSION.v}`;
   if (SCORE_CACHE.has(key)) return SCORE_CACHE.get(key);
   const result = scoreOnePostRaw(post, ctx, seenIds, followingIds, now);
-  // LRU simple : purge les 500 plus anciens si trop grand
   if (SCORE_CACHE.size >= SCORE_CACHE_MAX) {
     let purged = 0;
     for (const k of SCORE_CACHE.keys()) {
@@ -136,7 +135,7 @@ const getCachedScore = (post, ctx, seenIds, followingIds, now) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Persistence helpers (sessionStorage) — inchangés v15
+// Persistence helpers (sessionStorage)
 // ══════════════════════════════════════════════════════════════════════════════
 const LIVE_POOL_KEY = "feed_live_pool_v16";
 const SEEN_IDS_KEY  = "feed_seen_ids_v16";
@@ -169,7 +168,7 @@ const loadSeenIds = () => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE WEIGHTS — normalisés une seule fois au load (OPT 10)
+// SCORE WEIGHTS
 // ══════════════════════════════════════════════════════════════════════════════
 const RAW_DEFAULT_WEIGHTS = {
   behavioral:  0.25,
@@ -396,7 +395,7 @@ const createUserEmbedding = () => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// postToVecRaw — calcul pur (non caché)
+// postToVecRaw
 // ══════════════════════════════════════════════════════════════════════════════
 const postToVecRaw = (post) => {
   const vec = new Float32Array(EMB_DIM);
@@ -783,8 +782,6 @@ const createCausalCalibrator = () => {
       const cC=control.interacted/control.shown, cT=treatment.interacted/treatment.shown;
       return cC>0?(cT-cC)/cC:null;
     },
-    // ⚡ OPT 6 — recalibrateWeights est maintenant appelé depuis un useEffect dédié
-    // plus de setTimeout interne dans smartBuildFeed
     recalibrateWeights: (weights, onSave) => {
       const lift=data.control.shown>=CAUSAL_MIN_SAMPLES&&data.treatment.shown>=CAUSAL_MIN_SAMPLES
         ?(()=>{ const cC=data.control.interacted/data.control.shown, cT=data.treatment.interacted/data.treatment.shown; return cC>0?(cT-cC)/cC:null; })()
@@ -834,7 +831,7 @@ if (import.meta.hot) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SCORE Q : MMR Reranking — OPT 7 : postToVec dédupliqué
+// SCORE Q : MMR Reranking
 // ══════════════════════════════════════════════════════════════════════════════
 const MMR_LAMBDA_BASE = 0.70;
 
@@ -857,7 +854,6 @@ const applyMMRReranking = (scoredPosts) => {
 
   const lambda = adaptiveLambda(scoredPosts.length);
 
-  // ⚡ OPT 7 — vecs pré-calculés une seule fois, réutilisés dans toute la boucle
   const withVecs = scoredPosts.map(item => ({
     ...item,
     vec: postToVec(item.post),
@@ -873,7 +869,6 @@ const applyMMRReranking = (scoredPosts) => {
     let bestMMR=-Infinity, bestIndex=0;
     remaining.forEach((candidate, i) => {
       const relevance = candidate.score / 100;
-      // ⚡ candidate.vec déjà calculé, pas de double appel postToVec
       const maxSim    = result.reduce((m,sel)=>Math.max(m,cosineSim(candidate.vec,sel.vec)), 0);
       const mmr       = lambda*relevance - (1-lambda)*maxSim;
       if (mmr>bestMMR) { bestMMR=mmr; bestIndex=i; }
@@ -901,7 +896,7 @@ const applyExplorationBudget = (rankedPosts, totalSlots) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// scoreOnePostRaw — calcul pur sans cache (utilisé par getCachedScore)
+// scoreOnePostRaw
 // ══════════════════════════════════════════════════════════════════════════════
 const scoreOnePostRaw = (p, ctx, seenIds, followingIds, now) => {
   const { tracker, userEmb, fatigue, ltm, session, trend, calib, weights } = ctx;
@@ -945,17 +940,15 @@ const scoreOnePostRaw = (p, ctx, seenIds, followingIds, now) => {
   };
 };
 
-// scoreOnePost — alias public qui utilise le cache (OPT 1)
 const scoreOnePost = getCachedScore;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// smartBuildFeed v16 — OPT 6 : plus de setTimeout interne
+// smartBuildFeed v16
 // ══════════════════════════════════════════════════════════════════════════════
 const smartBuildFeed = (posts, bots, seenIds, followingIds=new Set(), ctx=null) => {
   const _ctx = ctx || getScoringContext();
   const now  = Date.now();
 
-  // ⚡ OPT 1 — utilise getCachedScore pour les posts réels
   const scoredReal = posts.map(p => getCachedScore(p, _ctx, seenIds, followingIds, now));
   const scoredBots = bots.map(p => {
     const base     = scorePost(p, now)*0.7;
@@ -977,9 +970,6 @@ const smartBuildFeed = (posts, bots, seenIds, followingIds=new Set(), ctx=null) 
       mixed.push({...rankedBots[bi++],_isBot:true});
   });
   while(bi<Math.min(rankedBots.length,MIX_MAX_BOTS)) mixed.push({...rankedBots[bi++],_isBot:true});
-
-  // ⚡ OPT 6 — recalibrateWeights est géré dans un useEffect dédié dans Home
-  // Plus de setTimeout ici qui mutait silencieusement hors du cycle React
 
   return applyExplorationBudget(mixed, mixed.length);
 };
@@ -1091,7 +1081,6 @@ const resolvePost = async (post) => {
   }catch{return null;}
 };
 
-// ⚡ OPT 2 — resolveBatch avec AbortSignal + yield requestIdleCallback
 const resolveBatch = async (posts, onPartialResult, signal) => {
   const results=new Array(posts.length).fill(null);
   let i=0, resolved=0;
@@ -1104,7 +1093,6 @@ const resolveBatch = async (posts, onPartialResult, signal) => {
         ? await resolvePost(posts[idx])
         : posts[idx];
       resolved++;
-      // Notify toutes les 5 résolutions (au lieu de 3) et yield au browser
       if (onPartialResult && resolved % 5 === 0) {
         onPartialResult(results.filter(Boolean));
         await new Promise(r => {
@@ -1128,8 +1116,7 @@ const seededShuffle = (arr, seed) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ⚡ OPT 5 — isValidPost hissé au niveau module (pas de useCallback chaud)
-// Ne dépend d'aucun state/prop React
+// ⚡ OPT 5 — isValidPost au niveau module
 // ══════════════════════════════════════════════════════════════════════════════
 const isValidPost = (p) => {
   if(!p?._id)return false;
@@ -1284,14 +1271,14 @@ const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest
 PostCardWrapper.displayName = "PostCardWrapper";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Compteur de clés unique et global au module
+// Compteur de clés unique
 // ══════════════════════════════════════════════════════════════════════════════
 let _keyCounter = 0;
 const nextKey = () => ++_keyCounter;
 
-// ═════════════════════════════════════════════════════════════════════════════
-// FEED v16 — OPT 3 : version counter au lieu de copie d'array
-// ═════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+// FEED v16
+// ══════════════════════════════════════════════════════════════════════════════
 const Feed = ({
   posts,
   isDarkMode, onDeleted, showToast, apiLoadMoreRef, hasMoreFromAPI,
@@ -1300,7 +1287,6 @@ const Feed = ({
   scrollContainerRef, followingIds,
   onPostsSeen,
 }) => {
-  // ⚡ OPT 3 — displayedVer au lieu de displayed state (évite la copie array)
   const [displayedVer,  setDisplayedVer]  = useState(0);
   const [showAllSeen,   setShowAllSeen]   = useState(false);
   const [isFetchingAPI, setIsFetchingAPI] = useState(false);
@@ -1331,7 +1317,7 @@ const Feed = ({
     const batch = pool.slice(0, PAGE_SIZE).map(tagPost);
     cursorRef.current = batch.length;
     accRef.current = batch;
-    setDisplayedVer(v => v + 1); // ⚡ OPT 3 — pas de copie
+    setDisplayedVer(v => v + 1);
     setShowAllSeen(false);
     setIsFetchingAPI(false);
     scheduleIdlePrefetch(pool, 0, PAGE_SIZE+PREFETCH_AHEAD, 20);
@@ -1400,13 +1386,11 @@ const Feed = ({
     tagged.forEach(p=>{ctx.fatigue.record(p);ctx.trend.record(p);ctx.session.recordView();});
 
     const next=[...accRef.current,...tagged];
-    // ⚡ OPT 3 — accRef est la source de vérité, pas de setState avec copie
     accRef.current = next.length > MAX_DOM_POSTS
       ? next.slice(next.length - MAX_DOM_POSTS)
       : next;
 
     Promise.resolve().then(()=>{loadingRef.current=false;});
-    // ⚡ OPT 3 — incrément minimal de version, pas de [...array]
     setDisplayedVer(v => v + 1);
     scheduleIdlePrefetch(pool,cursorRef.current,PREFETCH_AHEAD,30);
   },[tagPost]);
@@ -1459,7 +1443,6 @@ const Feed = ({
 
   const [selectedArticle,setSelectedArticle]=useState(null);
 
-  // ⚡ OPT 3 — lecture directe de accRef, pas de state copié
   const displayedPosts = accRef.current;
 
   if (isLoading&&!displayedPosts.length) return <FeedSkeleton isDarkMode={isDarkMode}/>;
@@ -1499,9 +1482,9 @@ const Feed = ({
 };
 Feed.displayName = "Feed";
 
-// ═════════════════════════════════════════════════════════════════════════════
-// HOME v16 — toutes optimisations appliquées
-// ═════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+// HOME v16 — Layout 2 colonnes grand écran
+// ══════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
   const { fetchStories, stories=[] } = useStories();
@@ -1552,19 +1535,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const currentApiPageRef   = useRef(1);
   const fetchingNextPageRef = useRef(false);
 
-  // ⚡ OPT 8 — AbortController global pour tous les fetches axios
   const abortRef = useRef(new AbortController());
-
-  // ⚡ OPT 4 — timer de debounce pour saveSeenIds
   const saveSeenIdsTimer = useRef(null);
 
   const STORIES_H = 92;
   const TOTAL_TOP = STORIES_H;
   const showMock  = MOCK_CONFIG.enabled;
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // OPT 8 — AbortController : reset à chaque montage, abort au unmount
-  // ══════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     abortRef.current = new AbortController();
     return () => {
@@ -1573,9 +1550,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     };
   }, []);
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // Seed forcé + seenIds reset au montage (v15 FIX 7, conservé)
-  // ══════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     const freshSeed = Math.floor(Math.random() * 0xffffffff);
     setSeed(freshSeed);
@@ -1584,10 +1558,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     startTransition(() => setResetSig(k => k + 1));
   }, []);
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // ⚡ OPT 6 — recalibrateWeights dans un useEffect dédié (toutes les 5 min)
-  // Plus de setTimeout dans smartBuildFeed / useMemo
-  // ══════════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!user) return;
     const id = setInterval(() => {
@@ -1596,7 +1566,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       _ctx.calib.recalibrateWeights(_ctx.weights, (newW) => {
         _ctx.weights = newW;
         saveWeights(newW);
-        // Invalide le score cache : les prochains scores seront recalculés
         invalidateScoreCache();
       });
     }, 5 * 60_000);
@@ -1613,7 +1582,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return all.filter(a=>{const key=a._id||a.id||a.url;if(seen.has(key))return false;seen.add(key);return true;});
   },[newsGCLen,newsTechLen,newsEnvLen]); // eslint-disable-line
 
-  // ⚡ OPT 4 — saveSeenIds déboncé 2s (plus de write synchrone à chaque batch)
   const handlePostsSeen = useCallback((ids) => {
     ids.forEach(id => persistedSeenIdsRef.current.add(id));
     clearTimeout(saveSeenIdsTimer.current);
@@ -1638,9 +1606,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if(!user)return;
     (async()=>{
       try{
-        const{data}=await axiosClient.get("/users/following?limit=500",{
-          signal: abortRef.current.signal // ⚡ OPT 8
-        });
+        const{data}=await axiosClient.get("/users/following?limit=500",{signal:abortRef.current.signal});
         const list=Array.isArray(data)?data:(data?.users||data?.following||[]);
         setFollowingIds(new Set(list.map(u=>u._id||u.id).filter(Boolean)));
       }catch(e){ if(e?.name==="CanceledError"||e?.name==="AbortError") return; }
@@ -1676,18 +1642,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if(!user||sugFetched.current)return;sugFetched.current=true;
     (async()=>{
       try{
-        const{data}=await axiosClient.get("/users/suggestions?limit=20",{
-          signal: abortRef.current.signal // ⚡ OPT 8
-        });
+        const{data}=await axiosClient.get("/users/suggestions?limit=20",{signal:abortRef.current.signal});
         const list=Array.isArray(data)?data:(data?.users||data?.suggestions||[]);
         setSuggestedUsers(list.filter(u=>u?._id&&u._id!==user._id));
       }
       catch(e){
         if(e?.name==="CanceledError"||e?.name==="AbortError") return;
         try{
-          const{data}=await axiosClient.get("/users?limit=20&sort=followers",{
-            signal: abortRef.current.signal
-          });
+          const{data}=await axiosClient.get("/users?limit=20&sort=followers",{signal:abortRef.current.signal});
           const list=Array.isArray(data)?data:(data?.users||[]);
           setSuggestedUsers(list.filter(u=>u?._id&&u._id!==user._id).slice(0,16));
         }catch{ setSuggestedUsers([]); }
@@ -1705,9 +1667,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       if(cachedProfilePosts.length>0){addLivePosts(cachedProfilePosts);const er=livePostsRef.current.filter(p=>!p._isMock&&!p.isMockPost).length;if(er>=FALLBACK_THRESHOLD*2)return;}
       let userPool=suggestedUsers.length>0?suggestedUsers:await(async()=>{
         try{
-          const{data}=await axiosClient.get("/users?limit=30&sort=followers",{
-            signal: abortRef.current.signal // ⚡ OPT 8
-          });
+          const{data}=await axiosClient.get("/users?limit=30&sort=followers",{signal:abortRef.current.signal});
           return Array.isArray(data)?data:(data?.users||[]);
         }catch{ return[]; }
       })();
@@ -1717,7 +1677,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       if(!window.__fallbackPostsRoutePromise__){
         const probeUid=probeTarget?._id||probeTarget?.id;
         window.__fallbackPostsRoutePromise__=probeUid?(async()=>{
-          const sig = abortRef.current.signal; // ⚡ OPT 8
+          const sig=abortRef.current.signal;
           try{await axiosClient.get(`/users/${probeUid}/posts?limit=1&page=1`,{signal:sig});return"user_posts";}
           catch(e1){if(e1.response?.status!==404)return"user_posts";
             try{await axiosClient.get(`/posts?userId=${probeUid}&limit=1`,{signal:sig});return"posts_filter";}
@@ -1735,7 +1695,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         if(route==="posts_user")  return`/posts/user/${uid}?limit=${FALLBACK_POSTS_LIMIT}`;
         return null;
       };
-      const sig = abortRef.current.signal; // ⚡ OPT 8
+      const sig=abortRef.current.signal;
       const results=await Promise.allSettled([probeTarget,...targets].filter(Boolean).map(async(u)=>{
         const uid=u._id||u.id;if(!uid)return[];
         const url=buildUrl(uid);if(!url)return[];
@@ -1785,7 +1745,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const rawPool=useMemo(()=>{
     const live=livePostsRef.current;
     const dedup=(arr)=>{const s=new Set();return arr.filter(p=>{if(s.has(p._id))return false;s.add(p._id);return true;});};
-    // ⚡ OPT 5 — isValidPost est au niveau module, pas recréé ici
     const valid=dedup(live.filter(p=>isValidPost(p)));
     const vReal=valid.filter(p=>!p.isBot&&!p.user?.isBot);
     const vBots=valid.filter(p=> p.isBot|| p.user?.isBot);
@@ -1797,7 +1756,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
     let built;
     if(!showMock){
-      // ⚡ OPT 1 — smartBuildFeed utilise getCachedScore en interne
       built = smartBuildFeed(realToScore, vBots, seenIds, followingIds, ctx);
     } else {
       const mocks=dedup(MOCK_POSTS.slice(0,mockCount));
@@ -1816,7 +1774,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     });
   },[livePostsVer,mockCount,showMock,seed,followingIds]); // eslint-disable-line
 
-  // ⚡ OPT 2 — useEffect avec AbortController pour annuler resolveBatch
   useEffect(()=>{
     if(!rawPool.length){setResolved([]);return;}
 
@@ -1836,7 +1793,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       if(cancelled||controller.signal.aborted)return;
       partials.forEach(p=>rm.set(p._id,p));
       startTransition(()=>setResolved(rawPool.map(p=>rm.get(p._id)).filter(Boolean)));
-    }, controller.signal).then(fr=>{  // ⚡ OPT 2 — signal passé à resolveBatch
+    }, controller.signal).then(fr=>{
       if(cancelled||controller.signal.aborted)return;
       fr.forEach(p=>rm.set(p._id,p));
       const o=rawPool.map(p=>rm.get(p._id)).filter(Boolean);
@@ -1899,7 +1856,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     setSeed(Math.floor(Math.random()*0xffffffff));
     persistedSeenIdsRef.current = new Set();
     saveSeenIds(new Set());
-    // Invalide le score cache au refresh
     invalidateScoreCache();
     prefetchTriggeredRef.current=false;currentApiPageRef.current=1;
     fetchingNextPageRef.current=false;fallbackFetchedRef.current=false;
@@ -1949,7 +1905,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   const handleShowNew=useCallback(()=>{
     setNewPosts(0);currentApiPageRef.current=1;fetchingNextPageRef.current=false;
-    invalidateScoreCache(); // Invalide le cache au show-new
+    invalidateScoreCache();
     startTransition(()=>{setSeed(Math.floor(Math.random()*0xffffffff));setResetSig(k=>k+1);});
   },[]);
 
@@ -2000,7 +1956,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         case"report":  _ctx.tracker.onHide(post,position);   _ctx.userEmb.update(postVec,-2.0);_ctx.ltm.update(post,-1.0); break;
         default: break;
       }
-      // Invalide le cache pour que le prochain rawPool recalcule ce post
       invalidateScoreCache();
     };
     window.addEventListener("feed:interaction",h);
@@ -2016,6 +1971,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         style={{WebkitOverflowScrolling:"touch",scrollbarWidth:"none",msOverflowStyle:"none",willChange:"transform",transform:"translateZ(0)"}}>
         <style>{`[data-scroll-container]::-webkit-scrollbar{display:none;width:0;height:0;}[data-scroll-container]{scrollbar-width:none;-ms-overflow-style:none;}`}</style>
 
+        {/* Pull-to-refresh */}
         <AnimatePresence>
           {(pullDist>8||isRefreshing)&&(
             <motion.div className="flex items-center justify-center py-1"
@@ -2026,36 +1982,87 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
           )}
         </AnimatePresence>
 
-        <div className="max-w-[470px] mx-auto">
-          <div className={`${bg} border-b ${border}`} style={{height:92,overflow:"hidden"}}>
-            <StoryContainer onOpenStory={handleOpenStory} onOpenCreator={()=>setShowCreator(true)} onOpenPyramid={()=>setShowPyramid(true)} isDarkMode={isDarkMode}/>
+        {/* ✅ LAYOUT 2 COLONNES GRAND ÉCRAN
+            - Mobile / tablette : colonne unique, feed pleine largeur
+            - xl (≥1280px) : feed centré ~630px + colonne droite suggestions 320px
+        */}
+        <div className="flex gap-0 xl:gap-6 max-w-[1100px] mx-auto">
+
+          {/* ── Colonne centrale : Stories + Feed ── */}
+          <div className="flex-1 min-w-0 xl:max-w-[630px]">
+
+            {/* Stories */}
+            <div className={`${bg} border-b ${border}`} style={{height:92,overflow:"hidden"}}>
+              <StoryContainer
+                onOpenStory={handleOpenStory}
+                onOpenCreator={()=>setShowCreator(true)}
+                onOpenPyramid={()=>setShowPyramid(true)}
+                isDarkMode={isDarkMode}
+              />
+            </div>
+
+            {/* Feed */}
+            <Feed
+              posts={filtered}
+              isDarkMode={isDarkMode}
+              onDeleted={handleDeleted}
+              showToast={showToast}
+              apiLoadMoreRef={apiObsRef}
+              hasMoreFromAPI={hasMore||mockCount<MOCK_POSTS.length}
+              isLoading={isLoading}
+              newPostsCount={newPosts}
+              onShowNewPosts={handleShowNew}
+              resetSignal={resetSig}
+              topOffset={TOTAL_TOP}
+              suggestedUsers={suggestedUsers}
+              newsArticles={newsArticles}
+              onScrollProgress={handleScrollProgress}
+              onNeedMorePosts={handleNeedMorePosts}
+              scrollContainerRef={scrollRef}
+              followingIds={followingIds}
+              onPostsSeen={handlePostsSeen}
+            />
           </div>
 
-          <Feed
-            posts={filtered}
-            isDarkMode={isDarkMode}
-            onDeleted={handleDeleted}
-            showToast={showToast}
-            apiLoadMoreRef={apiObsRef}
-            hasMoreFromAPI={hasMore||mockCount<MOCK_POSTS.length}
-            isLoading={isLoading}
-            newPostsCount={newPosts}
-            onShowNewPosts={handleShowNew}
-            resetSignal={resetSig}
-            topOffset={TOTAL_TOP}
-            suggestedUsers={suggestedUsers}
-            newsArticles={newsArticles}
-            onScrollProgress={handleScrollProgress}
-            onNeedMorePosts={handleNeedMorePosts}
-            scrollContainerRef={scrollRef}
-            followingIds={followingIds}
-            onPostsSeen={handlePostsSeen}
-          />
+          {/* ── Colonne droite : visible uniquement sur xl (≥1280px) ── */}
+          <div className="hidden xl:flex flex-col gap-5 w-[320px] flex-shrink-0 pt-4 pr-2">
+
+            {/* Bloc suggestions de comptes */}
+            <div className={`rounded-2xl overflow-hidden border ${isDarkMode?"border-gray-800 bg-gray-900":"border-gray-200 bg-gray-50"}`}>
+              <div className={`px-4 pt-3 pb-2 border-b ${isDarkMode?"border-gray-800":"border-gray-100"}`}>
+                <p className={`text-[13px] font-bold ${isDarkMode?"text-gray-200":"text-gray-800"}`}>
+                  Suggestions pour vous
+                </p>
+              </div>
+              <SuggestedAccounts isDarkMode={isDarkMode} instanceId={99} />
+            </div>
+
+            {/* Bloc post à découvrir */}
+            <div className={`rounded-2xl overflow-hidden border ${isDarkMode?"border-gray-800 bg-gray-900":"border-gray-200 bg-gray-50"}`}>
+              <div className={`px-4 pt-3 pb-2 border-b ${isDarkMode?"border-gray-800":"border-gray-100"}`}>
+                <p className={`text-[13px] font-bold ${isDarkMode?"text-gray-200":"text-gray-800"}`}>
+                  À découvrir
+                </p>
+              </div>
+              <SuggestedPostPreview isDarkMode={isDarkMode} userPool={suggestedUsers} slotIndex={0} />
+            </div>
+
+          </div>
+
         </div>
       </div>
 
+      {/* Modals */}
       <Suspense fallback={null}>
-        <ImmersivePyramidUniverse isOpen={showPyramid} onClose={()=>setShowPyramid(false)} stories={stories} user={user} onOpenStory={handleOpenStory} onOpenCreator={()=>{setShowPyramid(false);setShowCreator(true);}} isDarkMode={isDarkMode}/>
+        <ImmersivePyramidUniverse
+          isOpen={showPyramid}
+          onClose={()=>setShowPyramid(false)}
+          stories={stories}
+          user={user}
+          onOpenStory={handleOpenStory}
+          onOpenCreator={()=>{setShowPyramid(false);setShowCreator(true);}}
+          isDarkMode={isDarkMode}
+        />
       </Suspense>
 
       <AnimatePresence>

@@ -1,7 +1,9 @@
 // ==========================================
 // 📁 src/components/Header.jsx
+// ✅ FIX SYNC PHOTO PROFIL — avatarUrl recalcule sur les propriétés précises
+//    de user (profilePhoto, avatar, profilePicture) plutôt que sur la référence
+//    entière de l'objet user, pour forcer le re-render quand la photo change.
 // ✅ SearchPanel externalisé → src/components/SearchPanel.jsx
-// ✅ Reste identique — seul le panneau Recherche a changé
 // ==========================================
 import React, { useState, useEffect, useCallback, useRef, useMemo, memo } from "react";
 import { createPortal } from "react-dom";
@@ -11,7 +13,7 @@ import { useAuth } from "../context/AuthContext";
 import { useDarkMode } from "../context/DarkModeContext";
 import { Bell, User, Shield, LogOut, Moon, Sun, Trash2, Search, X, CheckCheck } from "lucide-react";
 import axios from "axios";
-import SearchPanel from "./SearchPanel"; // ✅ Nouveau composant
+import SearchPanel from "./SearchPanel";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 const SERVER_URL = API_URL.replace('/api', '');
@@ -24,6 +26,12 @@ const UserAvatar = memo(({ user, avatarUrl, size = "md" }) => {
   const firstLetter = (user?.fullName?.[0] || user?.email?.[0] || "U").toUpperCase();
   const [imgError, setImgError] = useState(false);
   const dim = size === "sm" ? "w-8 h-8 text-sm" : "w-10 h-10 text-lg";
+
+  // ✅ Réinitialiser l'erreur quand l'URL change (nouvelle photo uploadée)
+  useEffect(() => {
+    setImgError(false);
+  }, [avatarUrl]);
+
   return (
     <div
       className={`relative ${dim} rounded-full overflow-hidden transition-transform hover:scale-105 active:scale-95`}
@@ -134,7 +142,6 @@ const SidePanel = memo(({ isOpen, onClose, isDarkMode, children, title, actions 
                 </button>
               </div>
             </div>
-            {/* ✅ flex-1 + overflow géré à l'intérieur de chaque panneau */}
             <div className="flex-1 overflow-hidden">
               {children}
             </div>
@@ -148,7 +155,7 @@ const SidePanel = memo(({ isOpen, onClose, isDarkMode, children, title, actions 
 SidePanel.displayName = "SidePanel";
 
 // ─────────────────────────────────────────────
-// PANNEAU NOTIFICATIONS (inchangé)
+// PANNEAU NOTIFICATIONS
 // ─────────────────────────────────────────────
 const NOTIF_ICONS = { like: "❤️", comment: "💬", follow: "👤", system: "⚙️" };
 
@@ -264,12 +271,16 @@ const Header = memo(function Header() {
   const profileRef  = useRef(null);
   const isAdminUser = user?.role === "admin" || user?.role === "superadmin";
 
+  // ✅ FIX — Dépendances précises sur les propriétés photo plutôt que sur
+  // l'objet `user` entier. Cela garantit que avatarUrl se recalcule dès que
+  // updateUserProfile() met à jour profilePhoto dans authUser, même si
+  // React considère que la référence de `user` n'a pas changé.
   const avatarUrl = useMemo(() => {
     if (!user) return null;
     const avatar = user.avatar || user.profilePicture || user.profilePhoto;
     if (!avatar) return null;
     return avatar.startsWith("http") ? avatar : `${API_URL}${avatar}`;
-  }, [user]);
+  }, [user?.avatar, user?.profilePicture, user?.profilePhoto]);
 
   useEffect(() => {
     const handler = (e) => {
@@ -367,7 +378,6 @@ const Header = memo(function Header() {
             <motion.div whileHover={{ rotate: 10, scale: 1.05 }} whileTap={{ scale: 0.92 }}
               className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg flex-shrink-0"
               style={{ background: "linear-gradient(135deg, #f97316, #ec4899)" }}>C</motion.div>
-            {/* ✅ FIX — toujours visible sur mobile (suppression de hidden sm:block) */}
             <span
               className="text-lg sm:text-xl font-bold bg-clip-text text-transparent"
               style={{ background: "linear-gradient(135deg, #f97316, #ec4899)", WebkitBackgroundClip: "text" }}
@@ -376,7 +386,7 @@ const Header = memo(function Header() {
             </span>
           </Link>
 
-          {/* RECHERCHE — pill sm+ / icône mobile */}
+          {/* RECHERCHE */}
           {user && (
             <>
               <button onClick={handleOpenSearchPanel}
@@ -434,6 +444,7 @@ const Header = memo(function Header() {
                 <button onClick={() => setShowDropdown(!showDropdown)}
                   className="focus:outline-none transition-transform active:scale-90"
                   aria-label="Menu profil" style={{ WebkitTapHighlightColor: "transparent" }}>
+                  {/* ✅ avatarUrl recalcule maintenant sur user?.profilePhoto précisément */}
                   <UserAvatar user={user} avatarUrl={avatarUrl} />
                 </button>
 
@@ -454,6 +465,7 @@ const Header = memo(function Header() {
                           isDarkMode ? "bg-gray-900 border-gray-800 text-gray-200" : "bg-white border-gray-100 text-gray-700"
                         }`}>
                         <div className={`flex items-center gap-3 p-4 border-b ${isDarkMode ? "border-gray-800" : "border-gray-100"}`}>
+                          {/* ✅ avatarUrl à jour dans le dropdown aussi */}
                           <UserAvatar user={user} avatarUrl={avatarUrl} />
                           <div className="flex-1 min-w-0">
                             <p className="font-bold text-sm truncate">{user.fullName}</p>
@@ -494,7 +506,6 @@ const Header = memo(function Header() {
       {/* PANNEAUX */}
       {user && (
         <>
-          {/* ✅ SearchPanel via SidePanel — contenu géré en interne */}
           <SidePanel
             isOpen={showSearchPanel}
             onClose={() => setShowSearchPanel(false)}

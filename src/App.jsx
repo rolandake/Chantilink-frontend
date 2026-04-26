@@ -39,6 +39,131 @@ export const emitHomeRefresh = () =>
   window.dispatchEvent(new CustomEvent(HOME_REFRESH_EVENT));
 
 // ============================================
+// PRÉCHARGEMENT — rend les transitions instantanées
+// On déclenche le import() dès que l'app est prête,
+// avant même que l'utilisateur clique sur un onglet.
+// ============================================
+const preloadPages = () => {
+  // Chaque import() déclenche le téléchargement du chunk en arrière-plan.
+  // Les composants sont déjà dans importsPages.js (lazy), donc on les
+  // force à se résoudre immédiatement après le premier render.
+  const pages = [
+    () => import("./pages/Chat/Messages"),
+    () => import("./pages/Chat/ChatPage"),
+    () => import("./pages/Videos/VideosPage"),
+    () => import("./pages/Calculs/CalculsPage"),
+  ];
+  pages.forEach((load) => {
+    try { load(); } catch (_) {}
+  });
+};
+
+// ============================================
+// ICÔNES 3D SVG — style glassmorphism coloré
+// ============================================
+const Icon3D = memo(({ gradient, shadow, children, size = 40 }) => (
+  <span
+    className="flex items-center justify-center rounded-2xl flex-shrink-0 relative overflow-hidden"
+    style={{
+      width: size,
+      height: size,
+      background: gradient,
+      boxShadow: `0 4px 14px ${shadow}40, 0 1px 3px ${shadow}30, inset 0 1px 0 rgba(255,255,255,0.35)`,
+    }}
+  >
+    <span
+      className="absolute top-0 left-0 right-0 rounded-t-2xl pointer-events-none"
+      style={{
+        height: "45%",
+        background: "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(255,255,255,0.0) 100%)",
+      }}
+    />
+    {children}
+  </span>
+));
+Icon3D.displayName = "Icon3D";
+
+const NAV_ICON_CONFIGS = {
+  home: {
+    gradient: "linear-gradient(145deg, #ff7a18 0%, #f43f5e 100%)",
+    shadow: "#f97316",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H5a1 1 0 01-1-1V9.5z" fill="rgba(255,255,255,0.95)" />
+        <path d="M9 21V12h6v9" fill="rgba(255,255,255,0.5)" />
+      </svg>
+    ),
+  },
+  chat: {
+    gradient: "linear-gradient(145deg, #6366f1 0%, #8b5cf6 100%)",
+    shadow: "#6366f1",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" fill="rgba(255,255,255,0.95)" />
+        <circle cx="8" cy="10" r="1" fill="rgba(99,102,241,0.6)" />
+        <circle cx="12" cy="10" r="1" fill="rgba(99,102,241,0.6)" />
+        <circle cx="16" cy="10" r="1" fill="rgba(99,102,241,0.6)" />
+      </svg>
+    ),
+  },
+  videos: {
+    gradient: "linear-gradient(145deg, #06b6d4 0%, #0ea5e9 100%)",
+    shadow: "#06b6d4",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <rect x="2" y="5" width="15" height="14" rx="2" fill="rgba(255,255,255,0.95)" />
+        <path d="M17 9l5-3v12l-5-3V9z" fill="rgba(255,255,255,0.7)" />
+      </svg>
+    ),
+  },
+  calculs: {
+    gradient: "linear-gradient(145deg, #10b981 0%, #059669 100%)",
+    shadow: "#10b981",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <rect x="4" y="2" width="16" height="20" rx="2" fill="rgba(255,255,255,0.95)" />
+        <rect x="7" y="5" width="10" height="4" rx="1" fill="rgba(16,185,129,0.5)" />
+        <rect x="7" y="12" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
+        <rect x="10.5" y="12" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
+        <rect x="14" y="12" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
+        <rect x="7" y="16" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
+        <rect x="10.5" y="16" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
+        <rect x="14" y="16" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.3)" />
+      </svg>
+    ),
+  },
+  messages: {
+    gradient: "linear-gradient(145deg, #f59e0b 0%, #ef4444 100%)",
+    shadow: "#f59e0b",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <path d="M4 4h16a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2z" fill="rgba(255,255,255,0.95)" />
+        <path d="M2 6l10 7 10-7" stroke="rgba(245,158,11,0.7)" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  profile: {
+    gradient: "linear-gradient(145deg, #ec4899 0%, #a855f7 100%)",
+    shadow: "#ec4899",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="8" r="4" fill="rgba(255,255,255,0.95)" />
+        <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" fill="rgba(255,255,255,0.7)" />
+      </svg>
+    ),
+  },
+  admin: {
+    gradient: "linear-gradient(145deg, #f43f5e 0%, #dc2626 100%)",
+    shadow: "#f43f5e",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <path d="M12 2l2.5 5 5.5.8-4 3.9.9 5.5L12 15l-4.9 2.2.9-5.5L4 7.8 9.5 7z" fill="rgba(255,255,255,0.95)" />
+      </svg>
+    ),
+  },
+};
+
+// ============================================
 // SKELETON
 // ============================================
 const PageSkeleton = memo(({ isDarkMode }) => (
@@ -82,11 +207,11 @@ const FloatingBackButton = memo(({ isDarkMode, onBack }) => {
       onClick={onBack}
       className="fixed z-[60] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full transition-all active:scale-95"
       style={{
-        top:             "max(16px, env(safe-area-inset-top, 16px))",
-        left:            16,
-        background:      "transparent",
-        border:          "none",
-        color:           isDarkMode ? "rgba(255,255,255,0.75)" : "rgba(0,0,0,0.55)",
+        top:    "max(16px, env(safe-area-inset-top, 16px))",
+        left:   16,
+        background: "transparent",
+        border: "none",
+        color:  isDarkMode ? "rgba(255,255,255,0.75)" : "rgba(0,0,0,0.55)",
       }}
     >
       <span className="flex items-center justify-center w-7 h-7 rounded-full"
@@ -206,11 +331,19 @@ export default function App() {
       setupIndexedDB().catch(() => console.warn("IDB init failed")),
       initializeStorage().catch((err) => console.error("❌ [App] Erreur init storage:", err)),
     ]).catch(() => {});
+
+    // ── Préchargement des pages en arrière-plan
+    // pour des transitions quasi-instantanées
+    const timer = setTimeout(preloadPages, 1000);
+
     const fixVh = () =>
       document.documentElement.style.setProperty("--vh", `${window.innerHeight * 0.01}px`);
     fixVh();
     window.addEventListener("resize", fixVh, { passive: true });
-    return () => window.removeEventListener("resize", fixVh);
+    return () => {
+      window.removeEventListener("resize", fixVh);
+      clearTimeout(timer);
+    };
   }, []);
 
   if (!ready) return null;
@@ -338,14 +471,18 @@ function AppContent() {
     }
   }, [location.pathname, navigate]);
 
-  const isHome   = location.pathname === "/";
-  const isAuth   = location.pathname === "/auth";
-  const isVideos = location.pathname === "/videos";
-  const isAdmin  = user?.role === "admin" || user?.role === "superadmin";
+  // ── Flags de route ──────────────────────────────────────
+  const isHome     = location.pathname === "/";
+  const isAuth     = location.pathname === "/auth";
+  const isVideos   = location.pathname === "/videos";
+  const isMessages = location.pathname === "/messages"; // ✅ NOUVEAU
+  const isAdmin    = user?.role === "admin" || user?.role === "superadmin";
 
   const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
   const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
-  const showBackButton = !!user && !isAuth && !isHome && !isVideos && !storyViewerOpen;
+
+  // ✅ FIX : on exclut /messages — la page gère sa propre navigation
+  const showBackButton = !!user && !isAuth && !isHome && !isVideos && !isMessages && !storyViewerOpen;
 
   const handleBack = useCallback(() => {
     if (window.history.length > 1) navigate(-1);
@@ -379,7 +516,7 @@ function AppContent() {
       {/* HEADER */}
       {showHeader && (
         <div
-          className="fixed top-0 left-0 right-0 z-40"
+          className="fixed top-0 right-0 z-40 lg:left-[260px] left-0"
           style={{
             height:     72,
             transform:  isNavVisible ? "translateY(0)" : "translateY(-100%)",
@@ -391,7 +528,7 @@ function AppContent() {
         </div>
       )}
 
-      {/* BOUTON RETOUR FLOTTANT */}
+      {/* BOUTON RETOUR FLOTTANT — masqué sur /messages */}
       <AnimatePresence>
         {showBackButton && (
           <FloatingBackButton
@@ -414,7 +551,13 @@ function AppContent() {
 
       {/* CONTENU PRINCIPAL */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
-        <div className={`lg:ml-64 max-w-[630px] lg:max-w-none lg:px-8 mx-auto ${isHome ? "h-full" : ""}`}>
+        <div className={`lg:ml-[260px] ${isHome ? "h-full" : ""}`}>
+          {/*
+            ✅ PERFORMANCES — on utilise un fallback ultra-léger (null)
+            car les pages sont préchargées par preloadPages().
+            Le Suspense ne devrait quasiment jamais afficher le fallback
+            après le premier chargement.
+          */}
           <Suspense fallback={<LoadingSpinner />}>
             <Routes location={location}>
               <Route path="/auth" element={
@@ -527,8 +670,13 @@ const Badge = memo(({ count }) => {
   if (!count || count <= 0) return null;
   return (
     <span
-      className="absolute -top-0.5 -right-0.5 flex items-center justify-center rounded-full text-white font-black border-2"
-      style={{ minWidth: 17, height: 17, fontSize: 10, background: "linear-gradient(135deg, #f43f5e, #fb923c)", borderColor: "inherit", lineHeight: 1, padding: "0 3px" }}
+      className="absolute -top-1 -right-1 flex items-center justify-center rounded-full text-white font-black border-2"
+      style={{
+        minWidth: 18, height: 18, fontSize: 10,
+        background: "linear-gradient(135deg, #f43f5e, #fb923c)",
+        borderColor: "inherit", lineHeight: 1, padding: "0 3px",
+        boxShadow: "0 2px 6px rgba(244,63,94,0.5)",
+      }}
     >
       {count > 99 ? "99+" : count}
     </span>
@@ -595,42 +743,69 @@ const NavbarMobileMemo = memo(({ isDarkMode, isAdminUser, user, location, unread
 NavbarMobileMemo.displayName = "NavbarMobileMemo";
 
 // ============================================
-// SIDEBAR DESKTOP
+// NAV ITEM DESKTOP
 // ============================================
-const NavItemDesktop = memo(({ icon: Icon, label, onClick, isDarkMode, active, isAdmin, badge }) => (
-  <button
-    onClick={onClick}
-    className={`group relative flex items-center gap-3.5 w-full px-3 py-3 rounded-xl transition-all duration-150 active:scale-[0.97] ${
-      isDarkMode ? "hover:bg-gray-800/40" : "hover:bg-gray-50"
-    } ${isAdmin ? "!text-rose-500 hover:!text-rose-400" : ""}`}
-    style={{ WebkitTapHighlightColor: "transparent" }}
-  >
-    <span className="relative flex-shrink-0">
-      <Icon
-        size={24}
-        strokeWidth={active ? 2.5 : 1.8}
-        fill={active && !isAdmin ? "currentColor" : "none"}
-        className={`transition-all duration-150 ${
-          active
-            ? isAdmin ? "text-rose-500" : "text-orange-500"
-            : isAdmin ? "text-rose-500" : isDarkMode ? "text-gray-400" : "text-gray-500"
-        }`}
-      />
-      {!!badge && badge > 0 && <Badge count={badge} />}
-    </span>
-    <span className={`text-[15px] transition-all duration-150 ${
-      active
-        ? isAdmin ? "font-bold text-rose-500" : "font-bold text-orange-500"
-        : isDarkMode ? "font-normal text-gray-400" : "font-normal text-gray-600"
-    }`}>{label}</span>
-  </button>
-));
+const NavItemDesktop = memo(({ iconKey, label, onClick, isDarkMode, active, badge }) => {
+  const cfg = NAV_ICON_CONFIGS[iconKey] || NAV_ICON_CONFIGS.home;
+
+  return (
+    <button
+      onClick={onClick}
+      className={`group relative flex items-center gap-4 w-full px-3 py-3 rounded-2xl transition-all duration-200 active:scale-[0.97] ${
+        active
+          ? isDarkMode ? "bg-white/6" : "bg-black/[0.05]"
+          : isDarkMode ? "hover:bg-white/5" : "hover:bg-black/[0.04]"
+      }`}
+      style={{ WebkitTapHighlightColor: "transparent" }}
+    >
+      <span className="relative flex-shrink-0">
+        <Icon3D gradient={cfg.gradient} shadow={cfg.shadow} size={42}>
+          {cfg.icon(20)}
+        </Icon3D>
+        {!!badge && badge > 0 && (
+          <span
+            className="absolute -top-1 -right-1 flex items-center justify-center rounded-full text-white font-black"
+            style={{
+              minWidth: 18, height: 18, fontSize: 10,
+              background: "linear-gradient(135deg, #f43f5e, #fb923c)",
+              boxShadow: "0 2px 6px rgba(244,63,94,0.5)",
+              border: `2px solid ${isDarkMode ? "#111827" : "#ffffff"}`,
+              padding: "0 3px",
+            }}
+          >
+            {badge > 99 ? "99+" : badge}
+          </span>
+        )}
+      </span>
+      <span
+        className={`text-[16px] leading-none transition-all duration-200 ${active ? "font-black" : "font-semibold"}`}
+        style={{
+          color: active
+            ? isDarkMode ? "#ffffff" : "#111827"
+            : isDarkMode ? "rgba(255,255,255,0.60)" : "rgba(0,0,0,0.55)",
+        }}
+      >
+        {label}
+      </span>
+      {active && (
+        <span
+          className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full"
+          style={{ background: cfg.gradient, boxShadow: `0 0 8px ${cfg.shadow}80` }}
+        />
+      )}
+    </button>
+  );
+});
 NavItemDesktop.displayName = "NavItemDesktop";
 
+// ============================================
+// SIDEBAR DESKTOP
+// ============================================
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick }) => {
   const { t }    = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+
   const isActive   = useCallback((path) => location.pathname === path, [location.pathname]);
   const goChat     = useCallback(() => navigate("/chat"),    [navigate]);
   const goVideos   = useCallback(() => navigate("/videos"),  [navigate]);
@@ -639,23 +814,94 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
   const goProfile  = useCallback(() => navigate(`/profile/${location.state?.userId || "me"}`), [navigate, location.state?.userId]);
   const goAdmin    = useCallback(() => navigate("/admin"),   [navigate]);
 
+  const NAV_ITEMS = useMemo(() => [
+    { key: "home",     label: t("navbar.home"),     onClick: onHomeClick, path: "/" },
+    { key: "chat",     label: t("navbar.chat"),     onClick: goChat,      path: "/chat" },
+    { key: "videos",   label: t("videos.title"),    onClick: goVideos,    path: "/videos" },
+    { key: "calculs",  label: t("navbar.calculs"),  onClick: goCalculs,   path: "/calculs" },
+    { key: "messages", label: t("navbar.messages"), onClick: goMessages,  path: "/messages", badge: unreadCount },
+    { key: "profile",  label: t("navbar.profile"),  onClick: goProfile,   path: "/profile" },
+  ], [t, onHomeClick, goChat, goVideos, goCalculs, goMessages, goProfile, unreadCount]);
+
   return (
     <aside
-      className={`hidden lg:flex fixed left-0 bottom-0 w-64 flex-col py-6 px-4 gap-1 z-30 border-r ${isDarkMode ? "bg-gray-900/60 border-gray-800/60" : "bg-white border-gray-100"}`}
-      style={{ top: 72, backdropFilter: "blur(20px) saturate(180%)", WebkitBackdropFilter: "blur(20px) saturate(180%)" }}
+      className={`hidden lg:flex fixed left-0 top-0 bottom-0 w-[260px] flex-col z-30 border-r ${
+        isDarkMode ? "border-gray-800/50" : "border-gray-200/80"
+      }`}
+      style={{
+        background: isDarkMode
+          ? "linear-gradient(180deg, #0d0d0f 0%, #111115 100%)"
+          : "linear-gradient(180deg, #ffffff 0%, #f9f9fb 100%)",
+      }}
     >
-      <NavItemDesktop icon={Home}          label={t("navbar.home")}     onClick={onHomeClick} isDarkMode={isDarkMode} active={isActive("/")} />
-      <NavItemDesktop icon={MessageSquare} label={t("navbar.chat")}     onClick={goChat}      isDarkMode={isDarkMode} active={isActive("/chat")} />
-      <NavItemDesktop icon={Video}         label={t("videos.title")}    onClick={goVideos}    isDarkMode={isDarkMode} active={isActive("/videos")} />
-      <NavItemDesktop icon={Calculator}    label={t("navbar.calculs")}  onClick={goCalculs}   isDarkMode={isDarkMode} active={isActive("/calculs")} />
-      <NavItemDesktop icon={Mail}          label={t("navbar.messages")} onClick={goMessages}  isDarkMode={isDarkMode} active={isActive("/messages")} badge={unreadCount} />
-      <NavItemDesktop icon={User}          label={t("navbar.profile")}  onClick={goProfile}   isDarkMode={isDarkMode} active={location.pathname.includes("/profile")} />
-      {isAdminUser && (
-        <>
-          <div className={`w-full h-px my-3 ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-          <NavItemDesktop icon={Shield} label="Admin" onClick={goAdmin} isDarkMode={isDarkMode} active={location.pathname.includes("/admin")} isAdmin />
-        </>
-      )}
+      {/* Logo */}
+      <div
+        className={`flex items-center gap-3 px-5 flex-shrink-0 border-b ${
+          isDarkMode ? "border-gray-800/60" : "border-gray-100"
+        }`}
+        style={{ height: 72 }}
+      >
+        <div
+          className="w-10 h-10 rounded-2xl flex items-center justify-center text-white text-lg font-black flex-shrink-0 relative overflow-hidden"
+          style={{
+            background: "linear-gradient(145deg, #f97316 0%, #ec4899 100%)",
+            boxShadow: "0 4px 16px rgba(249,115,22,0.45), inset 0 1px 0 rgba(255,255,255,0.3)",
+          }}
+        >
+          <span className="absolute top-0 left-0 right-0 h-1/2 rounded-t-2xl"
+            style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, transparent 100%)" }}
+          />
+          C
+        </div>
+        <span
+          className={`text-[22px] font-black ${isDarkMode ? "text-white" : "text-gray-900"}`}
+          style={{ letterSpacing: "-0.045em" }}
+        >
+          Chantilink
+        </span>
+      </div>
+
+      {/* Nav items */}
+      <nav className="flex flex-col px-3 py-4 flex-1 overflow-hidden">
+        <div className="flex flex-col justify-between h-full">
+          <div className="flex flex-col gap-1.5">
+            {NAV_ITEMS.map((item) => (
+              <NavItemDesktop
+                key={item.key}
+                iconKey={item.key}
+                label={item.label}
+                onClick={item.onClick}
+                isDarkMode={isDarkMode}
+                active={
+                  item.path === "/"
+                    ? isActive("/")
+                    : item.path === "/profile"
+                      ? location.pathname.includes("/profile")
+                      : isActive(item.path)
+                }
+                badge={item.badge}
+              />
+            ))}
+            {isAdminUser && (
+              <>
+                <div className={`w-full h-px my-2 ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+                <NavItemDesktop
+                  iconKey="admin"
+                  label="Admin"
+                  onClick={goAdmin}
+                  isDarkMode={isDarkMode}
+                  active={location.pathname.includes("/admin")}
+                />
+              </>
+            )}
+          </div>
+          <div className={`pt-3 pb-2 border-t ${isDarkMode ? "border-gray-800/60" : "border-gray-100"}`}>
+            <p className={`text-[12px] font-semibold px-3 ${isDarkMode ? "text-gray-600" : "text-gray-400"}`}>
+              © {new Date().getFullYear()} Chantilink
+            </p>
+          </div>
+        </div>
+      </nav>
     </aside>
   );
 });
@@ -669,11 +915,11 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
   const navigate = useNavigate();
   const items = useMemo(() => {
     const base = [
-      { label: t("navbar.profile"),  icon: User,       path: `/profile/${user?._id}`, color: "#8b5cf6" },
-      { label: t("navbar.calculs"),  icon: Calculator, path: "/calculs",              color: "#06b6d4" },
-      { label: t("navbar.messages"), icon: Mail,       path: "/messages",             color: "#f97316", badge: unreadCount },
+      { label: t("navbar.profile"),  iconKey: "profile",  path: `/profile/${user?._id}` },
+      { label: t("navbar.calculs"),  iconKey: "calculs",  path: "/calculs" },
+      { label: t("navbar.messages"), iconKey: "messages", path: "/messages", badge: unreadCount },
     ];
-    if (isAdminUser) base.push({ label: "Admin", icon: Shield, path: "/admin", color: "#f43f5e" });
+    if (isAdminUser) base.push({ label: "Admin", iconKey: "admin", path: "/admin" });
     return base;
   }, [user?._id, isAdminUser, unreadCount, t]);
 
@@ -702,27 +948,30 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
           {t("messages.nav_label")}
         </p>
         <div className="grid grid-cols-3 gap-3">
-          {items.map((item) => (
-            <button
-              key={item.path}
-              onClick={() => { navigate(item.path); onClose(); }}
-              className={`relative flex flex-col items-center gap-2.5 py-4 px-2 rounded-2xl transition-all active:scale-95 ${isDarkMode ? "bg-gray-800/70 hover:bg-gray-800" : "bg-gray-50 hover:bg-gray-100"}`}
-              style={{ WebkitTapHighlightColor: "transparent" }}
-            >
-              <span className="flex items-center justify-center w-11 h-11 rounded-2xl" style={{ background: `${item.color}18` }}>
-                <item.icon size={22} style={{ color: item.color }} strokeWidth={1.8} />
-              </span>
-              <span className={`text-xs font-semibold ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>{item.label}</span>
-              {!!item.badge && item.badge > 0 && (
-                <span
-                  className="absolute top-2 right-2 flex items-center justify-center rounded-full text-white font-black text-[10px] border-2"
-                  style={{ minWidth: 18, height: 18, background: "linear-gradient(135deg, #f43f5e, #fb923c)", borderColor: isDarkMode ? "#1f2937" : "#fff", padding: "0 3px" }}
-                >
-                  {item.badge > 99 ? "99+" : item.badge}
-                </span>
-              )}
-            </button>
-          ))}
+          {items.map((item) => {
+            const cfg = NAV_ICON_CONFIGS[item.iconKey] || NAV_ICON_CONFIGS.home;
+            return (
+              <button
+                key={item.path}
+                onClick={() => { navigate(item.path); onClose(); }}
+                className={`relative flex flex-col items-center gap-3 py-4 px-2 rounded-2xl transition-all active:scale-95 ${isDarkMode ? "bg-gray-800/70 hover:bg-gray-800" : "bg-gray-50 hover:bg-gray-100"}`}
+                style={{ WebkitTapHighlightColor: "transparent" }}
+              >
+                <Icon3D gradient={cfg.gradient} shadow={cfg.shadow} size={46}>
+                  {cfg.icon(22)}
+                </Icon3D>
+                <span className={`text-xs font-bold ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>{item.label}</span>
+                {!!item.badge && item.badge > 0 && (
+                  <span
+                    className="absolute top-2 right-2 flex items-center justify-center rounded-full text-white font-black text-[10px] border-2"
+                    style={{ minWidth: 18, height: 18, background: "linear-gradient(135deg, #f43f5e, #fb923c)", borderColor: isDarkMode ? "#1f2937" : "#fff", padding: "0 3px" }}
+                  >
+                    {item.badge > 99 ? "99+" : item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </motion.div>
     </div>

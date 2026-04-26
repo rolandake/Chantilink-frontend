@@ -1,32 +1,13 @@
 // src/pages/profile/ProfilePage.jsx
-// ✅ v4 — FIX IDs NON-MONGODB + PROFIL BOT + PROFIL MOCK
-//
-// 🐛 FIX 1 — IDs non-MongoDB (mock posts) :
-//    loadProfilePosts ne bloquait pas sur isValidObjectId, mais le log
-//    "ID non-MongoDB: user_9_..." indique que le userId en param est un ID mock.
-//    On détecte désormais les IDs mock/temporaires et on affiche le profil
-//    directement depuis les données du post sans faire de fetch réseau.
-//
-// 🐛 FIX 2 — Profil bot "introuvable" :
-//    Si fetchUserById retourne null (404) ET que le post a un user.isBot=true,
-//    on construit le profil depuis l'objet user embarqué dans le post
-//    au lieu d'afficher "Profil introuvable".
-//
-// 🐛 FIX 3 — Navigation depuis un post mock :
-//    buildProfileFromEmbeddedUser() construit un profil complet depuis
-//    le champ user du post (qui contient username, fullName, profilePhoto, etc.)
-//    sans aucun appel réseau.
-//
-// 🐛 FIX 4 — Posts du profil bot visibles :
-//    Pour les bots, on cherche les posts dans le pool Home (livePostsRef via
-//    window.__homePostsPool__) avant de faire un fetch réseau.
-//
-// ✅ Toutes les corrections v1/v2/v3 conservées (spinner, texte coloré, etc.)
+// ✅ v7 — NOUVEAU DESIGN moderne TikTok/Instagram fusionné
+// Conserve toute la logique métier v6 (cache, IDB, socket, offline, etc.)
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
+import { motion } from "framer-motion";
 import { useParams, useNavigate } from "react-router-dom";
 import ProfileHeader from "./ProfileHeader";
 import ProfileMenu from "./ProfileMenu";
+import ProfileMediaGrid from "./ProfileMediaGrid";
 import SettingsSection from "./SettingsSection";
 import CreatePost from "../Home/CreatePost";
 import PostCard from "../Home/PostCard";
@@ -43,27 +24,23 @@ import {
   idbSetProfilePosts as idbSet,
   idbClearOtherKeysProfilePosts as idbClearOtherKeys,
   idbSetProfileUser as idbSetUser,
-  idbGetProfileUser as idbGetUser
+  idbGetProfileUser as idbGetUser,
 } from "../../utils/idbMigration";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // GUARDS ID
-// ─────────────────────────────────────────────
-
-/** Vrai ObjectId MongoDB — 24 hex chars */
+// ─────────────────────────────────────────────────────────────────────────────
 const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
-
-/** ID mock/temporaire généré côté front (ex: user_9_1776468454348_87280) */
 const isMockId = (id) =>
   !isValidObjectId(id) &&
   typeof id === "string" &&
   (id.startsWith("user_") || id.startsWith("post_") || id.startsWith("mock_"));
 
-// ─────────────────────────────────────────────
-// CACHE GLOBAL DE POSTS DE PROFILS
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CACHE GLOBAL
+// ─────────────────────────────────────────────────────────────────────────────
 const PROFILE_CACHE_TTL = 5 * 60 * 1000;
 
 const getProfilePostsCache = () => {
@@ -80,9 +57,7 @@ const storeProfilePostsInCache = (userId, posts) => {
       const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
       if (oldest) cache.delete(oldest[0]);
     }
-    window.dispatchEvent(new CustomEvent("profilePostsCached", {
-      detail: { userId, count: posts.length }
-    }));
+    window.dispatchEvent(new CustomEvent("profilePostsCached", { detail: { userId, count: posts.length } }));
   } catch {}
 };
 
@@ -102,16 +77,12 @@ export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
       }
     }
     return result;
-  } catch {
-    return [];
-  }
+  } catch { return []; }
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
-// ─────────────────────────────────────────────
-
-/** v3 FIX : préserve mediaType + textCardPalette pour les text-cards */
+// ─────────────────────────────────────────────────────────────────────────────
 const normalizePost = (p) => ({
   _id:             p._id || p.id,
   content:         p.content || "",
@@ -167,10 +138,6 @@ const extractUserFromResponse = (data) => {
   return null;
 };
 
-/**
- * buildUserFromPost — fallback si GET /users/:id retourne 404
- * Reconstruit le profil depuis l'objet user embarqué dans un post
- */
 const buildUserFromPost = (post) => {
   if (!post) return null;
   const u = post.user || {};
@@ -194,7 +161,6 @@ const buildUserFromPost = (post) => {
   };
 };
 
-/** buildMinimalUser — profil valide même sans posts */
 const buildMinimalUser = (uid, partial = {}) => ({
   _id:            uid,
   username:       partial.username      || partial.email?.split("@")[0] || "utilisateur",
@@ -214,13 +180,7 @@ const buildMinimalUser = (uid, partial = {}) => ({
   createdAt:      partial.createdAt     || null,
 });
 
-/**
- * 🆕 FIX 3 — Construit un profil depuis l'objet user embarqué dans n'importe quel post
- * Cherche dans window.__homePostsPool__ (pool Home) ou dans le cache profil
- * pour trouver un post de cet utilisateur et reconstruire son profil.
- */
 const buildProfileFromEmbeddedUser = (targetId) => {
-  // 1. Chercher dans le pool Home exposé
   try {
     const homePool = window.__homePostsPool__;
     if (Array.isArray(homePool)) {
@@ -228,16 +188,11 @@ const buildProfileFromEmbeddedUser = (targetId) => {
         const uid = post?.user?._id || post?.user?.id || post?.author?._id;
         if (uid && String(uid) === String(targetId)) {
           const profile = buildUserFromPost(post);
-          if (profile) return { profile, posts: homePool.filter(p => {
-            const pid = p?.user?._id || p?.user?.id || p?.author?._id;
-            return pid && String(pid) === String(targetId);
-          })};
+          if (profile) return { profile, posts: homePool.filter(p => { const pid = p?.user?._id || p?.user?.id || p?.author?._id; return pid && String(pid) === String(targetId); }) };
         }
       }
     }
   } catch {}
-
-  // 2. Chercher dans le cache profil
   try {
     const cache = getProfilePostsCache();
     const entry = cache.get(targetId);
@@ -246,100 +201,126 @@ const buildProfileFromEmbeddedUser = (targetId) => {
       if (profile) return { profile, posts: entry.posts };
     }
   } catch {}
-
   return null;
 };
 
-/**
- * 🆕 FIX 4 — Récupère les posts d'un utilisateur depuis le pool Home
- * sans faire de fetch réseau
- */
 const getPostsFromHomePool = (targetId) => {
   try {
     const homePool = window.__homePostsPool__;
     if (!Array.isArray(homePool)) return [];
-    return homePool.filter(p => {
-      const uid = p?.user?._id || p?.user?.id || p?.author?._id;
-      return uid && String(uid) === String(targetId);
-    });
-  } catch {
-    return [];
-  }
+    return homePool.filter(p => { const uid = p?.user?._id || p?.user?.id || p?.author?._id; return uid && String(uid) === String(targetId); });
+  } catch { return []; }
 };
 
-// ─────────────────────────────────────────────
-// COMPOSANTS UI
-// ─────────────────────────────────────────────
-const LoadingSpinner = memo(({ size = "12", darkMode = false, text = "Chargement..." }) => (
-  <div className="text-center py-12">
-    <div className={`inline-block w-${size} h-${size} border-4 rounded-full animate-spin ${
-      darkMode ? "border-orange-400 border-t-transparent" : "border-orange-500 border-t-transparent"
-    }`}></div>
-    {text && <p className={`mt-4 ${darkMode ? "text-gray-300" : "text-gray-600"}`}>{text}</p>}
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPOSANTS UI — Avec nouveau design
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LoadingSpinner = memo(({ darkMode = false, text = "Chargement..." }) => (
+  <div style={{ textAlign: 'center', padding: '48px 0', fontFamily: "'Sora','DM Sans',sans-serif" }}>
+    <div style={{
+      display: 'inline-block', width: 44, height: 44,
+      border: `4px solid ${darkMode ? 'rgba(249,115,22,0.2)' : 'rgba(249,115,22,0.15)'}`,
+      borderTopColor: '#f97316',
+      borderRadius: '50%',
+      animation: 'spin 0.8s linear infinite',
+    }} />
+    {text && <p style={{ marginTop: 14, color: darkMode ? '#6b7280' : '#9ca3af', fontSize: 14 }}>{text}</p>}
+    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
   </div>
 ));
 LoadingSpinner.displayName = "LoadingSpinner";
 
 const FollowButton = memo(({ isFollowing, isLoading, onClick, isDarkMode }) => (
-  <button
+  <motion.button
     onClick={onClick}
     disabled={isLoading}
-    className={`px-8 py-3 rounded-full font-semibold transition-all duration-200 shadow-md ${
-      isFollowing
-        ? isDarkMode
-          ? "bg-gray-800 text-gray-200 hover:bg-gray-700 border border-white/10"
-          : "bg-gray-200 text-gray-700 hover:bg-gray-300"
-        : isDarkMode
-        ? "bg-orange-600 text-white hover:bg-orange-700"
-        : "bg-orange-500 text-white hover:bg-orange-600"
-    } disabled:opacity-50 disabled:cursor-not-allowed active:scale-95`}
+    whileHover={{ scale: isLoading ? 1 : 1.04, y: isLoading ? 0 : -1 }}
+    whileTap={{ scale: isLoading ? 1 : 0.97 }}
+    style={{
+      padding: '11px 36px',
+      borderRadius: 999,
+      fontFamily: "'Sora','DM Sans',sans-serif",
+      fontWeight: 700,
+      fontSize: 15,
+      cursor: isLoading ? 'not-allowed' : 'pointer',
+      border: isFollowing ? `1px solid ${isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}` : 'none',
+      background: isFollowing
+        ? (isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)')
+        : 'linear-gradient(135deg,#f97316,#ec4899)',
+      color: isFollowing ? (isDarkMode ? '#9ca3af' : '#6b7280') : '#fff',
+      boxShadow: isFollowing ? 'none' : '0 6px 24px rgba(249,115,22,0.4)',
+      opacity: isLoading ? 0.7 : 1,
+      display: 'flex', alignItems: 'center', gap: 8,
+      transition: 'all 0.2s',
+    }}
   >
     {isLoading ? (
-      <span className="flex items-center gap-2">
-        <span className="inline-block w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></span>
+      <>
+        <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid currentColor', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
         Chargement...
-      </span>
+      </>
     ) : isFollowing ? "Se désabonner" : "S'abonner"}
-  </button>
+  </motion.button>
 ));
 FollowButton.displayName = "FollowButton";
 
-const Toast = memo(({ message, type }) => (
-  <div className={`fixed bottom-6 right-6 px-6 py-3 rounded-lg shadow-2xl transition-all duration-200 z-50 ${
-    type === "error" ? "bg-red-500 text-white"
-    : type === "info" ? "bg-blue-500 text-white"
-    : "bg-green-500 text-white"
-  }`}>
-    {message}
-  </div>
-));
+const Toast = memo(({ message, type }) => {
+  const bg = type === "error" ? '#ef4444' : type === "info" ? '#3b82f6' : 'linear-gradient(135deg,#22c55e,#16a34a)';
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 10, scale: 0.95 }}
+      style={{
+        position: 'fixed', bottom: 28, right: 28,
+        padding: '12px 22px', borderRadius: 16,
+        background: bg, color: '#fff',
+        fontFamily: "'Sora','DM Sans',sans-serif",
+        fontWeight: 600, fontSize: 14,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        zIndex: 9999, maxWidth: 340,
+        border: '1px solid rgba(255,255,255,0.15)',
+      }}
+    >
+      {message}
+    </motion.div>
+  );
+});
 Toast.displayName = "Toast";
 
 const EmptyPostsState = memo(({ isOwner, isDarkMode }) => (
-  <div className={`text-center py-16 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
-    <p className="text-5xl mb-4">📭</p>
-    <p className={`text-lg font-semibold mb-2 ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
+  <motion.div
+    initial={{ opacity: 0, y: 16 }}
+    animate={{ opacity: 1, y: 0 }}
+    style={{
+      textAlign: 'center', padding: '56px 24px',
+      fontFamily: "'Sora','DM Sans',sans-serif",
+    }}
+  >
+    <div style={{ fontSize: 52, marginBottom: 16 }}>📭</div>
+    <p style={{ fontSize: 17, fontWeight: 700, color: isDarkMode ? '#d1d5db' : '#374151', marginBottom: 8 }}>
       {isOwner ? "Tu n'as pas encore publié de post" : "Aucun post pour l'instant"}
     </p>
-    <p className="text-sm mt-1 max-w-xs mx-auto leading-relaxed">
+    <p style={{ fontSize: 13, color: isDarkMode ? '#6b7280' : '#9ca3af', maxWidth: 280, margin: '0 auto', lineHeight: 1.7 }}>
       {isOwner
         ? "Partage quelque chose avec ta communauté !"
         : "Cet utilisateur n'a encore rien publié. Reviens plus tard !"}
     </p>
-  </div>
+  </motion.div>
 ));
 EmptyPostsState.displayName = "EmptyPostsState";
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // PROFILE PAGE
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 export default function ProfilePage({
-  initialUser = null,
+  initialUser  = null,
   initialPosts = null,
   mockHandlers = null,
 }) {
   const { userId } = useParams();
-  const navigate = useNavigate();
+  const navigate   = useNavigate();
   const { user: authUser, loading: authLoading, socket, getToken } = useAuth();
   const { fetchUserPosts: realFetchUserPosts } = usePosts();
   const { isDarkMode } = useDarkMode();
@@ -377,27 +358,35 @@ export default function ProfilePage({
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // ─────────────────────────────────────────────
-  // fetchUserById
-  // ─────────────────────────────────────────────
+  // ✅ FIX DÉFINITIF SYNC PHOTO — Re-sync profileUser depuis authUser
+  // On dépend de authUser?.profilePhoto directement (valeur primitive) pour
+  // que le useEffect se déclenche IMMÉDIATEMENT après updateUserProfile().
+  // On merge toujours pour garantir une nouvelle référence → re-render garanti.
+  useEffect(() => {
+    if (!isOwner || !authUser) return;
+    setProfileUser(prev => ({ ...(prev || {}), ...authUser }));
+  }, [
+    isOwner,
+    authUser?._id,
+    authUser?.profilePhoto,
+    authUser?.coverPhoto,
+    authUser?.fullName,
+    authUser?.username,
+    authUser?.bio,
+    authUser?.location,
+    authUser?.website,
+  ]);
+
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
     if (!isValidObjectId(uid)) return null;
-
     const cached = requestCache.current.get(uid);
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
     if (!navigator.onLine) return null;
-
     try {
-      const { data } = await axios.get(`${API_URL}/users/${uid}`, {
-        withCredentials: true,
-        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
-        timeout: 8000,
-      });
-
+      const { data } = await axios.get(`${API_URL}/users/${uid}`, { withCredentials: true, headers: { "Cache-Control": "no-cache", Pragma: "no-cache" }, timeout: 8000 });
       let raw = extractUserFromResponse(data);
       if (!raw && data) raw = data.data || data.user || (data._id || data.id ? data : null);
-
       if (raw) {
         const normalized = buildMinimalUser(raw._id || raw.id, raw);
         requestCache.current.set(uid, { data: normalized, timestamp: Date.now() });
@@ -407,26 +396,18 @@ export default function ProfilePage({
     } catch (err) {
       if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED") return null;
       if (err.response?.status === 404) return null;
-      if (err.response?.status === 401 || err.response?.status === 403) {
-        console.warn(`[Profile] Accès refusé (${err.response.status}) pour ${uid} — profil minimal`);
-        return buildMinimalUser(uid);
-      }
-      console.warn(`[Profile] fetchUserById échoue pour ${uid}:`, err.message);
+      if (err.response?.status === 401 || err.response?.status === 403) return buildMinimalUser(uid);
       return null;
     }
   }, []);
 
   const tryBuildProfileFromPosts = useCallback(async (uid) => {
     if (!isValidObjectId(uid)) return null;
-
-    // 🆕 FIX 4 — d'abord chercher dans le pool Home (sans réseau)
     const homePostsForUser = getPostsFromHomePool(uid);
     if (homePostsForUser.length > 0) {
       const user = buildUserFromPost(homePostsForUser[0]);
       if (user) return { user, posts: homePostsForUser };
     }
-
-    // Sinon fetch réseau
     try {
       const result = await fetchUserPosts(uid, 1);
       const posts  = extractPostsFromResult(result);
@@ -434,13 +415,11 @@ export default function ProfilePage({
         const user = buildUserFromPost(posts[0]);
         if (user) return { user, posts };
       }
-    } catch (e) {
-      console.warn("[Profile] tryBuildProfileFromPosts:", e.message);
-    }
+    } catch (e) { console.warn("[Profile] tryBuildProfileFromPosts:", e.message); }
     return null;
   }, [fetchUserPosts]);
 
-  const followUser = useCallback(async (uid) => {
+  const followUser   = useCallback(async (uid) => {
     if (mockHandlers?.followUser) return await mockHandlers.followUser(uid);
     const { data } = await axios.post(`${API_URL}/users/${uid}/follow`, {}, { withCredentials: true });
     return data;
@@ -454,24 +433,18 @@ export default function ProfilePage({
 
   const savePosts = useCallback((userKey, posts) => {
     if (isMockProfile || !userKey || !Array.isArray(posts)) return;
-    // Ne pas sauvegarder les profils avec ID non-MongoDB
     if (!isValidObjectId(userKey)) return;
     if (saveDebounceTimer.current) clearTimeout(saveDebounceTimer.current);
     saveDebounceTimer.current = setTimeout(async () => {
       if (writeInProgress.current) return;
       writeInProgress.current = true;
-      try {
-        const safePosts = posts.map(normalizePost);
-        await idbSet(`profilePosts_${userKey}`, safePosts);
-      } finally {
-        writeInProgress.current = false;
-      }
+      try { await idbSet(`profilePosts_${userKey}`, posts.map(normalizePost)); }
+      finally { writeInProgress.current = false; }
     }, 200);
   }, [isMockProfile]);
 
   const saveUser = useCallback(async (user) => {
-    if (isMockProfile || !user?._id) return;
-    if (!isValidObjectId(user._id)) return;
+    if (isMockProfile || !user?._id || !isValidObjectId(user._id)) return;
     try { await idbSetUser(user._id, user); } catch (err) { console.warn("IDB User Save Error", err); }
   }, [isMockProfile]);
 
@@ -490,17 +463,9 @@ export default function ProfilePage({
 
   const handleFollowSuccess = useCallback(() => showLocalToast("Abonné !"), [showLocalToast]);
 
-  // ─────────────────────────────────────────────
-  // loadProfilePosts
-  // ─────────────────────────────────────────────
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
     if (!targetId || loadingRef.current) return;
-
-    // 🆕 FIX 1 — Pour les IDs non-MongoDB, on ne fait pas de fetch réseau
     if (!isValidObjectId(targetId)) {
-      console.warn(`[Profile] loadProfilePosts — ID non-MongoDB: ${targetId} — pool local uniquement`);
-
-      // Chercher des posts dans le pool Home
       const localPosts = getPostsFromHomePool(targetId);
       if (localPosts.length > 0) {
         startTransition(() => setProfilePosts(localPosts.map(normalizePost)));
@@ -508,88 +473,50 @@ export default function ProfilePage({
       }
       return;
     }
-
     loadingRef.current = true;
     setIsLoadingPosts(true);
-
     try {
       let postsArray = [];
-
-      if (prefetchedPosts && !append) {
-        postsArray = prefetchedPosts;
-        startTransition(() => setProfilePosts(prefetchedPosts));
-      }
-
-      if (isMockProfile && initialPosts && !append) {
-        postsArray = initialPosts;
-        startTransition(() => setProfilePosts(initialPosts));
-        storeProfilePostsInCache(targetId, initialPosts);
-        return;
-      }
-
+      if (prefetchedPosts && !append) { postsArray = prefetchedPosts; startTransition(() => setProfilePosts(prefetchedPosts)); }
+      if (isMockProfile && initialPosts && !append) { postsArray = initialPosts; startTransition(() => setProfilePosts(initialPosts)); storeProfilePostsInCache(targetId, initialPosts); return; }
       if (!isMockProfile && !append && !prefetchedPosts) {
         try {
           const cached = await getCachedPosts(targetId);
-          if (Array.isArray(cached) && cached.length > 0) {
-            postsArray = cached;
-            startTransition(() => setProfilePosts(cached));
-            storeProfilePostsInCache(targetId, cached);
-          }
-        } catch (e) {
-          console.warn("IDB cache read error:", e);
-        }
+          if (Array.isArray(cached) && cached.length > 0) { postsArray = cached; startTransition(() => setProfilePosts(cached)); storeProfilePostsInCache(targetId, cached); }
+        } catch (e) { console.warn("IDB cache read error:", e); }
       }
-
-      // 🆕 FIX 4 — Pour les bots, chercher aussi dans le pool Home d'abord
       if (!append && !prefetchedPosts && postsArray.length === 0) {
         const homePostsForUser = getPostsFromHomePool(targetId);
-        if (homePostsForUser.length > 0) {
-          postsArray = homePostsForUser;
-          startTransition(() => setProfilePosts(homePostsForUser.map(normalizePost)));
-          storeProfilePostsInCache(targetId, homePostsForUser);
-        }
+        if (homePostsForUser.length > 0) { postsArray = homePostsForUser; startTransition(() => setProfilePosts(homePostsForUser.map(normalizePost))); storeProfilePostsInCache(targetId, homePostsForUser); }
       }
-
       if (navigator.onLine && !prefetchedPosts) {
         try {
           const result  = await fetchUserPosts(targetId, pageNumber);
           const fetched = extractPostsFromResult(result);
           if (fetched.length > 0) postsArray = fetched;
-        } catch (networkErr) {
-          console.error("[Profile] Erreur fetch posts réseau:", networkErr);
-          if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info");
-        }
+        } catch (networkErr) { if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info"); }
       }
-
       setHasMore(postsArray.length >= 20);
-
       startTransition(() => {
         setProfilePosts(prev => {
-          const base        = append ? prev : [];
-          const merged      = [...base, ...postsArray];
-          const seen        = new Set();
-          const uniquePosts = merged
+          const base   = append ? prev : [];
+          const merged = [...base, ...postsArray];
+          const seen   = new Set();
+          const unique = merged
             .filter(p => { if (!p?._id || seen.has(p._id)) return false; seen.add(p._id); return true; })
             .map(normalizePost)
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          if (!isMockProfile && isValidObjectId(targetId)) savePosts(targetId, uniquePosts);
-          storeProfilePostsInCache(targetId, uniquePosts);
-          return uniquePosts;
+          if (!isMockProfile && isValidObjectId(targetId)) savePosts(targetId, unique);
+          storeProfilePostsInCache(targetId, unique);
+          return unique;
         });
       });
-
-    } catch (err) {
-      console.error("[Profile] loadProfilePosts error:", err);
-    } finally {
-      loadingRef.current = false;
-      setIsLoadingPosts(false);
-    }
+    } catch (err) { console.error("[Profile] loadProfilePosts error:", err); }
+    finally { loadingRef.current = false; setIsLoadingPosts(false); }
   }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts]);
 
   useEffect(() => {
-    if (profilePosts.length > 0 && profileUser?._id) {
-      storeProfilePostsInCache(profileUser._id, profilePosts);
-    }
+    if (profilePosts.length > 0 && profileUser?._id) storeProfilePostsInCache(profileUser._id, profilePosts);
   }, [profilePosts, profileUser?._id]);
 
   const lastPostRef = useCallback((node) => {
@@ -622,15 +549,12 @@ export default function ProfilePage({
       else await followUser(profileUser._id);
       showLocalToast(wasFollowing ? "Désabonné !" : "Abonné !");
     } catch (err) {
-      console.error("Erreur follow:", err);
       showLocalToast("Erreur lors de l'action", "error");
       const rollback = wasFollowing
         ? [...(profileUser.followers || []), authUserId]
         : (profileUser.followers || []).filter(u => !isSameUser(typeof u === "object" ? u._id : u, authUserId));
       startTransition(() => setProfileUser(prev => ({ ...prev, followers: rollback })));
-    } finally {
-      setFollowLoading(false);
-    }
+    } finally { setFollowLoading(false); }
   }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast, authUserId]);
 
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [targetUserId]);
@@ -659,239 +583,118 @@ export default function ProfilePage({
 
   useEffect(() => {
     const handleOnline = () => {
-      if (profileUser?._id && isValidObjectId(profileUser._id)) {
-        loadProfilePosts(profileUser._id, 1, false);
-      }
+      if (profileUser?._id && isValidObjectId(profileUser._id)) loadProfilePosts(profileUser._id, 1, false);
     };
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
   }, [profileUser?._id, loadProfilePosts]);
 
-  // ─────────────────────────────────────────────
-  // useEffect principal — v4
-  // ─────────────────────────────────────────────
+  // useEffect principal
   useEffect(() => {
     if (authLoading) return;
     if (!authUser) { navigate("/auth", { replace: true }); return; }
-
     if (initialUser) {
-      setProfileUser(initialUser);
-      setIsBot(!!initialUser.isBot);
-      setIsLoadingUser(false);
-      setUserNotFound(false);
-      if (targetUserId && isValidObjectId(targetUserId)) {
-        loadProfilePosts(targetUserId, 1, false);
-      }
+      setProfileUser(initialUser); setIsBot(!!initialUser.isBot); setIsLoadingUser(false); setUserNotFound(false);
+      if (targetUserId && isValidObjectId(targetUserId)) loadProfilePosts(targetUserId, 1, false);
       return;
     }
-
-    if (!targetUserId || targetUserId === "undefined") {
-      setIsLoadingUser(false);
-      setUserNotFound(true);
-      return;
-    }
-
-    // ─────────────────────────────────────────────
-    // 🆕 FIX 1 — ID mock/temporaire (ex: user_9_...)
-    // Pas de fetch réseau, on reconstruit depuis le pool Home
-    // ─────────────────────────────────────────────
+    if (!targetUserId || targetUserId === "undefined") { setIsLoadingUser(false); setUserNotFound(true); return; }
     if (isMockId(targetUserId)) {
-      console.log(`[Profile] ID mock détecté (${targetUserId}) — reconstruction depuis pool local`);
       const result = buildProfileFromEmbeddedUser(targetUserId);
-
       if (result) {
-        setProfileUser(result.profile);
-        setIsBot(!!result.profile.isBot);
-        setIsLoadingUser(false);
-        setUserNotFound(false);
-        if (result.posts.length > 0) {
-          startTransition(() => setProfilePosts(result.posts.map(normalizePost)));
-          storeProfilePostsInCache(targetUserId, result.posts);
-        }
+        setProfileUser(result.profile); setIsBot(!!result.profile.isBot); setIsLoadingUser(false); setUserNotFound(false);
+        if (result.posts.length > 0) { startTransition(() => setProfilePosts(result.posts.map(normalizePost))); storeProfilePostsInCache(targetUserId, result.posts); }
       } else {
-        // Profil mock non trouvé dans le pool — afficher un profil vide plutôt que "introuvable"
         setProfileUser(buildMinimalUser(targetUserId, { username: "utilisateur", fullName: "Utilisateur" }));
-        setIsBot(false);
-        setIsLoadingUser(false);
-        setUserNotFound(false);
+        setIsBot(false); setIsLoadingUser(false); setUserNotFound(false);
         showLocalToast("Profil de démonstration", "info");
       }
       return;
     }
-
-    // ID non-MongoDB non-mock (cas improbable)
     if (!isValidObjectId(targetUserId)) {
-      if (isOwner) {
-        // Si c'est le compte courant avec ID temporaire
-        setProfileUser(authUser);
-        setIsBot(false);
-        setIsLoadingUser(false);
-        setUserNotFound(false);
-      } else {
-        setIsLoadingUser(false);
-        setUserNotFound(true);
-      }
+      if (isOwner) { setProfileUser(authUser); setIsBot(false); setIsLoadingUser(false); setUserNotFound(false); }
+      else { setIsLoadingUser(false); setUserNotFound(true); }
       return;
     }
-
-    // ─────────────────────────────────────────────
-    // Flux normal — ID MongoDB valide
-    // ─────────────────────────────────────────────
     (async () => {
-      setIsLoadingUser(true);
-      setUserNotFound(false);
-
+      setIsLoadingUser(true); setUserNotFound(false);
       try {
         await idbClearOtherKeys(`profilePosts_${targetUserId}`);
-
         if (isOwner) {
-          setProfileUser(authUser);
-          setIsBot(false);
-          setUserNotFound(false);
-          saveUser(authUser);
-          if (navigator.onLine) {
-            fetchUserById(authUserId).then(fresh => {
-              if (fresh) { setProfileUser(fresh); saveUser(fresh); }
-            }).catch(() => {});
-          }
-
+          setProfileUser(authUser); setIsBot(false); setUserNotFound(false); saveUser(authUser);
+          if (navigator.onLine) fetchUserById(authUserId).then(fresh => { if (fresh) { setProfileUser(fresh); saveUser(fresh); } }).catch(() => {});
         } else {
           const cachedUser = await idbGetUser(targetUserId);
-          if (cachedUser) {
-            setProfileUser(buildMinimalUser(cachedUser._id || cachedUser.id, cachedUser));
-            setIsBot(!!cachedUser.isBot);
-            setUserNotFound(false);
-          }
-
+          if (cachedUser) { setProfileUser(buildMinimalUser(cachedUser._id || cachedUser.id, cachedUser)); setIsBot(!!cachedUser.isBot); setUserNotFound(false); }
           if (navigator.onLine) {
             const fetchedUser = await fetchUserById(targetUserId);
-
-            if (fetchedUser) {
-              setProfileUser(fetchedUser);
-              setIsBot(!!fetchedUser.isBot);
-              setUserNotFound(false);
-              saveUser(fetchedUser);
-
-            } else if (!cachedUser) {
-              // 🆕 FIX 2 — Chercher d'abord dans le pool Home (bots + posts récents)
+            if (fetchedUser) { setProfileUser(fetchedUser); setIsBot(!!fetchedUser.isBot); setUserNotFound(false); saveUser(fetchedUser); }
+            else if (!cachedUser) {
               const embeddedResult = buildProfileFromEmbeddedUser(targetUserId);
               if (embeddedResult) {
-                setProfileUser(embeddedResult.profile);
-                setIsBot(!!embeddedResult.profile.isBot);
-                setUserNotFound(false);
-                saveUser(embeddedResult.profile);
-                if (embeddedResult.posts.length > 0) {
-                  startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost)));
-                  storeProfilePostsInCache(targetUserId, embeddedResult.posts);
-                }
-                // Essayer quand même de charger plus de posts réseau
-                setPage(1);
-                setHasMore(true);
-                await loadProfilePosts(targetUserId, 1, false);
-                return;
+                setProfileUser(embeddedResult.profile); setIsBot(!!embeddedResult.profile.isBot); setUserNotFound(false); saveUser(embeddedResult.profile);
+                if (embeddedResult.posts.length > 0) { startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost))); storeProfilePostsInCache(targetUserId, embeddedResult.posts); }
+                setPage(1); setHasMore(true); await loadProfilePosts(targetUserId, 1, false); return;
               }
-
-              // Fallback fetch posts réseau
               const fallback = await tryBuildProfileFromPosts(targetUserId);
-
               if (fallback) {
-                setProfileUser(fallback.user);
-                setIsBot(!!fallback.user.isBot);
-                setUserNotFound(false);
-                saveUser(fallback.user);
-                setPage(1);
-                setHasMore(fallback.posts.length >= 20);
-                await loadProfilePosts(targetUserId, 1, false, fallback.posts);
-                return;
+                setProfileUser(fallback.user); setIsBot(!!fallback.user.isBot); setUserNotFound(false); saveUser(fallback.user);
+                setPage(1); setHasMore(fallback.posts.length >= 20);
+                await loadProfilePosts(targetUserId, 1, false, fallback.posts); return;
               } else {
-                if (isValidObjectId(targetUserId)) {
-                  console.warn(`[Profile] Profil réseau indisponible pour ${targetUserId} — profil vide`);
-                  setProfileUser(buildMinimalUser(targetUserId));
-                  setIsBot(false);
-                  setUserNotFound(false);
-                  showLocalToast("Profil partiellement disponible", "info");
-                } else {
-                  setUserNotFound(true);
-                }
+                if (isValidObjectId(targetUserId)) { setProfileUser(buildMinimalUser(targetUserId)); setIsBot(false); setUserNotFound(false); showLocalToast("Profil partiellement disponible", "info"); }
+                else setUserNotFound(true);
               }
             }
-
           } else if (!cachedUser) {
             if (isValidObjectId(targetUserId)) {
-              // Hors ligne — tenter le pool Home
               const embeddedResult = buildProfileFromEmbeddedUser(targetUserId);
               if (embeddedResult) {
-                setProfileUser(embeddedResult.profile);
-                setIsBot(!!embeddedResult.profile.isBot);
-                setUserNotFound(false);
-                if (embeddedResult.posts.length > 0) {
-                  startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost)));
-                }
+                setProfileUser(embeddedResult.profile); setIsBot(!!embeddedResult.profile.isBot); setUserNotFound(false);
+                if (embeddedResult.posts.length > 0) startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost)));
               } else {
-                setProfileUser(buildMinimalUser(targetUserId));
-                setIsBot(false);
-                setUserNotFound(false);
+                setProfileUser(buildMinimalUser(targetUserId)); setIsBot(false); setUserNotFound(false);
                 showLocalToast("Profil non disponible hors ligne", "info");
               }
-            } else {
-              setUserNotFound(true);
-            }
+            } else setUserNotFound(true);
           }
         }
-
-        setPage(1);
-        setHasMore(true);
-        await loadProfilePosts(targetUserId, 1, false);
-
+        setPage(1); setHasMore(true); await loadProfilePosts(targetUserId, 1, false);
       } catch (err) {
         console.error("Profil Load Error:", err);
-        if (!profileUser && isValidObjectId(targetUserId)) {
-          setProfileUser(buildMinimalUser(targetUserId));
-          setUserNotFound(false);
-        }
+        if (!profileUser && isValidObjectId(targetUserId)) { setProfileUser(buildMinimalUser(targetUserId)); setUserNotFound(false); }
         showLocalToast("Erreur lors du chargement", "error");
-      } finally {
-        setIsLoadingUser(false);
-      }
+      } finally { setIsLoadingUser(false); }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, authUser?._id, targetUserId, isOwner]);
 
-  // ── Socket temps réel ──────────────────────────────────────────────────────
+  // Socket temps réel
   useEffect(() => {
     if (!socket || !profileUser || isMockProfile || isBot) return;
     const handleNewPost = (post) => {
       const postUserId = typeof post.user === "object" ? post.user._id : post.user;
       if (!isSameUser(postUserId, profileUser._id)) return;
-      startTransition(() => {
-        setProfilePosts(prev => {
-          if (prev.find(p => p._id === post._id)) return prev;
-          const updated = [normalizePost(post), ...prev];
-          savePosts(profileUser._id, updated);
-          storeProfilePostsInCache(profileUser._id, updated);
-          return updated;
-        });
-      });
+      startTransition(() => setProfilePosts(prev => {
+        if (prev.find(p => p._id === post._id)) return prev;
+        const updated = [normalizePost(post), ...prev];
+        savePosts(profileUser._id, updated); storeProfilePostsInCache(profileUser._id, updated);
+        return updated;
+      }));
     };
     const handleDeletedPost = (postId) => {
-      startTransition(() => {
-        setProfilePosts(prev => {
-          const updated = prev.filter(p => p._id !== postId);
-          savePosts(profileUser._id, updated);
-          storeProfilePostsInCache(profileUser._id, updated);
-          return updated;
-        });
-      });
+      startTransition(() => setProfilePosts(prev => {
+        const updated = prev.filter(p => p._id !== postId);
+        savePosts(profileUser._id, updated); storeProfilePostsInCache(profileUser._id, updated);
+        return updated;
+      }));
     };
     const handleUpdatedPost = (post) => {
-      startTransition(() => {
-        setProfilePosts(prev => {
-          const updated = prev.map(p => p._id === post._id ? normalizePost(post) : p);
-          savePosts(profileUser._id, updated);
-          storeProfilePostsInCache(profileUser._id, updated);
-          return updated;
-        });
-      });
+      startTransition(() => setProfilePosts(prev => {
+        const updated = prev.map(p => p._id === post._id ? normalizePost(post) : p);
+        savePosts(profileUser._id, updated); storeProfilePostsInCache(profileUser._id, updated);
+        return updated;
+      }));
     };
     socket.on("newPost",     handleNewPost);
     socket.on("postDeleted", handleDeletedPost);
@@ -909,13 +712,14 @@ export default function ProfilePage({
     following: profileUser?.following?.length || profileUser?.followingCount || 0,
   };
 
-  // ── Rendu ──────────────────────────────────────────────────────────────────
+  // Styles de page
+  const pageBg = isDarkMode ? '#080808' : '#f5f5f7';
+
+  // ── STATES D'ÉCRAN ──────────────────────────────────────────────────────────
 
   if (authLoading || (isLoadingUser && !profileUser)) {
     return (
-      <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
-        isDarkMode ? "bg-black" : "bg-orange-50"
-      }`}>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: pageBg }}>
         <LoadingSpinner darkMode={isDarkMode} />
       </div>
     );
@@ -923,153 +727,164 @@ export default function ProfilePage({
 
   if (userNotFound || (!profileUser && !isLoadingUser)) {
     return (
-      <div className={`profile-page min-h-screen p-4 flex items-center justify-center transition-colors duration-200 ${
-        isDarkMode ? "bg-black" : "bg-orange-50"
-      }`}>
-        <div className="text-center">
-          <p className="text-5xl mb-4">🔍</p>
-          <p className={`text-lg font-medium mb-4 ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
-            Profil introuvable
-          </p>
-          <button
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: pageBg, fontFamily: "'Sora','DM Sans',sans-serif" }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 56, marginBottom: 16 }}>🔍</div>
+          <p style={{ fontSize: 18, fontWeight: 700, color: isDarkMode ? '#d1d5db' : '#374151', marginBottom: 20 }}>Profil introuvable</p>
+          <motion.button
             onClick={() => navigate(-1)}
-            className="px-6 py-2 bg-orange-500 text-white rounded-full font-semibold hover:bg-orange-600 transition"
+            whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.97 }}
+            style={{ padding: '11px 28px', borderRadius: 999, border: 'none', cursor: 'pointer', background: 'linear-gradient(135deg,#f97316,#ec4899)', color: '#fff', fontWeight: 700, fontSize: 14, boxShadow: '0 6px 24px rgba(249,115,22,0.4)' }}
           >
-            Retour
-          </button>
+            ← Retour
+          </motion.button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className={`profile-page min-h-screen p-4 transition-colors duration-200 ${
-      isDarkMode ? "bg-black" : "bg-orange-50"
-    }`}>
+    <div style={{
+      minHeight: '100vh',
+      background: pageBg,
+      padding: '16px',
+      fontFamily: "'Sora','DM Sans',sans-serif",
+      transition: 'background 0.3s',
+    }}>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap');
+      `}</style>
+
+      {/* Bannière mock */}
       {isMockProfile && (
-        <div className="max-w-7xl mx-auto mb-4">
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg px-4 py-3">
-            <p className="text-sm text-blue-500 text-center flex items-center justify-center gap-2">
-              <span>👤</span>
-              <span>Profil de démonstration — Toutes les interactions sont simulées</span>
-            </p>
-          </div>
+        <div style={{ maxWidth: 820, margin: '0 auto 16px', padding: '12px 20px', borderRadius: 16, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
+          <p style={{ fontSize: 13, color: '#3b82f6', textAlign: 'center', margin: 0, fontWeight: 500 }}>
+            👤 Profil de démonstration — Toutes les interactions sont simulées
+          </p>
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          <ProfileHeader
-            user={profileUser}
-            isOwnProfile={isOwner}
-            posts={profilePosts}
-            followers={profileUser.followers || []}
-            following={profileUser.following || []}
-            showToast={showLocalToast}
-          />
+      <div style={{ maxWidth: 820, margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr', gap: 16 }}>
 
-          {!isOwner && (
-            <div className="text-center">
-              <FollowButton
-                isFollowing={followStatus}
-                isLoading={followLoading}
-                onClick={handleFollowToggle}
+        {/* Layout desktop */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 16 }}>
+
+          {/* Colonne principale */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+            {/* Header */}
+            <ProfileHeader
+              user={profileUser}
+              isOwnProfile={isOwner}
+              posts={profilePosts}
+              followers={profileUser.followers || []}
+              following={profileUser.following || []}
+              showToast={showLocalToast}
+            />
+
+            {/* Bouton S'abonner */}
+            {!isOwner && (
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <FollowButton
+                  isFollowing={followStatus}
+                  isLoading={followLoading}
+                  onClick={handleFollowToggle}
+                  isDarkMode={isDarkMode}
+                />
+              </div>
+            )}
+
+            {/* Suggestions mobile */}
+            {isOwner && authUser && authToken && (
+              <div style={{ display: 'block' }} className="lg:hidden">
+                <ProfileSuggestions
+                  currentUser={authUser} token={authToken}
+                  isDarkMode={isDarkMode} maxSuggestions={3}
+                  onFollowSuccess={handleFollowSuccess}
+                />
+              </div>
+            )}
+
+            {/* Menu onglets */}
+            <ProfileMenu
+              selectedTab={selectedTab}
+              onSelectTab={setSelectedTab}
+              isOwner={isOwner}
+              stats={stats}
+            />
+
+            {/* ── ONGLET PUBLICATIONS ── */}
+            {selectedTab === "posts" && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {isOwner && !isMockProfile && !isBot && (
+                  <CreatePost user={authUser} onPostCreated={handlePostCreated} showToast={showLocalToast} />
+                )}
+                {isLoadingPosts && profilePosts.length === 0 ? (
+                  <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
+                ) : profilePosts.length === 0 && !isLoadingPosts ? (
+                  <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {profilePosts.map((post, index) => (
+                      <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
+                        <PostCard post={post} onDeleted={handlePostDeleted} showToast={showLocalToast} mockPost={isMockProfile} />
+                      </div>
+                    ))}
+                    {isLoadingPosts && (
+                      <div style={{ textAlign: 'center', padding: '16px 0' }}>
+                        <div style={{ display: 'inline-block', width: 28, height: 28, border: `3px solid ${isDarkMode ? 'rgba(249,115,22,0.2)' : 'rgba(249,115,22,0.15)'}`, borderTopColor: '#f97316', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                      </div>
+                    )}
+                    {!hasMore && profilePosts.length > 0 && (
+                      <p style={{ textAlign: 'center', padding: '16px 0', fontSize: 13, color: isDarkMode ? '#4b5563' : '#9ca3af' }}>
+                        · Tous les posts affichés ·
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ── ONGLET PHOTOS ── */}
+            {selectedTab === "photos" && (
+              <ProfileMediaGrid
+                posts={profilePosts}
                 isDarkMode={isDarkMode}
+                isLoading={isLoadingPosts}
+                hasMore={hasMore}
+                onLoadMore={() => {
+                  const nextPage = page + 1;
+                  setPage(nextPage);
+                  if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
+                }}
+                featuredFirst={false}
+                isOwner={isOwner}
               />
+            )}
+
+            {/* ── ONGLET PARAMÈTRES ── */}
+            {selectedTab === "settings" && isOwner && !isBot && (
+              <SettingsSection user={authUser} showToast={showLocalToast} />
+            )}
+          </div>
+
+          {/* Colonne suggestions desktop */}
+          {isOwner && !isBot && authUser && authToken && (
+            <div style={{ display: 'none' }} className="lg:block">
+              <div style={{ position: 'sticky', top: 16 }}>
+                <ProfileSuggestions
+                  currentUser={authUser} token={authToken}
+                  isDarkMode={isDarkMode} maxSuggestions={5}
+                  onFollowSuccess={handleFollowSuccess}
+                />
+              </div>
             </div>
-          )}
-
-          {isOwner && authUser && authToken && (
-            <div className="lg:hidden">
-              <ProfileSuggestions
-                currentUser={authUser}
-                token={authToken}
-                isDarkMode={isDarkMode}
-                maxSuggestions={3}
-                onFollowSuccess={handleFollowSuccess}
-              />
-            </div>
-          )}
-
-          <ProfileMenu
-            selectedTab={selectedTab}
-            onSelectTab={setSelectedTab}
-            isOwner={isOwner}
-            stats={stats}
-          />
-
-          {selectedTab === "posts" && (
-            <div>
-              {isOwner && !isMockProfile && !isBot && (
-                <div className="mb-4">
-                  <CreatePost
-                    user={authUser}
-                    onPostCreated={handlePostCreated}
-                    showToast={showLocalToast}
-                  />
-                </div>
-              )}
-
-              {isLoadingPosts && profilePosts.length === 0 ? (
-                <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
-              ) : profilePosts.length === 0 && !isLoadingPosts ? (
-                <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
-              ) : (
-                <div>
-                  {profilePosts.map((post, index) => (
-                    <div
-                      key={post._id}
-                      ref={index === profilePosts.length - 1 ? lastPostRef : null}
-                    >
-                      <PostCard
-                        post={post}
-                        onDeleted={handlePostDeleted}
-                        showToast={showLocalToast}
-                        mockPost={isMockProfile}
-                      />
-                    </div>
-                  ))}
-
-                  {isLoadingPosts && (
-                    <div className="text-center py-4">
-                      <div className={`inline-block w-8 h-8 border-4 rounded-full animate-spin ${
-                        isDarkMode
-                          ? "border-orange-400 border-t-transparent"
-                          : "border-orange-500 border-t-transparent"
-                      }`}></div>
-                    </div>
-                  )}
-
-                  {!hasMore && profilePosts.length > 0 && (
-                    <p className={`text-center py-4 text-sm ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
-                      Plus de posts
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {selectedTab === "settings" && isOwner && !isBot && (
-            <SettingsSection user={authUser} showToast={showLocalToast} />
           )}
         </div>
-
-        {isOwner && !isBot && authUser && authToken && (
-          <div className="hidden lg:block lg:col-span-1">
-            <div className="sticky top-4">
-              <ProfileSuggestions
-                currentUser={authUser}
-                token={authToken}
-                isDarkMode={isDarkMode}
-                maxSuggestions={5}
-                onFollowSuccess={handleFollowSuccess}
-              />
-            </div>
-          </div>
-        )}
       </div>
 
+      {/* Toast */}
       {toast && <Toast message={toast.message} type={toast.type} />}
     </div>
   );

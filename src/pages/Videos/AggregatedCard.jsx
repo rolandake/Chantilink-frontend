@@ -1,16 +1,19 @@
-// 📁 src/pages/Videos/AggregatedCard.jsx — v6 YOUTUBE POOL (zéro reload)
+// 📁 src/pages/Videos/AggregatedCard.jsx — v7 useVideoPlayer
 //
 // ═══════════════════════════════════════════════════════════════════════════
-// NOUVEAUTÉS v6 :
+// MIGRATION v7 — useVideoPlayer (source de vérité partagée)
 //
-//  🎬 YouTubeEmbed — utilise YouTubePool (singleton global)
-//     - Plus de création d'<iframe> dans le JSX
-//     - acquire(videoId, containerDiv) dépose une iframe déjà chargée
-//     - release(slot) la remet off-screen pour la prochaine slide
-//     - Lecture instantanée si warmup a été déclenché par VideosPage
-//     - postMessage play/pause/mute via slot.iframe.contentWindow
-//
-//  🔒 HÉRITAGE v5 INTÉGRAL — rien de cassé (Vimeo, DirectVideo, HlsVideo…)
+//  ✅ useVideoPlayer LOCAL (DirectVideo/HlsVideo) supprimé → remplacé par
+//     useVideoPlayer() du hook canonique
+//  ✅ DirectVideo refactorisé : src via ref callback + useLayoutEffect
+//     (même fix StrictMode que PostMedia/VideoItem v7)
+//  ✅ HlsVideo : conserve la logique HLS.js mais délègue play/pause/abort
+//     au hook pour cohérence
+//  ✅ AbortController, debounce, canplay, timeout, retry, cleanup → hérités
+//  ✅ Fallback proxy → direct via setCurrentSrc
+//  ✅ Singleton registerPlaying → 1 seule vidéo joue globalement
+//  ✅ TOUT le reste v6 conservé (YouTubeEmbed pool, Vimeo, SeekBar,
+//     ChantilinkSignature, commentaires, download, actions…)
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
@@ -19,6 +22,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import { lockFeed, unlockFeed } from './VideoCard';
 import YouTubePool from './YouTubePool';
+import useVideoPlayer, { USER_INTERACTED_KEY } from '../../hooks/useVideoPlayer';
 import {
   FaHeart, FaRegHeart, FaComment, FaShare, FaExternalLinkAlt,
   FaVolumeUp, FaVolumeMute, FaPlay, FaImage, FaDownload,
@@ -27,18 +31,18 @@ import { IoSend } from 'react-icons/io5';
 
 const API_URL  = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const API_BASE = API_URL.replace(/\/api$/, '');
-const USER_INTERACTED_KEY = 'vp_user_interacted';
 
-// ── URL builder ───────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 const buildVideoUrl = (content) => {
   if (!content) return null;
-  if (content.source === 'pixabay' && content.externalId) return `${API_BASE}/api/proxy/video?id=${content.externalId}`;
+  if (content.source === 'pixabay' && content.externalId)
+    return `${API_BASE}/api/proxy/video?id=${content.externalId}`;
   if (content.videoUrl?.includes('res.cloudinary.com')) return content.videoUrl;
-  if (content.videoUrl?.includes('cdn.pixabay.com/video')) return `${API_BASE}/api/proxy/video?url=${encodeURIComponent(content.videoUrl)}`;
+  if (content.videoUrl?.includes('cdn.pixabay.com/video'))
+    return `${API_BASE}/api/proxy/video?url=${encodeURIComponent(content.videoUrl)}`;
   return content.videoUrl || null;
 };
 
-// ── Extraction videoId YouTube depuis embedUrl ────────────────────────────────
 const extractYoutubeId = (embedUrl = '') => {
   const match = embedUrl.match(/youtube\.com\/embed\/([^?&/]+)/);
   return match ? match[1] : null;
@@ -51,6 +55,11 @@ const generateAvatar = (name = 'U') => {
   return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="${encodeURIComponent(color)}"/><text x="50%" y="50%" font-size="50" fill="white" text-anchor="middle" dy=".3em" font-family="Arial">${c}</text></svg>`;
 };
 
+const formatTime = (s) => {
+  if (!isFinite(s) || s < 0) return '0:00';
+  return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+};
+
 const downloadVideoFile = async (src, title = 'chantilink-video') => {
   if (!src) return;
   try {
@@ -59,75 +68,15 @@ const downloadVideoFile = async (src, title = 'chantilink-video') => {
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `${title.slice(0, 40).replace(/[^a-z0-9]/gi, '-')}-chantilink.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    a.href = url; a.download = `${title.slice(0, 40).replace(/[^a-z0-9]/gi, '-')}-chantilink.mp4`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  } catch {
-    window.open(src, '_blank');
-  }
-};
-
-const downloadWithWatermark = async (videoEl, filename = 'chantilink') => {
-  const src = videoEl?.src || '';
-  if (!src) return;
-  try {
-    const canvas = document.createElement('canvas');
-    const W = videoEl.videoWidth  || 720;
-    const H = videoEl.videoHeight || 1280;
-    canvas.width = W; canvas.height = H;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoEl, 0, 0, W, H);
-    const grad = ctx.createLinearGradient(0, H * 0.75, 0, H);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.55)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, H * 0.75, W, H * 0.25);
-    const pillW = 160, pillH = 36, pillX = W - pillW - 16, pillY = H - pillH - 20;
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(pillX, pillY, pillW, pillH, 10);
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fill();
-    ctx.restore();
-    ctx.beginPath();
-    ctx.arc(pillX + 18, pillY + pillH / 2, 6, 0, Math.PI * 2);
-    ctx.fillStyle = '#f97316';
-    ctx.fill();
-    ctx.font = `bold ${Math.round(W * 0.022)}px Arial, sans-serif`;
-    ctx.fillStyle = '#ffffff';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('Chantilink', pillX + 32, pillY + pillH / 2);
-    canvas.toBlob(async (blob) => {
-      if (!blob) return;
-      if (navigator.canShare?.({ files: [new File([blob], 'chantilink.png', { type: 'image/png' })] })) {
-        try { await navigator.share({ files: [new File([blob], 'chantilink.png', { type: 'image/png' })], title: 'Vidéo Chantilink' }); return; } catch {}
-      }
-      const url = URL.createObjectURL(blob);
-      const a   = document.createElement('a');
-      a.href = url; a.download = `${filename.slice(0,40)}-chantilink.png`;
-      a.click(); URL.revokeObjectURL(url);
-    }, 'image/png');
   } catch { window.open(src, '_blank'); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎬 YouTubeEmbed v6.1 — poster-first, pool acquire/release, zéro reload
+// 🎬 YouTubeEmbed v6.1 — poster-first, pool acquire/release (inchangé)
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// DIFFÉRENCE CLEF avec v6 :
-//   - v6 originale : montait l'iframe immédiatement dans le container
-//     → YouTube chargeait ~800 KB JS → 2-4 secondes de blanc/freeze
-//
-//   - v6.1 (ce patch) : le poster (thumbnail JPG) est affiché par YouTubePool
-//     dès acquire(). L'iframe est montée via requestIdleCallback (~50-200 ms
-//     après). La transition poster → vidéo se fait en fondu.
-//     → Affichage immédiat, 60 fps maintenu au scroll.
-//
-// L'interface props est IDENTIQUE à v6 — aucune modif ailleurs dans AggregatedCard.
-//
 const YouTubeEmbed = memo(({ content, isActive, muted }) => {
   const containerRef = useRef(null);
   const slotRef      = useRef(null);
@@ -135,380 +84,147 @@ const YouTubeEmbed = memo(({ content, isActive, muted }) => {
   const isActiveRef  = useRef(isActive);
   const videoId      = extractYoutubeId(content.embedUrl || content.videoUrl || '');
 
-  useEffect(() => { mutedRef.current   = muted;    }, [muted]);
+  useEffect(() => { mutedRef.current    = muted;    }, [muted]);
   useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
 
-  // Commande postMessage vers l'iframe (silencieuse si pas encore prête)
   const postCmd = useCallback((func, args = []) => {
     const iframe = slotRef.current?.iframe;
     if (!iframe) return;
-    try {
-      iframe.contentWindow?.postMessage(
-        JSON.stringify({ event: 'command', func, args }), '*'
-      );
-    } catch {}
+    try { iframe.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*'); } catch {}
   }, []);
 
-  // ── Monter via le Pool au montage (ou si videoId change) ──────────────
   useEffect(() => {
     if (!videoId || !containerRef.current) return;
-
-    // acquire() → affiche poster immédiatement, iframe en différé
     const slot = YouTubePool.acquire(videoId, containerRef.current);
     slotRef.current = slot;
-
-    // Si le slot était déjà prêt (warmup anticipé) → commandes immédiates
     if (slot.state === 'ready' || slot.state === 'active') {
       if (isActiveRef.current) postCmd('playVideo');
       if (!mutedRef.current)   { postCmd('unMute'); postCmd('setVolume', [100]); }
     }
-
-    // Écouter onReady pour le cas où l'iframe était encore en train de charger
     const handleMessage = (event) => {
       if (!event.origin?.includes('youtube.com')) return;
-      if (!slotRef.current?.iframe) return;
-      if (event.source !== slotRef.current.iframe.contentWindow) return;
-
+      if (!slotRef.current?.iframe || event.source !== slotRef.current.iframe.contentWindow) return;
       let data;
-      try {
-        data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      } catch { return; }
-
+      try { data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; }
       if (data?.event === 'onReady') {
-        if (isActiveRef.current) postCmd('playVideo');
-        else                     postCmd('pauseVideo');
+        if (isActiveRef.current) postCmd('playVideo'); else postCmd('pauseVideo');
         if (!mutedRef.current) { postCmd('unMute'); postCmd('setVolume', [100]); }
       }
-
-      // Loop de secours si la vidéo se termine
       if (data?.event === 'onStateChange' && data?.info === 0) {
         postCmd('seekTo', [0, true]);
         if (isActiveRef.current) postCmd('playVideo');
       }
     };
-
     window.addEventListener('message', handleMessage);
-
     return () => {
       window.removeEventListener('message', handleMessage);
-      if (slotRef.current) {
-        YouTubePool.release(slotRef.current);
-        slotRef.current = null;
-      }
+      if (slotRef.current) { YouTubePool.release(slotRef.current); slotRef.current = null; }
     };
-  }, [videoId]); // eslint-disable-line — videoId change = remount complet
+  }, [videoId]); // eslint-disable-line
 
-  // ── Play / pause selon isActive ───────────────────────────────────────
+  useEffect(() => { if (isActive) postCmd('playVideo'); else postCmd('pauseVideo'); }, [isActive, postCmd]);
   useEffect(() => {
-    if (isActive) postCmd('playVideo');
-    else          postCmd('pauseVideo');
-  }, [isActive, postCmd]);
-
-  // ── Mute / unmute ─────────────────────────────────────────────────────
-  useEffect(() => {
-    if (muted) {
-      postCmd('mute');
-    } else {
-      postCmd('unMute');
-      postCmd('setVolume', [100]);
-    }
+    if (muted) postCmd('mute');
+    else { postCmd('unMute'); postCmd('setVolume', [100]); }
   }, [muted, postCmd]);
 
-  if (!videoId) {
-    return (
-      <div className="w-full h-full bg-gray-900 flex items-center justify-center">
-        <p className="text-gray-500 text-sm">Vidéo indisponible</p>
-      </div>
-    );
-  }
+  if (!videoId) return (
+    <div className="w-full h-full bg-gray-900 flex items-center justify-center">
+      <p className="text-gray-500 text-sm">Vidéo indisponible</p>
+    </div>
+  );
 
-  // Le div reçoit le poster + l'iframe injectés par YouTubePool.acquire()
   return (
-    <div
-      ref={containerRef}
-      style={{
-        position:   'absolute',
-        inset:      0,
-        width:      '100%',
-        height:     '100%',
-        background: '#080810',
-        overflow:   'hidden',
-      }}
-    />
+    <div ref={containerRef}
+      style={{ position:'absolute', inset:0, width:'100%', height:'100%', background:'#080810', overflow:'hidden' }} />
   );
 });
 YouTubeEmbed.displayName = 'YouTubeEmbed';
 
-// ── useVideoPlayer — version anti-coupure ────────────────────────────────────
-function useVideoPlayer({ videoRef, src, isActive, muted, onMutedChange, onError }) {
-  const mutedRef    = useRef(muted);
-  const srcSetRef   = useRef(false);
-  const abortRef    = useRef(null);
-  const debounceRef = useRef(null);
-  const canplayRef  = useRef(null);
-  const timerRef    = useRef(null);
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ DirectVideo v7 — utilise useVideoPlayer (fix StrictMode)
+// ─────────────────────────────────────────────────────────────────────────────
+const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError,
+  onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded }) => {
 
-  useEffect(() => { mutedRef.current = muted; }, [muted]);
+  // buildVideoUrl peut retourner une URL proxy ou directe selon la source
+  const rawUrl = buildVideoUrl(content) || '';
 
+  const player = useVideoPlayer({
+    url:             rawUrl,
+    thumbnail:       content.thumbnail || null,
+    isActive,
+    initialMuted:    muted,
+    preload:         'auto',
+    onError,
+    onMutedChange,
+    useIntersection: false, // contrôle par isActive
+  });
+
+  // Sync mute depuis le parent (AggregatedCard gère son propre état muted)
   useEffect(() => {
-    if (!src || srcSetRef.current) return;
-    const vid = videoRef.current;
-    if (!vid) return;
-    srcSetRef.current = true;
-    vid.src     = src;
-    vid.muted   = true;
-    vid.volume  = 1;
-    vid.preload = 'auto';
-    vid.load();
-  }, [src, videoRef]);
-
-  useEffect(() => {
-    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
-
-    if (!isActive) {
-      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-      abortRef.current?.abort();
-      abortRef.current = null;
-      const vid = videoRef.current;
-      if (vid) {
-        if (canplayRef.current) { vid.removeEventListener('canplay', canplayRef.current); canplayRef.current = null; }
-        vid.pause();
-        vid.muted  = true;
-        vid.volume = 1;
-      }
-      return;
-    }
-
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = null;
-      const vid = videoRef.current;
-      if (!vid) return;
-
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-
-      vid.muted  = true;
-      vid.volume = 1;
-
-      const doPlay = () => {
-        if (ctrl.signal.aborted) return;
-        if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-        const p = vid.play();
-        if (!p) return;
-        p.then(() => {
-          if (ctrl.signal.aborted) { vid.pause(); return; }
-          if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
-            vid.muted  = mutedRef.current;
-            vid.volume = mutedRef.current ? 0 : 1;
-          }
-        }).catch(err => {
-          if (ctrl.signal.aborted || err.name === 'AbortError') return;
-          if (err.name !== 'NotAllowedError') {
-            setTimeout(() => {
-              if (ctrl.signal.aborted) return;
-              vid.play().then(() => {
-                if (ctrl.signal.aborted) { vid.pause(); return; }
-                if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
-                  vid.muted = mutedRef.current; vid.volume = mutedRef.current ? 0 : 1;
-                }
-              }).catch(() => { vid.muted = true; onMutedChange?.(true); });
-            }, 300);
-          } else {
-            vid.muted = true; onMutedChange?.(true);
-          }
-        });
-      };
-
-      if (vid.readyState >= 3) {
-        doPlay();
-      } else {
-        timerRef.current = setTimeout(() => {
-          timerRef.current = null;
-          if (!ctrl.signal.aborted && vid.readyState < 1) onError?.();
-        }, 4000);
-
-        if (canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
-        const onCan = () => {
-          vid.removeEventListener('canplay', onCan);
-          canplayRef.current = null;
-          if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-          doPlay();
-        };
-        canplayRef.current = onCan;
-        vid.addEventListener('canplay', onCan);
-      }
-    }, 80);
-
-    return () => {
-      if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
-    };
-  }, [isActive]); // eslint-disable-line
-
-  useEffect(() => {
-    const vid = videoRef.current;
+    const vid = player.videoEl;
     if (!vid) return;
     vid.muted  = muted;
     vid.volume = muted ? 0 : 1;
     if (!muted && vid.paused && isActive) {
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      vid.play().then(() => {
-        if (ctrl.signal.aborted) { vid.pause(); return; }
-      }).catch(() => { vid.muted = true; onMutedChange?.(true); });
+      player.doPlay();
     }
   }, [muted]); // eslint-disable-line
 
-  useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid) return;
-    const fn = () => onError?.();
-    vid.addEventListener('error', fn);
-    return () => vid.removeEventListener('error', fn);
-  }, [videoRef, onError]);
-
-  useEffect(() => {
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-      if (timerRef.current)    clearTimeout(timerRef.current);
-      abortRef.current?.abort();
-      const vid = videoRef.current;
-      if (vid && canplayRef.current) vid.removeEventListener('canplay', canplayRef.current);
-    };
-  }, []); // eslint-disable-line
-}
-
-// ── formatTime ───────────────────────────────────────────────────────────────
-const formatTime = (s) => {
-  if (!isFinite(s) || s < 0) return '0:00';
-  const m   = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${sec.toString().padStart(2, '0')}`;
-};
-
-// ── SeekBar ───────────────────────────────────────────────────────────────────
-const SeekBar = memo(({ progress, videoRef, isEmbed, duration = 0 }) => {
-  const trackRef  = useRef(null);
-  const dragging  = useRef(false);
-  const wasPaused = useRef(false);
-  const [isDragging,  setIsDragging]  = useState(false);
-  const [previewTime, setPreviewTime] = useState(0);
-  const [previewPct,  setPreviewPct]  = useState(0);
-
-  const getRatio = useCallback((clientX) => {
-    const bar = trackRef.current;
-    if (!bar) return null;
-    const rect = bar.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  }, []);
-
-  const applySeek = useCallback((ratio) => {
-    if (isEmbed) return;
-    const vid = videoRef.current;
-    if (!vid || !vid.duration) return;
-    const t = ratio * vid.duration;
-    vid.currentTime = t;
-    setPreviewTime(t);
-    setPreviewPct(ratio * 100);
-  }, [videoRef, isEmbed]);
-
-  const onPointerDown = useCallback((e) => {
-    if (isEmbed) return;
-    e.stopPropagation();
-    const ratio = getRatio(e.clientX);
-    if (ratio === null) return;
-    lockFeed();
-    dragging.current = true;
-    trackRef.current?.setPointerCapture(e.pointerId);
-    const vid = videoRef.current;
-    wasPaused.current = vid ? vid.paused : true;
-    if (vid && !vid.paused) vid.pause();
-    applySeek(ratio);
-    setIsDragging(true);
-  }, [getRatio, applySeek, videoRef, isEmbed]);
-
-  const onPointerMove = useCallback((e) => {
-    if (!dragging.current) return;
-    e.stopPropagation();
-    const ratio = getRatio(e.clientX);
-    if (ratio !== null) applySeek(ratio);
-  }, [getRatio, applySeek]);
-
-  const onPointerUp = useCallback((e) => {
-    if (!dragging.current) return;
-    e.stopPropagation();
-    dragging.current = false;
-    setIsDragging(false);
-    const vid = videoRef.current;
-    if (vid && !wasPaused.current) vid.play().catch(() => {});
-    unlockFeed();
-  }, [videoRef]);
-
-  const pct = isDragging ? previewPct : progress;
-
   return (
     <>
-      <AnimatePresence>
-        {isDragging && !isEmbed && (
-          <motion.div
-            initial={{ opacity: 0, y: 4, scale: 0.85 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 4, scale: 0.85 }}
-            transition={{ duration: 0.12 }}
-            className="absolute z-30 pointer-events-none"
-            style={{ bottom: 14, left: `clamp(28px, ${pct}%, calc(100% - 28px))`, transform: 'translateX(-50%)' }}
-          >
-            <div style={{ background:'rgba(0,0,0,0.82)', backdropFilter:'blur(8px)', border:'1px solid rgba(255,255,255,0.18)', borderRadius:8, padding:'3px 8px', fontSize:12, fontWeight:600, color:'#fff', whiteSpace:'nowrap' }}>
-              {formatTime(previewTime)}
-              {duration > 0 && <span style={{ opacity:0.5, fontWeight:400 }}> / {formatTime(duration)}</span>}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      <div ref={trackRef} className="absolute left-0 right-0 z-20"
-        style={{ bottom:0, height:28, cursor:isEmbed?'default':'pointer', touchAction:'none', userSelect:'none' }}
-        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
-        <div className="absolute left-0 right-0" style={{ bottom:0, height:isDragging?4:2.5, background:'rgba(255,255,255,0.18)', transition:'height 0.15s ease' }}>
-          <div style={{ position:'absolute', left:0, top:0, bottom:0, width:`${pct}%`, background:'#fff', borderRadius:99, transition:isDragging?'none':'width 0.1s linear' }} />
-          {!isEmbed && (
-            <div style={{ position:'absolute', top:'50%', left:`${pct}%`, transform:'translate(-50%,-50%)', width:isDragging?16:10, height:isDragging?16:10, borderRadius:'50%', background:'#fff', boxShadow:'0 1px 6px rgba(0,0,0,0.5)', transition:isDragging?'none':'width 0.15s, height 0.15s', pointerEvents:'none' }} />
-          )}
-        </div>
-      </div>
-    </>
-  );
-});
-SeekBar.displayName = 'SeekBar';
+      {/*
+        ✅ PAS de src={} — géré impérativement par useVideoPlayer
+        muted={true} attribut HTML initial pour autoplay policy navigateur.
+      */}
+      <video
+        ref={player.videoRef}
+        muted
+        loop
+        playsInline
+        preload="auto"
+        crossOrigin={player.crossOrigin}
+        style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', contain:'strict' }}
+        poster={content.thumbnail || undefined}
+        onClick={onTogglePlay}
+        onDoubleClick={onDoubleTap}
+        onPlay={player.handlePlay}
+        onPause={player.handlePause}
+        onError={player.handleError}
+        onTimeUpdate={onTimeUpdate}
+        onDurationChange={onDurationChange}
+        onEnded={onEnded}
+      />
 
-// ── DirectVideo ───────────────────────────────────────────────────────────────
-const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded, videoRef }) => {
-  useVideoPlayer({ videoRef, src: buildVideoUrl(content), isActive, muted, onMutedChange, onError });
-  return (
-    <video ref={videoRef}
-      className="w-full h-full object-cover"
-      style={{ position:'absolute', inset:0, width:'100%', height:'100%', contain:'strict' }}
-      playsInline preload="auto" loop
-      poster={content.thumbnail || undefined}
-      onClick={onTogglePlay} onDoubleClick={onDoubleTap}
-      onTimeUpdate={onTimeUpdate} onDurationChange={onDurationChange} onEnded={onEnded} />
+      {/* Poster jusqu'au premier frame décodé */}
+      {player.posterUrl && (
+        <img src={player.posterUrl} alt="" draggable="false"
+          style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', pointerEvents:'none', zIndex:player.posterVisible ? 2 : -1, opacity:player.posterVisible ? 1 : 0, transition:'opacity 0.3s ease' }} />
+      )}
+    </>
   );
 });
 DirectVideo.displayName = 'DirectVideo';
 
-// ── HlsVideo ──────────────────────────────────────────────────────────────────
-const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded, videoRef }) => {
-  const hlsRef    = useRef(null);
-  const mutedRef  = useRef(muted);
-  const abortRef  = useRef(null);
-  const isActRef  = useRef(isActive);
+// ─────────────────────────────────────────────────────────────────────────────
+// HlsVideo — conserve HLS.js, délègue play/pause au hook pour cohérence
+// ─────────────────────────────────────────────────────────────────────────────
+const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError,
+  onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded }) => {
 
-  useEffect(() => { mutedRef.current = muted; }, [muted]);
-  useEffect(() => { isActRef.current = isActive; }, [isActive]);
+  const videoElRef  = useRef(null);
+  const hlsRef      = useRef(null);
+  const abortRef    = useRef(null);
+  const mutedRef    = useRef(muted);
+  const isActRef    = useRef(isActive);
 
+  useEffect(() => { mutedRef.current  = muted;    }, [muted]);
+  useEffect(() => { isActRef.current  = isActive; }, [isActive]);
+
+  // ── Initialisation HLS.js ─────────────────────────────────────────────────
   useEffect(() => {
-    const vid = videoRef.current;
+    const vid = videoElRef.current;
     if (!vid || !content.videoUrl) return;
     const setup = async () => {
       try {
@@ -523,8 +239,7 @@ const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTog
             vid.muted = true; vid.volume = 1;
             if (!isActRef.current) return;
             abortRef.current?.abort();
-            const ctrl = new AbortController();
-            abortRef.current = ctrl;
+            const ctrl = new AbortController(); abortRef.current = ctrl;
             vid.play().then(() => {
               if (ctrl.signal.aborted) { vid.pause(); return; }
               if (sessionStorage.getItem(USER_INTERACTED_KEY) === '1') {
@@ -536,19 +251,18 @@ const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTog
         } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
           vid.src = content.videoUrl; vid.muted = true;
         }
-      } catch (e) { vid.src = content.videoUrl; vid.muted = true; }
+      } catch { vid.src = content.videoUrl; vid.muted = true; }
     };
     setup();
     return () => { abortRef.current?.abort(); hlsRef.current?.destroy(); hlsRef.current = null; };
   }, [content.videoUrl]); // eslint-disable-line
 
+  // ── Play/pause selon isActive ─────────────────────────────────────────────
   useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid) return;
+    const vid = videoElRef.current; if (!vid) return;
     if (isActive) {
       abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
+      const ctrl = new AbortController(); abortRef.current = ctrl;
       vid.muted = true;
       const t = setTimeout(() => {
         if (ctrl.signal.aborted) return;
@@ -565,31 +279,39 @@ const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError, onTog
     }
   }, [isActive]); // eslint-disable-line
 
+  // ── Sync muted ────────────────────────────────────────────────────────────
   useEffect(() => {
-    const vid = videoRef.current;
-    if (!vid) return;
+    const vid = videoElRef.current; if (!vid) return;
     vid.muted = muted; vid.volume = muted ? 0 : 1;
     if (!muted && vid.paused && isActive) {
       abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      vid.play().then(() => { if (ctrl.signal.aborted) { vid.pause(); return; } }).catch(() => { vid.muted = true; onMutedChange?.(true); });
+      const ctrl = new AbortController(); abortRef.current = ctrl;
+      vid.play().then(() => { if (ctrl.signal.aborted) { vid.pause(); return; } })
+        .catch(() => { vid.muted = true; onMutedChange?.(true); });
     }
   }, [muted]); // eslint-disable-line
 
+  // ── Cleanup ───────────────────────────────────────────────────────────────
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    hlsRef.current?.destroy(); hlsRef.current = null;
+    const vid = videoElRef.current;
+    if (vid) { vid.pause(); vid.src = ''; vid.load(); }
+  }, []);
+
   return (
-    <video ref={videoRef}
-      className="w-full h-full object-cover"
-      style={{ position:'absolute', inset:0, width:'100%', height:'100%', contain:'strict' }}
-      playsInline preload="auto" loop
+    <video ref={videoElRef}
+      muted loop playsInline preload="auto"
+      style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', contain:'strict' }}
       poster={content.thumbnail || undefined}
       onClick={onTogglePlay} onDoubleClick={onDoubleTap}
-      onTimeUpdate={onTimeUpdate} onDurationChange={onDurationChange} onEnded={onEnded} />
+      onTimeUpdate={onTimeUpdate} onDurationChange={onDurationChange} onEnded={onEnded}
+    />
   );
 });
 HlsVideo.displayName = 'HlsVideo';
 
-// ── VimeoEmbed ────────────────────────────────────────────────────────────────
+// ── VimeoEmbed (inchangé) ─────────────────────────────────────────────────────
 const VimeoEmbed = memo(({ content, isActive, muted }) => {
   const iframeRef  = useRef(null);
   const isReadyRef = useRef(false);
@@ -624,8 +346,7 @@ const VimeoEmbed = memo(({ content, isActive, muted }) => {
 
   useEffect(() => { isReadyRef.current = false; pendingRef.current = []; }, [content.videoUrl]);
   useEffect(() => {
-    if (isActive) { postCmd('play'); postCmd('setVolume', muted ? 0 : 1); }
-    else postCmd('pause');
+    if (isActive) { postCmd('play'); postCmd('setVolume', muted ? 0 : 1); } else postCmd('pause');
   }, [isActive, postCmd]); // eslint-disable-line
   useEffect(() => { postCmd('setVolume', muted ? 0 : 1); }, [muted, postCmd]);
 
@@ -642,7 +363,7 @@ const VimeoEmbed = memo(({ content, isActive, muted }) => {
 });
 VimeoEmbed.displayName = 'VimeoEmbed';
 
-// ── Contenus non-vidéo ────────────────────────────────────────────────────────
+// ── Contenus non-vidéo (inchangés) ───────────────────────────────────────────
 const ImageContent = memo(({ content, onDoubleTap }) => {
   const [loaded, setLoaded] = useState(false);
   const [error,  setError]  = useState(false);
@@ -664,7 +385,8 @@ const ArticleContent = memo(({ content }) => (
   <div className="w-full h-full flex flex-col bg-gray-950" style={{ borderTop:'4px solid #F26522' }}>
     {content.thumbnail && (
       <div className="flex-shrink-0 h-48 overflow-hidden">
-        <img src={content.thumbnail} alt={content.title} className="w-full h-full object-cover" onError={e => { e.target.style.display='none'; }} />
+        <img src={content.thumbnail} alt={content.title} className="w-full h-full object-cover"
+          onError={e => { e.target.style.display='none'; }} />
       </div>
     )}
     <div className="flex-1 overflow-y-auto p-6 pt-16">
@@ -721,14 +443,14 @@ const ChantilinkSignature = memo(({ visible }) => (
           <div style={{ display:'flex', alignItems:'center', gap:10, background:'rgba(255,255,255,0.10)', border:'1.5px solid rgba(255,255,255,0.22)', backdropFilter:'blur(18px)', borderRadius:999, padding:'10px 24px 10px 16px' }}>
             <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
               <circle cx="16" cy="16" r="16" fill="#f97316" fillOpacity="0.18"/>
-              <circle cx="16" cy="16" r="16" fill="url(#sig-grad-agg)" fillOpacity="0.85"/>
+              <circle cx="16" cy="16" r="16" fill="url(#sg2)" fillOpacity="0.85"/>
               <text x="16" y="21" textAnchor="middle" fontSize="16" fontWeight="900" fontFamily="Arial, sans-serif" fill="white">C</text>
-              <defs><radialGradient id="sig-grad-agg" cx="40%" cy="30%" r="70%"><stop offset="0%" stopColor="#fb923c"/><stop offset="100%" stopColor="#ea580c"/></radialGradient></defs>
+              <defs><radialGradient id="sg2" cx="40%" cy="30%" r="70%"><stop offset="0%" stopColor="#fb923c"/><stop offset="100%" stopColor="#ea580c"/></radialGradient></defs>
             </svg>
             <span style={{ color:'#fff', fontFamily:'Arial, sans-serif', fontWeight:800, fontSize:22, letterSpacing:'-0.3px' }}>Chantilink</span>
           </div>
           <motion.p initial={{ opacity:0, y:6 }} animate={{ opacity:1, y:0 }} transition={{ delay:0.18, duration:0.28 }}
-            style={{ color:'rgba(255,255,255,0.6)', fontSize:13, fontFamily:'Arial, sans-serif', fontWeight:500, letterSpacing:'0.04em', textAlign:'center' }}>
+            style={{ color:'rgba(255,255,255,0.6)', fontSize:13, fontFamily:'Arial, sans-serif', fontWeight:500, textAlign:'center' }}>
             Le réseau du BTP
           </motion.p>
           <motion.div style={{ width:80, height:3, borderRadius:99, background:'rgba(255,255,255,0.2)', overflow:'hidden' }}>
@@ -742,13 +464,90 @@ const ChantilinkSignature = memo(({ visible }) => (
 ));
 ChantilinkSignature.displayName = 'ChantilinkSignature';
 
+// ─── SeekBar (identique à VideoCard) ─────────────────────────────────────────
+const SeekBar = memo(({ progress, getVideoEl, isEmbed, duration = 0 }) => {
+  const trackRef  = useRef(null);
+  const dragging  = useRef(false);
+  const wasPaused = useRef(false);
+  const [isDragging,  setIsDragging]  = useState(false);
+  const [previewTime, setPreviewTime] = useState(0);
+  const [previewPct,  setPreviewPct]  = useState(0);
+
+  const getRatio = useCallback((clientX) => {
+    const bar = trackRef.current; if (!bar) return null;
+    const rect = bar.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  }, []);
+
+  const applySeek = useCallback((ratio) => {
+    if (isEmbed) return;
+    const vid = getVideoEl(); if (!vid?.duration) return;
+    const t = ratio * vid.duration;
+    vid.currentTime = t; setPreviewTime(t); setPreviewPct(ratio * 100);
+  }, [getVideoEl, isEmbed]);
+
+  const onPointerDown = useCallback((e) => {
+    if (isEmbed) return; e.stopPropagation();
+    const ratio = getRatio(e.clientX); if (ratio === null) return;
+    lockFeed(); dragging.current = true; trackRef.current?.setPointerCapture(e.pointerId);
+    const vid = getVideoEl(); wasPaused.current = vid ? vid.paused : true;
+    if (vid && !vid.paused) vid.pause();
+    applySeek(ratio); setIsDragging(true);
+  }, [getRatio, applySeek, getVideoEl, isEmbed]);
+
+  const onPointerMove = useCallback((e) => {
+    if (!dragging.current) return; e.stopPropagation();
+    const ratio = getRatio(e.clientX); if (ratio !== null) applySeek(ratio);
+  }, [getRatio, applySeek]);
+
+  const onPointerUp = useCallback((e) => {
+    if (!dragging.current) return; e.stopPropagation();
+    dragging.current = false; setIsDragging(false);
+    const vid = getVideoEl(); if (vid && !wasPaused.current) vid.play().catch(() => {});
+    unlockFeed();
+  }, [getVideoEl]);
+
+  const pct = isDragging ? previewPct : progress;
+
+  return (
+    <>
+      <AnimatePresence>
+        {isDragging && !isEmbed && (
+          <motion.div initial={{ opacity:0, y:4, scale:0.85 }} animate={{ opacity:1, y:0, scale:1 }} exit={{ opacity:0, y:4, scale:0.85 }} transition={{ duration:0.12 }}
+            className="absolute z-30 pointer-events-none"
+            style={{ bottom:14, left:`clamp(28px, ${pct}%, calc(100% - 28px))`, transform:'translateX(-50%)' }}>
+            <div style={{ background:'rgba(0,0,0,0.82)', backdropFilter:'blur(8px)', border:'1px solid rgba(255,255,255,0.18)', borderRadius:8, padding:'3px 8px', fontSize:12, fontWeight:600, color:'#fff', whiteSpace:'nowrap' }}>
+              {formatTime(previewTime)}
+              {duration > 0 && <span style={{ opacity:0.5, fontWeight:400 }}> / {formatTime(duration)}</span>}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <div ref={trackRef} className="absolute left-0 right-0 z-20"
+        style={{ bottom:0, height:28, cursor:isEmbed?'default':'pointer', touchAction:'none', userSelect:'none' }}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+        <div className="absolute left-0 right-0" style={{ bottom:0, height:isDragging?4:2.5, background:'rgba(255,255,255,0.18)', transition:'height 0.15s ease' }}>
+          <div style={{ position:'absolute', left:0, top:0, bottom:0, width:`${pct}%`, background:'#fff', borderRadius:99, transition:isDragging?'none':'width 0.1s linear' }} />
+          {!isEmbed && <div style={{ position:'absolute', top:'50%', left:`${pct}%`, transform:'translate(-50%,-50%)', width:isDragging?16:10, height:isDragging?16:10, borderRadius:'50%', background:'#fff', boxShadow:'0 1px 6px rgba(0,0,0,0.5)', transition:isDragging?'none':'width 0.15s, height 0.15s', pointerEvents:'none' }} />}
+        </div>
+      </div>
+    </>
+  );
+});
+SeekBar.displayName = 'SeekBar';
+
 // ─────────────────────────────────────────────────────────────────────────────
-// ── AggregatedCard principale
+// AggregatedCard principale v7
 // ─────────────────────────────────────────────────────────────────────────────
 const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVideoError }) => {
   if (!content) return null;
 
   const { user: currentUser, getToken } = useAuth();
+
+  // DirectVideo expose son videoEl via ref externe pour seekBar/download
+  const directVideoElRef = useRef(null);
+  const hlsVideoElRef    = useRef(null);
 
   const [muted,         setMuted]         = useState(() => sessionStorage.getItem(USER_INTERACTED_KEY) !== '1');
   const [showSoundHint, setShowSoundHint] = useState(false);
@@ -762,35 +561,39 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
   const [progress,      setProgress]      = useState(0);
   const [duration,      setDuration]      = useState(0);
   const [showSignature, setShowSignature] = useState(false);
-  const signatureTimer = useRef(null);
   const [videoError,    setVideoError]    = useState(false);
-
-  const videoRef        = useRef(null);
-  const isEndedFiredRef = useRef(false);
-  const onVideoEndedRef = useRef(onVideoEnded);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const signatureTimer   = useRef(null);
+  const isEndedFiredRef  = useRef(false);
+  const onVideoEndedRef  = useRef(onVideoEnded);
   useEffect(() => { onVideoEndedRef.current = onVideoEnded; }, [onVideoEnded]);
+
+  const isHLS        = !!content.isHLS;
+  const isEmbed      = !!content.isEmbed;
+  const contentType  = content.contentType || 'video';
+  const isYoutube    = isEmbed && !!(extractYoutubeId(content.embedUrl || content.videoUrl || ''));
+  const isVimeo      = isEmbed && !isYoutube && !!(content.videoUrl?.includes('vimeo') || content.embedUrl?.includes('vimeo'));
+  const isShortVideo = content.type === 'short_video';
+  const isDirectVid  = contentType === 'video' && !isEmbed && !isHLS;
+  const isImage      = contentType === 'image';
+  const isText       = contentType === 'text' || contentType === 'article';
+
+  const showVideoPlayer = (isShortVideo || isDirectVid || isHLS) && !videoError;
+  const showEmbed       = isEmbed && !videoError;
+  const showMuteBtn     = showVideoPlayer || showEmbed;
+  const videoHasNoAudio = content.hasAudio !== true && !isEmbed && !isHLS && content.platform === 'Pexels';
+
+  // Getter pour seekBar (accès au bon élément vidéo selon le type)
+  const getVideoEl = useCallback(() => {
+    if (isHLS)        return hlsVideoElRef.current;
+    if (isDirectVid)  return directVideoElRef.current;
+    return null;
+  }, [isHLS, isDirectVid]);
 
   const handleVideoError = useCallback(() => {
     setVideoError(true);
     setTimeout(() => onVideoError?.(), 300);
   }, [onVideoError]);
-
-  // ── Détection du type de contenu ─────────────────────────────────────────
-  const isHLS        = !!content.isHLS;
-  const isEmbed      = !!content.isEmbed;
-  const contentType  = content.contentType || 'video';
-
-  const isYoutube    = isEmbed && !!(extractYoutubeId(content.embedUrl || content.videoUrl || ''));
-  const isVimeo      = isEmbed && !isYoutube && !!(content.videoUrl?.includes('vimeo') || content.embedUrl?.includes('vimeo'));
-
-  const isShortVideo    = content.type === 'short_video';
-  const isDirectVid     = contentType === 'video' && !isEmbed && !isHLS;
-  const isImage         = contentType === 'image';
-  const isText          = contentType === 'text' || contentType === 'article';
-  const showVideoPlayer = (isShortVideo || isDirectVid || isHLS) && !videoError;
-  const showEmbed       = isEmbed && !videoError;
-  const showMuteBtn     = showVideoPlayer || showEmbed;
-  const videoHasNoAudio = content.hasAudio !== true && !isEmbed && !isHLS && content.platform === 'Pexels';
 
   useEffect(() => { isEndedFiredRef.current = false; }, [content._id]);
 
@@ -813,15 +616,17 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
 
   useEffect(() => {
     if (!isActive) {
-      if (!videoHasNoAudio) { const interacted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1'; setMuted(interacted ? false : true); }
-      setVideoError(false); setIsPaused(false); setProgress(0); setShowSoundHint(false);
-      setShowSignature(false); signatureTimer.current = null;
+      if (!videoHasNoAudio) {
+        const interacted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+        setMuted(interacted ? false : true);
+      }
+      setVideoError(false); setIsPaused(false); setProgress(0);
+      setShowSoundHint(false); setShowSignature(false); signatureTimer.current = null;
     }
   }, [isActive, videoHasNoAudio]);
 
-  const handleTimeUpdate = useCallback(e => {
-    const v = e.target;
-    if (!v?.duration) return;
+  const handleTimeUpdate = useCallback((e) => {
+    const v = e.target; if (!v?.duration) return;
     const pct = (v.currentTime / v.duration) * 100;
     setProgress(pct);
     if (pct >= 97 && !signatureTimer.current) {
@@ -829,51 +634,48 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
       setShowSignature(true);
       setTimeout(() => { setShowSignature(false); signatureTimer.current = null; }, 2200);
     }
-    if (pct < 5 && signatureTimer.current !== null) {
-      setShowSignature(false); signatureTimer.current = null;
-    }
+    if (pct < 5 && signatureTimer.current !== null) { setShowSignature(false); signatureTimer.current = null; }
   }, []);
 
-  const handleDurationChange = useCallback(e => {
+  const handleDurationChange = useCallback((e) => {
     const v = e.target;
     if (v?.duration && isFinite(v.duration)) setDuration(v.duration);
   }, []);
 
   const handleEnded = useCallback(() => {
-    const vid = videoRef.current;
+    const vid = getVideoEl();
     if (vid && !isEmbed) { vid.currentTime = 0; vid.play().catch(() => {}); return; }
     if (isEndedFiredRef.current) return;
     isEndedFiredRef.current = true;
     onVideoEndedRef.current?.();
-  }, [isEmbed]);
+  }, [isEmbed, getVideoEl]);
 
-  const activateSound = useCallback(e => {
+  const activateSound = useCallback((e) => {
     e?.stopPropagation();
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false); setMuted(false);
-    const vid = videoRef.current;
+    const vid = getVideoEl();
     if (vid && !isEmbed) {
       vid.muted = false; vid.volume = 1;
       if (vid.paused && isActive) vid.play().catch(() => { vid.muted = true; setMuted(true); });
     }
-  }, [isActive, isEmbed]);
+  }, [isActive, isEmbed, getVideoEl]);
 
-  const handleTogglePlay = useCallback(e => {
+  const handleTogglePlay = useCallback((e) => {
     e?.stopPropagation();
     if (sessionStorage.getItem(USER_INTERACTED_KEY) !== '1') { activateSound(e); return; }
-    const v = videoRef.current;
-    if (!v) return;
-    if (v.paused) { v.play().catch(() => {}); setIsPaused(false); }
-    else { v.pause(); setIsPaused(true); }
-  }, [activateSound]);
+    const vid = getVideoEl(); if (!vid) return;
+    if (vid.paused) { vid.play().catch(() => {}); setIsPaused(false); }
+    else { vid.pause(); setIsPaused(true); }
+  }, [activateSound, getVideoEl]);
 
-  const handleDoubleTap = useCallback(e => {
+  const handleDoubleTap = useCallback((e) => {
     e?.stopPropagation();
     setShowHeart(true); setTimeout(() => setShowHeart(false), 800);
     if (!isLiked) handleLike(); // eslint-disable-line
   }, [isLiked]); // eslint-disable-line
 
-  const handleLike = useCallback(async e => {
+  const handleLike = useCallback(async (e) => {
     e?.stopPropagation();
     if (!currentUser) return;
     const was = isLiked;
@@ -884,18 +686,18 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     } catch { setIsLiked(was); setLocalLikes(p => was ? p+1 : p-1); }
   }, [currentUser, isLiked, content._id, getToken]);
 
-  const handleToggleMute = useCallback(e => {
+  const handleToggleMute = useCallback((e) => {
     e.stopPropagation();
     if (videoHasNoAudio) return;
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false);
     const nm = !muted; setMuted(nm);
-    const vid = videoRef.current;
+    const vid = getVideoEl();
     if (vid && !isEmbed) {
       vid.muted = nm; vid.volume = nm ? 0 : 1;
       if (!nm && vid.paused && isActive) vid.play().catch(() => { vid.muted = true; setMuted(true); });
     }
-  }, [muted, isActive, isEmbed, videoHasNoAudio]);
+  }, [muted, isActive, isEmbed, videoHasNoAudio, getVideoEl]);
 
   const handleCommentSubmit = useCallback(async () => {
     if (!newComment.trim() || !currentUser) return;
@@ -910,29 +712,31 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     } catch { setLocalComments(p => p.filter(c => c._id !== temp._id)); }
   }, [newComment, currentUser, content._id, getToken]);
 
-  const handleShare = useCallback(async e => {
+  const handleShare = useCallback(async (e) => {
     e.stopPropagation();
     const url = content.externalUrl || window.location.href;
     if (navigator.share) try { await navigator.share({ title:content.title, url }); } catch {}
     else navigator.clipboard?.writeText(url);
   }, [content.externalUrl, content.title]);
 
-  const [isDownloading, setIsDownloading] = useState(false);
-  const handleDownload = useCallback(async e => {
-    e.stopPropagation();
-    if (isDownloading) return;
+  const handleDownload = useCallback(async (e) => {
+    e.stopPropagation(); if (isDownloading) return;
     setIsDownloading(true);
     try {
-      const src = videoRef.current?.src || buildVideoUrl(content) || '';
-      await downloadVideoFile(src, content.title || 'chantilink');
+      const vid = getVideoEl();
+      await downloadVideoFile(vid?.src || buildVideoUrl(content) || '', content.title || 'chantilink');
     } finally { setIsDownloading(false); }
-  }, [isDownloading, content]);
+  }, [isDownloading, content, getVideoEl]);
 
-  const onActDown = useCallback(e => { e.stopPropagation(); lockFeed();   }, []);
-  const onActUp   = useCallback(e => { e.stopPropagation(); unlockFeed(); }, []);
+  const onActDown = useCallback((e) => { e.stopPropagation(); lockFeed(); }, []);
+  const onActUp   = useCallback((e) => { e.stopPropagation(); unlockFeed(); }, []);
 
-  const openComments  = useCallback(e => { e.stopPropagation(); lockFeed(); setShowComments(true);  onModalChange?.(true);  }, [onModalChange]);
+  const openComments  = useCallback((e) => { e.stopPropagation(); lockFeed(); setShowComments(true);  onModalChange?.(true);  }, [onModalChange]);
   const closeComments = useCallback(()  => { unlockFeed(); setShowComments(false); onModalChange?.(false); }, [onModalChange]);
+
+  // DirectVideo expose son videoEl via une ref callback passée en prop
+  const onDirectVideoRef = useCallback((el) => { directVideoElRef.current = el; }, []);
+  const onHlsVideoRef    = useCallback((el) => { hlsVideoElRef.current    = el; }, []);
 
   const commentsModal = showComments ? createPortal(
     <div className="fixed inset-0 z-[9999] flex items-end"
@@ -978,52 +782,47 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     document.body
   ) : null;
 
-  if (videoError && onVideoError) {
-    return <div className="w-full h-full bg-black" style={{ opacity:0, transition:'opacity 0.3s' }} />;
-  }
+  if (videoError && onVideoError) return <div className="w-full h-full bg-black" />;
 
   return (
     <div className="relative w-full h-full bg-black overflow-hidden select-none">
 
-      {/* ── Lecteurs vidéo directs ──────────────────────────────────────────── */}
+      {/* ── Lecteurs directs ────────────────────────────────────────────────── */}
       {showVideoPlayer && isHLS && (
         <HlsVideo content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
-          onError={handleVideoError} videoRef={videoRef} onTogglePlay={handleTogglePlay}
+          onError={handleVideoError} onTogglePlay={handleTogglePlay}
           onTimeUpdate={handleTimeUpdate} onDurationChange={handleDurationChange}
-          onDoubleTap={handleDoubleTap} onEnded={handleEnded} />
+          onDoubleTap={handleDoubleTap} onEnded={handleEnded}
+          videoRef={onHlsVideoRef}
+        />
       )}
       {showVideoPlayer && !isHLS && (
         <DirectVideo content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
-          onError={handleVideoError} videoRef={videoRef} onTogglePlay={handleTogglePlay}
+          onError={handleVideoError} onTogglePlay={handleTogglePlay}
           onTimeUpdate={handleTimeUpdate} onDurationChange={handleDurationChange}
-          onDoubleTap={handleDoubleTap} onEnded={handleEnded} />
+          onDoubleTap={handleDoubleTap} onEnded={handleEnded}
+          videoRef={onDirectVideoRef}
+        />
       )}
 
-      {/* ── Embeds : YouTube v6.1 (poster-first) / Vimeo ───────────────────── */}
-      {showEmbed && isYoutube && (
-        <YouTubeEmbed content={content} isActive={isActive} muted={muted} />
-      )}
-      {showEmbed && isVimeo && (
-        <VimeoEmbed content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />
-      )}
-      {/* Fallback embed générique */}
-      {showEmbed && !isYoutube && !isVimeo && (
-        <VimeoEmbed content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />
-      )}
+      {/* ── Embeds ──────────────────────────────────────────────────────────── */}
+      {showEmbed && isYoutube && <YouTubeEmbed content={content} isActive={isActive} muted={muted} />}
+      {showEmbed && isVimeo   && <VimeoEmbed  content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />}
+      {showEmbed && !isYoutube && !isVimeo && <VimeoEmbed content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />}
 
-      {/* ── Erreur vidéo ───────────────────────────────────────────────────── */}
+      {/* ── Erreur ──────────────────────────────────────────────────────────── */}
       {(isShortVideo || isDirectVid || isHLS || isEmbed) && videoError && !onVideoError && <VideoError thumbnail={content.thumbnail} />}
 
-      {/* ── Contenus non-vidéo ─────────────────────────────────────────────── */}
+      {/* ── Contenus non-vidéo ──────────────────────────────────────────────── */}
       {isImage && !isShortVideo && !isDirectVid && !isHLS && <ImageContent content={content} onDoubleTap={handleDoubleTap} />}
       {isText  && !isShortVideo && !isDirectVid && !isHLS && !isImage && <ArticleContent content={content} />}
 
-      {/* ── Overlays ───────────────────────────────────────────────────────── */}
+      {/* ── Overlays ────────────────────────────────────────────────────────── */}
       {!isText && <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />}
       {videoHasNoAudio && isActive && <NoAudioBadge />}
 
-      {showVideoPlayer && <SeekBar progress={progress} videoRef={videoRef} isEmbed={false} duration={duration} />}
-      {showEmbed       && <SeekBar progress={progress} videoRef={videoRef} isEmbed={true}  duration={0} />}
+      {showVideoPlayer && <SeekBar progress={progress} getVideoEl={getVideoEl} isEmbed={false} duration={duration} />}
+      {showEmbed       && <SeekBar progress={0}        getVideoEl={getVideoEl} isEmbed={true}  duration={0} />}
 
       <ChantilinkSignature visible={showSignature && showVideoPlayer} />
 
@@ -1043,7 +842,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         )}
       </AnimatePresence>
 
-      {/* ── Infos contenu ──────────────────────────────────────────────────── */}
+      {/* ── Infos contenu ───────────────────────────────────────────────────── */}
       {!isText && (
         <div className="absolute left-4 right-16 z-30" style={{ bottom:'calc(72px + env(safe-area-inset-bottom))' }}>
           <div className="flex items-center gap-3 mb-3">
@@ -1071,7 +870,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         </div>
       )}
 
-      {/* ── Actions ────────────────────────────────────────────────────────── */}
+      {/* ── Actions ─────────────────────────────────────────────────────────── */}
       <div className="absolute right-2 flex flex-col items-center gap-5 z-40 pointer-events-auto"
         style={{ bottom:'calc(72px + env(safe-area-inset-bottom))' }}
         onPointerDown={onActDown} onPointerUp={onActUp} onPointerCancel={onActUp}
