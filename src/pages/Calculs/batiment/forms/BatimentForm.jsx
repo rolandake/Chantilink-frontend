@@ -448,7 +448,6 @@ const ExportBtn = ({ icon, label, sublabel, color, glowColor, disabled, loading,
       background: disabled
         ? "rgba(55,65,81,0.4)"
         : `linear-gradient(135deg, ${color.split(" ")[1].replace("from-","").replace(/-\d+/,"")}, ${color.split(" ")[3]?.replace("to-","").replace(/-\d+/,"")})`,
-      background: disabled ? "rgba(55,65,81,0.4)" : undefined,
       backgroundImage: disabled ? undefined : `linear-gradient(135deg, var(--tw-gradient-stops))`,
       boxShadow: disabled ? "none" : `0 4px 20px ${glowColor}`,
       border: `0.5px solid ${disabled ? "rgba(75,85,99,0.3)" : glowColor}`,
