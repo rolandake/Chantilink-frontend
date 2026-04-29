@@ -3,6 +3,7 @@
 // ✅ PHASE 1 — MODAL-BASED NAVIGATION
 //    Chaque bouton ouvre sa modale avec retour
 //    Conforme Google Play Policy (avril 2026)
+// ✅ FIX : bouton retour à gauche + titre centré
 // ============================================
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
@@ -103,8 +104,8 @@ const ModalOverlay = ({ children, onClose }) => (
 // ─────────────────────────────────────────────
 const AddContactModal = ({ token, onClose, onPickerSync }) => {
   const [loading, setLoading] = useState(false);
-  const [result, setResult]   = useState(null); // null | { found: [], total: number }
-  const [step, setStep]       = useState('idle'); // idle | picking | done
+  const [result, setResult]   = useState(null);
+  const [step, setStep]       = useState('idle');
   const { showToast } = useToast();
   const pickerSupported = isContactPickerSupported();
 
@@ -162,7 +163,6 @@ const AddContactModal = ({ token, onClose, onPickerSync }) => {
             <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               {pickerSupported ? (
                 <>
-                  {/* Explication */}
                   <div className="bg-blue-500/8 border border-blue-500/15 rounded-2xl p-4 mb-5 space-y-2">
                     {[
                       'Un sélecteur de contacts s\'ouvre',
@@ -360,10 +360,11 @@ export const ContactSidebar = ({
   conversations = [],
   onShowConversations,
   totalUnread = 0,
+  onBack, // ← prop optionnelle pour le bouton retour
 }) => {
   const [onAppContacts, setOnAppContacts] = useState([]);
   const [searchQuery,   setSearchQuery]   = useState('');
-  const [modal, setModal] = useState(null); // null | 'contacts' | 'add'
+  const [modal, setModal] = useState(null);
   const [pickerSupported] = useState(isContactPickerSupported());
   const { showToast } = useToast();
 
@@ -408,16 +409,32 @@ export const ContactSidebar = ({
     setModal(null);
   }, [onPickerSync, reloadOnAppContacts]);
 
+  // Gestion du bouton retour : prop onBack en priorité, sinon history.back()
+  const handleBack = useCallback(() => {
+    if (onBack) onBack();
+    else window.history.back();
+  }, [onBack]);
 
   return (
     <>
       <div className="flex flex-col h-full bg-[#0b0d10] border-r border-white/5">
 
-        {/* HEADER COMPACT */}
+        {/* ══ HEADER COMPACT ══ */}
         <div className="px-4 py-3 bg-[#12151a]/80 backdrop-blur-xl border-b border-white/5">
           <div className="flex items-center gap-2">
-            <ShieldCheck size={16} className="text-blue-500 flex-shrink-0" />
-            <span className="text-sm font-black tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent flex-1">
+
+            {/* ← BOUTON RETOUR */}
+            <motion.button
+              whileTap={{ scale: 0.9 }}
+              onClick={handleBack}
+              className="w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] hover:bg-white/[0.10] transition-all flex-shrink-0"
+              title="Retour"
+            >
+              <ArrowLeft size={15} strokeWidth={2.5} className="text-white/60" />
+            </motion.button>
+
+            {/* TITRE CENTRÉ */}
+            <span className="text-sm font-black tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent flex-1 text-center">
               Mes Contacts
             </span>
 
