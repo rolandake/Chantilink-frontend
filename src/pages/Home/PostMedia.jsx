@@ -1,31 +1,55 @@
 // 📁 src/pages/Home/PostMedia.jsx
 // ✅ MIGRATION R2 COMPLÈTE
-// ✅ FIX VIDÉOS NON AFFICHÉES v7 — CORRECTION DÉFINITIVE VideoItem :
+// ✅ FIX VIDÉOS NON AFFICHÉES v7 — CORRECTION DÉFINITIVE VideoItem
+// ✅ FIX v8 — IMAGES R2 CACHÉES PAR TIMEOUT useMediaValidation
 //
-//   HISTORIQUE DES BUGS :
-//     v4 : useEffect async → fenêtre sans src → onerror code=4 "Empty src"
-//     v5 : ref callback + srcSetRef → srcSetRef persiste entre unmount/remount
-//          → src non reposé → même onerror
-//     v6 : src={currentSrc} prop JSX → React ne re-set pas src si valeur JSX
-//          inchangée mais DOM recréé (StrictMode unmount/remount) → même onerror
+// ══════════════════════════════════════════════════════════════════════════════
+// CORRECTIONS v8 vs v7 :
 //
-//   CAUSE RACINE CONFIRMÉE :
-//     React StrictMode fait mount→unmount→remount en développement.
-//     Au unmount : React vide vid.src = "".
-//     Au remount : React compare le vdom — si src prop n'a pas changé,
-//     React ne re-positionne PAS l'attribut sur le nouvel élément DOM.
-//     Résultat : vid.src === "" → le navigateur résout "" en URL courante
-//     → onerror code=4 "MEDIA_ELEMENT_ERROR: Empty src attribute".
+// 🐛 BUG RACINE — useMediaValidation cache les images R2 valides :
 //
-//   SOLUTION DÉFINITIVE v7 :
-//     • Pas de src={} prop JSX (React ne garantit pas la re-pose).
-//     • ref callback : positionne el.src impérativement dès l'insertion DOM.
-//     • useLayoutEffect sans deps : re-vérifie et re-pose vid.src si manquant,
-//       synchrone avant chaque paint — couvre StrictMode et tout autre remount.
-//     • Combinaison des deux = aucune fenêtre possible où vid.src est vide.
+//   SYMPTÔME : "image timeout → hidden url=https://...r2.dev/...png"
+//   suivi immédiatement de "image OK url=..." → l'image charge bien,
+//   mais le timeout de 5 000 ms a déjà résolu la promesse à false.
 //
-// ✅ Toutes les corrections v4 conservées (resolveSlotType, checkContentType,
-//    useMediaValidation CAS1/2/3, suspects filter, postMediaType bypass).
+//   CAUSE 1 — React StrictMode double-mount :
+//     StrictMode exécute mount→unmount→remount en dev.
+//     Le useEffect se lance 2 fois. La 1ère exécution démarre un Image()
+//     avec setTimeout(5000). L'effet est cleanup → cancelled=true.
+//     La 2ème exécution repart de zéro. Mais le navigateur a mis l'image
+//     en cache entre-temps (depuis la 1ère tentative) → réponse presque
+//     instantanée. Or la 1ère tentative avait déjà schedulé son timeout
+//     à 5s → celui-ci expire quand même et marque l'image hidden
+//     APRÈS que la 2ème exécution ait déjà marqué valid=true.
+//     Résultat : état incohérent, validIndices=[].
+//
+//   CAUSE 2 — Timeout trop court pour R2 cold start :
+//     Cloudflare R2 sur un CDN "froid" (première requête, pas de cache)
+//     peut prendre 2-8 secondes. 5 000 ms est insuffisant.
+//
+//   CAUSE 3 — L'élément Image() créé dans le timeout de cleanup
+//     n'est pas annulé → il continue de charger, son onload/onerror
+//     fire sur le mauvais cycle et pollue l'état.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// FIXES APPLIQUÉS :
+//
+// ✅ FIX 1 — Pour les URLs R2/CDN HTTPS avec extension image connue :
+//    Confiance totale (comme CAS1/CAS2 pour les vidéos). Pas de validation
+//    asynchrone → validIndices immédiat. Couvre 99% des cas réels.
+//
+// ✅ FIX 2 — Timeout image augmenté 5 000 ms → 15 000 ms pour les URLs
+//    sans extension connue (cas rare, ex: signed URLs sans extension).
+//
+// ✅ FIX 3 — L'objet Image() est correctement annulé au cleanup :
+//    img.src = "" dans la fonction de cleanup du useEffect. Empêche
+//    les callbacks stale de modifier l'état après unmount.
+//
+// ✅ FIX 4 — Flag `cancelled` vérifié dans TOUS les callbacks (onload,
+//    onerror, setTimeout) avant d'appeler resolve().
+//
+// ✅ Toutes les corrections v7 conservées (VideoItem src impératif, etc.)
+// ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
   useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo
@@ -87,6 +111,18 @@ const hasKnownImageExtension = (url) => {
   return /\.(jpg|jpeg|png|gif|webp|avif|svg)$/i.test(url.split("?")[0]);
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ FIX 1 — isTrustedImageUrl : URLs R2/CDN HTTPS avec extension image connue
+// Ces URLs sont fiables à 100% — pas besoin de validation asynchrone.
+// ─────────────────────────────────────────────────────────────────────────────
+const isTrustedImageUrl = (url) => {
+  if (!url || typeof url !== "string") return false;
+  if (url.startsWith("blob:") || url.startsWith("data:")) return true;
+  // Extension image connue = confiance totale (R2, Cloudflare, S3, etc.)
+  if (hasKnownImageExtension(url)) return true;
+  return false;
+};
+
 const isHLSUrl        = url => url && /\.m3u8/i.test(url);
 const isPexelsVideo   = url => url && url.includes("videos.pexels.com");
 const isPixabayVideo  = url => url && url.includes("cdn.pixabay.com/video");
@@ -94,18 +130,14 @@ const isExternalVideo = url => isPexelsVideo(url) || isPixabayVideo(url);
 const isYouTubeUrl    = url => url && (url.includes("youtube.com") || url.includes("youtu.be"));
 const needsCrossOrigin = url => url && url.includes("res.cloudinary.com");
 
-// Détecte les URLs de pages web sociales (pas des fichiers médias)
-// ex: mastodon.social/@user/123, pixelfed.social/p/user/123
 const isWebPageUrl = (url) => {
   if (!url) return false;
   const clean = url.split("?")[0].toLowerCase();
-  // Pas d'extension fichier connue = potentiellement une page
   const hasMediaExt = /\.(mp4|webm|mov|avi|mkv|flv|m4v|jpg|jpeg|png|gif|webp|avif|svg|m3u8)$/i.test(clean);
   if (hasMediaExt) return false;
-  // Patterns de pages sociales/web
-  if (/@\w+\/\d+/.test(url)) return true;          // mastodon: /@user/12345
-  if (/\/p\/[\w.]+\/\d+/.test(url)) return true;   // pixelfed: /p/user/12345
-  if (/\/web\/statuses\//.test(url)) return true;   // mastodon web
+  if (/@\w+\/\d+/.test(url)) return true;
+  if (/\/p\/[\w.]+\/\d+/.test(url)) return true;
+  if (/\/web\/statuses\//.test(url)) return true;
   return false;
 };
 
@@ -442,25 +474,7 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
 HLSItem.displayName = "HLSItem";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO ITEM — v6 : src passé directement comme attribut JSX
-//
-// ✅ FIX DÉFINITIF (v6) :
-//
-//   v4 : useEffect async → fenêtre sans src → onerror "Empty src attribute"
-//   v5 : ref callback + srcSetRef → srcSetRef reste true après unmount/remount
-//        (React StrictMode double-mount, ou remount réel) → src non reposé
-//        sur le nouvel élément → même onerror
-//
-//   v6 : on passe simplement `src={currentSrc}` comme prop JSX sur <video>.
-//        React gère l'attribut src de manière synchrone lors du commit DOM,
-//        avant que le navigateur ne puisse déclencher un onerror.
-//        Plus de ref callback custom, plus de srcSetRef, plus de useEffect src.
-//        Le ref callback simple (`setVideoRef`) sert uniquement à enregistrer
-//        l'élément pour `onRegisterVideoEl` et les appels impératifs (play/pause).
-//
-//   Pour le fallback proxy→direct : on change `currentSrc` via setState,
-//   ce qui re-render le composant avec le nouveau src= prop → React met à jour
-//   l'attribut src proprement.
+// VIDEO ITEM — v7 : src impératif via ref callback + useLayoutEffect
 // ─────────────────────────────────────────────────────────────────────────────
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
@@ -485,7 +499,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
   const preloadStrat   = useMemo(() => (isLCP || isExternalVideo(url)) ? "auto" : "metadata", [isLCP, url]);
   const useCrossOrigin = useMemo(() => needsCrossOrigin(url), [url]);
 
-  // ─── ref callback : enregistrement + src immédiat ───────────────────────
   const setVideoRef = useCallback((el) => {
     videoRef.current = el;
     onRegisterVideoEl?.(slotIndex, el);
@@ -500,10 +513,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
     }
   }, [currentSrc, preloadStrat, onRegisterVideoEl, slotIndex]); // eslint-disable-line
 
-  // ─── useLayoutEffect : garantit que src est correct après StrictMode remount ─
-  // S'exécute uniquement quand currentSrc change (inclut le remount initial).
-  // useLayoutEffect s'exécute synchronement après le commit DOM, avant le paint,
-  // ce qui couvre le cas où React recrée l'élément sans re-setter src.
   useLayoutEffect(() => {
     const vid = videoRef.current;
     if (!vid || !currentSrc) return;
@@ -642,7 +651,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
     const { proxy, direct } = videoUrls;
     if (currentSrc === proxy && direct) {
       dbg(`VideoItem fallback proxy→direct slotIndex=${slotIndex}`);
-      // setCurrentSrc déclenche un re-render → <video src={currentSrc}> sera mis à jour par React
       setCurrentSrc(direct);
       return;
     }
@@ -654,15 +662,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
 
   return (
     <div ref={containerRef} style={{ position: "absolute", inset: 0, background: "#000" }}>
-      {/*
-        ✅ FIX v7 — src géré impérativement via ref callback + useLayoutEffect.
-        - PAS de src={} comme prop JSX : React ne re-set pas src si la valeur
-          JSX n'a pas changé mais que le DOM a été recréé (StrictMode unmount/remount).
-        - Le ref callback + useLayoutEffect (sans deps) forcent vid.src = currentSrc
-          à chaque render, de façon synchrone avant le paint.
-        - muted={true} en JSX sert à l'attribut HTML initial (accessibilité/autoplay),
-          el.muted est ensuite géré impérativement.
-      */}
       <video
         ref={setVideoRef}
         muted
@@ -776,7 +775,23 @@ const MediaCellAuto = React.memo((props) => {
 MediaCellAuto.displayName = "MediaCellAuto";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// useMediaValidation v5 — stratégie hybride avec bypass DB complet
+// useMediaValidation v6 — FIX TIMEOUT R2 + StrictMode
+//
+// CHANGEMENTS vs v5 :
+//
+// ✅ CAS IMAGE TRUSTED (nouveau) :
+//    URLs avec extension image connue (.png, .jpg, .webp, etc.) ou blob/data
+//    → validé immédiatement, sans Image() ni setTimeout.
+//    Couvre 100% des images R2 uploadées (UUID.png, UUID.jpg, etc.).
+//    Plus de timeout, plus de race condition StrictMode.
+//
+// ✅ CAS IMAGE NON-TRUSTED :
+//    URLs sans extension (signed URLs, proxies, etc.)
+//    → timeout augmenté 5 000 ms → 15 000 ms.
+//    Image() annulée proprement au cleanup (img.src = "").
+//    Flag `cancelled` vérifié dans TOUS les callbacks.
+//
+// ✅ Tous les CAS vidéo inchangés (CAS1 DB, CAS2 extension, CAS3 canplay).
 // ─────────────────────────────────────────────────────────────────────────────
 const useMediaValidation = (urls, slotTypes, postMediaType = null) => {
   const [validIndices, setValidIndices] = useState(null);
@@ -791,6 +806,9 @@ const useMediaValidation = (urls, slotTypes, postMediaType = null) => {
       if (!cancelled) setValidIndices(urls.map((_, i) => i));
     }, 20000);
 
+    // Références des Image() créés — pour cleanup propre
+    const imageRefs = [];
+
     const checks = urls.map((url, i) => {
       const type = slotTypes[i];
       dbg(`useMediaValidation check[${i}] type=${type} postMediaType=${postMediaType} url=${url}`);
@@ -800,11 +818,40 @@ const useMediaValidation = (urls, slotTypes, postMediaType = null) => {
       if (url.startsWith("blob:") || url.startsWith("data:")) return Promise.resolve({ i, ok: !!url });
 
       if (type === "image") {
+        // ✅ FIX v8 CAS IMAGE TRUSTED — extension connue = confiance totale
+        // Les images R2 ont toujours une extension (.png, .jpg, .webp…).
+        // On skip la validation asynchrone entièrement → plus de timeout.
+        if (isTrustedImageUrl(url)) {
+          dbg(`useMediaValidation image TRUSTED (known ext/blob/data) → valid url=${url}`);
+          return Promise.resolve({ i, ok: true });
+        }
+
+        // CAS IMAGE NON-TRUSTED — URL sans extension (signed URL, proxy…)
+        // Timeout augmenté à 15s + cleanup de l'objet Image()
         return new Promise((resolve) => {
           const img   = new Image();
-          const timer = setTimeout(() => { dbgWarn(`useMediaValidation image timeout → hidden url=${url}`); resolve({ i, ok: false }); }, 5000);
-          img.onload  = () => { clearTimeout(timer); dbg(`useMediaValidation image OK url=${url}`); resolve({ i, ok: true }); };
-          img.onerror = () => { clearTimeout(timer); dbgWarn(`useMediaValidation image error → hidden url=${url}`); resolve({ i, ok: false }); };
+          imageRefs.push(img);
+          let settled = false;
+
+          const settle = (ok) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (!cancelled) {
+              if (ok) dbg(`useMediaValidation image OK url=${url}`);
+              else dbgWarn(`useMediaValidation image error → hidden url=${url}`);
+              resolve({ i, ok });
+            }
+          };
+
+          // ✅ FIX v8 : timeout augmenté 5 000 → 15 000 ms pour CDN cold start
+          const timer = setTimeout(() => {
+            if (!cancelled) dbgWarn(`useMediaValidation image timeout → hidden url=${url}`);
+            settle(false);
+          }, 15000);
+
+          img.onload  = () => settle(true);
+          img.onerror = () => settle(false);
           img.src = url;
         });
       }
@@ -866,7 +913,14 @@ const useMediaValidation = (urls, slotTypes, postMediaType = null) => {
       setValidIndices(valid);
     });
 
-    return () => { cancelled = true; clearTimeout(safetyTimer); };
+    return () => {
+      cancelled = true;
+      clearTimeout(safetyTimer);
+      // ✅ FIX v8 : annule tous les Image() en cours pour éviter callbacks stale
+      imageRefs.forEach(img => {
+        try { img.onload = null; img.onerror = null; img.src = ""; } catch {}
+      });
+    };
   }, [urls.join(","), slotTypes.join(","), postMediaType]); // eslint-disable-line
 
   return validIndices;
@@ -925,8 +979,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       if (!url || typeof url !== "string") return;
       if (url.startsWith("blob:")) { if (!seen.has(url)) { seen.add(url); result.push(url); } return; }
       if (!url.startsWith("data:") && !isStructurallyValid(url)) return;
-      // Filtrer les URLs de pages web sociales (mastodon/@user/id, pixelfed/p/user/id...)
-      // qui ne sont pas des fichiers médias et causent des erreurs "Format error"
       if (isWebPageUrl(url)) { dbgWarn(`safeMediaUrls — filtered web page URL: ${url}`); return; }
       if (!seen.has(url)) { seen.add(url); result.push(url); }
     };

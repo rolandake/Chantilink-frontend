@@ -40,13 +40,8 @@ export const emitHomeRefresh = () =>
 
 // ============================================
 // PRÉCHARGEMENT — rend les transitions instantanées
-// On déclenche le import() dès que l'app est prête,
-// avant même que l'utilisateur clique sur un onglet.
 // ============================================
 const preloadPages = () => {
-  // Chaque import() déclenche le téléchargement du chunk en arrière-plan.
-  // Les composants sont déjà dans importsPages.js (lazy), donc on les
-  // force à se résoudre immédiatement après le premier render.
   const pages = [
     () => import("./pages/Chat/Messages"),
     () => import("./pages/Chat/ChatPage"),
@@ -332,8 +327,6 @@ export default function App() {
       initializeStorage().catch((err) => console.error("❌ [App] Erreur init storage:", err)),
     ]).catch(() => {});
 
-    // ── Préchargement des pages en arrière-plan
-    // pour des transitions quasi-instantanées
     const timer = setTimeout(preloadPages, 1000);
 
     const fixVh = () =>
@@ -475,13 +468,12 @@ function AppContent() {
   const isHome     = location.pathname === "/";
   const isAuth     = location.pathname === "/auth";
   const isVideos   = location.pathname === "/videos";
-  const isMessages = location.pathname === "/messages"; // ✅ NOUVEAU
+  const isMessages = location.pathname === "/messages";
   const isAdmin    = user?.role === "admin" || user?.role === "superadmin";
 
   const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
   const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
 
-  // ✅ FIX : on exclut /messages — la page gère sa propre navigation
   const showBackButton = !!user && !isAuth && !isHome && !isVideos && !isMessages && !storyViewerOpen;
 
   const handleBack = useCallback(() => {
@@ -489,14 +481,21 @@ function AppContent() {
     else navigate("/");
   }, [navigate]);
 
+  // ✅ FIX — mainStyle dynamique : top et bottom suivent isNavVisible
+  // pour éviter les espaces vides quand header/navbar disparaissent au scroll
   const mainStyle = useMemo(() => ({
-    top:                     showHeader ? 72 : 0,
-    bottom:                  showNav    ? 64 : 0,
-    overflowX:               "hidden",
-    overflowY:               isHome ? "hidden" : "auto",
+    top: showHeader
+      ? (isNavVisible ? 72 : 0)
+      : 0,
+    bottom: showNav
+      ? (isNavVisible ? 64 : 0)
+      : 0,
+    transition: "top 200ms ease-out, bottom 200ms ease-out",
+    overflowX: "hidden",
+    overflowY: isHome ? "hidden" : "auto",
     WebkitOverflowScrolling: "touch",
-    paddingBottom:           isHome ? 0 : "env(safe-area-inset-bottom)",
-  }), [showHeader, showNav, isHome]);
+    paddingBottom: isHome ? 0 : "env(safe-area-inset-bottom)",
+  }), [showHeader, showNav, isHome, isNavVisible]);
 
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
@@ -552,12 +551,6 @@ function AppContent() {
       {/* CONTENU PRINCIPAL */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
         <div className={`lg:ml-[260px] ${isHome ? "h-full" : ""}`}>
-          {/*
-            ✅ PERFORMANCES — on utilise un fallback ultra-léger (null)
-            car les pages sont préchargées par preloadPages().
-            Le Suspense ne devrait quasiment jamais afficher le fallback
-            après le premier chargement.
-          */}
           <Suspense fallback={<LoadingSpinner />}>
             <Routes location={location}>
               <Route path="/auth" element={

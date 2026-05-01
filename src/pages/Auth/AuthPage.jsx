@@ -1,20 +1,11 @@
 // src/pages/Auth/AuthPage.jsx
-// ✅ Login + Register + Forgot Password
-// ✅ NOUVEAU : Sélecteur de langue à l'inscription
-//    → La langue choisie est envoyée au backend avec le register
-//    → Appliquée immédiatement via i18n + persistée en base
-// ✅ Tous les textes traduits via useTranslation()
-
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../context/AuthContext";
 import { useLanguage } from "../../context/LanguageContext";
 import { SUPPORTED_LANGUAGES } from "../../i18n";
 
-// ============================================================
-// ICONS
-// ============================================================
 const EyeIcon = ({ open }) => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     {open
@@ -53,9 +44,6 @@ const GlobeIcon = () => (
   </svg>
 );
 
-// ============================================================
-// HELPERS
-// ============================================================
 const pwStrength = (pw) => {
   if (!pw) return 0;
   let s = 0;
@@ -67,9 +55,6 @@ const pwStrength = (pw) => {
 };
 const S_COLORS = ["","#f87171","#fb923c","#facc15","#34d399"];
 
-// ============================================================
-// CSS
-// ============================================================
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap');
 @keyframes cl-spin    { to { transform:rotate(360deg); } }
@@ -128,7 +113,6 @@ const CSS = `
 .cla-eye:hover{color:var(--txt)}
 .cla-ok-badge{position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--ok);display:flex;align-items:center}
 
-/* ── Sélecteur de langue ── */
 .cla-lang-select{
   width:100%;padding:11px 16px;
   background:rgba(255,255,255,.04);border:1px solid var(--brd);
@@ -148,7 +132,6 @@ const CSS = `
 .cla-lang-icon{position:absolute;left:12px;color:var(--mut);pointer-events:none;display:flex}
 .cla-lang-select.with-icon{padding-left:36px}
 
-/* ── Lang pills (mini selector pour login) ── */
 .cla-lang-pills{display:flex;gap:6px;margin-bottom:20px}
 .cla-lang-pill{
   flex:1;padding:7px 6px;border:1px solid var(--brd);border-radius:9px;
@@ -223,12 +206,9 @@ const CSS = `
 @media(max-width:440px){.cla-card{padding:32px 22px 28px;border-radius:20px}.cla-title{font-size:23px}}
 `;
 
-// ============================================================
-// COMPONENT
-// ============================================================
 export default function AuthPage() {
   const { t, i18n }                = useTranslation();
-  const { login, register, loading: authLoading } = useAuth();
+  const { login, register, loading: authLoading, isAuthenticated, sessionLoading } = useAuth();
   const { language, changeLanguage } = useLanguage();
   const navigate                   = useNavigate();
   const [searchParams]             = useSearchParams();
@@ -238,21 +218,18 @@ export default function AuthPage() {
   const [alert, setAlert]       = useState(null);
   const [googleBusy, setGoogleBusy] = useState(false);
 
-  // Login
-  const [email, setEmail]       = useState("");
+  // ✅ Email pré-rempli depuis localStorage
+  const [email, setEmail]       = useState(() => localStorage.getItem("cl_last_email") || "");
   const [pw, setPw]             = useState("");
   const [showPw, setShowPw]     = useState(false);
   const [remember, setRemember] = useState(true);
 
-  // Register
   const [name, setName]         = useState("");
   const [rEmail, setREmail]     = useState("");
   const [rPw, setRPw]           = useState("");
   const [showRPw, setShowRPw]   = useState(false);
-  // ✅ NOUVEAU : langue choisie à l'inscription (initialisée avec la langue courante)
   const [regLang, setRegLang]   = useState(language);
 
-  // Forgot
   const [fEmail, setFEmail]     = useState("");
   const [sentTo, setSentTo]     = useState("");
   const [cooldown, setCooldown] = useState(0);
@@ -261,10 +238,7 @@ export default function AuthPage() {
   const nameRef   = useRef(null);
   const fEmailRef = useRef(null);
 
-  // Sync regLang si la langue globale change depuis l'extérieur
-  useEffect(() => {
-    setRegLang(language);
-  }, [language]);
+  useEffect(() => { setRegLang(language); }, [language]);
 
   useEffect(() => {
     const msg = searchParams.get("msg");
@@ -283,7 +257,24 @@ export default function AuthPage() {
     return () => clearTimeout(id);
   }, [cooldown]);
 
-  const clear = useCallback(() => setAlert(null), []);
+  // ✅ Si déjà connecté → redirect immédiate
+  if (!sessionLoading && isAuthenticated) {
+    return <Navigate to="/" replace />;
+  }
+
+  // ✅ Pendant la vérification du cookie → rien (évite le flash)
+  if (sessionLoading) {
+    return (
+      <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#09090b" }}>
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2" strokeLinecap="round" style={{ animation: "spin .75s linear infinite", opacity: 0.6 }}>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+        </svg>
+      </div>
+    );
+  }
+
+  const clear = () => setAlert(null);
 
   const emailOk  = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   const rEmailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rEmail);
@@ -297,36 +288,46 @@ export default function AuthPage() {
   const canReg   = name.trim().length >= 2 && rEmailOk && rPw.length >= 6;
   const isLoading = busy || authLoading;
 
-  // ── Handlers ──
-  const handleLogin = useCallback(async (e) => {
+  const handleLogin = async (e) => {
     e?.preventDefault();
     if (!canLog || isLoading) return;
     setBusy(true); setAlert(null);
     try {
       const res = await login(email.trim().toLowerCase(), pw, remember);
-      if (res.success) navigate("/", { replace: true });
-      else setAlert({ t: "err", msg: res.message || t("auth.login.error_default") });
-    } catch { setAlert({ t: "err", msg: t("auth.login.error_generic") }); }
-    finally { setBusy(false); }
-  }, [canLog, isLoading, login, email, pw, remember, navigate, t]);
+      if (res.success) {
+        // ✅ Mémoriser l'email pour la prochaine visite
+        localStorage.setItem("cl_last_email", email.trim().toLowerCase());
+        navigate("/", { replace: true });
+      } else {
+        setAlert({ t: "err", msg: res.message || t("auth.login.error_default") });
+      }
+    } catch {
+      setAlert({ t: "err", msg: t("auth.login.error_generic") });
+    } finally {
+      setBusy(false);
+    }
+  };
 
-  const handleReg = useCallback(async (e) => {
+  const handleReg = async (e) => {
     e?.preventDefault();
     if (!canReg || isLoading) return;
     setBusy(true); setAlert(null);
     try {
-      // ✅ NOUVEAU : on passe regLang au register (5ème paramètre)
       const res = await register(name.trim(), rEmail.trim().toLowerCase(), rPw, true, regLang);
       if (res.success) {
-        // Appliquer la langue immédiatement (register() l'applique déjà via AuthContext)
+        localStorage.setItem("cl_last_email", rEmail.trim().toLowerCase());
         navigate("/", { replace: true });
+      } else {
+        setAlert({ t: "err", msg: res.message || t("auth.register.error_default") });
       }
-      else setAlert({ t: "err", msg: res.message || t("auth.register.error_default") });
-    } catch { setAlert({ t: "err", msg: t("auth.register.error_generic") }); }
-    finally { setBusy(false); }
-  }, [canReg, isLoading, register, name, rEmail, rPw, regLang, navigate, t]);
+    } catch {
+      setAlert({ t: "err", msg: t("auth.register.error_generic") });
+    } finally {
+      setBusy(false);
+    }
+  };
 
-  const handleForgot = useCallback(async (e) => {
+  const handleForgot = async (e) => {
     e?.preventDefault();
     if (!fEmailOk || isLoading || cooldown > 0) return;
     setBusy(true); setAlert(null);
@@ -349,9 +350,9 @@ export default function AuthPage() {
     } finally {
       setBusy(false);
     }
-  }, [fEmailOk, isLoading, cooldown, fEmail, t]);
+  };
 
-  const handleResend = useCallback(async () => {
+  const handleResend = async () => {
     if (cooldown > 0 || busy) return;
     setBusy(true);
     try {
@@ -367,32 +368,27 @@ export default function AuthPage() {
     } finally {
       setBusy(false);
     }
-  }, [cooldown, busy, sentTo, t]);
+  };
 
-  const handleGoogleLogin = useCallback(() => {
+  const handleGoogleLogin = () => {
     if (googleBusy) return;
     setGoogleBusy(true);
     window.location.href = "/api/auth/google";
-  }, [googleBusy]);
+  };
 
-  // ✅ NOUVEAU : changer la langue depuis les pills (login) ou select (register)
-  const handleLangChange = useCallback((langCode) => {
-    changeLanguage(langCode, { sync: false }); // Pas de sync backend (non connecté)
+  const handleLangChange = (langCode) => {
+    changeLanguage(langCode, { sync: false });
     if (mode === "register") setRegLang(langCode);
-  }, [changeLanguage, mode]);
+  };
 
   const goTo = (m) => { setMode(m); setAlert(null); };
 
-  // ============================================================
-  // RENDER
-  // ============================================================
   return (
     <>
       <style>{CSS}</style>
       <div className="cla">
         <div className="cla-card">
 
-          {/* ── Logo ── */}
           <div className="cla-logo">
             <div className="cla-logo-box">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -404,7 +400,6 @@ export default function AuthPage() {
             <div className="cla-logo-text">CHANTI<b>LINK</b></div>
           </div>
 
-          {/* ── Sélecteur de langue rapide (pills) — visible sur toutes les vues ── */}
           <div className="cla-lang-pills">
             {SUPPORTED_LANGUAGES.map((lang) => (
               <button
@@ -419,9 +414,6 @@ export default function AuthPage() {
             ))}
           </div>
 
-          {/* ══════════════════════════════════════
-              MODE : FORGOT-SENT
-          ══════════════════════════════════════ */}
           {mode === "forgot-sent" && (
             <div className="cla-success-screen">
               <div className="cla-success-icon"><MailIcon /></div>
@@ -435,14 +427,12 @@ export default function AuthPage() {
                 <br/><br/>
                 {t("auth.forgot_sent.spam_hint")} <strong>{t("auth.forgot_sent.spam_word")}</strong>.
               </div>
-
               {alert && (
                 <div className={`cla-alert ${alert.t}`}>
                   <span style={{flexShrink:0}}>{alert.t==="err"?"⚠":"✓"}</span>
                   <span>{alert.msg}</span>
                 </div>
               )}
-
               <div className="cla-countdown">
                 {cooldown > 0 ? (
                   <>{t("auth.forgot_sent.countdown", { count: cooldown }).replace("{{count}}", cooldown)}</>
@@ -455,16 +445,12 @@ export default function AuthPage() {
                   </>
                 )}
               </div>
-
               <button className="cla-btn-ghost" onClick={() => goTo("login")} style={{marginTop:20}}>
                 <ArrowLeftIcon /> {t("auth.forgot_sent.back_login")}
               </button>
             </div>
           )}
 
-          {/* ══════════════════════════════════════
-              MODES : LOGIN / REGISTER / FORGOT
-          ══════════════════════════════════════ */}
           {mode !== "forgot-sent" && (
             <>
               <div className="cla-title">
@@ -502,16 +488,22 @@ export default function AuthPage() {
                 </div>
               )}
 
-              {/* ── FORM LOGIN ── */}
               {mode === "login" && (
                 <form onSubmit={handleLogin} noValidate>
                   <div className="cla-f">
                     <label className="cla-lbl">{t("auth.login.email")}</label>
                     <div className="cla-iw">
-                      <input ref={emailRef} type="email" inputMode="email" autoComplete="email"
+                      <input
+                        ref={emailRef}
+                        type="email"
+                        inputMode="email"
+                        autoComplete="email"
                         className={`cla-i${emailOk?" ok pr":email.length>3&&!emailOk?" er":""}`}
-                        placeholder="prenom@entreprise.com" value={email}
-                        onChange={e=>{setEmail(e.target.value);clear();}} disabled={isLoading}/>
+                        placeholder="prenom@entreprise.com"
+                        value={email}
+                        onChange={e=>{setEmail(e.target.value);clear();}}
+                        disabled={isLoading}
+                      />
                       {emailOk && <span className="cla-ok-badge"><CheckIcon/></span>}
                     </div>
                   </div>
@@ -519,9 +511,15 @@ export default function AuthPage() {
                   <div className="cla-f">
                     <label className="cla-lbl">{t("auth.login.password")}</label>
                     <div className="cla-iw">
-                      <input type={showPw?"text":"password"} autoComplete="current-password"
-                        className="cla-i pr" placeholder="••••••••" value={pw}
-                        onChange={e=>{setPw(e.target.value);clear();}} disabled={isLoading}/>
+                      <input
+                        type={showPw?"text":"password"}
+                        autoComplete="current-password"
+                        className="cla-i pr"
+                        placeholder="••••••••"
+                        value={pw}
+                        onChange={e=>{setPw(e.target.value);clear();}}
+                        disabled={isLoading}
+                      />
                       <button type="button" className="cla-eye" onClick={()=>setShowPw(v=>!v)} tabIndex={-1}><EyeIcon open={showPw}/></button>
                     </div>
                   </div>
@@ -542,16 +540,21 @@ export default function AuthPage() {
                 </form>
               )}
 
-              {/* ── FORM REGISTER ── */}
               {mode === "register" && (
                 <form onSubmit={handleReg} noValidate>
                   <div className="cla-f">
                     <label className="cla-lbl">{t("auth.register.fullname")}</label>
                     <div className="cla-iw">
-                      <input ref={nameRef} type="text" autoComplete="name"
+                      <input
+                        ref={nameRef}
+                        type="text"
+                        autoComplete="name"
                         className={`cla-i${name.trim().length>=2?" ok":""}`}
-                        placeholder={t("auth.register.fullname_placeholder")} value={name}
-                        onChange={e=>{setName(e.target.value);clear();}} disabled={isLoading}/>
+                        placeholder={t("auth.register.fullname_placeholder")}
+                        value={name}
+                        onChange={e=>{setName(e.target.value);clear();}}
+                        disabled={isLoading}
+                      />
                       {name.trim().length>=2 && <span className="cla-ok-badge"><CheckIcon/></span>}
                     </div>
                   </div>
@@ -559,10 +562,16 @@ export default function AuthPage() {
                   <div className="cla-f">
                     <label className="cla-lbl">{t("auth.register.email")}</label>
                     <div className="cla-iw">
-                      <input type="email" inputMode="email" autoComplete="email"
+                      <input
+                        type="email"
+                        inputMode="email"
+                        autoComplete="email"
                         className={`cla-i${rEmailOk?" ok pr":rEmail.length>3&&!rEmailOk?" er":""}`}
-                        placeholder={t("auth.register.email_placeholder")} value={rEmail}
-                        onChange={e=>{setREmail(e.target.value);clear();}} disabled={isLoading}/>
+                        placeholder={t("auth.register.email_placeholder")}
+                        value={rEmail}
+                        onChange={e=>{setREmail(e.target.value);clear();}}
+                        disabled={isLoading}
+                      />
                       {rEmailOk && <span className="cla-ok-badge"><CheckIcon/></span>}
                     </div>
                   </div>
@@ -570,9 +579,15 @@ export default function AuthPage() {
                   <div className="cla-f">
                     <label className="cla-lbl">{t("auth.register.password")}</label>
                     <div className="cla-iw">
-                      <input type={showRPw?"text":"password"} autoComplete="new-password"
-                        className="cla-i pr" placeholder={t("auth.register.password_placeholder")} value={rPw}
-                        onChange={e=>{setRPw(e.target.value);clear();}} disabled={isLoading}/>
+                      <input
+                        type={showRPw?"text":"password"}
+                        autoComplete="new-password"
+                        className="cla-i pr"
+                        placeholder={t("auth.register.password_placeholder")}
+                        value={rPw}
+                        onChange={e=>{setRPw(e.target.value);clear();}}
+                        disabled={isLoading}
+                      />
                       <button type="button" className="cla-eye" onClick={()=>setShowRPw(v=>!v)} tabIndex={-1}><EyeIcon open={showRPw}/></button>
                     </div>
                     {rPw.length > 0 && (
@@ -589,7 +604,6 @@ export default function AuthPage() {
                     )}
                   </div>
 
-                  {/* ✅ NOUVEAU : Sélecteur de langue à l'inscription */}
                   <div className="cla-f">
                     <label className="cla-lbl">
                       <GlobeIcon style={{display:"inline",verticalAlign:"middle",marginRight:4}} />
@@ -621,7 +635,6 @@ export default function AuthPage() {
                 </form>
               )}
 
-              {/* ── FORM FORGOT PASSWORD ── */}
               {mode === "forgot" && (
                 <form onSubmit={handleForgot} noValidate>
                   <div className="cla-f">
@@ -643,14 +656,9 @@ export default function AuthPage() {
                   </div>
 
                   <div style={{
-                    background:"rgba(249,115,22,.06)",
-                    border:"1px solid rgba(249,115,22,.14)",
-                    borderRadius:10,
-                    padding:"10px 13px",
-                    fontSize:12.5,
-                    color:"#a0a0b0",
-                    marginBottom:16,
-                    lineHeight:1.6
+                    background:"rgba(249,115,22,.06)",border:"1px solid rgba(249,115,22,.14)",
+                    borderRadius:10,padding:"10px 13px",fontSize:12.5,color:"#a0a0b0",
+                    marginBottom:16,lineHeight:1.6
                   }}>
                     💡 {t("auth.forgot.info")} <strong style={{color:"#f97316"}}>{t("auth.forgot.info_duration")}</strong>.
                   </div>
@@ -666,7 +674,6 @@ export default function AuthPage() {
                 </form>
               )}
 
-              {/* ── SÉPARATEUR + GOOGLE ── */}
               {(mode === "login" || mode === "register") && (
                 <>
                   <div className="cla-sep">
@@ -674,7 +681,6 @@ export default function AuthPage() {
                     <span className="cla-sept">{t("auth.google.separator")}</span>
                     <div className="cla-sepl"/>
                   </div>
-
                   <button className="cla-google-btn" type="button" onClick={handleGoogleLogin} disabled={googleBusy || isLoading}>
                     {googleBusy
                       ? <><SpinnerIcon /> {t("auth.google.redirecting")}</>

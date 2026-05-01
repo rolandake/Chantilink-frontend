@@ -1,40 +1,35 @@
 // 📁 src/pages/Home/PostCard.jsx
-// ✅ v18 — FIX DÉFINITIF : boutons Supprimer et Booster ne répondent pas
+// ✅ v21 — FIX DÉFINITIF modaux Booster / Supprimer
 //
 // ══════════════════════════════════════════════════════════════════════════════
-// ROOT CAUSES identifiés via logs :
+// CORRECTIONS v21 vs v20 :
 //
-// 🐛 BUG 1 — getModalRoot() crée le conteneur avec pointer-events:none
-//    Le modal est injecté via createPortal dans ce conteneur.
-//    Le useEffect du modal essaie de le réactiver APRÈS le mount,
-//    mais les re-renders excessifs (log montre 4-6 renders par postId)
-//    font que le modal se démonte avant que useEffect s'exécute.
-//    → FIX : pointer-events:auto dès la création. Le backdrop du modal
-//      lui-même gère l'isolation via position:fixed + zIndex élevé.
+// 🐛 BUG RACINE — memo() + forwardRef() bloque les re-renders du state interne :
+//    En v20, showDeleteModal/showBoostModal étaient dans PostCard wrappé par
+//    memo(). Or memo() avec comparateur custom peut bloquer les re-renders
+//    déclenchés par setState interne quand le comparateur retourne true
+//    (les props n'ont pas changé → React skip le rendu → modal jamais affiché).
+//    → FIX v21 : PostCardModals est un composant SÉPARÉ, non-mémoïsé,
+//      qui détient les états des modaux. Il est rendu APRÈS le memo(PostCard)
+//      dans un wrapper PostCardWithModals. Le memo() ne peut donc jamais
+//      interférer avec les re-renders des modaux.
 //
-// 🐛 BUG 2 — Les modals DeleteModal et BoostModal ont leur propre useEffect
-//    qui fait root.style.pointerEvents = "auto" mais root.style.pointerEvents
-//    = "none" au cleanup. Si le parent re-render pendant que le modal est
-//    ouvert, le cleanup tourne et désactive les events sur le root.
-//    → FIX : Supprimer complètement la gestion pointer-events dans les modals.
-//      Le root est toujours "auto", le backdrop fixed intercepte les clics.
+// 🐛 BUG SECONDAIRE — Triple déclenchement du clic (event bubbling) :
+//    Les logs montraient "handleOpenDelete" × 3 → le clic du bouton dans
+//    PostCardInner remontait à des parents ayant aussi un onClick.
+//    → FIX : e.preventDefault() + e.stopPropagation() dans tous les handlers
+//      de boutons Booster/Supprimer, + guard "already opening" via useRef.
 //
-// 🐛 BUG 3 — Wrapper du card n'a pas isolation:isolate.
-//    PostMedia utilise des éléments position:absolute qui peuvent créer
-//    des stacking contexts non isolés capturant les clics des boutons.
-//    → FIX : isolation:isolate sur le div racine du card.
+// 🐛 BUG TERTIAIRE — getModalRoot() : élément potentiellement détaché :
+//    Si document.body est reconstruit (hot reload, portals SSR…), le modal-root
+//    créé précédemment n'est plus dans le DOM actif.
+//    → FIX : vérification document.body.contains(el) à chaque appel.
 //
-// 🐛 BUG 4 — memo() comparateur du PostCard wrapper ne couvre pas
-//    onDeleted et showToast → nouvelles références à chaque render parent
-//    → re-render inutiles → démontages/remontages intempestifs.
-//    → FIX : les callbacks sont déjà dans postRef, le comparateur est OK.
-//    Mais on s'assure que AnimatePresence wraps correctement les portails.
-//
-// ✅ Toutes les corrections v17 conservées.
+// ✅ Toutes les corrections v19/v20 conservées.
 // ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
-  forwardRef, useState, useEffect, useLayoutEffect,
+  forwardRef, useState, useEffect, useLayoutEffect, useImperativeHandle,
   useCallback, useMemo, useRef, memo, lazy, Suspense
 } from "react";
 import { createPortal } from "react-dom";
@@ -64,30 +59,29 @@ const DEBUG_PC = () => typeof window !== "undefined" && window.localStorage?.get
 const dbgPC = (...args) => { if (DEBUG_PC()) console.log("[PostCard]", ...args); };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX BUG 1 — getModalRoot() : pointer-events TOUJOURS auto
-// Le backdrop position:fixed du modal gère l'isolation visuelle et des clics.
-// Mettre pointer-events:none ici causait des clics ignorés sur les modals.
+// ✅ FIX v20 — getModalRoot() force pointer-events:auto à CHAQUE APPEL
+// L'ancien code ne forçait pointer-events qu'à la création, ce qui laissait
+// les ancêtres du portail potentiellement bloquer les clics.
+// On force aussi width/height à 0 pour ne pas affecter le layout.
 // ─────────────────────────────────────────────────────────────────────────────
 const getModalRoot = () => {
   let el = document.getElementById("modal-root");
   if (!el) {
     el = document.createElement("div");
     el.id = "modal-root";
-    el.style.cssText = [
-      "position:fixed",
-      "top:0",
-      "left:0",
-      "width:0",
-      "height:0",
-      "z-index:99999",
-      "isolation:isolate",
-      // ✅ FIX : toujours "auto" — le backdrop du modal intercepte les clics
-      "pointer-events:auto",
-    ].join(";");
     document.body.appendChild(el);
   }
-  // S'assurer que le root est toujours cliquable (peut avoir été désactivé par du code externe)
-  el.style.pointerEvents = "auto";
+  // Force systématique à chaque appel — pas seulement à la création
+  el.style.cssText = [
+    "position:fixed",
+    "top:0",
+    "left:0",
+    "width:0",
+    "height:0",
+    "z-index:99999",
+    "isolation:isolate",
+    "pointer-events:auto",          // ← forcé à chaque appel
+  ].join(";");
   return el;
 };
 
@@ -295,13 +289,25 @@ const SkeletonPostCard = memo(({ isDarkMode }) => (
 SkeletonPostCard.displayName = "SkeletonPostCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX BUG 2 — DELETE MODAL : suppression de la gestion pointer-events
-// Le root modal-root a déjà pointer-events:auto en permanence (FIX BUG 1).
-// Gérer pointer-events dans useEffect causait des désactivations lors des
-// re-renders (cleanup tournait avant le prochain effect).
+// ✅ FIX v20 — DeleteModal
+// - isClosingRef empêche la double fermeture pendant l'animation exit
+// - e.stopPropagation() sur tous les handlers
 // ─────────────────────────────────────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
-  // ✅ FIX BUG 2 : plus de gestion pointer-events ici (géré par getModalRoot)
+  const isClosingRef = useRef(false);
+
+  const safeCancel = useCallback((e) => {
+    e?.stopPropagation();
+    if (isDeleting || isClosingRef.current) return;
+    isClosingRef.current = true;
+    onCancel();
+  }, [isDeleting, onCancel]);
+
+  const safeConfirm = useCallback((e) => {
+    e?.stopPropagation();
+    if (isDeleting || isClosingRef.current) return;
+    onConfirm();
+  }, [isDeleting, onConfirm]);
 
   return (
     <div
@@ -317,10 +323,11 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
         WebkitBackdropFilter: "blur(4px)",
         padding:              "16px",
         isolation:            "isolate",
-        // pointer-events explicite sur le backdrop lui-même
         pointerEvents:        "auto",
       }}
-      onClick={() => !isDeleting && onCancel()}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) safeCancel(e);
+      }}
     >
       <motion.div
         initial={{ scale: 0.88, opacity: 0 }}
@@ -335,8 +342,9 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
           boxShadow:    "0 24px 64px rgba(0,0,0,0.5)",
           background:   isDarkMode ? "#111827" : "#ffffff",
           border:       isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
+          pointerEvents: "auto",
         }}
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div style={{ textAlign: "center", marginBottom: 24 }}>
           <div style={{
@@ -360,7 +368,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
         <div style={{ display: "flex", gap: 12 }}>
           <button
             type="button"
-            onClick={onCancel}
+            onClick={safeCancel}
             disabled={isDeleting}
             style={{
               flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
@@ -375,7 +383,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
           </button>
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={safeConfirm}
             disabled={isDeleting}
             style={{
               flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
@@ -395,10 +403,19 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
 DeleteModal.displayName = "DeleteModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX BUG 2 — BOOST MODAL : même correction pointer-events
+// ✅ FIX v20 — BoostModal
+// - isClosingRef empêche la double fermeture
+// - e.stopPropagation() systématique
 // ─────────────────────────────────────────────────────────────────────────────
 const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
-  // ✅ FIX BUG 2 : plus de gestion pointer-events ici (géré par getModalRoot)
+  const isClosingRef = useRef(false);
+
+  const safeClose = useCallback((e) => {
+    e?.stopPropagation();
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    onClose();
+  }, [onClose]);
 
   return (
     <div
@@ -414,10 +431,11 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
         WebkitBackdropFilter: "blur(4px)",
         padding:              "16px",
         isolation:            "isolate",
-        // pointer-events explicite sur le backdrop lui-même
         pointerEvents:        "auto",
       }}
-      onClick={onClose}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) safeClose(e);
+      }}
     >
       <motion.div
         initial={{ scale: 0.88, opacity: 0 }}
@@ -431,7 +449,7 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
           border: isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
           pointerEvents: "auto",
         }}
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <div style={{
@@ -451,7 +469,7 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
         </div>
         <button
           type="button"
-          onClick={onClose}
+          onClick={safeClose}
           style={{
             width: "100%", padding: "12px 0", borderRadius: 12, fontWeight: 700,
             fontSize: 15, border: "none", cursor: "pointer",
@@ -519,8 +537,16 @@ ActionsBar.displayName = "ActionsBar";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST CARD INNER
+// ✅ FIX v20 : onOpenDelete et onOpenBoost viennent du parent (PostCard)
+// Les états showDeleteModal / showBoostModal sont dans PostCard, jamais
+// unmountés par VirtualFeed. PostCardInner ne gère plus ces états.
 // ─────────────────────────────────────────────────────────────────────────────
-const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false, priority = false }, ref) => {
+const PostCardInner = forwardRef(({
+  post, onDeleted, showToast, mockPost = false, priority = false,
+  // ✅ FIX v20 — callbacks injectés depuis PostCard (niveau stable)
+  onOpenDelete,
+  onOpenBoost,
+}, ref) => {
   const { isDarkMode } = useDarkMode();
   const { user: currentUser, getToken, updateUserProfile } = useAuth();
   const navigate = useNavigate();
@@ -528,7 +554,8 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const vidsRef  = useRef([]);
 
   const isMockPost   = mockPost || post._id?.startsWith("post_") || post.isMockPost;
-  const isOptimistic = !!post.isOptimistic || post._id?.startsWith("temp_");
+  const isOptimistic = !!post.isOptimistic;
+  const isTempPost   = !!post.isOptimistic || post._id?.startsWith("temp_");
 
   const postUser = useMemo(() => {
     const u = post.user || post.author || {};
@@ -561,9 +588,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const [saved,             setSaved]             = useState(false);
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [showShareModal,    setShowShareModal]    = useState(false);
-  const [showDeleteModal,   setShowDeleteModal]   = useState(false);
-  const [showBoostModal,    setShowBoostModal]    = useState(false);
-  const [isDeleting,        setIsDeleting]        = useState(false);
   const [isFollowing,       setIsFollowing]       = useState(() => {
     if (!currentUser || !postUser._id || postUser._id === "unknown") return false;
     if (currentUser._id === postUser._id) return false;
@@ -582,7 +606,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     stateRef.current = { liked, likesCount, isFollowing, loadingFollow };
   });
   useLayoutEffect(() => {
-    postRef.current = { post, postUser, currentUser, isMockPost, isOptimistic, onDeleted, showToast, updateUserProfile };
+    postRef.current = { post, postUser, currentUser, isMockPost, isOptimistic, isTempPost, onDeleted, showToast, updateUserProfile };
   });
 
   const loadingLikeRef = useRef(false);
@@ -601,15 +625,29 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
+  // ✅ FIX v19 conservé — isOwner robuste
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
     const cuid = toStr(currentUser._id);
     if (!cuid) return false;
-    return (
-      toStr(post.userId)   === cuid ||
-      toStr(postUser._id)  === cuid
-    );
-  }, [currentUser?._id, post.userId, postUser._id]);
+    const candidates = [
+      toStr(post.userId),
+      toStr(post.user?._id),
+      toStr(post.user?.id),
+      toStr(post.author?._id),
+      toStr(post.author?.id),
+      toStr(postUser._id),
+    ].filter(id => id && id !== "unknown" && id !== "null" && id !== "undefined");
+    const result = candidates.some(id => id === cuid);
+    dbgPC(`isOwner=${result} cuid=${cuid} candidates=[${candidates.join(",")}]`);
+    return result;
+  }, [
+    currentUser?._id,
+    post.userId,
+    post.user,
+    post.author,
+    postUser._id,
+  ]);
 
   const canFollow = useMemo(() =>
     !!(currentUser && !isOwner && postUser._id !== "unknown"),
@@ -673,34 +711,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
       .finally(() => setLoadingFollow(false));
   }, []);
 
-  const handleDeletePost = useCallback(async () => {
-    const { post, isMockPost, isOptimistic, onDeleted, showToast } = postRef.current;
-    if (isOptimistic || post._id?.startsWith("temp_")) {
-      showToast?.("Publication en cours, patientez…", "info");
-      setShowDeleteModal(false);
-      return;
-    }
-    if (isMockPost) {
-      showToast?.("Post supprimé", "success");
-      setShowDeleteModal(false);
-      onDeleted?.(post._id);
-      return;
-    }
-    setIsDeleting(true);
-    try {
-      await axiosClient.delete(`/posts/${post._id}`);
-      showToast?.("Post supprimé", "success");
-      setShowDeleteModal(false);
-      onDeleted?.(post._id);
-    } catch (err) {
-      const s = err.response?.status;
-      if (s === 404) { setShowDeleteModal(false); onDeleted?.(post._id); }
-      else showToast?.(s === 403 ? "Permission refusée" : err.response?.data?.message || "Erreur", "error");
-    } finally {
-      setIsDeleting(false);
-    }
-  }, []);
-
   const handleProfileClick = useCallback((e) => {
     e?.stopPropagation();
     const { postUser } = postRef.current;
@@ -714,21 +724,20 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
   const handleSave         = useCallback(() => setSaved(v => !v), []);
   const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
 
-  // ✅ Handler Booster — ouvre showBoostModal
+  // ✅ FIX v20 — délèguent au parent (PostCard) qui est toujours monté
   const handleOpenBoost = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
-    dbgPC("handleOpenBoost triggered");
-    setShowBoostModal(true);
-  }, []);
+    dbgPC("handleOpenBoost → delegate to PostCard");
+    onOpenBoost?.();
+  }, [onOpenBoost]);
 
-  // ✅ Handler Delete — isolé
   const handleOpenDelete = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
-    dbgPC("handleOpenDelete triggered");
-    setShowDeleteModal(true);
-  }, []);
+    dbgPC("handleOpenDelete → delegate to PostCard");
+    onOpenDelete?.();
+  }, [onOpenDelete]);
 
   const handleCommentsCountChange = useCallback((count) => {
     if (typeof count === "number") setCommentsCount(count);
@@ -777,9 +786,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     const imgSrc = post.media || post.images;
     const arr = Array.isArray(imgSrc) ? imgSrc : (imgSrc ? [imgSrc] : []);
     arr.forEach(m => addUrl(typeof m === "string" ? m : m?.url));
-
-    dbgPC(`mediaUrls postId=${post._id} postMediaType=${postMediaType} count=${result.length} urls=`, result);
-
     return result;
   }, [embedUrl, videoUrl, post.media, post.images, post._id, postMediaType]);
 
@@ -819,17 +825,12 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
     || (effectiveMediaType === "video" && mediaLen > 0)
     || !!(post.thumbnail && (videoUrl || embedUrl));
 
-  dbgPC(`render postId=${post._id} mediaType=${postMediaType} effectiveMediaType=${effectiveMediaType} hasMedia=${hasMedia} mediaUrls=${mediaUrls.length} hasVideoMedia=${hasVideoMedia}`);
-
   const formattedDate = useRelativeTime(post.createdAt || null);
 
   if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
 
   return (
     <>
-      {/* ✅ FIX BUG 3 — isolation:isolate sur le wrapper du card
-          Empêche PostMedia (position:absolute) de créer un stacking context
-          non isolé qui pourrait capturer les clics des boutons du header. */}
       <div
         ref={setRootRef}
         className={`relative w-full max-w-[630px] mx-auto ${isDarkMode ? "bg-black" : "bg-white"}`}
@@ -868,19 +869,19 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
             </div>
           </div>
 
-          {/* ✅ Boutons header — zIndex élevé + isolation propre */}
+          {/* Boutons header */}
           <div
             style={{
-              display:       "flex",
-              alignItems:    "center",
-              gap:           8,
-              position:      "relative",
-              zIndex:        50,        // ← zIndex plus élevé qu'avant (était 10)
-              isolation:     "isolate", // ← isolation locale pour ce groupe de boutons
+              display:    "flex",
+              alignItems: "center",
+              gap:        8,
+              position:   "relative",
+              zIndex:     50,
+              isolation:  "isolate",
             }}
           >
             {/* Bouton Booster */}
-            {isOwner && !isBoosted && !isMockPost && !isOptimistic && (
+            {isOwner && !isBoosted && !isMockPost && !isTempPost && (
               <button
                 type="button"
                 onClick={handleOpenBoost}
@@ -908,7 +909,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
             )}
 
             {/* Bouton Suivre */}
-            {canFollow && !isOptimistic && (
+            {canFollow && !isTempPost && (
               <button
                 onClick={handleFollow}
                 disabled={loadingFollow}
@@ -937,7 +938,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
             )}
 
             {/* Bouton Supprimer */}
-            {isOwner && !isOptimistic && (
+            {isOwner && !isTempPost && (
               <button
                 type="button"
                 onClick={handleOpenDelete}
@@ -956,7 +957,6 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
                   WebkitTapHighlightColor: "transparent",
                   touchAction:             "manipulation",
                   pointerEvents:           "auto",
-                  // Zone de clic élargie pour mobile
                   minWidth:                44,
                   minHeight:               44,
                 }}
@@ -981,7 +981,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
           </div>
         )}
 
-        {/* MEDIA — dans un wrapper avec zIndex bas pour ne pas déborder sur le header */}
+        {/* MEDIA */}
         {hasMedia && (
           <div className="w-full" style={{ position: "relative", zIndex: 1 }}>
             <PostMedia
@@ -1005,31 +1005,7 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
         />
       </div>
 
-      {/* ✅ Modals via portail — AnimatePresence en dehors du div card
-          pour éviter tout problème de stacking context */}
-      <AnimatePresence>
-        {showDeleteModal && createPortal(
-          <DeleteModal
-            isDarkMode={isDarkMode}
-            isDeleting={isDeleting}
-            onConfirm={handleDeletePost}
-            onCancel={() => setShowDeleteModal(false)}
-          />,
-          getModalRoot()
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {showBoostModal && createPortal(
-          <BoostModal
-            isDarkMode={isDarkMode}
-            postId={post._id}
-            onClose={() => setShowBoostModal(false)}
-          />,
-          getModalRoot()
-        )}
-      </AnimatePresence>
-
+      {/* Modaux Comments / Share — restent dans PostCardInner (pas de VirtualFeed risk) */}
       {showCommentsModal && (
         <ErrorBoundary>
           <Suspense fallback={null}>
@@ -1078,10 +1054,143 @@ const PostCardInner = forwardRef(({ post, onDeleted, showToast, mockPost = false
 PostCardInner.displayName = "PostCardInner";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POSTCARD wrapper
+// ✅ FIX v21 — PostCardModals : composant NON-MÉMOÏSÉ portant les états modaux
+//
+// PROBLÈME IDENTIFIÉ :
+//   En v20, showDeleteModal/showBoostModal vivaient dans PostCard wrappé par
+//   memo() avec comparateur custom. Quand setState était appelé (showDeleteModal
+//   → true), React déclenchait bien un re-render de PostCard. Mais memo() avec
+//   comparateur custom EST appliqué avant le rendu interne — si le comparateur
+//   retourne true (props identiques), React optimise et saute le rendu complet
+//   du sous-arbre incluant les AnimatePresence et createPortal.
+//   Résultat : setShowDeleteModal(true) est exécuté, le state est mis à jour
+//   dans la fibre React, mais le portail n'est jamais créé dans le DOM.
+//
+// SOLUTION :
+//   PostCardModals est un composant séparé, sans memo(), qui :
+//   - Détient showDeleteModal, showBoostModal, isDeleting
+//   - Reçoit onOpenDelete / onOpenBoost comme setters exposés via useImperativeHandle
+//   - Rend les deux portails via createPortal(…, getModalRoot())
+//   Ce composant est TOUJOURS re-rendu quand son state change car il n'est
+//   pas mémoïsé.
+//
+// PostCard (mémoïsé) passe une ref à PostCardModals pour appeler
+// openDelete() et openBoost() de l'extérieur sans prop drilling.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PostCardModals = forwardRef(({ post, onDeleted, showToast, mockPost, isDarkMode }, ref) => {
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showBoostModal,  setShowBoostModal]  = useState(false);
+  const [isDeleting,      setIsDeleting]      = useState(false);
+
+  const postRef = useRef(post);
+  useLayoutEffect(() => { postRef.current = post; });
+
+  // Expose openDelete() et openBoost() à PostCard via ref
+  useImperativeHandle(ref, () => ({
+    openDelete: () => {
+      dbgPC("PostCardModals.openDelete → setShowDeleteModal(true)");
+      setShowDeleteModal(true);
+    },
+    openBoost: () => {
+      dbgPC("PostCardModals.openBoost → setShowBoostModal(true)");
+      setShowBoostModal(true);
+    },
+  }), []);
+
+  const handleDeletePost = useCallback(async () => {
+    const p = postRef.current;
+    const isMock    = mockPost || p._id?.startsWith("post_") || p.isMockPost;
+    const isTemp    = !!p.isOptimistic || p._id?.startsWith("temp_");
+
+    if (isTemp) {
+      showToast?.("Publication en cours, patientez…", "info");
+      setShowDeleteModal(false);
+      return;
+    }
+    if (isMock) {
+      showToast?.("Post supprimé", "success");
+      setShowDeleteModal(false);
+      onDeleted?.(p._id);
+      return;
+    }
+    setIsDeleting(true);
+    try {
+      await axiosClient.delete(`/posts/${p._id}`);
+      showToast?.("Post supprimé", "success");
+      setShowDeleteModal(false);
+      onDeleted?.(p._id);
+    } catch (err) {
+      const s = err.response?.status;
+      if (s === 404) { setShowDeleteModal(false); onDeleted?.(p._id); }
+      else showToast?.(s === 403 ? "Permission refusée" : err.response?.data?.message || "Erreur", "error");
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [mockPost, onDeleted, showToast]);
+
+  // Portails rendus directement dans document.body — hors de tout contexte
+  // de stacking/clipping/pointer-events de l'application
+  return (
+    <>
+      <AnimatePresence>
+        {showDeleteModal && createPortal(
+          <DeleteModal
+            isDarkMode={isDarkMode}
+            isDeleting={isDeleting}
+            onConfirm={handleDeletePost}
+            onCancel={() => setShowDeleteModal(false)}
+          />,
+          getModalRoot()
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showBoostModal && createPortal(
+          <BoostModal
+            isDarkMode={isDarkMode}
+            postId={post._id}
+            onClose={() => setShowBoostModal(false)}
+          />,
+          getModalRoot()
+        )}
+      </AnimatePresence>
+    </>
+  );
+});
+PostCardModals.displayName = "PostCardModals";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POSTCARD — wrapper mémoïsé (props uniquement, pas d'état modal)
 // ─────────────────────────────────────────────────────────────────────────────
 const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
+
+  // Ref vers PostCardModals — permet d'appeler openDelete/openBoost
+  // sans passer par des props qui déclencheraient un re-render mémoïsé
+  const modalsRef = useRef(null);
+
+  // ✅ FIX v21 — Guards anti-double-clic (triple bubbling observé dans les logs)
+  const openingRef = useRef(false);
+
+  const handleOpenDelete = useCallback((e) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    if (openingRef.current) return;
+    openingRef.current = true;
+    setTimeout(() => { openingRef.current = false; }, 300);
+    dbgPC("PostCard.handleOpenDelete");
+    modalsRef.current?.openDelete();
+  }, []);
+
+  const handleOpenBoost = useCallback((e) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    if (openingRef.current) return;
+    openingRef.current = true;
+    setTimeout(() => { openingRef.current = false; }, 300);
+    dbgPC("PostCard.handleOpenBoost");
+    modalsRef.current?.openBoost();
+  }, []);
 
   if (loading) return <SkeletonPostCard isDarkMode={isDarkMode} />;
   if (!post || !post._id) return null;
@@ -1097,14 +1206,29 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mock
   }
 
   return (
-    <PostCardInner
-      ref={ref}
-      post={post}
-      onDeleted={onDeleted}
-      showToast={showToast}
-      mockPost={mockPost}
-      priority={priority}
-    />
+    <>
+      {/* PostCardInner — peut être unmounté par VirtualFeed, pas de state modal */}
+      <PostCardInner
+        ref={ref}
+        post={post}
+        onDeleted={onDeleted}
+        showToast={showToast}
+        mockPost={mockPost}
+        priority={priority}
+        onOpenDelete={handleOpenDelete}
+        onOpenBoost={handleOpenBoost}
+      />
+
+      {/* PostCardModals — NON mémoïsé, toujours monté, porte les états modaux */}
+      <PostCardModals
+        ref={modalsRef}
+        post={post}
+        onDeleted={onDeleted}
+        showToast={showToast}
+        mockPost={mockPost}
+        isDarkMode={isDarkMode}
+      />
+    </>
   );
 });
 PostCard.displayName = "PostCard";
