@@ -1,5 +1,5 @@
 // 📁 src/pages/profile/ProfileMediaGrid.jsx
-// ✅ v4 — Lightbox fullscreen style TikTok
+// ✅ v6 — Miniatures robustes avec fallbacks multiples (R2 / stockage générique)
 
 import React, {
   useState, useEffect, useRef, useCallback, useMemo, memo
@@ -33,35 +33,49 @@ const resolveItemUrl = (m) => {
 const urlIsVideo = (url) => !!(url && VIDEO_EXTS.test(url.split("?")[0]));
 const urlIsImage = (url) => !!(url && IMG_EXTS.test(url.split("?")[0]));
 
-const cloudinaryVideoThumb = (url) => {
-  if (!url || !url.includes("cloudinary.com")) return null;
-  return url
-    .replace(/\/upload\/(?:v\d+\/)?/, "/upload/so_0/")
-    .replace(VIDEO_EXTS, ".jpg");
+// Thumbnail YouTube (si des liens YT sont embarqués dans des posts)
+const youtubeThumb = (url) => {
+  if (!url) return null;
+  const m = url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([A-Za-z0-9_-]{11})/);
+  return m ? `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg` : null;
 };
 
 const getMediaUrl = (post) => {
+  // 1. Champ thumbnail dédié (idéal : généré côté backend lors de l'upload)
   if (post?.thumbnail) return post.thumbnail;
+
   const mediaArr = Array.isArray(post?.media)  ? post.media
                  : Array.isArray(post?.images) ? post.images : [];
-  if (mediaArr.length === 0) return null;
-  const firstItem = mediaArr[0];
-  if (typeof firstItem === "object" && firstItem !== null) {
-    const t = firstItem.thumbnail || firstItem.thumb || firstItem.poster || null;
-    if (t) return t;
+
+  // 2. Thumbnail explicite dans un objet media (ex: { url, thumbnail })
+  for (const m of mediaArr) {
+    if (typeof m === "object" && m !== null) {
+      const t = m.thumbnail || m.thumb || m.poster || null;
+      if (t) return t;
+    }
   }
+
+  // 3. Première URL image directe
   for (const m of mediaArr) {
     const url = resolveItemUrl(m);
     if (urlIsImage(url)) return url;
   }
+
+  // 4. URL vidéo R2 — VideoThumbnail capturera la frame via canvas
   for (const m of mediaArr) {
     const url = resolveItemUrl(m);
-    if (urlIsVideo(url)) {
-      const thumb = cloudinaryVideoThumb(url);
-      if (thumb) return thumb;
-    }
+    if (urlIsVideo(url)) return url;
   }
-  return resolveItemUrl(firstItem);
+
+  // 5. YouTube fallback
+  for (const m of mediaArr) {
+    const yt = youtubeThumb(resolveItemUrl(m) || "");
+    if (yt) return yt;
+  }
+
+  // 6. Toute autre URL disponible (R2 peut servir des fichiers sans extension)
+  if (mediaArr.length > 0) return resolveItemUrl(mediaArr[0]);
+  return null;
 };
 
 const getPlayableUrl = (post) => {
@@ -80,6 +94,7 @@ const isVideo = (post) => {
     if (typeof m === "object" && m?.type?.startsWith("video")) return true;
     const url = resolveItemUrl(m);
     if (urlIsVideo(url)) return true;
+    if (youtubeThumb(url)) return true;
   }
   return false;
 };
@@ -110,11 +125,24 @@ const TEXT_PALETTES = [
   ["#2D6A4F","#52B788"], ["#8B2FC9","#5A108F"],
 ];
 
+// Palettes pour les fallbacks génériques (post sans média visible)
+const FALLBACK_PALETTES = [
+  ["#0f2027","#203a43","#2c5364"],
+  ["#1a1a2e","#16213e","#0f3460"],
+  ["#2c1810","#4a2c2a","#6b3a3a"],
+  ["#0d1b2a","#1b263b","#415a77"],
+  ["#1c1c1e","#2c2c2e","#3a3a3c"],
+  ["#0a0a0a","#1a1a1a","#2a2a2a"],
+];
+
 const hashText = (str = "") => {
   let h = 0;
   for (let i = 0; i < str.length; i++) h = Math.imul(31, h) + str.charCodeAt(i) | 0;
-  return Math.abs(h) % TEXT_PALETTES.length;
+  return Math.abs(h);
 };
+
+const getTextPalette = (str) => TEXT_PALETTES[hashText(str) % TEXT_PALETTES.length];
+const getFallbackPalette = (str) => FALLBACK_PALETTES[hashText(str) % FALLBACK_PALETTES.length];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SQUELETTE
@@ -126,11 +154,96 @@ const SkeletonCell = memo(({ isDarkMode }) => (
 SkeletonCell.displayName = "SkeletonCell";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FALLBACK GÉNÉRIQUE — quand aucun média n'est disponible
+// Affiche un fond dégradé avec icône et éventuellement un extrait de texte
+// ─────────────────────────────────────────────────────────────────────────────
+const GenericFallback = memo(({ post, isVideoPost, compact = true }) => {
+  const id = post?._id || post?.content || "";
+  const [c1, c2, c3] = getFallbackPalette(id);
+  const content = (post?.content || "").trim();
+  const shortText = content.length > 0 && content.length <= 80 ? content : null;
+
+  return (
+    <div style={{
+      position: "absolute", inset: 0,
+      background: `linear-gradient(160deg, ${c1} 0%, ${c2} 55%, ${c3} 100%)`,
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      gap: compact ? 6 : 12, padding: compact ? 8 : 20,
+      overflow: "hidden",
+    }}>
+      {/* Cercles décoratifs en fond */}
+      <div style={{
+        position: "absolute",
+        width: compact ? 80 : 160,
+        height: compact ? 80 : 160,
+        borderRadius: "50%",
+        border: "1px solid rgba(255,255,255,0.07)",
+        top: "10%", right: "-15%",
+        pointerEvents: "none",
+      }} />
+      <div style={{
+        position: "absolute",
+        width: compact ? 60 : 120,
+        height: compact ? 60 : 120,
+        borderRadius: "50%",
+        border: "1px solid rgba(255,255,255,0.05)",
+        bottom: "5%", left: "-10%",
+        pointerEvents: "none",
+      }} />
+
+      {isVideoPost ? (
+        <div style={{
+          width: compact ? 36 : 56,
+          height: compact ? 36 : 56,
+          borderRadius: "50%",
+          background: "rgba(255,255,255,0.12)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          flexShrink: 0,
+        }}>
+          <PlayIcon style={{
+            width: compact ? 16 : 26,
+            height: compact ? 16 : 26,
+            color: "rgba(255,255,255,0.65)",
+            marginLeft: 2,
+          }} />
+        </div>
+      ) : (
+        <PhotoIcon style={{
+          width: compact ? 22 : 40,
+          height: compact ? 22 : 40,
+          color: "rgba(255,255,255,0.2)",
+          flexShrink: 0,
+        }} />
+      )}
+
+      {shortText && (
+        <p style={{
+          color: "rgba(255,255,255,0.55)",
+          fontSize: compact ? 9 : 13,
+          fontWeight: 500,
+          textAlign: "center",
+          lineHeight: 1.35,
+          margin: 0,
+          overflow: "hidden",
+          display: "-webkit-box",
+          WebkitLineClamp: 3,
+          WebkitBoxOrient: "vertical",
+          wordBreak: "break-word",
+          maxWidth: "90%",
+        }}>{shortText}</p>
+      )}
+    </div>
+  );
+});
+GenericFallback.displayName = "GenericFallback";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TEXT CARD MINIATURE
 // ─────────────────────────────────────────────────────────────────────────────
 const TextCardThumbnail = memo(({ post }) => {
   const content = (post?.content || "").trim();
-  const [from, to] = TEXT_PALETTES[hashText(content)];
+  const [from, to] = getTextPalette(content);
   return (
     <div style={{
       width: "100%", height: "100%",
@@ -151,35 +264,69 @@ const TextCardThumbnail = memo(({ post }) => {
 TextCardThumbnail.displayName = "TextCardThumbnail";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO THUMBNAIL — canvas capture 1ère frame
+// VIDEO THUMBNAIL — canvas capture 1ère frame avec fallback robuste
 // ─────────────────────────────────────────────────────────────────────────────
-const VideoThumbnail = memo(({ src, isDarkMode }) => {
+const VideoThumbnail = memo(({ src, post, isDarkMode }) => {
   const videoRef  = useRef(null);
   const canvasRef = useRef(null);
   const [frame,  setFrame]  = useState(null);
   const [failed, setFailed] = useState(false);
+  const [tried,  setTried]  = useState(false);
 
   useEffect(() => {
     if (!src) { setFailed(true); return; }
     const video = videoRef.current;
     if (!video) return;
+
+    let timeout;
     const capture = () => {
       try {
         const canvas = canvasRef.current;
-        if (!canvas) return;
+        if (!canvas) { setFailed(true); return; }
         canvas.width  = video.videoWidth  || 320;
         canvas.height = video.videoHeight || 568;
         canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-        setFrame(canvas.toDataURL("image/jpeg", 0.8));
-      } catch { setFailed(true); }
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+        // Vérifie que l'image n'est pas vide (toute noire / transparente)
+        if (dataUrl.length > 5000) {
+          setFrame(dataUrl);
+        } else {
+          setFailed(true);
+        }
+      } catch {
+        setFailed(true);
+      }
+      setTried(true);
     };
-    const onLoaded = () => { video.currentTime = 0.5; };
-    const onSeeked = () => capture();
-    const onError  = () => setFailed(true);
+
+    const onLoaded = () => {
+      // Tente à 0.1s d'abord, puis 1s si l'image est noire
+      video.currentTime = 0.1;
+    };
+    const onSeeked = () => {
+      capture();
+      // Si l'image semble noire, tente à 1s
+      if (!frame) {
+        setTimeout(() => {
+          if (!frame && !failed) {
+            video.currentTime = 1;
+          }
+        }, 300);
+      }
+    };
+    const onError  = () => { setFailed(true); setTried(true); };
+
+    // Timeout de sécurité : si rien ne se passe en 5s, on abandonne
+    timeout = setTimeout(() => {
+      if (!tried) { setFailed(true); setTried(true); }
+    }, 5000);
+
     video.addEventListener("loadeddata", onLoaded);
     video.addEventListener("seeked",     onSeeked);
     video.addEventListener("error",      onError);
+
     return () => {
+      clearTimeout(timeout);
       video.removeEventListener("loadeddata", onLoaded);
       video.removeEventListener("seeked",     onSeeked);
       video.removeEventListener("error",      onError);
@@ -196,12 +343,8 @@ const VideoThumbnail = memo(({ src, isDarkMode }) => {
       ) : !failed ? (
         <div className={`absolute inset-0 animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />
       ) : (
-        <div style={{
-          position: "absolute", inset: 0, background: "linear-gradient(135deg,#1a1a2e,#16213e)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <PlayIcon style={{ width: 32, height: 32, color: "rgba(255,255,255,0.4)" }} />
-        </div>
+        // Fallback élégant quand canvas échoue (CORS, format non supporté…)
+        <GenericFallback post={post} isVideoPost compact />
       )}
     </>
   );
@@ -209,11 +352,85 @@ const VideoThumbnail = memo(({ src, isDarkMode }) => {
 VideoThumbnail.displayName = "VideoThumbnail";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// IMAGE THUMBNAIL avec chaîne de fallback
+// ─────────────────────────────────────────────────────────────────────────────
+const ImageThumbnail = memo(({ post, primaryUrl, index, isDarkMode }) => {
+  const [currentSrc, setCurrentSrc] = useState(primaryUrl);
+  const [imgLoaded,  setImgLoaded]  = useState(false);
+  const [failed,     setFailed]     = useState(false);
+  const triedUrls = useRef(new Set([primaryUrl]));
+
+  // Construit une liste de fallbacks à essayer dans l'ordre
+  const fallbackUrls = useMemo(() => {
+    const urls = [];
+    const mediaArr = Array.isArray(post?.media)  ? post.media
+                   : Array.isArray(post?.images) ? post.images : [];
+
+    // Toutes les URLs image du tableau media
+    for (const m of mediaArr) {
+      const url = resolveItemUrl(m);
+      if (url && urlIsImage(url) && url !== primaryUrl) urls.push(url);
+    }
+
+    // YouTube fallback (si le post contient un lien YT)
+    const playable = getPlayableUrl(post);
+    const yt = youtubeThumb(playable || "");
+    if (yt && yt !== primaryUrl) urls.push(yt);
+
+    // Toutes les autres URLs du tableau (vidéo incluse, pour R2)
+    for (const m of mediaArr) {
+      const url = resolveItemUrl(m);
+      if (url && url !== primaryUrl && !urls.includes(url)) urls.push(url);
+    }
+
+    return urls.filter((u) => u && !triedUrls.current.has(u));
+  }, [post, primaryUrl]);
+
+  const fallbackIndex = useRef(0);
+
+  const handleError = useCallback(() => {
+    const nextUrl = fallbackUrls[fallbackIndex.current];
+    if (nextUrl) {
+      triedUrls.current.add(nextUrl);
+      fallbackIndex.current += 1;
+      setCurrentSrc(nextUrl);
+      setImgLoaded(false);
+    } else {
+      setFailed(true);
+    }
+  }, [fallbackUrls]);
+
+  if (failed) {
+    return <GenericFallback post={post} isVideoPost={false} compact />;
+  }
+
+  return (
+    <>
+      {!imgLoaded && (
+        <div className={`absolute inset-0 animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />
+      )}
+      <img
+        src={currentSrc}
+        alt=""
+        loading={index < 9 ? "eager" : "lazy"}
+        decoding={index < 9 ? "sync" : "async"}
+        crossOrigin="anonymous"
+        style={{
+          position: "absolute", inset: 0, width: "100%", height: "100%",
+          objectFit: "cover", opacity: imgLoaded ? 1 : 0, transition: "opacity 0.2s ease",
+        }}
+        onLoad={() => setImgLoaded(true)}
+        onError={handleError}
+      />
+    </>
+  );
+});
+ImageThumbnail.displayName = "ImageThumbnail";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CELLULE GRILLE
 // ─────────────────────────────────────────────────────────────────────────────
 const GridCell = memo(({ post, index, onClick, isDarkMode, isLarge = false, isPinned = false }) => {
-  const [imgLoaded, setImgLoaded] = useState(false);
-  const [imgError,  setImgError]  = useState(false);
   const [isHovered, setIsHovered] = useState(false);
 
   const mediaUrl    = getMediaUrl(post);
@@ -221,12 +438,31 @@ const GridCell = memo(({ post, index, onClick, isDarkMode, isLarge = false, isPi
   const videoPost   = isVideo(post);
   const multiMedia  = isMultiMedia(post);
   const textCard    = isTextCard(post);
-  const needCanvas  = videoPost && (!mediaUrl || urlIsVideo(mediaUrl));
-  const videoSrc    = needCanvas ? (urlIsVideo(mediaUrl) ? mediaUrl : playableUrl) : null;
+
+  // Décide la stratégie de rendu
+  // 1. Text card → TextCardThumbnail
+  // 2. Vidéo sans image thumb → VideoThumbnail (canvas) 
+  // 3. Image URL disponible → ImageThumbnail (avec fallback chain)
+  // 4. Rien → GenericFallback
+  const needCanvas = videoPost && (!mediaUrl || urlIsVideo(mediaUrl));
+  const videoSrc   = needCanvas ? (urlIsVideo(mediaUrl) ? mediaUrl : playableUrl) : null;
 
   const viewsCount    = Array.isArray(post?.views)    ? post.views.length    : (post?.viewsCount    || post?.views    || 0);
   const likesCount    = Array.isArray(post?.likes)    ? post.likes.length    : (post?.likesCount    || 0);
   const commentsCount = Array.isArray(post?.comments) ? post.comments.length : (post?.commentsCount || 0);
+
+  const renderMedia = () => {
+    if (textCard) {
+      return <div style={{ position: "absolute", inset: 0 }}><TextCardThumbnail post={post} /></div>;
+    }
+    if (needCanvas && videoSrc) {
+      return <VideoThumbnail src={videoSrc} post={post} isDarkMode={isDarkMode} />;
+    }
+    if (mediaUrl) {
+      return <ImageThumbnail post={post} primaryUrl={mediaUrl} index={index} isDarkMode={isDarkMode} />;
+    }
+    return <GenericFallback post={post} isVideoPost={videoPost} compact />;
+  };
 
   return (
     <motion.div
@@ -242,34 +478,7 @@ const GridCell = memo(({ post, index, onClick, isDarkMode, isLarge = false, isPi
       onHoverEnd={() => setIsHovered(false)}
       onClick={() => onClick(post, index)}
     >
-      {textCard ? (
-        <div style={{ position: "absolute", inset: 0 }}><TextCardThumbnail post={post} /></div>
-      ) : needCanvas && videoSrc ? (
-        <VideoThumbnail src={videoSrc} isDarkMode={isDarkMode} />
-      ) : mediaUrl && !imgError ? (
-        <>
-          {!imgLoaded && <div className={`absolute inset-0 animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />}
-          <img src={mediaUrl} alt=""
-            loading={index < 9 ? "eager" : "lazy"}
-            decoding={index < 9 ? "sync" : "async"}
-            crossOrigin="anonymous"
-            style={{
-              position: "absolute", inset: 0, width: "100%", height: "100%",
-              objectFit: "cover", opacity: imgLoaded ? 1 : 0, transition: "opacity 0.2s ease",
-            }}
-            onLoad={() => setImgLoaded(true)}
-            onError={() => setImgError(true)}
-          />
-        </>
-      ) : (
-        <div style={{
-          position: "absolute", inset: 0,
-          background: isDarkMode ? "linear-gradient(135deg,#1f2937,#111827)" : "linear-gradient(135deg,#f3f4f6,#e5e7eb)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <PhotoIcon style={{ width: 28, height: 28, color: isDarkMode ? "#4b5563" : "#9ca3af" }} />
-        </div>
-      )}
+      {renderMedia()}
 
       {/* Gradient overlay bas */}
       <div style={{
@@ -406,7 +615,7 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
   const username      = post?.user?.fullName || post?.user?.username || "Utilisateur";
   const avatar        = post?.user?.profilePhoto || null;
 
-  const [from, to] = TEXT_PALETTES[hashText(content)];
+  const [from, to] = getTextPalette(content);
 
   const goNext = useCallback(() => {
     if (currentIndex < allPosts.length - 1) setCurrentIndex(i => i + 1);
@@ -416,7 +625,6 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
     if (currentIndex > 0) setCurrentIndex(i => i - 1);
   }, [currentIndex]);
 
-  // Keyboard
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape")     onClose();
@@ -427,13 +635,11 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, goNext, goPrev]);
 
-  // Bloquer le scroll body
   useEffect(() => {
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = ""; };
   }, []);
 
-  // Swipe vertical ET horizontal
   const handleTouchStart = (e) => {
     touchStartY.current = e.touches[0].clientY;
     touchStartX.current = e.touches[0].clientX;
@@ -461,13 +667,12 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
         position: "fixed", inset: 0, zIndex: 99999,
         background: "#000",
         display: "flex", flexDirection: "column",
-        // Empêche tout défilement derrière
         touchAction: "none",
       }}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
-      {/* ── HEADER — flottant en haut ── */}
+      {/* ── HEADER ── */}
       <div style={{
         position: "absolute", top: 0, left: 0, right: 0,
         zIndex: 30,
@@ -475,7 +680,6 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
         background: "linear-gradient(to bottom, rgba(0,0,0,0.65) 0%, transparent 100%)",
         display: "flex", alignItems: "center", gap: 10,
       }}>
-        {/* Bouton retour */}
         <button onClick={onClose} style={{
           background: "none", border: "none", cursor: "pointer",
           display: "flex", alignItems: "center", gap: 6, color: "white", padding: 0,
@@ -484,7 +688,6 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
           <span style={{ fontSize: 15, fontWeight: 600 }}>Retour</span>
         </button>
 
-        {/* Avatar + nom */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
           {avatar ? (
             <img src={avatar} alt={username} style={{
@@ -543,39 +746,22 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
               controls
               playsInline
               autoPlay
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "contain",
-                display: "block",
-                background: "#000",
-              }}
+              style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#000" }}
             />
           ) : (playableUrl || mediaUrl) ? (
             <img
               key={playableUrl || mediaUrl}
               src={playableUrl || mediaUrl}
               alt=""
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "contain",
-                display: "block",
-              }}
+              style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
             />
           ) : (
-            <div style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              flexDirection: "column", gap: 12,
-            }}>
-              <PhotoIcon style={{ width: 56, height: 56, color: "rgba(255,255,255,0.2)" }} />
-              <span style={{ color: "rgba(255,255,255,0.4)", fontSize: 14 }}>Média non disponible</span>
-            </div>
+            <GenericFallback post={post} isVideoPost={videoPost} compact={false} />
           )}
         </motion.div>
       </AnimatePresence>
 
-      {/* ── OVERLAY INFOS BAS — style TikTok ── */}
+      {/* ── OVERLAY INFOS BAS ── */}
       <div style={{
         position: "absolute", bottom: 0, left: 0, right: 0,
         zIndex: 30,
@@ -583,7 +769,6 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
         background: "linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 100%)",
         pointerEvents: "none",
       }}>
-        {/* Caption */}
         {content && !textCard && (
           <p style={{
             color: "white", fontSize: 14, lineHeight: 1.5, margin: "0 0 12px",
@@ -595,7 +780,6 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
           </p>
         )}
 
-        {/* Stats */}
         <div style={{ display: "flex", alignItems: "center", gap: 20, pointerEvents: "auto" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, color: "white" }}>
             <HeartIcon style={{ width: 22, height: 22, color: "#ef4444" }} />
@@ -617,11 +801,10 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
         </div>
       </div>
 
-      {/* ── BOUTONS NAV HAUT DROITE (↑ ↓) style TikTok ── */}
+      {/* ── NAV ── */}
       <div style={{
         position: "absolute", right: 16, top: "50%", transform: "translateY(-50%)",
-        zIndex: 30,
-        display: "flex", flexDirection: "column", gap: 8,
+        zIndex: 30, display: "flex", flexDirection: "column", gap: 8,
       }}>
         <button
           onClick={goPrev}
@@ -655,7 +838,6 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
         </button>
       </div>
 
-      {/* Compteur position */}
       <div style={{
         position: "absolute", bottom: "calc(env(safe-area-inset-bottom, 20px) + 60px)",
         left: "50%", transform: "translateX(-50%)",
@@ -702,18 +884,9 @@ const ProfileMediaGrid = ({
   const handleCellClick = useCallback((_, index) => setLightboxIndex(index), []);
   const handleCloseLightbox = useCallback(() => setLightboxIndex(null), []);
 
-  const mediaPosts = useMemo(() =>
-    posts.filter(p =>
-      getMediaUrl(p) || isTextCard(p) ||
-      (p?.mediaType === "text-card") ||
-      (p?.content && p.content.trim().length > 0 && !getMediaUrl(p) && p.content.length <= 120)
-    ), [posts]
-  );
-
-  const basePosts = mediaPosts.length > 0 ? mediaPosts : posts;
-
+  // Inclut TOUS les posts (même sans média) — le fallback s'en charge
   const sortedPosts = useMemo(() => {
-    const arr = [...basePosts];
+    const arr = [...posts];
     if (sortKey === "popular") {
       return arr.sort((a, b) => {
         const score = (p) =>
@@ -724,7 +897,7 @@ const ProfileMediaGrid = ({
     }
     if (sortKey === "oldest") return arr.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
     return arr.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  }, [basePosts, sortKey]);
+  }, [posts, sortKey]);
 
   const pinnedSet = useMemo(() => new Set(pinnedPostIds), [pinnedPostIds]);
 

@@ -11,7 +11,6 @@ import ProfileMediaGrid from "./ProfileMediaGrid";
 import SettingsSection from "./SettingsSection";
 import CreatePost from "../Home/CreatePost";
 import PostCard from "../Home/PostCard";
-import ProfileSuggestions from "./ProfileSuggestions";
 import { usePosts } from "../../context/PostsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useDarkMode } from "../../context/DarkModeContext";
@@ -342,7 +341,6 @@ export default function ProfilePage({
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
   const [isBot,          setIsBot]          = useState(false);
   const [isLoadingUser,  setIsLoadingUser]  = useState(!initialUser && !(isOwner && authUser));
-  const [authToken,      setAuthToken]      = useState(null);
   const [userNotFound,   setUserNotFound]   = useState(false);
 
   const loadingRef        = useRef(false);
@@ -359,9 +357,6 @@ export default function ProfilePage({
   }, []);
 
   // ✅ FIX DÉFINITIF SYNC PHOTO — Re-sync profileUser depuis authUser
-  // On dépend de authUser?.profilePhoto directement (valeur primitive) pour
-  // que le useEffect se déclenche IMMÉDIATEMENT après updateUserProfile().
-  // On merge toujours pour garantir une nouvelle référence → re-render garanti.
   useEffect(() => {
     if (!isOwner || !authUser) return;
     setProfileUser(prev => ({ ...(prev || {}), ...authUser }));
@@ -560,10 +555,6 @@ export default function ProfilePage({
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [targetUserId]);
 
   useEffect(() => {
-    if (authUser && getToken) getToken().then(t => setAuthToken(t)).catch(() => {});
-  }, [authUser, getToken]);
-
-  useEffect(() => {
     if (isMockProfile) return;
     (async () => {
       try { await registerServiceWorker(); } catch {}
@@ -712,7 +703,6 @@ export default function ProfilePage({
     following: profileUser?.following?.length || profileUser?.followingCount || 0,
   };
 
-  // Styles de page
   const pageBg = isDarkMode ? '#080808' : '#f5f5f7';
 
   // ── STATES D'ÉCRAN ──────────────────────────────────────────────────────────
@@ -765,121 +755,91 @@ export default function ProfilePage({
         </div>
       )}
 
-      <div style={{ maxWidth: 820, margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr', gap: 16 }}>
+      <div style={{ maxWidth: 820, margin: '0 auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-        {/* Layout desktop */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 16 }}>
+          {/* Header */}
+          <ProfileHeader
+            user={profileUser}
+            isOwnProfile={isOwner}
+            posts={profilePosts}
+            followers={profileUser.followers || []}
+            following={profileUser.following || []}
+            showToast={showLocalToast}
+          />
 
-          {/* Colonne principale */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-            {/* Header */}
-            <ProfileHeader
-              user={profileUser}
-              isOwnProfile={isOwner}
-              posts={profilePosts}
-              followers={profileUser.followers || []}
-              following={profileUser.following || []}
-              showToast={showLocalToast}
-            />
-
-            {/* Bouton S'abonner */}
-            {!isOwner && (
-              <div style={{ display: 'flex', justifyContent: 'center' }}>
-                <FollowButton
-                  isFollowing={followStatus}
-                  isLoading={followLoading}
-                  onClick={handleFollowToggle}
-                  isDarkMode={isDarkMode}
-                />
-              </div>
-            )}
-
-            {/* Suggestions mobile */}
-            {isOwner && authUser && authToken && (
-              <div style={{ display: 'block' }} className="lg:hidden">
-                <ProfileSuggestions
-                  currentUser={authUser} token={authToken}
-                  isDarkMode={isDarkMode} maxSuggestions={3}
-                  onFollowSuccess={handleFollowSuccess}
-                />
-              </div>
-            )}
-
-            {/* Menu onglets */}
-            <ProfileMenu
-              selectedTab={selectedTab}
-              onSelectTab={setSelectedTab}
-              isOwner={isOwner}
-              stats={stats}
-            />
-
-            {/* ── ONGLET PUBLICATIONS ── */}
-            {selectedTab === "posts" && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {isOwner && !isMockProfile && !isBot && (
-                  <CreatePost user={authUser} onPostCreated={handlePostCreated} showToast={showLocalToast} />
-                )}
-                {isLoadingPosts && profilePosts.length === 0 ? (
-                  <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
-                ) : profilePosts.length === 0 && !isLoadingPosts ? (
-                  <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    {profilePosts.map((post, index) => (
-                      <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
-                        <PostCard post={post} onDeleted={handlePostDeleted} showToast={showLocalToast} mockPost={isMockProfile} />
-                      </div>
-                    ))}
-                    {isLoadingPosts && (
-                      <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                        <div style={{ display: 'inline-block', width: 28, height: 28, border: `3px solid ${isDarkMode ? 'rgba(249,115,22,0.2)' : 'rgba(249,115,22,0.15)'}`, borderTopColor: '#f97316', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                      </div>
-                    )}
-                    {!hasMore && profilePosts.length > 0 && (
-                      <p style={{ textAlign: 'center', padding: '16px 0', fontSize: 13, color: isDarkMode ? '#4b5563' : '#9ca3af' }}>
-                        · Tous les posts affichés ·
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── ONGLET PHOTOS ── */}
-            {selectedTab === "photos" && (
-              <ProfileMediaGrid
-                posts={profilePosts}
+          {/* Bouton S'abonner */}
+          {!isOwner && (
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <FollowButton
+                isFollowing={followStatus}
+                isLoading={followLoading}
+                onClick={handleFollowToggle}
                 isDarkMode={isDarkMode}
-                isLoading={isLoadingPosts}
-                hasMore={hasMore}
-                onLoadMore={() => {
-                  const nextPage = page + 1;
-                  setPage(nextPage);
-                  if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
-                }}
-                featuredFirst={false}
-                isOwner={isOwner}
               />
-            )}
-
-            {/* ── ONGLET PARAMÈTRES ── */}
-            {selectedTab === "settings" && isOwner && !isBot && (
-              <SettingsSection user={authUser} showToast={showLocalToast} />
-            )}
-          </div>
-
-          {/* Colonne suggestions desktop */}
-          {isOwner && !isBot && authUser && authToken && (
-            <div style={{ display: 'none' }} className="lg:block">
-              <div style={{ position: 'sticky', top: 16 }}>
-                <ProfileSuggestions
-                  currentUser={authUser} token={authToken}
-                  isDarkMode={isDarkMode} maxSuggestions={5}
-                  onFollowSuccess={handleFollowSuccess}
-                />
-              </div>
             </div>
+          )}
+
+          {/* Menu onglets */}
+          <ProfileMenu
+            selectedTab={selectedTab}
+            onSelectTab={setSelectedTab}
+            isOwner={isOwner}
+            stats={stats}
+          />
+
+          {/* ── ONGLET PUBLICATIONS ── */}
+          {selectedTab === "posts" && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {isOwner && !isMockProfile && !isBot && (
+                <CreatePost user={authUser} onPostCreated={handlePostCreated} showToast={showLocalToast} />
+              )}
+              {isLoadingPosts && profilePosts.length === 0 ? (
+                <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
+              ) : profilePosts.length === 0 && !isLoadingPosts ? (
+                <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {profilePosts.map((post, index) => (
+                    <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
+                      <PostCard post={post} onDeleted={handlePostDeleted} showToast={showLocalToast} mockPost={isMockProfile} />
+                    </div>
+                  ))}
+                  {isLoadingPosts && (
+                    <div style={{ textAlign: 'center', padding: '16px 0' }}>
+                      <div style={{ display: 'inline-block', width: 28, height: 28, border: `3px solid ${isDarkMode ? 'rgba(249,115,22,0.2)' : 'rgba(249,115,22,0.15)'}`, borderTopColor: '#f97316', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                    </div>
+                  )}
+                  {!hasMore && profilePosts.length > 0 && (
+                    <p style={{ textAlign: 'center', padding: '16px 0', fontSize: 13, color: isDarkMode ? '#4b5563' : '#9ca3af' }}>
+                      · Tous les posts affichés ·
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── ONGLET PHOTOS ── */}
+          {selectedTab === "photos" && (
+            <ProfileMediaGrid
+              posts={profilePosts}
+              isDarkMode={isDarkMode}
+              isLoading={isLoadingPosts}
+              hasMore={hasMore}
+              onLoadMore={() => {
+                const nextPage = page + 1;
+                setPage(nextPage);
+                if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
+              }}
+              featuredFirst={false}
+              isOwner={isOwner}
+            />
+          )}
+
+          {/* ── ONGLET PARAMÈTRES ── */}
+          {selectedTab === "settings" && isOwner && !isBot && (
+            <SettingsSection user={authUser} showToast={showLocalToast} />
           )}
         </div>
       </div>
