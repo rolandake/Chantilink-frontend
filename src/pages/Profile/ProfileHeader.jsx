@@ -1,6 +1,7 @@
 // src/pages/profile/ProfileHeader.jsx
 // ✅ NOUVEAU DESIGN — Style moderne TikTok/Instagram fusionné
-// Conserve toute la logique métier originale (upload, follow, stats, modals)
+// ✅ FIX PHOTO : force re-render après upload via cache-bust + state local
+// ✅ DEBUG : logs détaillés pour tracer les mises à jour photo
 
 import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -12,7 +13,6 @@ import {
   ShieldCheckIcon,
   SparklesIcon,
   MapPinIcon,
-  LinkIcon,
   CalendarIcon,
   ChartBarIcon,
   UserGroupIcon,
@@ -30,6 +30,18 @@ import axios from 'axios';
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const EMOJIS = ["😊", "🔥", "💡", "🎉", "🚀", "❤️", "😎", "✨", "🎵"];
+
+// ─────────────────────────────────────────────
+// DEBUG HELPER
+// ─────────────────────────────────────────────
+const debug = (section, msg, data) => {
+  const style = 'background:#f97316;color:#fff;padding:2px 6px;border-radius:4px;font-weight:bold';
+  if (data !== undefined) {
+    console.log(`%c[ProfileHeader:${section}]`, style, msg, data);
+  } else {
+    console.log(`%c[ProfileHeader:${section}]`, style, msg);
+  }
+};
 
 // ─────────────────────────────────────────────
 // HELPER — message d'erreur upload lisible
@@ -52,6 +64,15 @@ function formatCount(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
   return String(n);
+}
+
+// ─────────────────────────────────────────────
+// HELPER — ajoute un cache-bust à une URL image
+// ─────────────────────────────────────────────
+function bustCache(url) {
+  if (!url) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}t=${Date.now()}`;
 }
 
 // ============================================
@@ -277,13 +298,18 @@ export default function ProfileHeader({
   const [saving,             setSaving]             = useState(false);
   const [showStats,          setShowStats]          = useState(false);
 
+  // ✅ FIX PHOTO : URLs locales overrides — initialisées à null, jamais héritées du parent
   const [localPhoto,      setLocalPhoto]      = useState(null);
   const [localCoverPhoto, setLocalCoverPhoto] = useState(null);
 
-  const [modalOpen,    setModalOpen]    = useState(false);
-  const [modalType,    setModalType]    = useState(null);
-  const [showReportModal,  setShowReportModal]  = useState(false);
-  const [showOptionsMenu,  setShowOptionsMenu]  = useState(false);
+  // ✅ Clé de re-render forcé pour les <img> (contourne le cache navigateur)
+  const [profilePhotoKey, setProfilePhotoKey] = useState(0);
+  const [coverPhotoKey,   setCoverPhotoKey]   = useState(0);
+
+  const [modalOpen,       setModalOpen]       = useState(false);
+  const [modalType,       setModalType]       = useState(null);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false);
 
   const [userPosts,     setUserPosts]     = useState(posts);
   const [userFollowers, setUserFollowers] = useState(followers);
@@ -299,22 +325,49 @@ export default function ProfileHeader({
     website:  user?.website  || ''
   });
 
-  const profileInputRef  = useRef(null);
-  const coverInputRef    = useRef(null);
-  const optionsMenuRef   = useRef(null);
+  const profileInputRef = useRef(null);
+  const coverInputRef   = useRef(null);
+  const optionsMenuRef  = useRef(null);
 
-  // Photo résolue par priorité
-  const resolvedProfilePhoto = localPhoto
-    || (isOwnProfile ? authUser?.profilePhoto : null)
-    || user?.profilePhoto
-    || '/default-avatar.png';
+  // ─────────────────────────────────────────────────────────────
+  // ✅ RÉSOLUTION PHOTO — priorité : local override > authUser > user prop
+  // Le localPhoto et localCoverPhoto sont des URLs avec cache-bust
+  // qui forcent le navigateur à recharger l'image depuis le serveur.
+  // ─────────────────────────────────────────────────────────────
+  const resolvedProfilePhoto = useMemo(() => {
+    const url = localPhoto
+      || (isOwnProfile ? authUser?.profilePhoto : null)
+      || user?.profilePhoto
+      || '/default-avatar.png';
+    debug('Photo', '🖼 resolvedProfilePhoto =', url);
+    return url;
+  }, [localPhoto, isOwnProfile, authUser?.profilePhoto, user?.profilePhoto]);
 
-  const resolvedCoverPhoto = localCoverPhoto
-    || (isOwnProfile ? authUser?.coverPhoto : null)
-    || user?.coverPhoto
-    || '/default-cover.jpg';
+  const resolvedCoverPhoto = useMemo(() => {
+    const url = localCoverPhoto
+      || (isOwnProfile ? authUser?.coverPhoto : null)
+      || user?.coverPhoto
+      || '/default-cover.jpg';
+    debug('Photo', '🖼 resolvedCoverPhoto =', url);
+    return url;
+  }, [localCoverPhoto, isOwnProfile, authUser?.coverPhoto, user?.coverPhoto]);
 
-  useEffect(() => { setLocalPhoto(null); setLocalCoverPhoto(null); }, [user?._id]);
+  // ─────────────────────────────────────────────────────────────
+  // Debug : log chaque fois que authUser change
+  // ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    debug('AuthUser', '👤 authUser mis à jour', {
+      profilePhoto: authUser?.profilePhoto,
+      coverPhoto:   authUser?.coverPhoto,
+    });
+  }, [authUser?.profilePhoto, authUser?.coverPhoto]);
+
+  // Reset local overrides quand on change d'utilisateur
+  useEffect(() => {
+    debug('Reset', `🔄 Reset photos locales (user._id changé: ${user?._id})`);
+    setLocalPhoto(null);
+    setLocalCoverPhoto(null);
+  }, [user?._id]);
 
   useEffect(() => {
     if (!isEditingProfile) {
@@ -330,14 +383,28 @@ export default function ProfileHeader({
 
   const handleSendMessage = useCallback(() => {
     if (!user) { showToast?.("Impossible d'envoyer un message", 'error'); return; }
-    navigate('/messages', { state: { selectedContact: { id: user._id || user.id, fullName: user.fullName, username: user.username, profilePhoto: user.profilePhoto, isOnline: user.isOnline, lastSeen: user.lastSeen }, openChat: true } });
+    navigate('/messages', {
+      state: {
+        selectedContact: {
+          id: user._id || user.id,
+          fullName: user.fullName,
+          username: user.username,
+          profilePhoto: user.profilePhoto,
+          isOnline: user.isOnline,
+          lastSeen: user.lastSeen,
+        },
+        openChat: true,
+      },
+    });
   }, [user, navigate, showToast]);
 
   const handleReportUser = useCallback(async (reportData) => {
     try {
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-      await axios.post(`${API_URL}/reports/user`, reportData, { headers: { Authorization: `Bearer ${token}` }, withCredentials: true });
+      await axios.post(`${API_URL}/reports/user`, reportData, {
+        headers: { Authorization: `Bearer ${token}` }, withCredentials: true,
+      });
       showToast?.('Signalement envoyé. Merci pour votre aide ! 🙏', 'success');
       setShowReportModal(false);
       setShowOptionsMenu(false);
@@ -347,7 +414,10 @@ export default function ProfileHeader({
   }, [getToken, showToast]);
 
   useEffect(() => {
-    const handleClickOutside = (e) => { if (optionsMenuRef.current && !optionsMenuRef.current.contains(e.target)) setShowOptionsMenu(false); };
+    const handleClickOutside = (e) => {
+      if (optionsMenuRef.current && !optionsMenuRef.current.contains(e.target))
+        setShowOptionsMenu(false);
+    };
     if (showOptionsMenu) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showOptionsMenu]);
@@ -362,9 +432,15 @@ export default function ProfileHeader({
         axios.get(`${API_URL}/users/${user._id}/followers`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, timeout: 10000 }),
         axios.get(`${API_URL}/users/${user._id}/following`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, timeout: 10000 }),
       ]);
-      if (postsRes.status === 'fulfilled') setUserPosts(Array.isArray(postsRes.value.data?.posts || postsRes.value.data?.data) ? (postsRes.value.data?.posts || postsRes.value.data?.data) : []);
-      if (followersRes.status === 'fulfilled') setUserFollowers(Array.isArray(followersRes.value.data?.followers || followersRes.value.data?.data) ? (followersRes.value.data?.followers || followersRes.value.data?.data) : []);
-      if (followingRes.status === 'fulfilled') setUserFollowing(Array.isArray(followingRes.value.data?.following || followingRes.value.data?.data) ? (followingRes.value.data?.following || followingRes.value.data?.data) : []);
+      if (postsRes.status === 'fulfilled')
+        setUserPosts(Array.isArray(postsRes.value.data?.posts || postsRes.value.data?.data)
+          ? (postsRes.value.data?.posts || postsRes.value.data?.data) : []);
+      if (followersRes.status === 'fulfilled')
+        setUserFollowers(Array.isArray(followersRes.value.data?.followers || followersRes.value.data?.data)
+          ? (followersRes.value.data?.followers || followersRes.value.data?.data) : []);
+      if (followingRes.status === 'fulfilled')
+        setUserFollowing(Array.isArray(followingRes.value.data?.following || followingRes.value.data?.data)
+          ? (followingRes.value.data?.following || followingRes.value.data?.data) : []);
     } catch (err) { setStatsError(err.message); }
     finally { setLoadingStats(false); }
   }, [user?._id, getToken]);
@@ -378,7 +454,9 @@ export default function ProfileHeader({
     try {
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-      await axios.post(`${API_URL}/users/${userId}/follow`, {}, { headers: { Authorization: `Bearer ${token}` }, withCredentials: true });
+      await axios.post(`${API_URL}/users/${userId}/follow`, {}, {
+        headers: { Authorization: `Bearer ${token}` }, withCredentials: true,
+      });
       await fetchUserStats();
       showToast?.(shouldFollow ? 'Abonné ! 🎉' : 'Désabonné', 'success');
     } catch (err) { showToast?.("Erreur lors de l'action", 'error'); throw err; }
@@ -404,28 +482,70 @@ export default function ProfileHeader({
     if (!file) return;
     if (!file.type.startsWith('image/')) { showToast?.('Fichier non valide. Image requise.', 'error'); return; }
     if (file.size > 5 * 1024 * 1024) { showToast?.('Fichier trop volumineux (5 Mo max)', 'error'); return; }
+
+    debug('Upload', '📤 Début upload photo profil', { name: file.name, size: file.size, type: file.type });
+
+    // Aperçu immédiat blob
     const blobUrl = URL.createObjectURL(file);
     setLocalPhoto(blobUrl);
+    setProfilePhotoKey(k => k + 1);
     setIsUploadingProfile(true);
+
     try {
       const formData = new FormData();
       formData.append('profilePhoto', file);
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-      const response = await axios.put(`${API_URL}/users/${user._id}/images`, formData, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }, timeout: 60000 });
+
+      debug('Upload', '🌐 Envoi requête PUT /images...');
+
+      const response = await axios.put(
+        `${API_URL}/users/${user._id}/images`,
+        formData,
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }, timeout: 60000 }
+      );
+
+      debug('Upload', '✅ Réponse serveur reçue', {
+        status: response.status,
+        hasUser: !!response.data?.user,
+        profilePhoto: response.data?.user?.profilePhoto,
+      });
+
       if (response.data?.user) {
-        // ✅ Révoquer le blob AVANT de setter la vraie URL pour éviter un flash
         URL.revokeObjectURL(blobUrl);
-        // ✅ Cache-bust : ajouter un timestamp pour forcer le rechargement de l'image
-        const freshUrl = response.data.user.profilePhoto
-          ? response.data.user.profilePhoto + (response.data.user.profilePhoto.includes('?') ? '&' : '?') + 't=' + Date.now()
-          : null;
-        setLocalPhoto(freshUrl);
+
+        const serverUrl = response.data.user.profilePhoto;
+        debug('Upload', '🔗 URL serveur profilePhoto =', serverUrl);
+
+        // ✅ Sync authUser via context
         await updateUserProfile(user._id, response.data.user);
+        debug('Upload', '✅ updateUserProfile appelé');
+
+        // ✅ Cache-bust forcé → le navigateur recharge réellement l'image
+        const freshUrl = serverUrl ? bustCache(serverUrl) : null;
+        debug('Upload', '🔄 freshUrl avec cache-bust =', freshUrl);
+
+        setLocalPhoto(freshUrl);
+        setProfilePhotoKey(k => k + 1); // force re-render de l'<img>
+      } else {
+        debug('Upload', '⚠️ Réponse sans user — on garde le blob');
       }
+
       showToast?.('✅ Photo de profil mise à jour !', 'success');
-    } catch (err) { setLocalPhoto(null); showToast?.(getUploadErrorMessage(err), 'error'); }
-    finally { setIsUploadingProfile(false); if (profileInputRef.current) profileInputRef.current.value = null; }
+    } catch (err) {
+      debug('Upload', '❌ Erreur upload profilePhoto', {
+        message: err.message,
+        status: err.response?.status,
+        data: err.response?.data,
+      });
+      URL.revokeObjectURL(blobUrl);
+      setLocalPhoto(null);
+      setProfilePhotoKey(k => k + 1);
+      showToast?.(getUploadErrorMessage(err), 'error');
+    } finally {
+      setIsUploadingProfile(false);
+      if (profileInputRef.current) profileInputRef.current.value = null;
+    }
   };
 
   // ── Upload couverture ─────────────────────────────────────────────────────
@@ -434,49 +554,101 @@ export default function ProfileHeader({
     if (!file) return;
     if (!file.type.startsWith('image/')) { showToast?.('Fichier non valide. Image requise.', 'error'); return; }
     if (file.size > 5 * 1024 * 1024) { showToast?.('Fichier trop volumineux (5 Mo max)', 'error'); return; }
+
+    debug('Upload', '📤 Début upload couverture', { name: file.name, size: file.size });
+
     const blobUrl = URL.createObjectURL(file);
     setLocalCoverPhoto(blobUrl);
+    setCoverPhotoKey(k => k + 1);
     setIsUploadingCover(true);
+
     try {
       const formData = new FormData();
       formData.append('coverPhoto', file);
       const token = await getToken();
       if (!token) throw new Error("Session expirée");
-      const response = await axios.put(`${API_URL}/users/${user._id}/images`, formData, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }, timeout: 60000 });
+
+      debug('Upload', '🌐 Envoi requête PUT /images (cover)...');
+
+      const response = await axios.put(
+        `${API_URL}/users/${user._id}/images`,
+        formData,
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }, timeout: 60000 }
+      );
+
+      debug('Upload', '✅ Réponse serveur reçue (cover)', {
+        status: response.status,
+        hasUser: !!response.data?.user,
+        coverPhoto: response.data?.user?.coverPhoto,
+      });
+
       if (response.data?.user) {
         URL.revokeObjectURL(blobUrl);
-        const freshUrl = response.data.user.coverPhoto
-          ? response.data.user.coverPhoto + (response.data.user.coverPhoto.includes('?') ? '&' : '?') + 't=' + Date.now()
-          : null;
-        setLocalCoverPhoto(freshUrl);
+
+        const serverUrl = response.data.user.coverPhoto;
+        debug('Upload', '🔗 URL serveur coverPhoto =', serverUrl);
+
         await updateUserProfile(user._id, response.data.user);
+        debug('Upload', '✅ updateUserProfile appelé (cover)');
+
+        const freshUrl = serverUrl ? bustCache(serverUrl) : null;
+        debug('Upload', '🔄 freshUrl cover avec cache-bust =', freshUrl);
+
+        setLocalCoverPhoto(freshUrl);
+        setCoverPhotoKey(k => k + 1);
+      } else {
+        debug('Upload', '⚠️ Réponse sans user (cover) — on garde le blob');
       }
+
       showToast?.('✅ Photo de couverture mise à jour !', 'success');
-    } catch (err) { setLocalCoverPhoto(null); showToast?.(getUploadErrorMessage(err), 'error'); }
-    finally { setIsUploadingCover(false); if (coverInputRef.current) coverInputRef.current.value = null; }
+    } catch (err) {
+      debug('Upload', '❌ Erreur upload coverPhoto', {
+        message: err.message,
+        status: err.response?.status,
+        data: err.response?.data,
+      });
+      URL.revokeObjectURL(blobUrl);
+      setLocalCoverPhoto(null);
+      setCoverPhotoKey(k => k + 1);
+      showToast?.(getUploadErrorMessage(err), 'error');
+    } finally {
+      setIsUploadingCover(false);
+      if (coverInputRef.current) coverInputRef.current.value = null;
+    }
   };
 
+  // ── Sauvegarde profil ─────────────────────────────────────────────────────
   const handleSaveProfile = async () => {
+    if (!user?._id) { showToast?.('Utilisateur introuvable', 'error'); return; }
     setSaving(true);
     try {
-      const token = await getToken();
-      if (!token) throw new Error("Session expirée");
-      await updateUserProfile(user._id, { fullName: editData.fullName.trim(), username: editData.username.trim(), bio: editData.bio.trim(), location: editData.location.trim(), website: editData.website.trim() });
+      await updateUserProfile(user._id, {
+        fullName: editData.fullName.trim(),
+        username: editData.username.trim(),
+        bio:      editData.bio.trim(),
+        location: editData.location.trim(),
+        website:  editData.website.trim(),
+      });
       setIsEditingProfile(false);
       showToast?.('Profil mis à jour !', 'success');
-    } catch (err) { showToast?.(err.response?.data?.message || err.message || 'Erreur', 'error'); }
-    finally { setSaving(false); }
+    } catch (err) {
+      showToast?.(err.response?.data?.message || err.message || 'Erreur lors de la mise à jour', 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const addEmoji = (emoji) => setEditData(prev => ({ ...prev, bio: (prev.bio || '') + ' ' + emoji }));
-  const memberSince = user?.createdAt ? new Date(user.createdAt).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long' }) : null;
+  const memberSince = user?.createdAt
+    ? new Date(user.createdAt).toLocaleDateString('fr-FR', { year: 'numeric', month: 'long' })
+    : null;
 
-  // ── Styles inline pour le nouveau design ─────────────────────────────────
-  const bg    = isDarkMode ? '#0a0a0a' : '#fff';
-  const text  = isDarkMode ? '#f5f5f5' : '#111';
-  const sub   = isDarkMode ? '#6b7280' : '#9ca3af';
-  const card  = isDarkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)';
-  const bdr   = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
+  // Styles
+  const bg   = isDarkMode ? '#0a0a0a' : '#fff';
+  const text = isDarkMode ? '#f5f5f5' : '#111';
+  const sub  = isDarkMode ? '#6b7280' : '#9ca3af';
+  const card = isDarkMode ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)';
+  const bdr  = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
 
   return (
     <>
@@ -488,7 +660,6 @@ export default function ProfileHeader({
         @keyframes spin { to { transform: rotate(360deg); } }
         .avatar-ring { animation: pulseRing 2s ease-out infinite; }
         .stat-tile:hover { transform: translateY(-3px) scale(1.03); }
-        .action-btn-sm:hover { opacity: 0.85; transform: translateY(-1px); }
       `}</style>
 
       <motion.div
@@ -496,26 +667,28 @@ export default function ProfileHeader({
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, ease: [0.25, 0.8, 0.25, 1] }}
         style={{
-          borderRadius: 28,
-          overflow: 'hidden',
-          border: `1px solid ${bdr}`,
-          background: bg,
-          boxShadow: isDarkMode
-            ? '0 24px 80px rgba(0,0,0,0.6)'
-            : '0 8px 40px rgba(0,0,0,0.1)',
+          borderRadius: 28, overflow: 'hidden',
+          border: `1px solid ${bdr}`, background: bg,
+          boxShadow: isDarkMode ? '0 24px 80px rgba(0,0,0,0.6)' : '0 8px 40px rgba(0,0,0,0.1)',
           fontFamily: "'Sora', 'DM Sans', sans-serif",
         }}
       >
 
-        {/* ── COUVERTURE ────────────────────────────────────────────────── */}
+        {/* ── COUVERTURE ── */}
         <div style={{ position: 'relative', height: 220, overflow: 'hidden' }}>
+          {/* ✅ key={coverPhotoKey} force React à recréer l'élément → vide le cache navigateur */}
           <motion.img
-            key={resolvedCoverPhoto}
+            key={`cover-${coverPhotoKey}`}
             src={resolvedCoverPhoto}
             alt="Couverture"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
             whileHover={{ scale: 1.04 }}
             transition={{ duration: 0.6 }}
+            onLoad={() => debug('Img', '✅ Cover chargée depuis:', resolvedCoverPhoto)}
+            onError={(e) => {
+              debug('Img', '❌ Erreur chargement cover:', resolvedCoverPhoto);
+              e.target.src = '/default-cover.jpg';
+            }}
           />
           {/* Gradient overlay */}
           <div style={{
@@ -524,13 +697,11 @@ export default function ProfileHeader({
               ? 'linear-gradient(to bottom, rgba(10,10,10,0) 30%, rgba(10,10,10,0.95) 100%)'
               : 'linear-gradient(to bottom, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 100%)',
           }} />
-
           {/* Noise overlay */}
           <div style={{
             position: 'absolute', inset: 0, opacity: 0.25,
             backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E")`,
-            backgroundSize: '160px',
-            pointerEvents: 'none',
+            backgroundSize: '160px', pointerEvents: 'none',
           }} />
 
           {/* Boutons sur la couverture */}
@@ -633,10 +804,10 @@ export default function ProfileHeader({
           </div>
         </div>
 
-        {/* ── BODY ──────────────────────────────────────────────────────── */}
+        {/* ── BODY ── */}
         <div style={{ padding: '0 24px 28px', position: 'relative' }}>
 
-          {/* Avatar + boutons action */}
+          {/* Avatar + boutons */}
           <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: -44, marginBottom: 16 }}>
 
             {/* Avatar */}
@@ -650,14 +821,21 @@ export default function ProfileHeader({
                   boxShadow: '0 0 0 0 rgba(249,115,22,0.55)',
                 }}
               >
+                {/* ✅ key={profilePhotoKey} force la recréation de l'img → vide le cache */}
                 <img
-                  key={resolvedProfilePhoto}
+                  key={`profile-${profilePhotoKey}`}
                   src={resolvedProfilePhoto}
                   alt={user?.fullName}
                   style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                  onError={e => { if (e.target.src !== '/default-avatar.png') e.target.src = '/default-avatar.png'; }}
+                  onLoad={() => debug('Img', '✅ Photo profil chargée depuis:', resolvedProfilePhoto)}
+                  onError={(e) => {
+                    debug('Img', '❌ Erreur chargement photo profil:', resolvedProfilePhoto);
+                    if (e.target.src !== window.location.origin + '/default-avatar.png')
+                      e.target.src = '/default-avatar.png';
+                  }}
                 />
               </div>
+
               {/* Badge vérifié/premium */}
               {(user?.isPremium || user?.isVerified) && (
                 <motion.div
@@ -678,6 +856,7 @@ export default function ProfileHeader({
                   }
                 </motion.div>
               )}
+
               {/* Bouton upload photo profil */}
               {isOwnProfile && (
                 <>
@@ -708,9 +887,9 @@ export default function ProfileHeader({
               )}
             </div>
 
-            {/* Boutons droite */}
+            {/* Bouton Modifier */}
             <div style={{ display: 'flex', gap: 8, paddingBottom: 6 }}>
-              {isOwnProfile ? (
+              {isOwnProfile && (
                 <motion.button
                   onClick={() => setIsEditingProfile(true)}
                   whileHover={{ scale: 1.03, y: -1 }}
@@ -726,14 +905,13 @@ export default function ProfileHeader({
                   <PencilIcon style={{ width: 15, height: 15 }} />
                   Modifier
                 </motion.button>
-              ) : null}
+              )}
             </div>
           </div>
 
           {/* Infos utilisateur */}
           <AnimatePresence mode="wait">
             {isEditingProfile ? (
-              /* ── MODE ÉDITION ── */
               <motion.div
                 key="edit"
                 initial={{ opacity: 0, y: 16 }}
@@ -760,7 +938,10 @@ export default function ProfileHeader({
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, alignItems: 'center' }}>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {EMOJIS.map(em => (
-                            <motion.button key={em} onClick={() => addEmoji(em)} whileHover={{ scale: 1.2 }} style={{ fontSize: 18, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>{em}</motion.button>
+                            <motion.button key={em} onClick={() => addEmoji(em)} whileHover={{ scale: 1.2 }}
+                              style={{ fontSize: 18, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                              {em}
+                            </motion.button>
                           ))}
                         </div>
                         <span style={{ fontSize: 11, color: sub }}>{editData.bio.length}/300</span>
@@ -785,7 +966,16 @@ export default function ProfileHeader({
                 ))}
                 <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
                   <motion.button
-                    onClick={() => { setIsEditingProfile(false); setEditData({ fullName: user?.fullName||'', username: user?.username||'', bio: user?.bio||'', location: user?.location||'', website: user?.website||'' }); }}
+                    onClick={() => {
+                      setIsEditingProfile(false);
+                      setEditData({
+                        fullName: user?.fullName || '',
+                        username: user?.username || '',
+                        bio:      user?.bio      || '',
+                        location: user?.location || '',
+                        website:  user?.website  || '',
+                      });
+                    }}
                     whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
                     style={{ padding: '9px 20px', borderRadius: 50, border: `1px solid ${bdr}`, cursor: 'pointer', background: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)', color: sub, fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}
                   >
@@ -794,18 +984,20 @@ export default function ProfileHeader({
                   <motion.button
                     onClick={handleSaveProfile} disabled={saving}
                     whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                    style={{ padding: '9px 20px', borderRadius: 50, border: 'none', cursor: 'pointer', background: 'linear-gradient(135deg,#22c55e,#16a34a)', color: '#fff', fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 4px 14px rgba(34,197,94,0.4)', opacity: saving ? 0.7 : 1 }}
+                    style={{ padding: '9px 20px', borderRadius: 50, border: 'none', cursor: saving ? 'not-allowed' : 'pointer', background: 'linear-gradient(135deg,#22c55e,#16a34a)', color: '#fff', fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 4px 14px rgba(34,197,94,0.4)', opacity: saving ? 0.7 : 1 }}
                   >
-                    {saving ? <div style={{ width: 15, height: 15, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} /> : <CheckIcon style={{ width: 15, height: 15 }} />}
+                    {saving
+                      ? <div style={{ width: 15, height: 15, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                      : <CheckIcon style={{ width: 15, height: 15 }} />
+                    }
                     Enregistrer
                   </motion.button>
                 </div>
               </motion.div>
             ) : (
-              /* ── MODE AFFICHAGE ── */
               <motion.div key="view" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                {/* Nom + badges */}
                 <div style={{ marginBottom: 6 }}>
+                  {/* Nom + badges */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
                     <h1 style={{
                       fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em',
@@ -827,23 +1019,24 @@ export default function ProfileHeader({
                     )}
                   </div>
 
-                  {/* Ligne handle + stats inline style TikTok */}
+                  {/* Handle + website */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
                     <span style={{ fontSize: 13, color: sub }}>@{user?.username || user?.email?.split('@')[0] || 'user'}</span>
                     {user?.website && (
-                      <a href={user.website.startsWith('http') ? user.website : `https://${user.website}`} target="_blank" rel="noopener noreferrer"
+                      <a href={user.website.startsWith('http') ? user.website : `https://${user.website}`}
+                        target="_blank" rel="noopener noreferrer"
                         style={{ fontSize: 13, color: '#f97316', textDecoration: 'none', fontWeight: 600 }}>
                         🔗 {user.website.replace(/^https?:\/\//, '')}
                       </a>
                     )}
                   </div>
 
-                  {/* Ligne followers style TikTok */}
+                  {/* Stats style TikTok */}
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
                     {[
                       { val: stats.followers, label: 'Abonnés',     clickType: 'followers' },
                       { val: stats.following, label: 'Abonnements', clickType: 'following' },
-                      { val: stats.likes,     label: "Go0ts",       clickType: null },
+                      { val: stats.likes,     label: 'Go0ts',       clickType: null },
                     ].map((s, i) => (
                       <React.Fragment key={i}>
                         {i > 0 && <span style={{ color: isDarkMode ? '#374151' : '#d1d5db', fontSize: 13 }}>·</span>}
@@ -884,7 +1077,7 @@ export default function ProfileHeader({
             )}
           </AnimatePresence>
 
-          {/* ── STATS CARDS ───────────────────────────────────────────── */}
+          {/* ── STATS CARDS ── */}
           <div style={{ paddingTop: 20, borderTop: `1px solid ${bdr}` }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
               <h3 style={{ fontSize: 15, fontWeight: 700, color: text, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>

@@ -16,7 +16,7 @@ import axiosClient          from "../../api/axiosClientGlobal";
 import StoryContainer       from "./StoryContainer.jsx";
 import SuggestedAccounts    from "./SuggestedAccounts";
 import SuggestedPostPreview from "./SuggestedPostPreview";
-import PostCard             from "./PostCard";
+import PostCard, { GlobalModalManager } from "./PostCard";
 import VirtualFeed          from "./VirtualFeed";
 import MOCK_POSTS, { generateFullDataset } from "../../data/mockPosts";
 import {
@@ -1983,6 +1983,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
         </div>
       </div>
+
+      {/* Gestionnaire global modaux — hors VirtualFeed */}
+      <GlobalModalManager />
 
       <Suspense fallback={null}>
         <ImmersivePyramidUniverse

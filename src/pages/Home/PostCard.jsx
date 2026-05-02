@@ -1,35 +1,24 @@
 // 📁 src/pages/Home/PostCard.jsx
-// ✅ v21 — FIX DÉFINITIF modaux Booster / Supprimer
+// ✅ v24 — DEBUG COMPLET modaux invisibles
 //
-// ══════════════════════════════════════════════════════════════════════════════
-// CORRECTIONS v21 vs v20 :
+// Pour activer le debug :
+//   localStorage.setItem("POSTCARD_DEBUG", "1") dans la console DevTools
+//   OU ajouter ?postcard_debug=1 dans l'URL (auto-set dans localStorage)
 //
-// 🐛 BUG RACINE — memo() + forwardRef() bloque les re-renders du state interne :
-//    En v20, showDeleteModal/showBoostModal étaient dans PostCard wrappé par
-//    memo(). Or memo() avec comparateur custom peut bloquer les re-renders
-//    déclenchés par setState interne quand le comparateur retourne true
-//    (les props n'ont pas changé → React skip le rendu → modal jamais affiché).
-//    → FIX v21 : PostCardModals est un composant SÉPARÉ, non-mémoïsé,
-//      qui détient les états des modaux. Il est rendu APRÈS le memo(PostCard)
-//      dans un wrapper PostCardWithModals. Le memo() ne peut donc jamais
-//      interférer avec les re-renders des modaux.
-//
-// 🐛 BUG SECONDAIRE — Triple déclenchement du clic (event bubbling) :
-//    Les logs montraient "handleOpenDelete" × 3 → le clic du bouton dans
-//    PostCardInner remontait à des parents ayant aussi un onClick.
-//    → FIX : e.preventDefault() + e.stopPropagation() dans tous les handlers
-//      de boutons Booster/Supprimer, + guard "already opening" via useRef.
-//
-// 🐛 BUG TERTIAIRE — getModalRoot() : élément potentiellement détaché :
-//    Si document.body est reconstruit (hot reload, portals SSR…), le modal-root
-//    créé précédemment n'est plus dans le DOM actif.
-//    → FIX : vérification document.body.contains(el) à chaque appel.
-//
-// ✅ Toutes les corrections v19/v20 conservées.
+// Ce que le debug trace :
+//   [1] Clic bouton → handleOpenDelete/handleOpenBoost
+//   [2] emitModalEvent → CustomEvent dispatché sur window
+//   [3] GlobalModalManager → réception de l'event → setModalState
+//   [4] GlobalModalManager → re-render → rendu du portail
+//   [5] getModalRoot() → container DOM inspecté (cssText, rect, parents)
+//   [6] 50ms après setModalState → modal-root contient-il quelque chose ?
+//   [7] 100ms après dispatch → modal-root vide ou non ?
+//   [8] DeleteModal/BoostModal → montage + inspection overlay
+//   [9] Remontée des parents jusqu'à body → détection overflow/clip/isolation
 // ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
-  forwardRef, useState, useEffect, useLayoutEffect, useImperativeHandle,
+  forwardRef, useState, useEffect, useLayoutEffect,
   useCallback, useMemo, useRef, memo, lazy, Suspense
 } from "react";
 import { createPortal } from "react-dom";
@@ -53,35 +42,127 @@ const PostShareModal    = lazy(() => import("./PostShareSection"));
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEBUG HELPER
+// DEBUG SYSTEM v24
 // ─────────────────────────────────────────────────────────────────────────────
-const DEBUG_PC = () => typeof window !== "undefined" && window.localStorage?.getItem("POSTCARD_DEBUG") === "1";
-const dbgPC = (...args) => { if (DEBUG_PC()) console.log("[PostCard]", ...args); };
+const _isDebug = () => {
+  if (typeof window === "undefined") return false;
+  if (window.localStorage?.getItem("POSTCARD_DEBUG") === "1") return true;
+  try {
+    if (new URLSearchParams(window.location.search).get("postcard_debug") === "1") return true;
+  } catch {}
+  return false;
+};
+
+// Auto-enable via ?postcard_debug=1
+if (typeof window !== "undefined") {
+  try {
+    if (new URLSearchParams(window.location.search).get("postcard_debug") === "1") {
+      window.localStorage?.setItem("POSTCARD_DEBUG", "1");
+      console.info("%c[PostCard DEBUG] Auto-activé via ?postcard_debug=1", "color:#f97316;font-weight:bold");
+    }
+  } catch {}
+}
+
+const dbgPC = (...args) => {
+  if (_isDebug()) console.log("%c[PostCard]", "color:#f97316;font-weight:bold", ...args);
+};
+
+const dbgWarn = (...args) => {
+  if (_isDebug()) console.warn("%c[PostCard ⚠]", "color:#ef4444;font-weight:bold", ...args);
+};
+
+// Inspecte un élément DOM et remonte ses parents pour détecter les causes de clipping
+const dbgInspectEl = (label, el) => {
+  if (!_isDebug() || !el) return;
+  const style  = window.getComputedStyle(el);
+  const rect   = el.getBoundingClientRect();
+  const inBody = document.body.contains(el);
+
+  console.groupCollapsed(`%c[PostCard DOM] ${label}`, "color:#a855f7;font-weight:bold");
+  console.log("element:", el);
+  console.log("in document.body:", inBody);
+  console.log("inline cssText:", el.style.cssText);
+  console.log("computed display:", style.display);
+  console.log("computed visibility:", style.visibility);
+  console.log("computed opacity:", style.opacity);
+  console.log("computed z-index:", style.zIndex);
+  console.log("computed position:", style.position);
+  console.log("computed inset:", style.inset);
+  console.log("computed overflow:", style.overflow, "/", style.overflowX, "/", style.overflowY);
+  console.log("computed pointer-events:", style.pointerEvents);
+  console.log("computed isolation:", style.isolation);
+  console.log("computed clip / clip-path:", style.clip, "/", style.clipPath);
+  console.log("computed will-change:", style.willChange);
+  console.log("computed transform:", style.transform);
+  console.log("BoundingRect:", `top=${rect.top} left=${rect.left} w=${rect.width} h=${rect.height}`);
+  console.log("children.length:", el.children.length);
+  console.log("innerHTML preview:", el.innerHTML.substring(0, 300));
+
+  // Remonte les parents → cherche overflow:hidden, isolation:isolate, transform
+  console.group("→ Analyse des parents (recherche clip/overflow/isolation/transform)");
+  let parent = el.parentElement;
+  let depth  = 0;
+  let problemsFound = 0;
+  while (parent && parent !== document.documentElement && depth < 20) {
+    const ps = window.getComputedStyle(parent);
+    const pr = parent.getBoundingClientRect();
+    const clipOverflow = ps.overflow !== "visible" || ps.overflowX !== "visible" || ps.overflowY !== "visible";
+    const hasIsolate   = ps.isolation === "isolate";
+    const hasTransform = ps.transform !== "none" || ps.willChange.includes("transform");
+    const lowZ         = parseInt(ps.zIndex) < 0;
+
+    if (clipOverflow || hasIsolate || hasTransform || lowZ) {
+      problemsFound++;
+      const id  = parent.id ? `#${parent.id}` : "";
+      const cls = parent.className ? `.${String(parent.className).trim().split(/\s+/).slice(0,3).join(".")}` : "";
+      console.warn(
+        `[depth=${depth}] ${parent.tagName}${id}${cls}`,
+        "\n  overflow:", ps.overflow, ps.overflowX, ps.overflowY,
+        "\n  isolation:", ps.isolation,
+        "\n  transform:", ps.transform,
+        "\n  will-change:", ps.willChange,
+        "\n  z-index:", ps.zIndex,
+        "\n  position:", ps.position,
+        "\n  rect:", `top=${pr.top} left=${pr.left} w=${pr.width} h=${pr.height}`,
+      );
+    }
+    parent = parent.parentElement;
+    depth++;
+  }
+  if (problemsFound === 0) console.log("(aucun parent problématique détecté)");
+  console.groupEnd();
+  console.groupEnd();
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX v20 — getModalRoot() force pointer-events:auto à CHAQUE APPEL
-// L'ancien code ne forçait pointer-events qu'à la création, ce qui laissait
-// les ancêtres du portail potentiellement bloquer les clics.
-// On force aussi width/height à 0 pour ne pas affecter le layout.
+// getModalRoot — v24 avec diagnostic complet
 // ─────────────────────────────────────────────────────────────────────────────
 const getModalRoot = () => {
   let el = document.getElementById("modal-root");
+  if (el && !document.body.contains(el)) {
+    dbgWarn("getModalRoot: modal-root détaché du DOM → recréation");
+    el.remove();
+    el = null;
+  }
   if (!el) {
     el = document.createElement("div");
     el.id = "modal-root";
     document.body.appendChild(el);
+    dbgPC("getModalRoot: modal-root CRÉÉ et ajouté à document.body");
   }
-  // Force systématique à chaque appel — pas seulement à la création
+
+  // ✅ FIX v23 : inset:0 (taille réelle), pointer-events:none sur le conteneur,
+  // overflow:visible, PAS d'isolation:isolate
   el.style.cssText = [
     "position:fixed",
-    "top:0",
-    "left:0",
-    "width:0",
-    "height:0",
-    "z-index:99999",
-    "isolation:isolate",
-    "pointer-events:auto",          // ← forcé à chaque appel
+    "inset:0",
+    "z-index:999999",
+    "pointer-events:none",
+    "overflow:visible",
   ].join(";");
+
+  dbgPC("getModalRoot → el:", el, "| cssText:", el.style.cssText);
+  dbgInspectEl("modal-root après getModalRoot()", el);
   return el;
 };
 
@@ -288,60 +369,99 @@ const SkeletonPostCard = memo(({ isDarkMode }) => (
 ));
 SkeletonPostCard.displayName = "SkeletonPostCard";
 
+// ── Bus d'événements ─────────────────────────────────────────────────────────
+const MODAL_EVENT = "postcard:openModal";
+
+const emitModalEvent = (action, post, extra = {}) => {
+  dbgPC(`[1] emitModalEvent → action="${action}" postId="${post?._id}"`);
+
+  const ev = new CustomEvent(MODAL_EVENT, {
+    detail: { action, post, ...extra },
+    bubbles: false,
+  });
+  window.dispatchEvent(ev);
+  dbgPC(`[2] CustomEvent dispatché sur window`, ev);
+
+  // Vérifie 100ms après si le modal-root a reçu du contenu
+  if (_isDebug()) {
+    setTimeout(() => {
+      const mr = document.getElementById("modal-root");
+      if (!mr) {
+        console.error("%c[PostCard DEBUG] [7] ❌ modal-root INTROUVABLE 100ms après dispatch !", "color:red;font-weight:bold");
+        return;
+      }
+      if (mr.children.length === 0) {
+        console.error(
+          "%c[PostCard DEBUG] [7] ❌ modal-root VIDE 100ms après dispatch — GlobalModalManager n'a pas rendu !",
+          "color:red;font-weight:bold",
+          "\nCauses possibles:",
+          "\n  - <GlobalModalManager /> absent de Home.jsx",
+          "\n  - GlobalModalManager démonté/remonté (key change)",
+          "\n  - setModalState bloqué (React Strict Mode double-invoke ?)",
+          "\n  - startTransition wrapping le setState ?",
+        );
+        dbgInspectEl("modal-root vide", mr);
+      } else {
+        console.info(
+          "%c[PostCard DEBUG] [7] ✅ modal-root contient " + mr.children.length + " enfant(s)",
+          "color:green;font-weight:bold",
+        );
+        dbgInspectEl("modal-root > premier enfant (100ms)", mr.children[0]);
+      }
+    }, 100);
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX v20 — DeleteModal
-// - isClosingRef empêche la double fermeture pendant l'animation exit
-// - e.stopPropagation() sur tous les handlers
+// DELETE MODAL — v24 debug
 // ─────────────────────────────────────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
   const isClosingRef = useRef(false);
+  const overlayRef   = useRef(null);
 
-  const safeCancel = useCallback((e) => {
+  useEffect(() => {
+    dbgPC("[8] DeleteModal MONTÉ ✅");
+    if (overlayRef.current) {
+      dbgInspectEl("[8] DeleteModal overlay (monté)", overlayRef.current);
+    }
+    return () => dbgPC("[8] DeleteModal DÉMONTÉ");
+  }, []);
+
+  const safeCancel = (e) => {
     e?.stopPropagation();
     if (isDeleting || isClosingRef.current) return;
     isClosingRef.current = true;
     onCancel();
-  }, [isDeleting, onCancel]);
+  };
 
-  const safeConfirm = useCallback((e) => {
+  const safeConfirm = (e) => {
     e?.stopPropagation();
     if (isDeleting || isClosingRef.current) return;
     onConfirm();
-  }, [isDeleting, onConfirm]);
+  };
 
   return (
     <div
+      ref={overlayRef}
       style={{
-        position:             "fixed",
-        inset:                0,
-        zIndex:               99999,
-        display:              "flex",
-        alignItems:           "center",
-        justifyContent:       "center",
-        background:           "rgba(0,0,0,0.82)",
-        backdropFilter:       "blur(4px)",
-        WebkitBackdropFilter: "blur(4px)",
-        padding:              "16px",
-        isolation:            "isolate",
-        pointerEvents:        "auto",
+        position: "fixed", inset: 0, zIndex: 999999,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "rgba(0,0,0,0.82)",
+        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+        padding: "16px", pointerEvents: "auto",
       }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) safeCancel(e);
-      }}
+      onClick={(e) => { if (e.target === e.currentTarget) safeCancel(e); }}
     >
       <motion.div
         initial={{ scale: 0.88, opacity: 0 }}
-        animate={{ scale: 1,    opacity: 1 }}
-        exit={{ scale: 0.88,    opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.88, opacity: 0 }}
         transition={{ duration: 0.18, ease: "easeOut" }}
         style={{
-          width:        "100%",
-          maxWidth:     360,
-          borderRadius: 20,
-          padding:      24,
-          boxShadow:    "0 24px 64px rgba(0,0,0,0.5)",
-          background:   isDarkMode ? "#111827" : "#ffffff",
-          border:       isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
+          width: "100%", maxWidth: 360, borderRadius: 20, padding: 24,
+          boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+          background: isDarkMode ? "#111827" : "#ffffff",
+          border: isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
           pointerEvents: "auto",
         }}
         onClick={(e) => e.stopPropagation()}
@@ -355,10 +475,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
           }}>
             <TrashIcon style={{ width: 32, height: 32, color: "#ef4444" }} />
           </div>
-          <h2 style={{
-            fontSize: 20, fontWeight: 700, marginBottom: 8,
-            color: isDarkMode ? "#ffffff" : "#111827",
-          }}>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8, color: isDarkMode ? "#ffffff" : "#111827" }}>
             Supprimer ce post ?
           </h2>
           <p style={{ fontSize: 14, color: "#6b7280", margin: 0 }}>
@@ -366,33 +483,23 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
           </p>
         </div>
         <div style={{ display: "flex", gap: 12 }}>
-          <button
-            type="button"
-            onClick={safeCancel}
-            disabled={isDeleting}
+          <button type="button" onClick={safeCancel} disabled={isDeleting}
             style={{
               flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
               fontSize: 15, border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
               opacity: isDeleting ? 0.5 : 1,
               background: isDarkMode ? "#1f2937" : "#f3f4f6",
-              color:      isDarkMode ? "#ffffff" : "#111827",
-              pointerEvents: "auto",
-            }}
-          >
+              color: isDarkMode ? "#ffffff" : "#111827", pointerEvents: "auto",
+            }}>
             Annuler
           </button>
-          <button
-            type="button"
-            onClick={safeConfirm}
-            disabled={isDeleting}
+          <button type="button" onClick={safeConfirm} disabled={isDeleting}
             style={{
               flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
               fontSize: 15, border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
               opacity: isDeleting ? 0.5 : 1,
-              background: "#ef4444", color: "#ffffff",
-              pointerEvents: "auto",
-            }}
-          >
+              background: "#ef4444", color: "#ffffff", pointerEvents: "auto",
+            }}>
             {isDeleting ? "Suppression…" : "Supprimer"}
           </button>
         </div>
@@ -403,44 +510,43 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
 DeleteModal.displayName = "DeleteModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX v20 — BoostModal
-// - isClosingRef empêche la double fermeture
-// - e.stopPropagation() systématique
+// BOOST MODAL — v24 debug
 // ─────────────────────────────────────────────────────────────────────────────
 const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
   const isClosingRef = useRef(false);
+  const overlayRef   = useRef(null);
 
-  const safeClose = useCallback((e) => {
+  useEffect(() => {
+    dbgPC("[8] BoostModal MONTÉ ✅");
+    if (overlayRef.current) {
+      dbgInspectEl("[8] BoostModal overlay (monté)", overlayRef.current);
+    }
+    return () => dbgPC("[8] BoostModal DÉMONTÉ");
+  }, []);
+
+  const safeClose = (e) => {
     e?.stopPropagation();
     if (isClosingRef.current) return;
     isClosingRef.current = true;
     onClose();
-  }, [onClose]);
+  };
 
   return (
     <div
+      ref={overlayRef}
       style={{
-        position:             "fixed",
-        inset:                0,
-        zIndex:               99999,
-        display:              "flex",
-        alignItems:           "center",
-        justifyContent:       "center",
-        background:           "rgba(0,0,0,0.82)",
-        backdropFilter:       "blur(4px)",
-        WebkitBackdropFilter: "blur(4px)",
-        padding:              "16px",
-        isolation:            "isolate",
-        pointerEvents:        "auto",
+        position: "fixed", inset: 0, zIndex: 999999,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "rgba(0,0,0,0.82)",
+        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+        padding: "16px", pointerEvents: "auto",
       }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) safeClose(e);
-      }}
+      onClick={(e) => { if (e.target === e.currentTarget) safeClose(e); }}
     >
       <motion.div
         initial={{ scale: 0.88, opacity: 0 }}
-        animate={{ scale: 1,    opacity: 1 }}
-        exit={{ scale: 0.88,    opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.88, opacity: 0 }}
         transition={{ duration: 0.18, ease: "easeOut" }}
         style={{
           width: "100%", maxWidth: 400, borderRadius: 20, padding: 24,
@@ -467,16 +573,13 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
             Augmentez la visibilité de votre publication auprès d'un plus grand public.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={safeClose}
+        <button type="button" onClick={safeClose}
           style={{
             width: "100%", padding: "12px 0", borderRadius: 12, fontWeight: 700,
             fontSize: 15, border: "none", cursor: "pointer",
             background: "linear-gradient(135deg, #9333ea, #ec4899)", color: "#ffffff",
             pointerEvents: "auto",
-          }}
-        >
+          }}>
           Fermer
         </button>
       </motion.div>
@@ -486,66 +589,185 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
 BoostModal.displayName = "BoostModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GlobalModalManager — v24 debug complet
+// ─────────────────────────────────────────────────────────────────────────────
+export const GlobalModalManager = () => {
+  const { isDarkMode } = useDarkMode();
+  const [modalState, setModalState] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const renderCountRef = useRef(0);
+  renderCountRef.current++;
+
+  // Log chaque render du GlobalModalManager
+  dbgPC(`[4] GlobalModalManager render #${renderCountRef.current} | modalState=`, modalState?.action ?? "null");
+
+  useEffect(() => {
+    dbgPC("[3] GlobalModalManager MONTÉ — addEventListener MODAL_EVENT sur window");
+
+    if (_isDebug()) {
+      // Vérifie après 0ms que le composant est bien dans l'arbre React
+      setTimeout(() => {
+        dbgPC("[3] GlobalModalManager check post-mount → modal-root existant:", document.getElementById("modal-root"));
+      }, 0);
+    }
+
+    const handler = (e) => {
+      const { action, post, onDeleted, showToast, mockPost } = e.detail || {};
+      dbgPC(`[3] GlobalModalManager ← EVENT REÇU action="${action}" postId="${post?._id}"`);
+      dbgPC(`[3] detail complet:`, e.detail);
+
+      if (!action || !post) {
+        dbgWarn("[3] ❌ EVENT reçu avec detail incomplet — action ou post manquant !", e.detail);
+        return;
+      }
+
+      dbgPC("[4] → setIsDeleting(false) + setModalState({ action, post, ... })");
+      setIsDeleting(false);
+      setModalState({ action, post, onDeleted, showToast, mockPost });
+
+      // Vérification 50ms après setModalState
+      if (_isDebug()) {
+        setTimeout(() => {
+          const mr = document.getElementById("modal-root");
+          dbgPC("[6] Vérification 50ms après setModalState → modal-root:", mr);
+          if (mr) {
+            dbgInspectEl("[6] modal-root 50ms après setModalState", mr);
+            if (mr.children.length === 0) {
+              console.error(
+                "%c[PostCard DEBUG] [6] ❌ modal-root VIDE 50ms après setModalState !",
+                "color:red;font-weight:bold",
+                "\nGlobalModalManager n'a pas re-rendu ou createPortal n'a pas injecté.",
+                "\nVérifiez que GlobalModalManager n'est pas dans un arbre React.memo ou Suspense qui bloque le re-render.",
+              );
+            } else {
+              console.info(
+                `%c[PostCard DEBUG] [6] ✅ modal-root a ${mr.children.length} enfant(s)`,
+                "color:green;font-weight:bold",
+              );
+            }
+          } else {
+            console.error("%c[PostCard DEBUG] [6] ❌ modal-root ABSENT 50ms après setModalState !", "color:red");
+          }
+        }, 50);
+      }
+    };
+
+    window.addEventListener(MODAL_EVENT, handler);
+    dbgPC("[3] addEventListener OK pour", MODAL_EVENT);
+
+    return () => {
+      window.removeEventListener(MODAL_EVENT, handler);
+      dbgPC("[3] GlobalModalManager DÉMONTÉ — removeEventListener");
+    };
+  }, []);
+
+  const close = useCallback(() => {
+    dbgPC("[4] GlobalModalManager → close() → setModalState(null)");
+    setModalState(null);
+  }, []);
+
+  const handleDeletePost = useCallback(async () => {
+    if (!modalState) return;
+    const { post, onDeleted, showToast, mockPost } = modalState;
+    const isMock = mockPost || post._id?.startsWith("post_") || post.isMockPost;
+    const isTemp = !!post.isOptimistic || post._id?.startsWith("temp_");
+
+    if (isTemp) { showToast?.("Publication en cours, patientez…", "info"); close(); return; }
+    if (isMock) { showToast?.("Post supprimé", "success"); close(); onDeleted?.(post._id); return; }
+
+    setIsDeleting(true);
+    try {
+      await axiosClient.delete(`/posts/${post._id}`);
+      showToast?.("Post supprimé", "success");
+      close();
+      onDeleted?.(post._id);
+    } catch (err) {
+      const s = err.response?.status;
+      if (s === 404) { close(); onDeleted?.(post._id); }
+      else showToast?.(s === 403 ? "Permission refusée" : err.response?.data?.message || "Erreur", "error");
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [modalState, close]);
+
+  if (!modalState) {
+    dbgPC("[4] GlobalModalManager → return null (modalState=null)");
+    return null;
+  }
+
+  dbgPC(`[5] GlobalModalManager → RENDU PORTAIL action="${modalState.action}"`);
+
+  const container = getModalRoot();
+  dbgPC("[5] container du portail:", container);
+
+  return createPortal(
+    <AnimatePresence>
+      {modalState.action === "delete" && (
+        <DeleteModal
+          key="delete"
+          isDarkMode={isDarkMode}
+          isDeleting={isDeleting}
+          onConfirm={handleDeletePost}
+          onCancel={close}
+        />
+      )}
+      {modalState.action === "boost" && (
+        <BoostModal
+          key="boost"
+          isDarkMode={isDarkMode}
+          postId={modalState.post?._id}
+          onClose={close}
+        />
+      )}
+    </AnimatePresence>,
+    container
+  );
+};
+GlobalModalManager.displayName = "GlobalModalManager";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ACTIONS BAR
 // ─────────────────────────────────────────────────────────────────────────────
-const ActionsBar = memo(({
-  liked, likesCount, saved, commentsCount,
-  isDarkMode, onLike, onOpenComments, onOpenShare, onSave,
-}) => (
-  <>
-    <div className="flex items-center justify-between px-3 py-2">
-      <div className="flex items-center gap-4">
-        <button onClick={onLike} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
-          {liked
-            ? <HeartSolid className="w-7 h-7 text-red-500" />
-            : <HeartIcon className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />}
-        </button>
-        <button onClick={onOpenComments} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
-          <ChatBubbleLeftIcon className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />
-        </button>
-        <button onClick={onOpenShare} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
-          <ShareIcon className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />
-        </button>
-      </div>
-      <button onClick={onSave} className="active:scale-90 transition-transform" style={{ WebkitTapHighlightColor: "transparent" }}>
-        {saved
-          ? <BookmarkSolid className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />
-          : <BookmarkIcon  className={`w-7 h-7 ${isDarkMode ? "text-white" : "text-gray-900"}`} />}
+const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, isDarkMode, onLike, onOpenComments, onOpenShare, onSave }) => (
+  <div className="flex items-center justify-between px-3 py-2">
+    <div className="flex items-center gap-4">
+      <button onClick={onLike} className="flex items-center gap-1.5 group">
+        {liked
+          ? <HeartSolid className="w-6 h-6 text-red-500" />
+          : <HeartIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"} group-active:scale-90 transition-transform`} />
+        }
+        {likesCount > 0 && (
+          <span className={`text-sm font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>{likesCount}</span>
+        )}
+      </button>
+
+      <button onClick={onOpenComments} className="flex items-center gap-1.5 group">
+        <ChatBubbleLeftIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
+        {commentsCount > 0 && (
+          <span className={`text-sm font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>{commentsCount}</span>
+        )}
+      </button>
+
+      <button onClick={onOpenShare}>
+        <ShareIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
       </button>
     </div>
-    {likesCount > 0 && (
-      <div className="px-3 pb-1">
-        <span className={`text-sm font-semibold ${isDarkMode ? "text-white" : "text-gray-900"}`}>
-          {likesCount.toLocaleString()} {likesCount === 1 ? "mention J'aime" : "mentions J'aime"}
-        </span>
-      </div>
-    )}
-    {commentsCount > 0 && (
-      <button onClick={onOpenComments} className="px-3 pb-3 text-sm text-gray-500 hover:text-gray-400 text-left">
-        Afficher {commentsCount === 1 ? "le commentaire" : `les ${commentsCount.toLocaleString()} commentaires`}
-      </button>
-    )}
-  </>
-), (prev, next) =>
-  prev.liked         === next.liked         &&
-  prev.likesCount    === next.likesCount    &&
-  prev.saved         === next.saved         &&
-  prev.commentsCount === next.commentsCount &&
-  prev.isDarkMode    === next.isDarkMode
-);
+
+    <button onClick={onSave}>
+      {saved
+        ? <BookmarkSolid className="w-6 h-6 text-orange-500" />
+        : <BookmarkIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
+      }
+    </button>
+  </div>
+));
 ActionsBar.displayName = "ActionsBar";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST CARD INNER
-// ✅ FIX v20 : onOpenDelete et onOpenBoost viennent du parent (PostCard)
-// Les états showDeleteModal / showBoostModal sont dans PostCard, jamais
-// unmountés par VirtualFeed. PostCardInner ne gère plus ces états.
 // ─────────────────────────────────────────────────────────────────────────────
 const PostCardInner = forwardRef(({
   post, onDeleted, showToast, mockPost = false, priority = false,
-  // ✅ FIX v20 — callbacks injectés depuis PostCard (niveau stable)
-  onOpenDelete,
-  onOpenBoost,
 }, ref) => {
   const { isDarkMode } = useDarkMode();
   const { user: currentUser, getToken, updateUserProfile } = useAuth();
@@ -602,12 +824,8 @@ const PostCardInner = forwardRef(({
   const stateRef = useRef({});
   const postRef  = useRef({});
 
-  useLayoutEffect(() => {
-    stateRef.current = { liked, likesCount, isFollowing, loadingFollow };
-  });
-  useLayoutEffect(() => {
-    postRef.current = { post, postUser, currentUser, isMockPost, isOptimistic, isTempPost, onDeleted, showToast, updateUserProfile };
-  });
+  useLayoutEffect(() => { stateRef.current = { liked, likesCount, isFollowing, loadingFollow }; });
+  useLayoutEffect(() => { postRef.current = { post, postUser, currentUser, isMockPost, isOptimistic, isTempPost, onDeleted, showToast, updateUserProfile }; });
 
   const loadingLikeRef = useRef(false);
 
@@ -617,37 +835,23 @@ const PostCardInner = forwardRef(({
     const vids = Array.from(cardRef.current.querySelectorAll("video"));
     vids.forEach(v => { obs.observe(v); _observedVideos.set(v, true); });
     vidsRef.current = vids;
-    return () => {
-      vidsRef.current.forEach(v => { obs.unobserve(v); });
-      vidsRef.current = [];
-    };
+    return () => { vidsRef.current.forEach(v => { obs.unobserve(v); }); vidsRef.current = []; };
   }, []);
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
-  // ✅ FIX v19 conservé — isOwner robuste
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
     const cuid = toStr(currentUser._id);
     if (!cuid) return false;
     const candidates = [
-      toStr(post.userId),
-      toStr(post.user?._id),
-      toStr(post.user?.id),
-      toStr(post.author?._id),
-      toStr(post.author?.id),
-      toStr(postUser._id),
+      toStr(post.userId), toStr(post.user?._id), toStr(post.user?.id),
+      toStr(post.author?._id), toStr(post.author?.id), toStr(postUser._id),
     ].filter(id => id && id !== "unknown" && id !== "null" && id !== "undefined");
     const result = candidates.some(id => id === cuid);
-    dbgPC(`isOwner=${result} cuid=${cuid} candidates=[${candidates.join(",")}]`);
+    dbgPC(`isOwner=${result} cuid=${cuid}`);
     return result;
-  }, [
-    currentUser?._id,
-    post.userId,
-    post.user,
-    post.author,
-    postUser._id,
-  ]);
+  }, [currentUser?._id, post.userId, post.user, post.author, postUser._id]);
 
   const canFollow = useMemo(() =>
     !!(currentUser && !isOwner && postUser._id !== "unknown"),
@@ -661,14 +865,11 @@ const PostCardInner = forwardRef(({
     const { post, currentUser, isMockPost, isOptimistic, showToast } = postRef.current;
     if (isOptimistic) { showToast?.("Publication en cours, patientez…", "info"); return; }
     if (!currentUser) { showToast?.("Connectez-vous pour aimer", "info"); return; }
-
     loadingLikeRef.current = true;
     const nl = !liked;
     setLiked(nl);
     setLikesCount(c => nl ? c + 1 : c - 1);
-
     if (isMockPost) { loadingLikeRef.current = false; return; }
-
     axiosClient.post(`/posts/${post._id}/like`)
       .then(({ data }) => {
         if (typeof data.likesCount === "number") setLikesCount(data.likesCount);
@@ -678,8 +879,7 @@ const PostCardInner = forwardRef(({
         }));
       })
       .catch(err => {
-        setLiked(liked);
-        setLikesCount(likesCount);
+        setLiked(liked); setLikesCount(likesCount);
         showToast?.(err.response?.data?.message || "Erreur", "error");
       })
       .finally(() => { loadingLikeRef.current = false; });
@@ -724,20 +924,37 @@ const PostCardInner = forwardRef(({
   const handleSave         = useCallback(() => setSaved(v => !v), []);
   const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
 
-  // ✅ FIX v20 — délèguent au parent (PostCard) qui est toujours monté
-  const handleOpenBoost = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dbgPC("handleOpenBoost → delegate to PostCard");
-    onOpenBoost?.();
-  }, [onOpenBoost]);
+  const openingRef = useRef(false);
 
   const handleOpenDelete = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dbgPC("handleOpenDelete → delegate to PostCard");
-    onOpenDelete?.();
-  }, [onOpenDelete]);
+    e?.preventDefault();
+    e?.stopPropagation();
+    dbgPC("[1] handleOpenDelete → clic reçu | openingRef:", openingRef.current);
+    if (openingRef.current) {
+      dbgWarn("[1] handleOpenDelete → IGNORÉ (guard actif)");
+      return;
+    }
+    openingRef.current = true;
+    setTimeout(() => { openingRef.current = false; }, 300);
+    const { post, onDeleted, showToast, isMockPost } = postRef.current;
+    dbgPC("[1] handleOpenDelete → emitModalEvent pour post._id:", post?._id, "| isMockPost:", isMockPost);
+    emitModalEvent("delete", post, { onDeleted, showToast, mockPost: isMockPost });
+  }, []);
+
+  const handleOpenBoost = useCallback((e) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+    dbgPC("[1] handleOpenBoost → clic reçu | openingRef:", openingRef.current);
+    if (openingRef.current) {
+      dbgWarn("[1] handleOpenBoost → IGNORÉ (guard actif)");
+      return;
+    }
+    openingRef.current = true;
+    setTimeout(() => { openingRef.current = false; }, 300);
+    const { post } = postRef.current;
+    dbgPC("[1] handleOpenBoost → emitModalEvent pour post._id:", post?._id);
+    emitModalEvent("boost", post);
+  }, []);
 
   const handleCommentsCountChange = useCallback((count) => {
     if (typeof count === "number") setCommentsCount(count);
@@ -761,25 +978,17 @@ const PostCardInner = forwardRef(({
   const imagesLen     = Array.isArray(post.images) ? post.images.length : 0;
   const mediaLen      = Array.isArray(post.media)  ? post.media.length  : 0;
   const postMediaType = post.mediaType || null;
-
   const isVideoMediaType = postMediaType === "video" || postMediaType === "youtube";
 
   const mediaUrls = useMemo(() => {
-    const seen = new Set();
-    const result = [];
+    const seen = new Set(); const result = [];
     const addUrl = (raw) => {
       if (!raw || typeof raw !== "string") return;
-      if (raw.startsWith("blob:")) {
-        if (!seen.has(raw)) { seen.add(raw); result.push(raw); }
-        return;
-      }
+      if (raw.startsWith("blob:")) { if (!seen.has(raw)) { seen.add(raw); result.push(raw); } return; }
       if (raw.includes("videos.pexels.com")) return;
       if (raw.includes("cdn.pixabay.com/video")) return;
       const url = resolveMediaUrl(raw);
-      if (url && !seen.has(url) && isStructurallyValid(url)) {
-        seen.add(url);
-        result.push(url);
-      }
+      if (url && !seen.has(url) && isStructurallyValid(url)) { seen.add(url); result.push(url); }
     };
     if (embedUrl) addUrl(embedUrl);
     if (videoUrl) addUrl(videoUrl);
@@ -794,22 +1003,15 @@ const PostCardInner = forwardRef(({
     if (embedUrl) return true;
     if (videoUrl && isVideoUrl(videoUrl)) return true;
     const arr = Array.isArray(post.media) ? post.media : [];
-    return arr.some(m => {
-      const url = typeof m === "string" ? m : m?.url;
-      return url && isVideoUrl(url);
-    });
+    return arr.some(m => { const url = typeof m === "string" ? m : m?.url; return url && isVideoUrl(url); });
   }, [isVideoMediaType, embedUrl, videoUrl, post.media]);
 
   const TEXT_CARD_THRESHOLD = 120;
-  const hasRawMedia = !!(embedUrl || videoUrl || imagesLen > 0 || mediaLen > 0 || post.thumbnail);
+  const hasRawMedia    = !!(embedUrl || videoUrl || imagesLen > 0 || mediaLen > 0 || post.thumbnail);
   const trimmedContent = content.trim();
 
-  const isAutoTextCard = !postMediaType
-    && !isVideoMediaType
-    && !hasRawMedia
-    && !hasVideoMedia
-    && trimmedContent.length > 0
-    && trimmedContent.length <= TEXT_CARD_THRESHOLD;
+  const isAutoTextCard = !postMediaType && !isVideoMediaType && !hasRawMedia && !hasVideoMedia
+    && trimmedContent.length > 0 && trimmedContent.length <= TEXT_CARD_THRESHOLD;
 
   const effectiveMediaType = (() => {
     if (postMediaType && postMediaType !== "text") return postMediaType;
@@ -819,8 +1021,7 @@ const PostCardInner = forwardRef(({
     return null;
   })();
 
-  const hasMedia = effectiveMediaType === "text-card"
-    || mediaUrls.length > 0
+  const hasMedia = effectiveMediaType === "text-card" || mediaUrls.length > 0
     || effectiveMediaType === "youtube"
     || (effectiveMediaType === "video" && mediaLen > 0)
     || !!(post.thumbnail && (videoUrl || embedUrl));
@@ -869,98 +1070,43 @@ const PostCardInner = forwardRef(({
             </div>
           </div>
 
-          {/* Boutons header */}
-          <div
-            style={{
-              display:    "flex",
-              alignItems: "center",
-              gap:        8,
-              position:   "relative",
-              zIndex:     50,
-              isolation:  "isolate",
-            }}
-          >
-            {/* Bouton Booster */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative", zIndex: 50, isolation: "isolate" }}>
             {isOwner && !isBoosted && !isMockPost && !isTempPost && (
-              <button
-                type="button"
-                onClick={handleOpenBoost}
+              <button type="button" onClick={handleOpenBoost}
                 style={{
-                  background:                "linear-gradient(to right, #9333ea, #ec4899)",
-                  color:                     "white",
-                  padding:                   "4px 12px",
-                  borderRadius:              9999,
-                  fontSize:                  12,
-                  fontWeight:                700,
-                  border:                    "none",
-                  cursor:                    "pointer",
-                  display:                   "flex",
-                  alignItems:                "center",
-                  gap:                       4,
-                  WebkitTapHighlightColor:   "transparent",
-                  touchAction:               "manipulation",
-                  position:                  "relative",
-                  zIndex:                    51,
-                  pointerEvents:             "auto",
-                }}
-              >
+                  background: "linear-gradient(to right, #9333ea, #ec4899)", color: "white",
+                  padding: "4px 12px", borderRadius: 9999, fontSize: 12, fontWeight: 700,
+                  border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+                  WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
+                  position: "relative", zIndex: 51, pointerEvents: "auto",
+                }}>
                 <RocketLaunchIcon style={{ width: 12, height: 12 }} /> Booster
               </button>
             )}
 
-            {/* Bouton Suivre */}
             {canFollow && !isTempPost && (
-              <button
-                onClick={handleFollow}
-                disabled={loadingFollow}
+              <button onClick={handleFollow} disabled={loadingFollow}
                 style={{
-                  padding:                 "4px 12px",
-                  borderRadius:            8,
-                  fontSize:                12,
-                  fontWeight:              600,
-                  border:                  "none",
-                  cursor:                  loadingFollow ? "not-allowed" : "pointer",
-                  background:              isFollowing
-                    ? (isDarkMode ? "#1f2937" : "#f3f4f6")
-                    : (isDarkMode ? "#ffffff" : "#111827"),
-                  color:                   isFollowing
-                    ? (isDarkMode ? "#d1d5db" : "#4b5563")
-                    : (isDarkMode ? "#000000" : "#ffffff"),
-                  WebkitTapHighlightColor: "transparent",
-                  touchAction:             "manipulation",
-                  position:                "relative",
-                  zIndex:                  51,
-                  pointerEvents:           "auto",
-                }}
-              >
+                  padding: "4px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, border: "none",
+                  cursor: loadingFollow ? "not-allowed" : "pointer",
+                  background: isFollowing ? (isDarkMode ? "#1f2937" : "#f3f4f6") : (isDarkMode ? "#ffffff" : "#111827"),
+                  color: isFollowing ? (isDarkMode ? "#d1d5db" : "#4b5563") : (isDarkMode ? "#000000" : "#ffffff"),
+                  WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
+                  position: "relative", zIndex: 51, pointerEvents: "auto",
+                }}>
                 {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
               </button>
             )}
 
-            {/* Bouton Supprimer */}
             {isOwner && !isTempPost && (
-              <button
-                type="button"
-                onClick={handleOpenDelete}
-                aria-label="Supprimer ce post"
+              <button type="button" onClick={handleOpenDelete} aria-label="Supprimer ce post"
                 style={{
-                  padding:                 8,
-                  borderRadius:            "50%",
-                  border:                  "none",
-                  background:              "transparent",
-                  cursor:                  "pointer",
-                  display:                 "flex",
-                  alignItems:              "center",
-                  justifyContent:          "center",
-                  position:                "relative",
-                  zIndex:                  51,
-                  WebkitTapHighlightColor: "transparent",
-                  touchAction:             "manipulation",
-                  pointerEvents:           "auto",
-                  minWidth:                44,
-                  minHeight:               44,
-                }}
-              >
+                  padding: 8, borderRadius: "50%", border: "none", background: "transparent",
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  position: "relative", zIndex: 51,
+                  WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
+                  pointerEvents: "auto", minWidth: 44, minHeight: 44,
+                }}>
                 <TrashIcon style={{ width: 20, height: 20, color: "#9ca3af" }} />
               </button>
             )}
@@ -970,9 +1116,7 @@ const PostCardInner = forwardRef(({
         {/* TEXTE */}
         {content && effectiveMediaType !== "text-card" && (
           <div className="px-3 pb-2">
-            <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>
-              {displayContent}
-            </p>
+            <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>{displayContent}</p>
             {shouldTruncate && (
               <button onClick={handleExpand} className="text-gray-500 text-sm hover:text-gray-400 mt-1">
                 {expanded ? "voir moins" : "voir plus"}
@@ -987,43 +1131,28 @@ const PostCardInner = forwardRef(({
             <PostMedia
               mediaUrls={mediaUrls}
               isFirstPost={priority}
-              post={effectiveMediaType !== postMediaType
-                ? { ...post, mediaType: effectiveMediaType }
-                : post
-              }
+              post={effectiveMediaType !== postMediaType ? { ...post, mediaType: effectiveMediaType } : post}
             />
           </div>
         )}
 
         <ActionsBar
-          liked={liked} likesCount={likesCount} saved={saved}
-          commentsCount={commentsCount} isDarkMode={isDarkMode}
-          onLike={handleLike}
-          onOpenComments={handleOpenComments}
-          onOpenShare={handleOpenShare}
-          onSave={handleSave}
+          liked={liked} likesCount={likesCount} saved={saved} commentsCount={commentsCount}
+          isDarkMode={isDarkMode} onLike={handleLike}
+          onOpenComments={handleOpenComments} onOpenShare={handleOpenShare} onSave={handleSave}
         />
       </div>
 
-      {/* Modaux Comments / Share — restent dans PostCardInner (pas de VirtualFeed risk) */}
       {showCommentsModal && (
         <ErrorBoundary>
           <Suspense fallback={null}>
             <PostCommentsModal
-              isOpen={showCommentsModal}
-              onClose={() => setShowCommentsModal(false)}
-              postId={post._id}
-              postUser={postUser}
-              postContent={content}
-              postMediaUrl={mediaUrls[0] || null}
-              likesCount={likesCount}
-              comments={comments}
-              setComments={setComments}
-              currentUser={currentUser}
-              getToken={getToken}
-              showToast={showToast}
-              navigate={navigate}
-              isMockPost={isMockPost}
+              isOpen={showCommentsModal} onClose={() => setShowCommentsModal(false)}
+              postId={post._id} postUser={postUser} postContent={content}
+              postMediaUrl={mediaUrls[0] || null} likesCount={likesCount}
+              comments={comments} setComments={setComments}
+              currentUser={currentUser} getToken={getToken} showToast={showToast}
+              navigate={navigate} isMockPost={isMockPost}
               onCommentsCountChange={handleCommentsCountChange}
             />
           </Suspense>
@@ -1034,16 +1163,10 @@ const PostCardInner = forwardRef(({
         <ErrorBoundary>
           <Suspense fallback={null}>
             <PostShareModal
-              isOpen={showShareModal}
-              onClose={() => setShowShareModal(false)}
-              postId={post._id}
-              postUser={postUser}
-              postContent={content}
-              postMediaUrl={mediaUrls[0] || null}
-              likesCount={likesCount}
-              commentsCount={commentsCount}
-              navigate={navigate}
-              showToast={showToast}
+              isOpen={showShareModal} onClose={() => setShowShareModal(false)}
+              postId={post._id} postUser={postUser} postContent={content}
+              postMediaUrl={mediaUrls[0] || null} likesCount={likesCount}
+              commentsCount={commentsCount} navigate={navigate} showToast={showToast}
             />
           </Suspense>
         </ErrorBoundary>
@@ -1054,143 +1177,10 @@ const PostCardInner = forwardRef(({
 PostCardInner.displayName = "PostCardInner";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX v21 — PostCardModals : composant NON-MÉMOÏSÉ portant les états modaux
-//
-// PROBLÈME IDENTIFIÉ :
-//   En v20, showDeleteModal/showBoostModal vivaient dans PostCard wrappé par
-//   memo() avec comparateur custom. Quand setState était appelé (showDeleteModal
-//   → true), React déclenchait bien un re-render de PostCard. Mais memo() avec
-//   comparateur custom EST appliqué avant le rendu interne — si le comparateur
-//   retourne true (props identiques), React optimise et saute le rendu complet
-//   du sous-arbre incluant les AnimatePresence et createPortal.
-//   Résultat : setShowDeleteModal(true) est exécuté, le state est mis à jour
-//   dans la fibre React, mais le portail n'est jamais créé dans le DOM.
-//
-// SOLUTION :
-//   PostCardModals est un composant séparé, sans memo(), qui :
-//   - Détient showDeleteModal, showBoostModal, isDeleting
-//   - Reçoit onOpenDelete / onOpenBoost comme setters exposés via useImperativeHandle
-//   - Rend les deux portails via createPortal(…, getModalRoot())
-//   Ce composant est TOUJOURS re-rendu quand son state change car il n'est
-//   pas mémoïsé.
-//
-// PostCard (mémoïsé) passe une ref à PostCardModals pour appeler
-// openDelete() et openBoost() de l'extérieur sans prop drilling.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const PostCardModals = forwardRef(({ post, onDeleted, showToast, mockPost, isDarkMode }, ref) => {
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [showBoostModal,  setShowBoostModal]  = useState(false);
-  const [isDeleting,      setIsDeleting]      = useState(false);
-
-  const postRef = useRef(post);
-  useLayoutEffect(() => { postRef.current = post; });
-
-  // Expose openDelete() et openBoost() à PostCard via ref
-  useImperativeHandle(ref, () => ({
-    openDelete: () => {
-      dbgPC("PostCardModals.openDelete → setShowDeleteModal(true)");
-      setShowDeleteModal(true);
-    },
-    openBoost: () => {
-      dbgPC("PostCardModals.openBoost → setShowBoostModal(true)");
-      setShowBoostModal(true);
-    },
-  }), []);
-
-  const handleDeletePost = useCallback(async () => {
-    const p = postRef.current;
-    const isMock    = mockPost || p._id?.startsWith("post_") || p.isMockPost;
-    const isTemp    = !!p.isOptimistic || p._id?.startsWith("temp_");
-
-    if (isTemp) {
-      showToast?.("Publication en cours, patientez…", "info");
-      setShowDeleteModal(false);
-      return;
-    }
-    if (isMock) {
-      showToast?.("Post supprimé", "success");
-      setShowDeleteModal(false);
-      onDeleted?.(p._id);
-      return;
-    }
-    setIsDeleting(true);
-    try {
-      await axiosClient.delete(`/posts/${p._id}`);
-      showToast?.("Post supprimé", "success");
-      setShowDeleteModal(false);
-      onDeleted?.(p._id);
-    } catch (err) {
-      const s = err.response?.status;
-      if (s === 404) { setShowDeleteModal(false); onDeleted?.(p._id); }
-      else showToast?.(s === 403 ? "Permission refusée" : err.response?.data?.message || "Erreur", "error");
-    } finally {
-      setIsDeleting(false);
-    }
-  }, [mockPost, onDeleted, showToast]);
-
-  // Portails rendus directement dans document.body — hors de tout contexte
-  // de stacking/clipping/pointer-events de l'application
-  return (
-    <>
-      <AnimatePresence>
-        {showDeleteModal && createPortal(
-          <DeleteModal
-            isDarkMode={isDarkMode}
-            isDeleting={isDeleting}
-            onConfirm={handleDeletePost}
-            onCancel={() => setShowDeleteModal(false)}
-          />,
-          getModalRoot()
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {showBoostModal && createPortal(
-          <BoostModal
-            isDarkMode={isDarkMode}
-            postId={post._id}
-            onClose={() => setShowBoostModal(false)}
-          />,
-          getModalRoot()
-        )}
-      </AnimatePresence>
-    </>
-  );
-});
-PostCardModals.displayName = "PostCardModals";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// POSTCARD — wrapper mémoïsé (props uniquement, pas d'état modal)
+// POSTCARD — wrapper léger
 // ─────────────────────────────────────────────────────────────────────────────
 const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
-
-  // Ref vers PostCardModals — permet d'appeler openDelete/openBoost
-  // sans passer par des props qui déclencheraient un re-render mémoïsé
-  const modalsRef = useRef(null);
-
-  // ✅ FIX v21 — Guards anti-double-clic (triple bubbling observé dans les logs)
-  const openingRef = useRef(false);
-
-  const handleOpenDelete = useCallback((e) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-    if (openingRef.current) return;
-    openingRef.current = true;
-    setTimeout(() => { openingRef.current = false; }, 300);
-    dbgPC("PostCard.handleOpenDelete");
-    modalsRef.current?.openDelete();
-  }, []);
-
-  const handleOpenBoost = useCallback((e) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-    if (openingRef.current) return;
-    openingRef.current = true;
-    setTimeout(() => { openingRef.current = false; }, 300);
-    dbgPC("PostCard.handleOpenBoost");
-    modalsRef.current?.openBoost();
-  }, []);
 
   if (loading) return <SkeletonPostCard isDarkMode={isDarkMode} />;
   if (!post || !post._id) return null;
@@ -1206,29 +1196,14 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mock
   }
 
   return (
-    <>
-      {/* PostCardInner — peut être unmounté par VirtualFeed, pas de state modal */}
-      <PostCardInner
-        ref={ref}
-        post={post}
-        onDeleted={onDeleted}
-        showToast={showToast}
-        mockPost={mockPost}
-        priority={priority}
-        onOpenDelete={handleOpenDelete}
-        onOpenBoost={handleOpenBoost}
-      />
-
-      {/* PostCardModals — NON mémoïsé, toujours monté, porte les états modaux */}
-      <PostCardModals
-        ref={modalsRef}
-        post={post}
-        onDeleted={onDeleted}
-        showToast={showToast}
-        mockPost={mockPost}
-        isDarkMode={isDarkMode}
-      />
-    </>
+    <PostCardInner
+      ref={ref}
+      post={post}
+      onDeleted={onDeleted}
+      showToast={showToast}
+      mockPost={mockPost}
+      priority={priority}
+    />
   );
 });
 PostCard.displayName = "PostCard";

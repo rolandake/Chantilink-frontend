@@ -3,6 +3,7 @@
 // ✅ NOUVEAU : après login/register/refresh → applyLanguage(user.language)
 //    → La langue de l'utilisateur est appliquée automatiquement à la connexion
 // ✅ NOUVEAU : AuthContext exporté pour AppBridge
+// ✅ FIX : updateUserProfile persiste maintenant en base via API PUT
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -12,7 +13,7 @@ import axios from "axios";
 import { io } from "socket.io-client";
 import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
-import { applyLanguage } from "../i18n"; // ← NOUVEAU
+import { applyLanguage } from "../i18n";
 
 // ✅ Export nommé du contexte (pour AppLanguageBridge dans main.jsx)
 export const AuthContext = createContext({
@@ -128,6 +129,9 @@ export function AuthProvider({ children }) {
   const refreshQueue       = useRef([]);
   const lastRefreshAttempt = useRef(0);
   const socketRef          = useRef(null);
+
+  // Ref pour getToken utilisable dans updateUserProfile sans dépendance circulaire
+  const getTokenRef = useRef(null);
 
   // ============================================
   // NOTIFICATIONS
@@ -246,7 +250,6 @@ export function AuthProvider({ children }) {
         setUser(updatedUser);
         secureSetItem(STORAGE_KEYS.USER_INFO, updatedUser);
         await syncUserToIDB(updatedUser);
-        // ✅ NOUVEAU : appliquer la langue du user au refresh
         applyUserLanguage(updatedUser);
       }
 
@@ -286,13 +289,18 @@ export function AuthProvider({ children }) {
     return token;
   }, [token, tokenExpiresAt, refreshAccessToken]);
 
+  // Maintenir la ref à jour pour updateUserProfile
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  }, [getToken]);
+
   // ============================================
   // AUTO-LOGIN
   // ============================================
   const loadSession = useCallback(async () => {
     const storedAttempts = secureGetItem(STORAGE_KEYS.LOGIN_ATTEMPTS) || {};
     setLoginAttempts(storedAttempts);
-    setReady(true); // FIX LCP : visible immédiatement
+    setReady(true);
 
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
@@ -303,7 +311,6 @@ export function AuthProvider({ children }) {
         setToken(newToken); setTokenExpiresAt(expiresAt); setUser(userData);
         secureSetItem(STORAGE_KEYS.USER_INFO, userData);
         await syncUserToIDB(userData);
-        // ✅ NOUVEAU : appliquer la langue sauvegardée en base
         applyUserLanguage(userData);
         debugLog("log", "AutoLogin", `✅ Reconnecté: ${userData?.email} (lang: ${userData?.language})`);
       }
@@ -317,7 +324,7 @@ export function AuthProvider({ children }) {
         const idbUser = await idbGet("users", "user_active").catch(() => null);
         if (idbUser?._id) {
           setUser(idbUser);
-          applyUserLanguage(idbUser); // ✅ Appliquer la langue même en offline
+          applyUserLanguage(idbUser);
         }
       }
     } finally {
@@ -344,7 +351,6 @@ export function AuthProvider({ children }) {
       await syncUserToIDB(userData);
       resetLoginAttempts(safeEmail);
       addNotification("success", "Connecté avec succès");
-      // ✅ NOUVEAU : appliquer la langue préférée de l'utilisateur
       applyUserLanguage(userData);
       debugLog("log", "Login", `✅ Connecté: ${userData?.email} (lang: ${userData?.language})`);
       return { success: true, user: userData };
@@ -364,7 +370,6 @@ export function AuthProvider({ children }) {
   // INSCRIPTION
   // ============================================
   const register = useCallback(async (fullName, email, password, rememberMe = false, language = "fr") => {
-    // ✅ NOUVEAU : language passé en paramètre
     setLoading(true);
     try {
       const res = await authAxios.post("/api/auth/register", {
@@ -378,7 +383,6 @@ export function AuthProvider({ children }) {
       secureSetItem(STORAGE_KEYS.USER_INFO, userData);
       await syncUserToIDB(userData);
       addNotification("success", "Compte créé avec succès !");
-      // ✅ NOUVEAU : appliquer la langue choisie à l'inscription
       applyUserLanguage(userData);
       return { success: true, user: userData };
     } catch (err) {
@@ -392,22 +396,62 @@ export function AuthProvider({ children }) {
   }, [addNotification, syncUserToIDB]);
 
   // ============================================
-  // MISE À JOUR PROFIL
+  // ✅ FIX — MISE À JOUR PROFIL AVEC PERSISTANCE API
   // ============================================
   const updateUserProfile = useCallback(async (userIdOrUpdates, maybeUpdates) => {
+    const userId  = typeof userIdOrUpdates === "string" ? userIdOrUpdates : user?._id;
     const updates = typeof userIdOrUpdates === "string" ? maybeUpdates : userIdOrUpdates;
     if (!updates) return;
 
+    // ✅ Mise à jour optimiste immédiate (UI réactive)
     setUser((prev) => {
       if (!prev) return prev;
       const updated = { ...prev, ...updates };
-      setTimeout(() => {
-        secureSetItem(STORAGE_KEYS.USER_INFO, updated);
-        syncUserToIDB(updated);
-      }, 0);
+      // Persister localement en synchrone
+      secureSetItem(STORAGE_KEYS.USER_INFO, updated);
+      // IDB en asynchrone sans bloquer
+      syncUserToIDB(updated).catch(() => {});
       return updated;
     });
-  }, [syncUserToIDB]);
+
+    // ✅ Persistance en base si on a un userId
+    if (userId) {
+      try {
+        const currentToken = await getTokenRef.current?.();
+        if (currentToken) {
+          const res = await axios.put(
+            `${API_URL}/users/${userId}`,
+            updates,
+            {
+              headers:         { Authorization: `Bearer ${currentToken}` },
+              withCredentials: true,
+              timeout:         15000,
+            }
+          );
+
+          // Resynchroniser avec la réponse serveur (source de vérité)
+          if (res.data?.user) {
+            const serverUser = res.data.user;
+            setUser((prev) => {
+              if (!prev) return prev;
+              const synced = { ...prev, ...serverUser };
+              secureSetItem(STORAGE_KEYS.USER_INFO, synced);
+              syncUserToIDB(synced).catch(() => {});
+              return synced;
+            });
+            debugLog("log", "UpdateProfile", `✅ Profil persisté en base pour user: ${userId}`);
+          }
+        } else {
+          debugLog("warn", "UpdateProfile", "⚠️ Pas de token — persistance API ignorée");
+        }
+      } catch (err) {
+        debugLog("warn", "UpdateProfile", "⚠️ Persistance API échouée", summarizeAxiosError(err));
+        // L'état optimiste reste en place — l'utilisateur voit ses changements
+        // mais ils seront perdus au rechargement si la DB n'a pas été mise à jour.
+        // On ne throw pas pour ne pas casser les composants appelants.
+      }
+    }
+  }, [user?._id, syncUserToIDB]);
 
   // ============================================
   // VÉRIFICATION ADMIN
