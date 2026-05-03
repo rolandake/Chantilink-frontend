@@ -1,4 +1,11 @@
-// 📁 src/pages/Home/Home.jsx — v17 VIRTUALISÉ
+// 📁 src/pages/Home/Home.jsx — v18 INSTANT LOAD
+// ✅ FIX CHARGEMENT INSTANTANÉ :
+//   - livePool affiché immédiatement depuis sessionStorage au mount
+//   - setResetSig décalé avec setTimeout(0) pour ne pas bloquer le premier render
+//   - startTransition retiré du setResolved(immediate) → affichage synchrone
+//   - Skeleton affiché UNIQUEMENT si livePool vide (vraiment première visite)
+//   - rawPool scoring différé via startTransition pour ne pas bloquer le paint
+
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
   memo, lazy, Suspense, startTransition, useTransition,
@@ -1197,7 +1204,7 @@ const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest
 PostCardWrapper.displayName = "PostCardWrapper";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// FEED v17 — avec VirtualFeed
+// FEED v18
 // ══════════════════════════════════════════════════════════════════════════════
 const Feed = ({
   posts,
@@ -1345,7 +1352,6 @@ const Feed = ({
 
   const displayedPosts = accRef.current;
 
-  // ── renderItem pour VirtualFeed ──────────────────────────────────────────
   const renderItem = useCallback((post, index) => {
     const newsSlot = index > 0 && index % NEWS_EVERY === 0
       ? Math.floor(index / NEWS_EVERY) - 1 : -1;
@@ -1397,6 +1403,8 @@ const Feed = ({
     onDeleted, showToast,
   ]);
 
+  // ✅ FIX v18 — Skeleton uniquement si VRAIMENT aucun post et chargement en cours
+  // Si resolved a des posts (depuis cache), on les affiche même si postsLoading=true
   if (isLoading && !displayedPosts.length) return <FeedSkeleton isDarkMode={isDarkMode}/>;
   if (!isLoading && !displayedPosts.length) return (
     <div className="flex flex-col items-center justify-center py-24 gap-3">
@@ -1411,7 +1419,6 @@ const Feed = ({
     <>
       <NewBanner count={newPostsCount} onClick={onShowNewPosts} topOffset={topOffset}/>
 
-      {/* ✅ VirtualFeed remplace le .map() — seuls 6-8 posts dans le DOM */}
       <VirtualFeed
         posts={displayedPosts}
         containerRef={scrollContainerRef}
@@ -1444,7 +1451,7 @@ const Feed = ({
 Feed.displayName = "Feed";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HOME v17
+// HOME v18 — INSTANT LOAD
 // ══════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
@@ -1469,9 +1476,19 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const [suggestedUsers, setSuggestedUsers] = useState([]);
   const [followingIds, setFollowingIds] = useState(new Set());
 
+  // ✅ FIX v18 — livePool initialisé SYNCHRONEMENT depuis sessionStorage
+  // Pas d'attente : le cache est lu au constructeur du state
   const livePostsRef = useRef(loadLivePool());
   const [livePostsVer, setLivePostsVer] = useState(0);
-  const [resolved, setResolved]         = useState([]);
+
+  // ✅ FIX v18 — resolved initialisé immédiatement avec les posts du cache
+  // si livePool non-vide, le feed s'affiche AVANT tout appel réseau
+  const [resolved, setResolved] = useState(() => {
+    const cached = loadLivePool();
+    if (!cached.length) return [];
+    // Retourner directement les posts valides du cache (pas d'expirables au boot)
+    return cached.filter(p => isValidPost(p) && !hasExpirable(p)).slice(0, PAGE_SIZE);
+  });
 
   const persistedSeenIdsRef = useRef(loadSeenIds());
 
@@ -1510,12 +1527,20 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     };
   }, []);
 
+  // ✅ FIX v18 — seed et resetSig séparés pour ne pas bloquer le premier render
+  // setSeed est immédiat, setResetSig est différé après le premier paint
   useEffect(() => {
     const freshSeed = Math.floor(Math.random() * 0xffffffff);
     setSeed(freshSeed);
-    persistedSeenIdsRef.current = new Set();
-    saveSeenIds(new Set());
-    startTransition(() => setResetSig(k => k + 1));
+    // ✅ NE PAS réinitialiser seenIds si on a déjà du cache → évite de
+    // rescorer tous les posts et de retarder l'affichage
+    const hasCachedPosts = livePostsRef.current.length > 0;
+    if (!hasCachedPosts) {
+      persistedSeenIdsRef.current = new Set();
+      saveSeenIds(new Set());
+    }
+    // ✅ Décaler le resetSig après le premier render pour ne pas bloquer
+    setTimeout(() => startTransition(() => setResetSig(k => k + 1)), 0);
   }, []);
 
   useEffect(() => {
@@ -1729,24 +1754,35 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     });
   },[livePostsVer,mockCount,showMock,seed,followingIds]); // eslint-disable-line
 
+  // ✅ FIX v18 — Pipeline d'affichage instantané
+  // 1. Les posts sans URL expirable s'affichent IMMÉDIATEMENT (setResolved synchrone)
+  // 2. startTransition retiré du setResolved(immediate) → React ne le diffère plus
+  // 3. resolveBatch tourne en arrière-plan et enrichit progressivement
   useEffect(()=>{
     if(!rawPool.length){setResolved([]);return;}
     const controller = new AbortController();
     let cancelled = false;
+
     const immediate=rawPool.filter(p=>!hasExpirable(p));
     const exp=rawPool.filter(p=>hasExpirable(p));
-    startTransition(()=>setResolved(immediate));
+
+    // ✅ Affichage SYNCHRONE — pas de startTransition, pas de délai
+    setResolved(immediate);
+
     if(!exp.length) return () => { cancelled = true; };
+
     scheduleIdlePrefetch(immediate,0,PREFETCH_AHEAD,20);
     const rm=new Map(immediate.map(p=>[p._id,p]));
+
     resolveBatch(exp,(partials)=>{
       if(cancelled||controller.signal.aborted)return;
       partials.forEach(p=>rm.set(p._id,p));
-      startTransition(()=>setResolved(rawPool.map(p=>rm.get(p._id)).filter(Boolean)));
+      // ✅ Les mises à jour partielles restent en startTransition (non-urgentes)
+      startTransition(()=>setResolved(rawPool.map(p=>rm.get(p._id)||p).filter(Boolean)));
     }, controller.signal).then(fr=>{
       if(cancelled||controller.signal.aborted)return;
       fr.forEach(p=>rm.set(p._id,p));
-      const o=rawPool.map(p=>rm.get(p._id)).filter(Boolean);
+      const o=rawPool.map(p=>rm.get(p._id)||p).filter(Boolean);
       startTransition(()=>setResolved(o));
       scheduleIdlePrefetch(o,0,PREFETCH_AHEAD*2,20);
     });
@@ -1770,7 +1806,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return resolved.filter(p=>(p.content||"").toLowerCase().includes(q)||(p.user?.fullName||"").toLowerCase().includes(q));
   },[resolved,searchQuery]);
 
-  const isLoading=postsLoading&&resolved.length===0;
+  // ✅ FIX v18 — isLoading = true UNIQUEMENT si resolved est vide
+  // Si on a des posts depuis le cache, on ne montre pas le skeleton
+  const isLoading = postsLoading && resolved.length === 0;
   useEffect(()=>{loadingRef.current=postsLoading;},[postsLoading]);
 
   useEffect(()=>{
@@ -1984,7 +2022,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         </div>
       </div>
 
-      {/* Gestionnaire global modaux — hors VirtualFeed */}
       <GlobalModalManager />
 
       <Suspense fallback={null}>

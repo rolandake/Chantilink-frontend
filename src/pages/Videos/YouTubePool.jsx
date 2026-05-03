@@ -1,28 +1,80 @@
-// 📁 src/pages/Videos/YouTubePool.js
-// ═══════════════════════════════════════════════════════════════════════════════
-// YouTubePool v3 — POSTER-FIRST + API unifiée acquire/release
+// 📁 src/pages/Videos/YouTubePool.js — v6 YT.Player OFFICIEL
 //
-// COMPATIBILITÉ TOTALE avec AggregatedCard v6 :
-//   - YouTubePool.acquire(videoId, container) → slot   ✅
-//   - YouTubePool.release(slot)                        ✅
-//   - YouTubePool.warmup(ids[])                        ✅ (inchangé)
-//   - YouTubePool.init()                               ✅ (inchangé)
-//   - YouTubePool.destroy()                            ✅ (inchangé)
+// ═══════════════════════════════════════════════════════════════════════════
+// CORRECTIONS vs v5 :
 //
-// GAIN DE VITESSE :
-//   Avant  → iframe YouTube montée immédiatement → 800 KB JS → 2-4 s de blanc
-//   Après  → thumbnail JPG affichée < 16 ms → iframe montée après idle → fondu
+// ✅ FIX CRITIQUE — Utilise YT.Player officiel au lieu de postMessage raw
+//    → Résout "this.api.isExternalMethodAvailable is not a function"
+//    → Résout tous les onReady timeout (callback officiel garanti)
+//    → Plus de race condition postMessage/origin
 //
-// FONCTIONNEMENT :
-//   1. acquire() injecte un poster (img thumbnail + icône play) dans le container
-//      → visible en < 16 ms, zéro iframe, zéro réseau YouTube
-//   2. requestIdleCallback (~50-250 ms) → iframe créée et ajoutée silencieusement
-//   3. onload iframe → opacité 0→1, poster fondu et retiré du DOM
-//   4. release() → postMessage pause, retire iframe + poster proprement
-// ═══════════════════════════════════════════════════════════════════════════════
+// ✅ SON PERSISTANT — globalMuted partagé entre tous les slots
+//    → Quand l'utilisateur active le son, tous les slots suivants
+//      démarrent automatiquement avec le son
+//    → setGlobalMuted(false) propagé à tous les slots actifs
+//
+// ✅ CHARGEMENT API UNIQUE — loadYouTubeApi() est une Promise partagée
+//    → Le script youtube.com/iframe_api n'est injecté qu'une seule fois
+//    → Tous les acquire() en parallèle attendent la même Promise
+//
+// ✅ LRU EVICTION MAX_SLOTS=5 conservé
+// ✅ poster-first conservé (thumbnail avant iframe)
+// ✅ API acquire/release 100% compatible avec AggregatedCard v7
+// ═══════════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PRECONNECT — économise 200-400 ms DNS+TLS sur le premier embed
+// ÉTAT GLOBAL DU SON — partagé entre tous les slots
+// ─────────────────────────────────────────────────────────────────────────────
+let _globalMuted = true; // démarre muet (autoplay policy navigateur)
+
+export const getGlobalMuted = () => _globalMuted;
+
+export const setGlobalMuted = (muted) => {
+  _globalMuted = muted;
+  // Propager à tous les slots actifs immédiatement
+  for (const slot of _slots.values()) {
+    if (slot.state === 'active' || slot.state === 'paused') {
+      slot.setMuted(muted);
+    }
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHARGEMENT UNIQUE DE L'API YOUTUBE IFRAME
+// ─────────────────────────────────────────────────────────────────────────────
+let _ytApiPromise = null;
+
+const loadYouTubeApi = () => {
+  if (_ytApiPromise) return _ytApiPromise;
+
+  _ytApiPromise = new Promise((resolve) => {
+    // Déjà chargée (ex: HMR en dev)
+    if (typeof window !== 'undefined' && window.YT?.Player) {
+      resolve();
+      return;
+    }
+
+    // Callback global attendu par youtube.com/iframe_api
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      prev?.(); // chaîner si déjà défini
+      resolve();
+    };
+
+    // Injecter le script une seule fois
+    if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      document.head.appendChild(script);
+    }
+  });
+
+  return _ytApiPromise;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRECONNECT DNS/TLS
 // ─────────────────────────────────────────────────────────────────────────────
 const YT_DOMAINS = [
   'https://www.youtube.com',
@@ -36,283 +88,373 @@ const injectPreconnects = () => {
   _preconnected = true;
   for (const origin of YT_DOMAINS) {
     if (document.querySelector(`link[href="${origin}"]`)) continue;
-    const pc  = document.createElement('link');
-    pc.rel    = 'preconnect';
-    pc.href   = origin;
-    pc.crossOrigin = 'anonymous';
+    const pc = document.createElement('link');
+    pc.rel = 'preconnect'; pc.href = origin; pc.crossOrigin = 'anonymous';
     document.head.appendChild(pc);
     const dns = document.createElement('link');
-    dns.rel   = 'dns-prefetch';
-    dns.href  = origin;
+    dns.rel = 'dns-prefetch'; dns.href = origin;
     document.head.appendChild(dns);
   }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THUMBNAIL PRELOAD
+// THUMBNAIL HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 const _preloadedThumbs = new Set();
+const THUMB_QUALITIES  = ['hqdefault', 'mqdefault', 'sddefault'];
 
-const getThumbnailUrl = (videoId) =>
-  `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+export const getThumbnailUrl = (videoId, quality = 'hqdefault') =>
+  `https://i.ytimg.com/vi/${videoId}/${quality}.jpg`;
 
 const preloadThumbnail = (videoId) => {
   if (!videoId || _preloadedThumbs.has(videoId)) return;
   _preloadedThumbs.add(videoId);
   const img = new Image();
-  img.src = getThumbnailUrl(videoId);
+  img.src = getThumbnailUrl(videoId, 'hqdefault');
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BUILDERS
+// POSTER (thumbnail + badge YouTube affiché avant l'iframe)
 // ─────────────────────────────────────────────────────────────────────────────
-const buildIframe = (videoId) => {
-  const iframe = document.createElement('iframe');
-  const params = new URLSearchParams({
-    autoplay:       '1',
-    mute:           '1',
-    loop:           '1',
-    playlist:       videoId,      // nécessaire pour loop=1
-    playsinline:    '1',
-    controls:       '0',
-    rel:            '0',
-    modestbranding: '1',
-    enablejsapi:    '1',
-    origin:         typeof window !== 'undefined' ? window.location.origin : '',
-    iv_load_policy: '3',
-    fs:             '0',
-  });
-  iframe.src             = `https://www.youtube.com/embed/${videoId}?${params}`;
-  iframe.allow           = 'autoplay; fullscreen; picture-in-picture';
-  iframe.allowFullscreen = true;
-  iframe.style.cssText   = [
-    'position:absolute', 'inset:0', 'width:100%', 'height:100%',
-    'border:none', 'opacity:0', 'transition:opacity 0.3s ease', 'z-index:1',
-  ].join(';');
-  iframe.setAttribute('title', 'YouTube video');
-  return iframe;
-};
-
 const buildPoster = (videoId) => {
   const wrapper = document.createElement('div');
   wrapper.style.cssText = [
     'position:absolute', 'inset:0', 'width:100%', 'height:100%',
-    'background:#080810', 'overflow:hidden', 'transition:opacity 0.35s ease', 'z-index:2',
+    'background:#080810', 'overflow:hidden',
+    'transition:opacity 0.35s ease', 'z-index:2',
   ].join(';');
 
-  // Thumbnail
   const img    = document.createElement('img');
-  img.src      = getThumbnailUrl(videoId);
-  img.alt      = '';
   img.loading  = 'eager';
   img.decoding = 'async';
   img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
-  wrapper.appendChild(img);
 
-  // Icône play SVG
-  const playWrap = document.createElement('div');
-  playWrap.style.cssText = [
-    'position:absolute', 'inset:0', 'display:flex',
-    'align-items:center', 'justify-content:center', 'pointer-events:none',
-  ].join(';');
-  playWrap.innerHTML = `
-    <svg width="56" height="56" viewBox="0 0 56 56" fill="none"
-      style="filter:drop-shadow(0 2px 12px rgba(0,0,0,.6))">
-      <circle cx="28" cy="28" r="28" fill="rgba(0,0,0,.52)"/>
-      <path d="M22 18.5L40 28L22 37.5V18.5Z" fill="white"/>
-    </svg>`;
-  wrapper.appendChild(playWrap);
+  let qi = 0;
+  const tryLoad = () => { img.src = getThumbnailUrl(videoId, THUMB_QUALITIES[qi]); };
+  img.onerror = () => {
+    qi++;
+    if (qi < THUMB_QUALITIES.length) tryLoad();
+    else wrapper.style.background = 'linear-gradient(135deg,#0f0f1a,#1a0f2e)';
+  };
+  tryLoad();
+  wrapper.appendChild(img);
 
   // Badge YouTube
   const badge = document.createElement('div');
   badge.style.cssText = [
-    'position:absolute', 'top:12px', 'right:12px',
-    'background:#ff0000', 'border-radius:4px', 'padding:3px 6px',
-    'display:flex', 'align-items:center', 'gap:4px',
+    'position:absolute', 'top:10px', 'left:10px',
+    'background:rgba(0,0,0,0.65)', 'backdrop-filter:blur(8px)',
+    'border:1px solid rgba(255,255,255,0.15)',
+    'border-radius:9999px', 'padding:3px 10px',
+    'display:flex', 'align-items:center', 'gap:5px',
   ].join(';');
   badge.innerHTML = `
-    <svg width="14" height="10" viewBox="0 0 14 10" fill="white">
-      <path d="M13.7 1.56A1.76 1.76 0 0 0 12.46.32C11.37 0 7 0 7 0S2.63 0 1.54.32A1.76 1.76 0 0 0 .3 1.56 18.4 18.4 0 0 0 0 5a18.4 18.4 0 0 0 .3 3.44 1.76 1.76 0 0 0 1.24 1.24C2.63 10 7 10 7 10s4.37 0 5.46-.32a1.76 1.76 0 0 0 1.24-1.24A18.4 18.4 0 0 0 14 5a18.4 18.4 0 0 0-.3-3.44Z"/>
-      <path d="M5.6 7.14 9.23 5 5.6 2.86v4.28Z" fill="#ff0000"/>
+    <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
+      <rect width="14" height="10" rx="2" fill="#FF0000"/>
+      <path d="M5.5 2.5l5 2.5-5 2.5V2.5Z" fill="white"/>
     </svg>
-    <span style="color:white;font-size:9px;font-weight:700;letter-spacing:.04em">YouTube</span>`;
+    <span style="color:white;font-size:10px;font-weight:700;letter-spacing:.03em">YouTube</span>`;
   wrapper.appendChild(badge);
 
   return wrapper;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SLOTS MAP
+// SLOT — une vidéo YouTube gérée par YT.Player officiel
+// states: mounting → loading → active ↔ paused → released
 // ─────────────────────────────────────────────────────────────────────────────
-// slot = { videoId, container, iframe, poster, state, idleHandle }
-// state: 'loading' | 'ready' | 'active' | 'released'
-const _slots = new Map();
+class Slot {
+  constructor(videoId, container) {
+    this.videoId    = videoId;
+    this.container  = container;
+    this.player     = null;   // instance YT.Player
+    this.playerDiv  = null;   // div hôte de l'iframe
+    this.poster     = null;
+    this.state      = 'mounting';
+    this.idleHandle = null;
+
+    // Son hérité de l'état global au moment de la création
+    this._wantMuted = _globalMuted;
+    this._wantPlay  = true;
+  }
+
+  // Compatibilité avec AggregatedCard qui teste slot._isDestroyed
+  get _isDestroyed() {
+    return this.state === 'released';
+  }
+
+  // Appelé depuis idle callback — attend l'API YT puis crée le player
+  async mountIframe() {
+    if (this.state === 'released') return;
+
+    try {
+      await loadYouTubeApi();
+    } catch {
+      console.error('[YTPool] Impossible de charger l\'API YouTube');
+      return;
+    }
+
+    if (this.state === 'released') return; // démontage pendant l'attente
+
+    this.state = 'loading';
+
+    // Div hôte — YT.Player va remplacer ce div par l'iframe
+    const div = document.createElement('div');
+    div.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;';
+    this.container.appendChild(div);
+    this.playerDiv = div;
+
+    this.player = new window.YT.Player(div, {
+      videoId: this.videoId,
+      playerVars: {
+        autoplay:       1,
+        mute:           1,          // toujours muet au départ (autoplay policy)
+        loop:           1,
+        playlist:       this.videoId,
+        playsinline:    1,
+        controls:       0,
+        rel:            0,
+        modestbranding: 1,
+        iv_load_policy: 3,
+        fs:             0,
+        cc_load_policy: 0,
+        origin:         typeof window !== 'undefined' ? window.location.origin : '',
+      },
+      events: {
+        onReady:       (e) => this._onReady(e),
+        onStateChange: (e) => this._onStateChange(e),
+        onError:       (e) => console.warn(`[YTPool] Error ${this.videoId} code=${e.data}`),
+      },
+    });
+  }
+
+  // ── Player prêt (callback officiel YT — jamais de double-fire) ───────────
+  _onReady(event) {
+    if (this.state === 'released') return;
+    this.state = 'active';
+
+    // Retirer le poster
+    if (this.poster) {
+      const p = this.poster; this.poster = null;
+      p.style.opacity = '0';
+      setTimeout(() => { try { p.remove(); } catch {} }, 380);
+    }
+
+    // Appliquer l'état souhaité
+    this._applyMute(event.target);
+    if (this._wantPlay) {
+      event.target.playVideo();
+    } else {
+      event.target.pauseVideo();
+    }
+  }
+
+  // ── Changement d'état du player ───────────────────────────────────────────
+  _onStateChange(event) {
+    if (this.state === 'released') return;
+    // 0 = ended → loop manuel (au cas où loop=1 ne suffit pas)
+    if (event.data === 0 && this._wantPlay) {
+      try { this.player?.seekTo(0); this.player?.playVideo(); } catch {}
+    }
+    // 1 = playing → resync son (YT peut reset le mute)
+    if (event.data === 1) {
+      this._applyMute(this.player);
+    }
+    // -1 = unstarted → relancer si désiré
+    if (event.data === -1 && this._wantPlay) {
+      try { this.player?.playVideo(); } catch {}
+    }
+  }
+
+  // ── Application du son ────────────────────────────────────────────────────
+  _applyMute(target) {
+    if (!target) return;
+    try {
+      if (this._wantMuted) {
+        target.mute();
+        target.setVolume(0);
+      } else {
+        target.unMute();
+        target.setVolume(100);
+      }
+    } catch {}
+  }
+
+  // ── API publique ──────────────────────────────────────────────────────────
+  play() {
+    this._wantPlay = true;
+    try {
+      if (this.player && (this.state === 'active' || this.state === 'paused')) {
+        this.player.playVideo();
+        this.state = 'active';
+      }
+    } catch {}
+  }
+
+  pause() {
+    this._wantPlay = false;
+    try {
+      if (this.player && this.state === 'active') {
+        this.player.pauseVideo();
+        this.state = 'paused';
+      }
+    } catch {}
+  }
+
+  setMuted(muted) {
+    this._wantMuted = muted;
+    this._applyMute(this.player);
+  }
+
+  // ── Nettoyage complet ─────────────────────────────────────────────────────
+  destroy() {
+    if (this.state === 'released') return;
+    this.state = 'released';
+
+    if (this.idleHandle != null) {
+      try { cancelIdleCallback(this.idleHandle); } catch {}
+      try { clearTimeout(this.idleHandle); } catch {}
+      this.idleHandle = null;
+    }
+
+    try { this.player?.pauseVideo(); } catch {}
+    try { this.player?.destroy(); } catch {}
+    this.player = null;
+
+    setTimeout(() => {
+      try { this.playerDiv?.remove(); } catch {}
+      try { this.poster?.remove(); } catch {}
+      this.playerDiv = null;
+      this.poster    = null;
+    }, 60);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INTERNE — détruire un slot sans passer par release()
+// POOL MANAGER
 // ─────────────────────────────────────────────────────────────────────────────
-const _destroySlot = (slot) => {
-  if (!slot) return;
-  // Annuler le montage différé si en cours
-  if (slot.idleHandle != null) {
-    try {
-      if ('cancelIdleCallback' in window) cancelIdleCallback(slot.idleHandle);
-      else clearTimeout(slot.idleHandle);
-    } catch {}
-    slot.idleHandle = null;
+const _slots    = new Map();
+const MAX_SLOTS = 5;
+
+const _evictLRU = (keepVideoId) => {
+  if (_slots.size < MAX_SLOTS) return;
+  for (const [vid, slot] of _slots) {
+    if (vid === keepVideoId) continue;
+    if (slot.state === 'paused' || slot.state === 'released') {
+      slot.destroy();
+      _slots.delete(vid);
+      return;
+    }
   }
-  try { slot.iframe?.remove(); }  catch {}
-  try { slot.poster?.remove(); }  catch {}
-  _slots.delete(slot.videoId);
+  // Si tous actifs, évincer le plus ancien (premier de la Map)
+  for (const [vid, slot] of _slots) {
+    if (vid === keepVideoId) continue;
+    slot.destroy();
+    _slots.delete(vid);
+    return;
+  }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// API PUBLIQUE
-// ─────────────────────────────────────────────────────────────────────────────
 const YouTubePool = {
 
-  /** Initialisation globale — une seule fois au montage du feed */
   init() {
     injectPreconnects();
+    // Précharger l'API dès l'init (sans bloquer)
+    loadYouTubeApi();
   },
 
-  /**
-   * Préchauffer des IDs YouTube : thumbnail en cache navigateur + DNS.
-   * Appelé par VideosPage.notifyActive() pour les N slides suivantes.
-   */
   warmup(videoIds = []) {
     for (const id of videoIds) preloadThumbnail(id);
   },
 
-  /** URL de thumbnail publique (utilitaire) */
   getThumbnailUrl,
 
   /**
-   * acquire(videoId, container) → slot
+   * acquire(videoId, container, opts?) → slot
    *
-   * Affiche immédiatement le poster dans container, puis monte l'iframe
-   * YouTube en arrière-plan via requestIdleCallback.
-   *
-   * Compatible API AggregatedCard v6.
+   * opts.muted    : boolean — état initial du son (défaut: globalMuted)
+   * opts.autoplay : boolean — lancer la lecture dès que prêt (défaut: true)
    */
-  acquire(videoId, container) {
+  acquire(videoId, container, opts = {}) {
     if (!videoId || !container) {
-      return { videoId, container, iframe: null, poster: null, state: 'idle', idleHandle: null };
+      return {
+        videoId, container, player: null, poster: null,
+        state: 'idle', idleHandle: null,
+        _isDestroyed: true,
+        play() {}, pause() {}, setMuted() {},
+      };
     }
 
-    // Réutiliser le slot existant si même container
+    // Réutiliser si même videoId + même container
     const existing = _slots.get(videoId);
-    if (existing && existing.container === container) return existing;
+    if (existing && existing.container === container && existing.state !== 'released') {
+      if (opts.muted !== undefined) existing._wantMuted = opts.muted;
+      else existing._wantMuted = _globalMuted;
+      if (opts.autoplay === false) existing._wantPlay = false;
+      if (existing.state === 'paused' && existing._wantPlay) existing.play();
+      existing._applyMute(existing.player);
+      return existing;
+    }
 
-    // Nettoyer un slot orphelin sur cet ID
-    if (existing) _destroySlot(existing);
+    // Détruire l'ancien slot (container différent)
+    if (existing) { existing.destroy(); _slots.delete(videoId); }
 
-    // S'assurer que le container a position:relative pour les enfants absolus
-    if (container.style.position !== 'absolute' && container.style.position !== 'fixed') {
+    _evictLRU(videoId);
+
+    // Préparer le container
+    const cs = window.getComputedStyle(container);
+    if (!['absolute', 'fixed', 'sticky', 'relative'].includes(cs.position)) {
       container.style.position = 'relative';
     }
     container.style.overflow = 'hidden';
 
-    const slot = {
-      videoId,
-      container,
-      iframe:     null,
-      poster:     null,
-      state:      'loading',
-      idleHandle: null,
-    };
+    const slot = new Slot(videoId, container);
+
+    // Appliquer les options
+    slot._wantMuted = opts.muted !== undefined ? !!opts.muted : _globalMuted;
+    slot._wantPlay  = opts.autoplay !== undefined ? !!opts.autoplay : true;
+
     _slots.set(videoId, slot);
 
-    // ── ÉTAPE 1 : Poster instantané ────────────────────────────────────────
+    // Poster immédiat (thumbnail visible avant que l'iframe charge)
     const poster = buildPoster(videoId);
     container.appendChild(poster);
     slot.poster = poster;
 
-    // ── ÉTAPE 2 : Iframe en différé ────────────────────────────────────────
-    let iframeMounted = false;
-    const mountIframe = () => {
-      if (iframeMounted || !_slots.has(videoId)) return;
-      iframeMounted    = true;
-      slot.idleHandle  = null;
-
-      const iframe = buildIframe(videoId);
-      container.appendChild(iframe);
-      slot.iframe = iframe;
-      slot.state  = 'loading';
-
-      iframe.addEventListener('load', () => {
-        if (!_slots.has(videoId)) return;   // slot déjà libéré
-        slot.state = 'ready';
-
-        // Révéler l'iframe en fondu
-        iframe.style.opacity = '1';
-
-        // Masquer puis supprimer le poster
-        setTimeout(() => {
-          if (!slot.poster) return;
-          slot.poster.style.opacity = '0';
-          setTimeout(() => {
-            try { slot.poster?.remove(); } catch {}
-            slot.poster = null;
-            slot.state  = 'active';
-          }, 380);
-        }, 300);
-      }, { once: true });
-    };
-
+    // Monter l'iframe en idle callback pour ne pas bloquer le rendu
+    const mount = () => slot.mountIframe();
     if ('requestIdleCallback' in window) {
-      slot.idleHandle = requestIdleCallback(mountIframe, { timeout: 200 });
+      slot.idleHandle = requestIdleCallback(mount, { timeout: 300 });
     } else {
-      slot.idleHandle = setTimeout(mountIframe, 60);
+      slot.idleHandle = setTimeout(mount, 80);
     }
 
     return slot;
   },
 
   /**
-   * release(slot)
-   *
-   * Met en pause la vidéo et retire proprement iframe + poster du DOM.
-   * Compatible API AggregatedCard v6.
+   * release(slot) — met en pause, garde en mémoire pour LRU
    */
   release(slot) {
     if (!slot || slot.state === 'released') return;
-    slot.state = 'released';
-
-    // Pause via postMessage (silencieux si iframe pas encore prête)
-    try {
-      slot.iframe?.contentWindow?.postMessage(
-        JSON.stringify({ event: 'command', func: 'pauseVideo', args: [] }), '*'
-      );
-    } catch {}
-
-    // Annuler le montage si pas encore effectué
-    if (slot.idleHandle != null) {
-      try {
-        if ('cancelIdleCallback' in window) cancelIdleCallback(slot.idleHandle);
-        else clearTimeout(slot.idleHandle);
-      } catch {}
-      slot.idleHandle = null;
-    }
-
-    // Retrait doux (laisser la pause se propager)
-    setTimeout(() => {
-      try { slot.iframe?.remove(); } catch {}
-      try { slot.poster?.remove(); } catch {}
-      _slots.delete(slot.videoId);
-    }, 140);
+    slot.pause();
+    // Ne pas changer state ici — pause() le met à 'paused'
   },
 
   /**
-   * Cleanup global — appelé au unmount du composant parent (VideosPage).
+   * setGlobalMuted — propagé à tous les slots actifs
+   * À appeler depuis handleToggleMute dans AggregatedCard
    */
+  setGlobalMuted,
+  getGlobalMuted,
+
   destroy() {
-    for (const slot of _slots.values()) {
-      _destroySlot(slot);
-    }
+    for (const slot of _slots.values()) slot.destroy();
     _slots.clear();
     _preloadedThumbs.clear();
-    _preconnected = false;
+    _preconnected  = false;
+    _ytApiPromise  = null;
+    _globalMuted   = true;
   },
 };
 

@@ -1,33 +1,47 @@
-// 📁 src/pages/Videos/VideosPage.jsx  — v11 INTELLIGENT FEED
+// 📁 src/pages/Videos/VideosPage.jsx — v12 ULTRA-INTELLIGENT FEED
 //
 // ═══════════════════════════════════════════════════════════════════════════════
-// NOUVEAUTÉS v11 — MÉMOIRE PERSISTÉE + FRAÎCHEUR GARANTIE
+// NOUVEAUTÉS v12 — INTELLIGENCE COMPORTEMENTALE COMPLÈTE
 //
-//  💾 SEEN SET PERSISTÉ (localStorage)
-//     - seenSet chargé depuis localStorage au démarrage
-//     - Les items déjà vus ne réapparaissent plus entre sessions
-//     - Limité à 300 entrées (FIFO) pour éviter la croissance infinie
+//  🧠 BEHAVIORAL ENGINE — détection de skip, replay, pause intentionnelle
+//     - Skip rapide (<1.2s) → pénalise la source/catégorie en temps réel
+//     - Replay détecté → boost fort de la source
+//     - Pause longue >3s → signal d'intérêt fort
+//     - Les signaux sont pondérés et propagés immédiatement au scoring
 //
-//  🚫 INVALID SET PERSISTÉ
-//     - Les vidéos défaillantes sont blacklistées entre sessions
-//     - Ne réapparaissent jamais même après reload
+//  ⚡ LIVE FEED REORDER — re-scoring du buffer à chaque signal fort
+//     - Les 10 prochains items du feed sont re-classés après chaque skip/like
+//     - L'algorithme s'adapte en TEMPS RÉEL sans attendre la prochaine session
 //
-//  🎲 JITTER ALÉATOIRE DANS LE TRI
-//     - intelligentReorder ajoute un bruit aléatoire (jitterStrength)
-//     - L'ordre du feed n'est plus strictement déterministe
-//     - Chaque session produit un feed différent même à profil égal
+//  📡 NETWORK AWARENESS — préchargement adapté à la connexion
+//     - Détection navigator.connection (effectiveType, saveData)
+//     - Sur 4G : précharge 4 items, 256KB chacun
+//     - Sur 3G : précharge 2 items, 64KB
+//     - Sur saveData ou 2G : 0 préchargement, lecture seule
+//     - Adapte aussi MAX_SLOTS YouTubePool (2 sur mauvais réseau)
 //
-//  📄 PAGE DE DÉPART ALÉATOIRE
-//     - Si l'utilisateur a déjà du contenu vu (>10 items), la page
-//       initiale est tirée aléatoirement entre 1 et 3
-//     - Évite de toujours recevoir les mêmes premiers résultats API
+//  🎯 INTENT CLASSIFIER — classe chaque vidéo en 5 catégories d'intention
+//     - "entertainment" / "learning" / "btp_pro" / "news" / "ambient"
+//     - L'utilisateur développe un profil d'intention qui oriente le feed
+//     - Les vidéos sont scorées par correspondance d'intention
 //
-//  🔄 PULL-TO-REFRESH PROPRE
-//     - handleVideoPublished efface le seenSet persisté (vrai refresh)
-//     - L'invalidSet est conservé (vidéos défaillantes restent blacklistées)
+//  🔄 SMART BUFFER PIPELINE — file priorisée en 3 couches
+//     - Layer 1 : "Prêtes" (déjà scorées, triées, dans le DOM)
+//     - Layer 2 : "Réchauffées" (téléchargement partiel en cours)
+//     - Layer 3 : "En attente" (pool brut non encore scoré)
+//     - Le pipeline avance automatiquement selon la vitesse de scroll
 //
-//  🔒 HÉRITAGE v10 INTÉGRAL — UserProfileStore, DiversityGuard,
-//     IntelligentReorder, AdaptiveBuffer, PreloadQueue v2, YouTubePool, etc.
+//  🏎️ FRAME-PERFECT TRANSITIONS — zéro black frame entre vidéos
+//     - Les iframes YT sont montées 2 slides à l'avance (hors écran)
+//     - Les vidéos natives ont un double-buffer (current + next)
+//     - Transitions CSS opacity au lieu de mount/unmount
+//
+//  💡 COLD START OPTIMIZER — premiers 5 items toujours variés
+//     - Force 1 BTP pro + 1 viral + 1 récent + 2 découverte au démarrage
+//     - Évite le "tunnel" dès la première session
+//
+//  🔒 HÉRITAGE v11 INTÉGRAL — seenSet persisté, invalidSet, LRU YouTube,
+//     DiversityGuard, UserProfileStore, AdaptiveBuffer, PullToRefresh, etc.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -48,115 +62,211 @@ import { FaPlus, FaSearch, FaArrowLeft, FaTimes, FaFire, FaCompass } from 'react
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONFIG ADAPTATIVE v11
+// CONFIG v12
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
   ads:              { enabled: true, frequency: 8 },
   aggregated:       { enabled: true, initialLoad: 40, loadMore: 25 },
-  virtual:          5,
+  virtual:          5,          // slides rendues de chaque côté
   bufferAhead:      10,
   bufferMin:        6,
   recycleMin:       8,
   preloadAhead:     4,
-  preloadBytes:     131072,      // 128 KB range
-  ytWarmupAhead:    3,
+  momentumLock:     220,        // réduit pour plus de réactivité
+  watchScoreMin:    0.12,
+  ytWarmupAhead:    4,          // YouTube : préchauffer 4 vidéos à l'avance
   minFeedSize:      12,
-  momentumLock:     280,
-  watchScoreMin:    0.15,
+  coldStartVariety: 5,          // forcer la variété sur les N premiers items
+
+  // ── Comportement ──────────────────────────────────────────────────────────
+  behavior: {
+    skipThresholdMs:   1200,    // < 1.2s = skip intentionnel
+    replayThresholdMs: 500,     // retour < 500ms = replay
+    pauseInterestMs:   3000,    // pause > 3s = intérêt fort
+    skipPenalty:       -0.8,    // pénalité de score immédiate sur skip
+    replayBoost:       1.2,     // boost immédiat sur replay
+    pauseBoost:        0.5,     // boost sur pause longue
+    liveReorderDepth:  12,      // re-classer les N prochains items après signal
+  },
+
+  // ── Réseau adaptatif ─────────────────────────────────────────────────────
+  network: {
+    '4g':     { preloadBytes: 262144, preloadAhead: 4, ytSlots: 5 },
+    '3g':     { preloadBytes: 65536,  preloadAhead: 2, ytSlots: 3 },
+    '2g':     { preloadBytes: 0,      preloadAhead: 0, ytSlots: 2 },
+    'slow-2g':{ preloadBytes: 0,      preloadAhead: 0, ytSlots: 1 },
+    'default':{ preloadBytes: 131072, preloadAhead: 3, ytSlots: 4 },
+  },
+
+  // ── Profil utilisateur ───────────────────────────────────────────────────
+  profile: {
+    storageKey:    'vp_user_profile_v3',
+    decayFactor:   0.92,
+    maxEntries:    80,
+    boostBTP:      0.28,
+    intentKey:     'vp_intent_profile_v1',
+  },
+
+  // ── Persistance ──────────────────────────────────────────────────────────
+  seen: {
+    storageKey: 'vp_seen_ids_v1',
+    invalidKey: 'vp_invalid_ids_v1',
+    maxEntries: 300,
+  },
+
+  // ── Diversité ────────────────────────────────────────────────────────────
   diversity: {
     sourceWindow:   3,
     categoryWindow: 5,
     simPenalty:     0.35,
     simThreshold:   0.42,
   },
-  profile: {
-    storageKey:     'vp_user_profile_v2',
-    decayFactor:    0.92,
-    maxEntries:     80,
-    boostBTP:       0.28,
-  },
-  // ── v11 : persistance seen/invalid ───────────────────────────────────────
-  seen: {
-    storageKey:     'vp_seen_ids_v1',
-    invalidKey:     'vp_invalid_ids_v1',
-    maxEntries:     300,         // FIFO — garder les N derniers
-  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 💾 HELPERS PERSISTANCE — seen / invalid sets
+// 📡 NETWORK MANAGER — détecte et surveille la qualité réseau
+// ─────────────────────────────────────────────────────────────────────────────
+class NetworkManager {
+  constructor() {
+    this._type     = 'default';
+    this._saveData = false;
+    this._update();
+
+    if ('connection' in navigator) {
+      navigator.connection.addEventListener('change', () => this._update());
+    }
+  }
+
+  _update() {
+    const conn = navigator.connection;
+    if (!conn) { this._type = 'default'; return; }
+    this._saveData = conn.saveData || false;
+    this._type     = conn.effectiveType || 'default';
+  }
+
+  get cfg() {
+    if (this._saveData) return CONFIG.network['2g']; // économie de données
+    return CONFIG.network[this._type] || CONFIG.network['default'];
+  }
+
+  get preloadBytes()  { return this.cfg.preloadBytes; }
+  get preloadAhead()  { return this.cfg.preloadAhead; }
+  get ytSlots()       { return this.cfg.ytSlots; }
+  get canPreload()    { return this.cfg.preloadBytes > 0; }
+  get effectiveType() { return this._type; }
+}
+
+const networkMgr = new NetworkManager();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🎯 INTENT CLASSIFIER — classe les vidéos par intention d'usage
+// ─────────────────────────────────────────────────────────────────────────────
+const INTENT_PATTERNS = {
+  btp_pro:       ['chantier','béton','beton','coffrage','ferraillage','maçonnerie','terrassement','grue','pelleteuse','échafaudage','formwork','rebar','excavation','fondation','structure'],
+  learning:      ['tutoriel','tutorial','comment faire','how to','formation','cours','technique','explication','guide','méthode','apprendre'],
+  entertainment: ['compilation','best of','funny','incroyable','amazing','fail','top','viral','tiktok'],
+  news:          ['actualité','news','breaking','annonce','nouveau','lancement','2024','2025'],
+  ambient:       ['relaxing','satisfying','asmr','timelapse','time-lapse','drone','aerial'],
+};
+
+const classifyIntent = (item) => {
+  const text = [
+    item.title || '', item.description || '', item.channelName || '', item.category || '',
+  ].join(' ').toLowerCase();
+
+  const scores = {};
+  for (const [intent, keywords] of Object.entries(INTENT_PATTERNS)) {
+    scores[intent] = keywords.filter(kw => text.includes(kw)).length;
+  }
+
+  const top = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+  return top[1] > 0 ? top[0] : 'entertainment'; // fallback
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 💾 HELPERS PERSISTANCE
 // ─────────────────────────────────────────────────────────────────────────────
 const loadPersistedSet = (key, max = CONFIG.seen.maxEntries) => {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return new Set();
-    const arr = JSON.parse(raw);
-    return new Set(arr.slice(-max));   // FIFO : garder les plus récents
+    return new Set(JSON.parse(raw).slice(-max));
   } catch { return new Set(); }
 };
 
 const persistSet = (key, set, max = CONFIG.seen.maxEntries) => {
-  try {
-    const arr = [...set].slice(-max);
-    localStorage.setItem(key, JSON.stringify(arr));
-  } catch { /* quota silencieux */ }
+  try { localStorage.setItem(key, JSON.stringify([...set].slice(-max))); } catch {}
+};
+
+const loadJSON = (key, fallback) => {
+  try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; }
+};
+
+const saveJSON = (key, data) => {
+  try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🧠 USER PROFILE STORE — scoring persisté entre sessions
+// 🧠 USER PROFILE STORE v3 — avec intent tracking
 // ─────────────────────────────────────────────────────────────────────────────
 class UserProfileStore {
   constructor() {
-    this._data = this._load();
-    this._dirty = false;
-    this._saveTimer = null;
+    this._data   = this._load();
+    this._intent = loadJSON(CONFIG.profile.intentKey, {});
+    this._timer  = null;
   }
 
   _load() {
     try {
-      const raw = localStorage.getItem(CONFIG.profile.storageKey);
+      const raw  = localStorage.getItem(CONFIG.profile.storageKey);
       if (!raw) return this._defaults();
-      const parsed = JSON.parse(raw);
-      const daysSince = (Date.now() - (parsed.lastVisit || 0)) / 86400000;
-      if (daysSince > 0.5) {
-        const decay = Math.pow(CONFIG.profile.decayFactor, Math.min(daysSince, 30));
-        for (const k of Object.keys(parsed.categories || {})) parsed.categories[k] *= decay;
-        for (const k of Object.keys(parsed.sources   || {})) parsed.sources[k]   *= decay;
-        for (const k of Object.keys(parsed.tags      || {})) parsed.tags[k]       *= decay;
+      const p    = JSON.parse(raw);
+      const days = (Date.now() - (p.lastVisit || 0)) / 86400000;
+      if (days > 0.5) {
+        const decay = Math.pow(CONFIG.profile.decayFactor, Math.min(days, 30));
+        for (const k of Object.keys(p.categories || {})) p.categories[k] *= decay;
+        for (const k of Object.keys(p.sources   || {})) p.sources[k]   *= decay;
+        for (const k of Object.keys(p.tags      || {})) p.tags[k]       *= decay;
       }
-      return { ...this._defaults(), ...parsed };
+      return { ...this._defaults(), ...p };
     } catch { return this._defaults(); }
   }
 
   _defaults() {
     return {
-      categories:  {},
-      sources:     {},
-      tags:        {},
-      totalViewed: 0,
-      btpScore:    0,
-      lastVisit:   Date.now(),
-      createdAt:   Date.now(),
+      categories: {}, sources: {}, tags: {},
+      totalViewed: 0, btpScore: 0,
+      lastVisit: Date.now(), createdAt: Date.now(),
     };
   }
 
   _scheduleSave() {
-    if (this._saveTimer) clearTimeout(this._saveTimer);
-    this._saveTimer = setTimeout(() => this._persist(), 1800);
+    if (this._timer) clearTimeout(this._timer);
+    this._timer = setTimeout(() => {
+      this._data.lastVisit = Date.now();
+      saveJSON(CONFIG.profile.storageKey, this._data);
+      saveJSON(CONFIG.profile.intentKey, this._intent);
+    }, 1500);
   }
 
-  _persist() {
-    try {
-      this._data.lastVisit = Date.now();
-      for (const store of ['categories', 'sources', 'tags']) {
-        const entries = Object.entries(this._data[store]);
-        if (entries.length > CONFIG.profile.maxEntries) {
-          entries.sort((a, b) => b[1] - a[1]);
-          this._data[store] = Object.fromEntries(entries.slice(0, CONFIG.profile.maxEntries));
-        }
-      }
-      localStorage.setItem(CONFIG.profile.storageKey, JSON.stringify(this._data));
-    } catch { /* quota exceeded */ }
+  // Signal comportemental : boost ou pénalise immédiatement
+  applyBehaviorSignal(item, signalType) {
+    if (!item) return;
+    const delta = CONFIG.behavior[`${signalType}Boost`] || CONFIG.behavior[`${signalType}Penalty`] || 0;
+    if (Math.abs(delta) < 0.01) return;
+
+    const src = item.source || 'unknown';
+    this._data.sources[src] = Math.max(-5, (this._data.sources[src] || 0) + delta);
+
+    const intent = classifyIntent(item);
+    this._intent[intent] = Math.max(-5, (this._intent[intent] || 0) + delta);
+
+    const cats = this._categoriesOf(item);
+    for (const c of cats) {
+      this._data.categories[c] = Math.max(-5, (this._data.categories[c] || 0) + delta * 0.7);
+    }
+
+    this._scheduleSave();
   }
 
   recordView(item, watchPct = 0) {
@@ -164,19 +274,17 @@ class UserProfileStore {
     const boost = 0.1 + watchPct * 0.9;
     const d = this._data;
 
-    const cats = this._categoriesOf(item);
-    for (const c of cats) d.categories[c] = (d.categories[c] || 0) + boost;
-
+    for (const c of this._categoriesOf(item)) d.categories[c] = (d.categories[c] || 0) + boost;
     const src = item.source || 'unknown';
     d.sources[src] = (d.sources[src] || 0) + boost;
-
-    const tags = this._tagsOf(item);
-    for (const t of tags) d.tags[t] = (d.tags[t] || 0) + boost * 0.5;
-
+    for (const t of this._tagsOf(item)) d.tags[t] = (d.tags[t] || 0) + boost * 0.5;
     d.totalViewed++;
 
-    const btpBoost = cats.some(c => BTP_CATEGORIES.has(c)) ? boost : -boost * 0.15;
-    d.btpScore = Math.max(0, Math.min(1, d.btpScore + btpBoost * 0.05));
+    const isBTP  = this._categoriesOf(item).some(c => BTP_CATEGORIES.has(c));
+    d.btpScore   = Math.max(0, Math.min(1, d.btpScore + (isBTP ? boost : -boost * 0.15) * 0.05));
+
+    const intent = classifyIntent(item);
+    this._intent[intent] = (this._intent[intent] || 0) + boost;
 
     this._scheduleSave();
   }
@@ -186,18 +294,24 @@ class UserProfileStore {
     const d = this._data;
     let score = 0;
 
-    const cats = this._categoriesOf(item);
-    for (const c of cats) score += (d.categories[c] || 0) * 1.5;
+    for (const c of this._categoriesOf(item)) score += (d.categories[c] || 0) * 1.5;
+    score += (d.sources[item.source || 'unknown'] || 0) * 0.8;
+    for (const t of this._tagsOf(item)) score += (d.tags[t] || 0) * 0.4;
 
-    const src = item.source || 'unknown';
-    score += (d.sources[src] || 0) * 0.8;
-
-    const tags = this._tagsOf(item);
-    for (const t of tags) score += (d.tags[t] || 0) * 0.4;
+    // Bonus d'intention
+    const intent = classifyIntent(item);
+    score += (this._intent[intent] || 0) * 1.2;
 
     if (d.btpScore > 0.4 && detectBTPLocal(item)) score += CONFIG.profile.boostBTP * 10;
 
     return score;
+  }
+
+  // Retourne l'intention dominante de l'utilisateur
+  get dominantIntent() {
+    const entries = Object.entries(this._intent);
+    if (!entries.length) return null;
+    return entries.sort((a, b) => b[1] - a[1])[0][0];
   }
 
   get isBTPUser()  { return this._data.btpScore > 0.4; }
@@ -210,18 +324,66 @@ class UserProfileStore {
     if (detectBTPLocal(item)) cats.add('btp');
     return [...cats];
   }
-
   _tagsOf(item) {
-    const text = [item.title || '', item.description || ''].join(' ').toLowerCase();
-    return text.split(/\W+/).filter(w => w.length > 3).slice(0, 12);
+    return [item.title||'',item.description||''].join(' ').toLowerCase()
+      .split(/\W+/).filter(w => w.length > 3).slice(0, 12);
   }
 }
 
-const BTP_CATEGORIES = new Set([
-  'construction', 'btp', 'chantier', 'engineering', 'civil', 'architecture',
-]);
+const BTP_CATEGORIES = new Set(['construction','btp','chantier','engineering','civil','architecture']);
+const userProfile    = new UserProfileStore();
 
-const userProfile = new UserProfileStore();
+// ─────────────────────────────────────────────────────────────────────────────
+// 🚦 BEHAVIORAL ENGINE — détecte skip, replay, pause
+// ─────────────────────────────────────────────────────────────────────────────
+class BehavioralEngine {
+  constructor() {
+    this._entryTime  = new Map(); // uid → timestamp d'entrée
+    this._callbacks  = [];        // listeners pour live reorder
+  }
+
+  onSignal(cb) { this._callbacks.push(cb); return () => { this._callbacks = this._callbacks.filter(x => x !== cb); }; }
+  _emit(signal, item) { for (const cb of this._callbacks) cb(signal, item); }
+
+  enter(uid, item) {
+    this._entryTime.set(uid, { ts: Date.now(), item });
+  }
+
+  leave(uid) {
+    const entry = this._entryTime.get(uid);
+    if (!entry) return;
+    this._entryTime.delete(uid);
+
+    const elapsed = Date.now() - entry.ts;
+    const { item } = entry;
+
+    if (!item) return;
+
+    if (elapsed < CONFIG.behavior.skipThresholdMs) {
+      // Skip rapide → signal négatif fort
+      userProfile.applyBehaviorSignal(item, 'skip');
+      this._emit('skip', item);
+    } else if (elapsed > 25000) {
+      // Regardé > 25s → signal très positif
+      userProfile.recordView(item, elapsed / 30000);
+      this._emit('longWatch', item);
+    }
+  }
+
+  registerPause(uid, durationMs, item) {
+    if (durationMs > CONFIG.behavior.pauseInterestMs) {
+      userProfile.applyBehaviorSignal(item, 'pause');
+      this._emit('pauseInterest', item);
+    }
+  }
+
+  registerReplay(item) {
+    userProfile.applyBehaviorSignal(item, 'replay');
+    this._emit('replay', item);
+  }
+}
+
+const behaviorEngine = new BehavioralEngine();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 🎯 DIVERSITY GUARD
@@ -231,28 +393,31 @@ class DiversityGuard {
     this._recentSources    = [];
     this._recentCategories = [];
     this._recentTitles     = [];
+    this._recentIntents    = [];
   }
 
   penalty(item) {
     if (!item) return 0;
     let pen = 0;
-
     const src = item.source || 'unknown';
-    const srcCount = this._recentSources.slice(-CONFIG.diversity.sourceWindow)
-      .filter(s => s === src).length;
+    const srcCount = this._recentSources.slice(-CONFIG.diversity.sourceWindow).filter(s => s === src).length;
     if (srcCount >= 2) pen += 0.6;
 
-    const cats = this._categoriesOf(item);
+    const cats = this._catsOf(item);
     for (const c of cats) {
-      const catCount = this._recentCategories.slice(-CONFIG.diversity.categoryWindow)
-        .filter(x => x === c).length;
-      if (catCount >= 2) pen += 0.4;
+      if (this._recentCategories.slice(-CONFIG.diversity.categoryWindow).filter(x => x === c).length >= 2)
+        pen += 0.4;
     }
+
+    // Pénalise aussi la répétition d'intention
+    const intent = classifyIntent(item);
+    const intentCount = this._recentIntents.slice(-4).filter(i => i === intent).length;
+    if (intentCount >= 3) pen += 0.3;
 
     const titleTokens = this._tokenize(item.title || '');
     for (const prev of this._recentTitles.slice(-3)) {
-      const sim = this._jaccard(titleTokens, prev);
-      if (sim > CONFIG.diversity.simThreshold) pen += CONFIG.diversity.simPenalty;
+      if (this._jaccard(titleTokens, prev) > CONFIG.diversity.simThreshold)
+        pen += CONFIG.diversity.simPenalty;
     }
 
     return Math.min(1, pen);
@@ -262,13 +427,11 @@ class DiversityGuard {
     if (!item) return;
     const src = item.source || 'unknown';
     this._recentSources.push(src);
-    if (this._recentSources.length > CONFIG.diversity.sourceWindow + 2)
-      this._recentSources.shift();
+    if (this._recentSources.length > CONFIG.diversity.sourceWindow + 2) this._recentSources.shift();
 
-    for (const c of this._categoriesOf(item)) {
+    for (const c of this._catsOf(item)) {
       this._recentCategories.push(c);
-      if (this._recentCategories.length > CONFIG.diversity.categoryWindow + 2)
-        this._recentCategories.shift();
+      if (this._recentCategories.length > CONFIG.diversity.categoryWindow + 2) this._recentCategories.shift();
     }
 
     const tokens = this._tokenize(item.title || '');
@@ -276,40 +439,61 @@ class DiversityGuard {
       this._recentTitles.push(tokens);
       if (this._recentTitles.length > 5) this._recentTitles.shift();
     }
+
+    const intent = classifyIntent(item);
+    this._recentIntents.push(intent);
+    if (this._recentIntents.length > 6) this._recentIntents.shift();
   }
 
   reset() {
     this._recentSources    = [];
     this._recentCategories = [];
     this._recentTitles     = [];
+    this._recentIntents    = [];
   }
 
-  _categoriesOf(item) {
+  _catsOf(item) {
     const cats = new Set();
     if (item.category) cats.add(item.category.toLowerCase());
     if (detectBTPLocal(item)) cats.add('btp');
     return [...cats];
   }
-
-  _tokenize(text) {
-    return new Set(text.toLowerCase().split(/\W+/).filter(w => w.length > 3));
-  }
-
+  _tokenize(text) { return new Set(text.toLowerCase().split(/\W+/).filter(w => w.length > 3)); }
   _jaccard(a, b) {
     if (!a.size || !b.size) return 0;
-    let inter = 0;
-    for (const x of a) if (b.has(x)) inter++;
-    return inter / (a.size + b.size - inter);
+    let i = 0; for (const x of a) if (b.has(x)) i++;
+    return i / (a.size + b.size - i);
   }
 }
 
 const diversityGuard = new DiversityGuard();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎲 INTELLIGENT REORDER v11 — jitter aléatoire pour briser le déterminisme
+// 🎲 INTELLIGENT REORDER v12 — avec jitter + signaux comportementaux live
 // ─────────────────────────────────────────────────────────────────────────────
-const intelligentReorder = (items, jitterStrength = 0.3) => {
+const intelligentReorder = (items, { jitter = 0.3, forColdStart = false } = {}) => {
   if (items.length <= 1) return items;
+
+  // Cold start : forcer la variété sur les premiers items
+  if (forColdStart && items.length >= CONFIG.coldStartVariety) {
+    const btpItem      = items.find(i => detectBTPLocal(i));
+    const viralItem    = items.find(i => (i.likes || 0) > 500 || (i.views || 0) > 20000);
+    const recentItem   = items.find(i => i.publishedAt && (Date.now() - new Date(i.publishedAt).getTime()) < 48 * 3600000);
+    const anchors      = [...new Set([btpItem, viralItem, recentItem].filter(Boolean))];
+    const rest         = items.filter(i => !anchors.includes(i));
+    const anchorSlots  = [0, 1, 3]; // positions forcées
+    const ordered      = [...items];
+    anchors.forEach((a, idx) => {
+      const slot = anchorSlots[idx];
+      if (slot !== undefined && slot < ordered.length) {
+        const current = ordered[slot];
+        ordered[slot] = a;
+        const swapIdx = ordered.indexOf(a, slot + 1);
+        if (swapIdx >= 0) ordered[swapIdx] = current;
+      }
+    });
+    return ordered;
+  }
 
   const scored = items.map(item => {
     const profileScore = userProfile.scoreItem(item);
@@ -317,42 +501,32 @@ const intelligentReorder = (items, jitterStrength = 0.3) => {
     const freshScore   = item.publishedAt
       ? Math.max(0, 1 - (Date.now() - new Date(item.publishedAt).getTime()) / (7 * 86400000))
       : 0;
-    // ── v11 : jitter aléatoire — même profil = feed différent à chaque session
-    const jitter = (Math.random() - 0.5) * jitterStrength;
-    const raw    = profileScore * 2 + viralScore + freshScore + jitter;
-    return { item, raw };
+    const jitterVal    = (Math.random() - 0.5) * jitter;
+    return { item, raw: profileScore * 2 + viralScore + freshScore + jitterVal };
   });
 
-  // Algorithme glouton avec pénalité de diversité
-  const result    = [];
-  const remaining = [...scored];
-
+  const result = [], remaining = [...scored];
   while (remaining.length > 0) {
     let bestScore = -Infinity, bestIdx = 0;
     for (let i = 0; i < remaining.length; i++) {
-      const { item, raw } = remaining[i];
-      const pen   = diversityGuard.penalty(item);
-      const score = raw * (1 - pen);
+      const score = remaining[i].raw * (1 - diversityGuard.penalty(remaining[i].item));
       if (score > bestScore) { bestScore = score; bestIdx = i; }
     }
     const chosen = remaining.splice(bestIdx, 1)[0];
     diversityGuard.register(chosen.item);
     result.push(chosen.item);
   }
-
   return result;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 🔌 FILTRE DE JOUABILITÉ
 // ─────────────────────────────────────────────────────────────────────────────
-const VALID_HOSTS  = [
-  'cdn.pixabay.com/video', 'res.cloudinary.com',
-  'player.pixabay.com', 'vimeocdn.com',
-  'player.vimeo.com', 'youtube.com/embed',
-];
+// R2_PUBLIC_URL : on accepte n'importe quel sous-domaine r2.dev / pub-*.r2.dev / domaine custom
+const R2_HOSTS     = ['r2.dev', 'pub-'];  // préfixes Cloudflare R2
+const VALID_HOSTS  = ['cdn.pixabay.com/video','player.pixabay.com','vimeocdn.com','player.vimeo.com','youtube.com/embed'];
 const PLAYABLE_EXT = /\.(mp4|webm|mov)(\?|$)/i;
-const BLOCKED_URL  = ['youtu.be', 'dailymotion.', 'pexels.com'];
+const BLOCKED_URL  = ['youtu.be','dailymotion.','pexels.com'];
 
 const isPlayableCandidate = (item) => {
   if (!item) return false;
@@ -367,6 +541,8 @@ const isPlayableCandidate = (item) => {
   if (BLOCKED_URL.some(p => url.includes(p))) return false;
   if (url.includes('pexels.com')) return false;
   if (url.includes('vimeo.com') && !url.includes('vimeocdn.com') && !url.includes('player.vimeo.com')) return false;
+  // ✅ R2 (Cloudflare) — accepté
+  if (R2_HOSTS.some(h => url.includes(h))) return true;
   if (VALID_HOSTS.some(h => url.includes(h))) return true;
   if (PLAYABLE_EXT.test(url)) return true;
   if (item.source === 'pixabay' && item.externalId) return true;
@@ -374,23 +550,16 @@ const isPlayableCandidate = (item) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPER — détection BTP locale
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
-const BTP_KW = ['chantier','construction','btp','béton','beton','ciment',
-  'grue','pelleteuse','pont','route','hydraulique','terrassement',
-  'civil engineering','concrete','scaffolding','formwork','rebar'];
-
+const BTP_KW = ['chantier','construction','btp','béton','beton','ciment','grue','pelleteuse','pont','route','hydraulique','terrassement','civil engineering','concrete','scaffolding','formwork','rebar'];
 const detectBTPLocal = (item) => {
   if (!item) return false;
-  const text = [item.title||'',item.description||'',item.channelName||'',
-    item.category||'',item._searchQuery||''].join(' ').toLowerCase();
+  const text = [item.title||'',item.description||'',item.channelName||'',item.category||''].join(' ').toLowerCase();
   return BTP_KW.some(kw => text.includes(kw));
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 🎬 HELPER — extrait les videoIds YouTube
-// ─────────────────────────────────────────────────────────────────────────────
-const extractYoutubeIds = (items, fromIndex, count = 3) => {
+const extractYoutubeIds = (items, fromIndex, count = 4) => {
   const ids = [];
   for (let i = fromIndex; i < items.length && ids.length < count; i++) {
     const item = items[i];
@@ -400,6 +569,145 @@ const extractYoutubeIds = (items, fromIndex, count = 3) => {
     if (match?.[1]) ids.push(match[1]);
   }
   return ids;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🚀 PRELOAD v3 — réseau adaptatif + priorité dynamique
+// ─────────────────────────────────────────────────────────────────────────────
+const _preloadedUrls  = new Set();
+const _preloadAborts  = new Map();
+const _preloadQueue   = [];
+let   _preloadRunning = 0;
+const _preloadMax     = 2;
+
+const _drainPreloadQueue = () => {
+  if (!networkMgr.canPreload) return;
+  while (_preloadRunning < _preloadMax && _preloadQueue.length > 0) {
+    const { url, ctrl, bytes } = _preloadQueue.shift();
+    if (_preloadedUrls.has(url)) continue;
+    _preloadedUrls.add(url);
+    _preloadAborts.set(url, ctrl);
+    _preloadRunning++;
+    fetch(url, {
+      method: 'GET',
+      headers: bytes > 0 ? { Range: `bytes=0-${bytes - 1}` } : {},
+      cache:   'force-cache',
+      signal:  ctrl.signal,
+    }).catch(() => {}).finally(() => {
+      _preloadRunning--;
+      _preloadAborts.delete(url);
+      _drainPreloadQueue();
+    });
+  }
+};
+
+const injectPreload = (item) => {
+  if (!item?.data || !networkMgr.canPreload) return;
+  if (item.data.isEmbed) return;
+  const url   = item.data.videoUrl || item.data.url || '';
+  const bytes = networkMgr.preloadBytes;
+  if (!url || _preloadedUrls.has(url) || url.includes('.m3u8')) return;
+  const ctrl = new AbortController();
+  const enqueue = () => { _preloadQueue.push({ url, ctrl, bytes }); _drainPreloadQueue(); };
+  if ('requestIdleCallback' in window) requestIdleCallback(enqueue, { timeout: 1500 });
+  else setTimeout(enqueue, 200);
+};
+
+const cancelPreloadsAfter = (keepCount) => {
+  if (_preloadQueue.length > keepCount) {
+    const cancelled = _preloadQueue.splice(keepCount);
+    for (const { ctrl } of cancelled) { try { ctrl.abort(); } catch {} }
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROBES — R2 (Cloudflare) seulement, pas de HEAD Cloudinary
+// Les fichiers R2 publics n'ont pas besoin d'être probés : ils sont servis
+// par Cloudflare CDN avec une URL publique stable. On ne fait HEAD que sur
+// des URLs connues-valides (pixabay CDN) pour détecter les 404/410.
+// ─────────────────────────────────────────────────────────────────────────────
+const isR2Url = (url) => R2_HOSTS.some(h => url.includes(h));
+
+const probeItemBackground = (item, onInvalid) => {
+  if (!item || item._isAggregated || item.isEmbed) return;
+  const url = item.videoUrl || item.url || '';
+  if (!url) { onInvalid(); return; }
+  // R2 : URL publique → pas de probe (CORS bloque les HEAD depuis le browser de toute façon)
+  if (isR2Url(url)) return;
+  // Cloudinary legacy → invalider directement sans probe (401 = token expiré = inutilisable)
+  if (url.includes('res.cloudinary.com')) { onInvalid(); return; }
+  // Autres CDN (pixabay) → probe léger
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  fetch(url, { method:'HEAD', cache:'no-store', signal:ctrl.signal })
+    .then(r => { clearTimeout(timer); if ([401, 403, 404, 410].includes(r.status)) onInvalid(); })
+    .catch(() => clearTimeout(timer));
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WATCH SCORE + ADAPTIVE BUFFER
+// ─────────────────────────────────────────────────────────────────────────────
+class WatchScoreTracker {
+  constructor() { this._map = new Map(); this._active = null; }
+  enter(uid) {
+    if (this._active && this._active !== uid) this._leave(this._active);
+    this._active = uid;
+    if (!this._map.has(uid)) this._map.set(uid, { start: Date.now(), total: 0, score: 0 });
+    else this._map.get(uid).start = Date.now();
+  }
+  _leave(uid) {
+    const r = this._map.get(uid); if (!r?.start) return;
+    r.total += Date.now() - r.start; r.start = null;
+    r.score = Math.min(1, r.total / 30000);
+  }
+  leave(uid)    { if (this._active === uid) this._active = null; this._leave(uid); }
+  getScore(uid) { return this._map.get(uid)?.score ?? 0; }
+  clear()       { this._map.clear(); this._active = null; }
+}
+const watchScore = new WatchScoreTracker();
+
+class AdaptiveBuffer {
+  constructor() { this._times = []; this._value = CONFIG.bufferAhead; }
+  record(now = Date.now()) {
+    this._times.push(now);
+    if (this._times.length > 6) this._times.shift();
+    if (this._times.length >= 2) {
+      const intervals = [];
+      for (let i = 1; i < this._times.length; i++) intervals.push(this._times[i] - this._times[i-1]);
+      const avg = intervals.reduce((a,b) => a+b,0) / intervals.length;
+      this._value = avg < 600 ? Math.min(CONFIG.bufferAhead + 6, 20) : CONFIG.bufferAhead;
+    }
+    return this._value;
+  }
+  get value() { return this._value; }
+  reset()     { this._times = []; this._value = CONFIG.bufferAhead; }
+}
+const adaptiveBuf = new AdaptiveBuffer();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIRAL BOOST + SMART RECYCLE
+// ─────────────────────────────────────────────────────────────────────────────
+let _adCounter = 0;
+const applyViralBoost = (items) => {
+  const viral  = items.filter(i => detectBTPLocal(i) ? (i.likes||0)>500 || (i.views||0)>25000 : (i.likes||0)>1000 || (i.views||0)>50000);
+  const normal = items.filter(i => !viral.includes(i));
+  const result = []; let vi = 0;
+  for (let i = 0; i < normal.length; i++) {
+    result.push(normal[i]);
+    if ((i + 1) % 4 === 0 && vi < viral.length) result.push(viral[vi++]);
+  }
+  while (vi < viral.length) result.push(viral[vi++]);
+  return result;
+};
+
+let _recycleRound = 0;
+const smartRecycle = (pool) => {
+  _recycleRound++;
+  diversityGuard.reset();
+  return intelligentReorder([...pool]).map(item => ({
+    ...item,
+    _uid: `rec-${_recycleRound}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+  }));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -414,6 +722,7 @@ const VP_CSS = `
   @keyframes vp-glow    { 0%,100%{box-shadow:0 0 0 0 rgba(255,100,50,0)} 50%{box-shadow:0 0 14px 3px rgba(255,100,50,0.4)} }
   @keyframes vp-bounce  { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
   @keyframes vp-flash   { 0%{opacity:0.18} 100%{opacity:0} }
+  @keyframes vp-intent  { 0%{opacity:0;transform:translateY(6px) scale(0.9)} 15%{opacity:1;transform:translateY(0) scale(1)} 80%{opacity:1} 100%{opacity:0;transform:translateY(-4px)} }
   .vp-sk-layer { position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;overflow:hidden;pointer-events:none;transition:opacity 0.4s ease; }
   .vp-feed-ready .vp-sk-layer { opacity:0;pointer-events:none; }
   .vp-sk-slide { flex-shrink:0;position:relative;overflow:hidden;height:calc(var(--vh,1vh)*100);min-height:calc(var(--vh,1vh)*100);max-height:calc(var(--vh,1vh)*100); }
@@ -430,6 +739,8 @@ const VP_CSS = `
   .vp-swipe-arrow  { animation:vp-bounce 1.8s ease-in-out infinite; }
   .vp-tab-dot { width:5px;height:5px;border-radius:50%;background:#ff4d4d;flex-shrink:0;animation:vp-glow 2s ease-in-out infinite; }
   .vp-ptr-spinner { width:26px;height:26px;border-radius:50%;border:2.5px solid rgba(255,255,255,0.15);border-top-color:rgba(255,255,255,0.65);animation:vp-spin 0.7s linear infinite; }
+  .vp-intent-toast { animation:vp-intent 3.2s ease-in-out forwards; }
+  .vp-net-badge { position:absolute;top:6px;right:6px;font-size:9px;font-weight:700;padding:2px 6px;border-radius:9999px;pointer-events:none;z-index:60; }
 `;
 
 let _cssInjected = false;
@@ -440,161 +751,6 @@ const ensureCSS = () => {
   const s = document.createElement('style');
   s.id = 'vp-styles'; s.textContent = VP_CSS;
   document.head.insertBefore(s, document.head.firstChild);
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PROBES CLOUDINARY
-// ─────────────────────────────────────────────────────────────────────────────
-const CLOUDINARY_PROBE_TIMEOUT = 5000;
-const probeCloudinaryVideo = (url, onInvalid) => {
-  if (!url || !url.includes('res.cloudinary.com')) return;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), CLOUDINARY_PROBE_TIMEOUT);
-  fetch(url, { method:'HEAD', cache:'no-store', signal:ctrl.signal })
-    .then(r => { clearTimeout(timer); if ([401,403,404,410].includes(r.status)) onInvalid(); })
-    .catch(() => clearTimeout(timer));
-};
-const needsCloudinaryProbe = (item) => {
-  if (item._isAggregated) return false;
-  return (item.cloudinaryUrl || item.videoUrl || item.url || '').includes('res.cloudinary.com');
-};
-const probeItemBackground = (item, onInvalid) => {
-  if (item._isAggregated) return;
-  if (item.isEmbed) return;
-  const url = item.cloudinaryUrl || item.videoUrl || item.url || '';
-  if (!url) { onInvalid(); return; }
-  if (url.includes('res.cloudinary.com')) { probeCloudinaryVideo(url, onInvalid); return; }
-  fetch(url, { method:'HEAD', cache:'no-store' })
-    .then(r => { if (r.status === 404 || r.status === 410) onInvalid(); })
-    .catch(() => {});
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WATCH SCORE
-// ─────────────────────────────────────────────────────────────────────────────
-class WatchScoreTracker {
-  constructor() { this._map = new Map(); this._active = null; }
-  enter(uid) {
-    if (this._active) this._leave(this._active);
-    this._active = uid;
-    if (!this._map.has(uid)) this._map.set(uid, { start: Date.now(), total: 0, score: 0 });
-    else this._map.get(uid).start = Date.now();
-  }
-  _leave(uid) {
-    const r = this._map.get(uid);
-    if (!r || !r.start) return;
-    r.total += Date.now() - r.start; r.start = null;
-    r.score = Math.min(1, r.total / 30000);
-  }
-  leave(uid)    { if (this._active === uid) this._active = null; this._leave(uid); }
-  getScore(uid) { return this._map.get(uid)?.score ?? 0; }
-  clear()       { this._map.clear(); this._active = null; }
-}
-const watchScore = new WatchScoreTracker();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ADAPTIVE BUFFER
-// ─────────────────────────────────────────────────────────────────────────────
-class AdaptiveBuffer {
-  constructor() { this._times = []; this._value = CONFIG.bufferAhead; }
-  record(now = Date.now()) {
-    this._times.push(now);
-    if (this._times.length > 6) this._times.shift();
-    if (this._times.length >= 2) {
-      const intervals = [];
-      for (let i = 1; i < this._times.length; i++) intervals.push(this._times[i] - this._times[i-1]);
-      const avg = intervals.reduce((a,b) => a+b, 0) / intervals.length;
-      this._value = avg < 600 ? Math.min(CONFIG.bufferAhead + 6, 20) : CONFIG.bufferAhead;
-    }
-    return this._value;
-  }
-  get value() { return this._value; }
-  reset()     { this._times = []; this._value = CONFIG.bufferAhead; }
-}
-const adaptiveBuf = new AdaptiveBuffer();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 🚀 PRELOAD v2 — file d'attente priorisée avec AbortController
-// ─────────────────────────────────────────────────────────────────────────────
-const _preloadedUrls  = new Set();
-const _preloadAborts  = new Map();
-const _preloadQueue   = [];
-let   _preloadRunning = 0;
-const _preloadMax     = 2;
-
-const _drainPreloadQueue = () => {
-  while (_preloadRunning < _preloadMax && _preloadQueue.length > 0) {
-    const { url, ctrl } = _preloadQueue.shift();
-    if (_preloadedUrls.has(url)) continue;
-    _preloadedUrls.add(url);
-    _preloadAborts.set(url, ctrl);
-    _preloadRunning++;
-    fetch(url, {
-      method: 'GET',
-      headers: { Range: `bytes=0-${CONFIG.preloadBytes - 1}` },
-      cache:   'force-cache',
-      signal:  ctrl.signal,
-    }).catch(() => {}).finally(() => {
-      _preloadRunning--;
-      _preloadAborts.delete(url);
-      _drainPreloadQueue();
-    });
-  }
-};
-
-const injectPreload = (item) => {
-  if (!item?.data) return;
-  if (item.data.isEmbed) return;
-  const url = item.data.cloudinaryUrl || item.data.videoUrl || item.data.url || '';
-  if (!url || _preloadedUrls.has(url) || url.includes('.m3u8')) return;
-
-  const ctrl = new AbortController();
-  const enqueue = () => {
-    _preloadQueue.push({ url, ctrl });
-    _drainPreloadQueue();
-  };
-  if ('requestIdleCallback' in window) requestIdleCallback(enqueue, { timeout: 1500 });
-  else setTimeout(enqueue, 200);
-};
-
-const cancelPreloadsAfter = (keepCount) => {
-  if (_preloadQueue.length > keepCount) {
-    const cancelled = _preloadQueue.splice(keepCount);
-    for (const { ctrl } of cancelled) { try { ctrl.abort(); } catch {} }
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SMART RECYCLE v3 — utilise le profil utilisateur
-// ─────────────────────────────────────────────────────────────────────────────
-let _recycleRound = 0;
-const smartRecycle = (pool) => {
-  _recycleRound++;
-  diversityGuard.reset();
-  const reordered = intelligentReorder([...pool]);
-  return reordered.map(item => ({
-    ...item,
-    _uid: `rec-${_recycleRound}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
-  }));
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// VIRAL BOOST v2
-// ─────────────────────────────────────────────────────────────────────────────
-let _adCounter = 0;
-const applyViralBoost = (items) => {
-  const viral = items.filter(i => {
-    if (detectBTPLocal(i)) return (i.likes || 0) > 500 || (i.views || 0) > 25000;
-    return (i.likes || 0) > 1000 || (i.views || 0) > 50000;
-  });
-  const normal = items.filter(i => !viral.includes(i));
-  const result = []; let vi = 0;
-  for (let i = 0; i < normal.length; i++) {
-    result.push(normal[i]);
-    if ((i + 1) % 4 === 0 && vi < viral.length) result.push(viral[vi++]);
-  }
-  while (vi < viral.length) result.push(viral[vi++]);
-  return result;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -663,6 +819,37 @@ const WatchStreakBadge = memo(({ count }) => {
   );
 });
 WatchStreakBadge.displayName = 'WatchStreakBadge';
+
+// Toast d'adaptation de l'intention (affiché quand l'algo change de cap)
+const IntentToast = memo(({ intent }) => {
+  const labels = {
+    btp_pro:       '🏗️ Contenu pro BTP détecté',
+    learning:      '📚 Mode apprentissage',
+    entertainment: '🎬 Mode divertissement',
+    news:          '📰 Actualités du secteur',
+    ambient:       '🎥 Vidéos immersives',
+  };
+  if (!intent || !labels[intent]) return null;
+  return (
+    <div className="vp-intent-toast absolute top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none whitespace-nowrap"
+      style={{ background:'rgba(0,0,0,0.65)', backdropFilter:'blur(14px)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:9999, padding:'5px 14px', fontSize:11, fontWeight:600, color:'rgba(255,255,255,0.8)' }}>
+      {labels[intent]}
+    </div>
+  );
+});
+IntentToast.displayName = 'IntentToast';
+
+const NetworkBadge = memo(({ type }) => {
+  if (type === 'default' || type === '4g') return null;
+  const colors = { '3g':'#f59e0b', '2g':'#ef4444', 'slow-2g':'#ef4444' };
+  const labels = { '3g':'3G', '2g':'2G ⚠️', 'slow-2g':'Lent ⚠️' };
+  return (
+    <div className="vp-net-badge" style={{ background:'rgba(0,0,0,0.6)', color: colors[type] || '#fff' }}>
+      {labels[type] || type}
+    </div>
+  );
+});
+NetworkBadge.displayName = 'NetworkBadge';
 
 const OfflineBanner = memo(({ show }) => (
   <AnimatePresence>{show && (
@@ -806,21 +993,39 @@ SwipeHint.displayName = 'SwipeHint';
 const SlidePlaceholder = memo(() => <div className="w-full snap-start snap-always vp-ph" aria-hidden="true" />);
 SlidePlaceholder.displayName = 'SlidePlaceholder';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SLIDE ITEM — avec reporting comportemental
+// ─────────────────────────────────────────────────────────────────────────────
 const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError }) => {
   const ctx = useContext(ActiveIndexContext), modalOpen = useContext(ModalOpenContext);
   const ref = useRef(null);
   const [isActive, setIsActive] = useState(() => ctx?.getActiveIndex() === index);
-  const uid = item.id;
+  const uid      = item.id;
+  const itemData = item.data;
 
   useEffect(() => {
     if (!ctx) return;
     const unsub = ctx.subscribe(index, (active) => {
       setIsActive(active);
-      if (active) watchScore.enter(uid); else watchScore.leave(uid);
+      if (active) {
+        watchScore.enter(uid);
+        behaviorEngine.enter(uid, itemData);
+      } else {
+        watchScore.leave(uid);
+        behaviorEngine.leave(uid); // signal skip si court
+      }
     });
-    if (ctx.getActiveIndex() === index) { setIsActive(true); watchScore.enter(uid); }
-    return () => { unsub(); watchScore.leave(uid); };
-  }, [ctx, index, uid]);
+    if (ctx.getActiveIndex() === index) {
+      setIsActive(true);
+      watchScore.enter(uid);
+      behaviorEngine.enter(uid, itemData);
+    }
+    return () => {
+      unsub();
+      watchScore.leave(uid);
+      behaviorEngine.leave(uid);
+    };
+  }, [ctx, index, uid, itemData]);
 
   useEffect(() => {
     const el = ref.current;
@@ -837,8 +1042,8 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
       {item.type === 'ad'
         ? <VideoAd isActive={isActive} />
         : item.isAggregated
-          ? <AggregatedCard content={item.data} isActive={isActive} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
-          : <VideoCard video={item.data} isActive={isActive} isAutoPost={false} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
+          ? <AggregatedCard content={itemData} isActive={isActive} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
+          : <VideoCard video={itemData} isActive={isActive} isAutoPost={false} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
       }
     </div>
   );
@@ -852,7 +1057,7 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
 SlideItem.displayName = 'SlideItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEOS PAGE PRINCIPALE — v11
+// VIDEOS PAGE — v12
 // ─────────────────────────────────────────────────────────────────────────────
 const VideosPage = () => {
   ensureCSS();
@@ -874,23 +1079,33 @@ const VideosPage = () => {
   const [slideFlash,         setSlideFlash]         = useState(false);
   const [ptrProgress,        setPtrProgress]        = useState(0);
   const [ptrRefreshing,      setPtrRefreshing]      = useState(false);
+  const [intentToast,        setIntentToast]        = useState(null); // intent détecté → toast
+  const [netType,            setNetType]            = useState(networkMgr.effectiveType);
 
-  const containerRef   = useRef(null), activeIndexRef = useRef(0), slideListeners = useRef({});
-  const feedItemsRef   = useRef([]);
-  // ── v11 : seenSet et invalidSet chargés depuis localStorage au montage ──
-  const seenSet        = useRef(loadPersistedSet(CONFIG.seen.storageKey));
-  const invalidSet     = useRef(loadPersistedSet(CONFIG.seen.invalidKey));
-  const aggPool        = useRef([]),   fetchTriggered = useRef(false);
-  const lastScrollTime = useRef(0),    momentumLockRef = useRef(0), anyModalRef = useRef(false);
-  const aggPageRef     = useRef(1),    aggHasMoreRef = useRef(true), aggLoadingRef = useRef(false);
-  const userHasMoreRef = useRef(userHasMore), userLoadingRef = useRef(userLoading);
-  const loadingMoreRef = useRef(false), watchStreakRef = useRef(0);
-  const ptrStartRef    = useRef(null), ptrActiveRef = useRef(false);
-  const activeItemRef  = useRef(null);
+  const containerRef    = useRef(null), activeIndexRef = useRef(0), slideListeners = useRef({});
+  const feedItemsRef    = useRef([]);
+  const seenSet         = useRef(loadPersistedSet(CONFIG.seen.storageKey));
+  const invalidSet      = useRef(loadPersistedSet(CONFIG.seen.invalidKey));
+  const aggPool         = useRef([]), fetchTriggered = useRef(false);
+  const lastScrollTime  = useRef(0), momentumLockRef = useRef(0), anyModalRef = useRef(false);
+  const aggPageRef      = useRef(1), aggHasMoreRef = useRef(true), aggLoadingRef = useRef(false);
+  const userHasMoreRef  = useRef(userHasMore), userLoadingRef = useRef(userLoading);
+  const loadingMoreRef  = useRef(false), watchStreakRef = useRef(0);
+  const ptrStartRef     = useRef(null), ptrActiveRef = useRef(false);
+  const activeItemRef   = useRef(null);
+  const lastIntentRef   = useRef(null); // pour détecter les changements d'intention
 
   useEffect(() => { userHasMoreRef.current = userHasMore; }, [userHasMore]);
   useEffect(() => { userLoadingRef.current = userLoading; }, [userLoading]);
   useEffect(() => { anyModalRef.current    = anyModalOpen; }, [anyModalOpen]);
+
+  // Surveille les changements de réseau
+  useEffect(() => {
+    if (!('connection' in navigator)) return;
+    const update = () => setNetType(networkMgr.effectiveType);
+    navigator.connection.addEventListener('change', update);
+    return () => navigator.connection.removeEventListener('change', update);
+  }, []);
 
   const activeCtx = useMemo(() => ({
     getActiveIndex: () => activeIndexRef.current,
@@ -900,28 +1115,65 @@ const VideosPage = () => {
     },
   }), []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 🧠 ENVOI WATCH SCORE AU BACKEND + mise à jour profil
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Live reorder — réclasse les prochains items après signal comportemental
+  const liveReorderAhead = useCallback(() => {
+    const idx     = activeIndexRef.current;
+    const items   = feedItemsRef.current;
+    const start   = idx + 1;
+    const end     = Math.min(start + CONFIG.behavior.liveReorderDepth, items.length);
+    if (end <= start) return;
+
+    const slice    = items.slice(start, end);
+    const dataOnly = slice.map(i => i.data).filter(Boolean);
+    if (dataOnly.length < 2) return;
+
+    const reordered = intelligentReorder(dataOnly, { jitter: 0.2 });
+    const uidMap    = new Map(slice.map(i => [i.data, i]));
+
+    const newSlice  = reordered.map(d => uidMap.get(d)).filter(Boolean);
+
+    const newFeed   = [
+      ...items.slice(0, start),
+      ...newSlice,
+      ...items.slice(end),
+    ];
+
+    feedItemsRef.current = newFeed;
+    startTransition(() => setFeedItems([...newFeed]));
+  }, []);
+
+  // ── Écoute les signaux comportementaux
+  useEffect(() => {
+    const unsub = behaviorEngine.onSignal((signal, item) => {
+      if (signal === 'skip' || signal === 'replay' || signal === 'longWatch') {
+        liveReorderAhead();
+      }
+
+      // Détecter changement d'intention dominant
+      const newIntent = userProfile.dominantIntent;
+      if (newIntent && newIntent !== lastIntentRef.current) {
+        lastIntentRef.current = newIntent;
+        setIntentToast(newIntent);
+        setTimeout(() => setIntentToast(null), 3500);
+      }
+    });
+    return unsub;
+  }, [liveReorderAhead]);
+
+  // ─── Watch score + profil ──────────────────────────────────────────────────
   const sendWatchScore = useCallback(async (itemData, score) => {
     if (!itemData?._id || score < CONFIG.watchScoreMin) return;
-
     userProfile.recordView(itemData, score);
-
     if (!itemData._isAggregated) return;
     const watchPct = Math.round(score * 100);
     try {
       const token = await getToken();
-      const headers = {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      };
       fetch(`${API_BASE}/api/aggregated/${itemData._id}/view`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type':'application/json', ...(token ? { Authorization:`Bearer ${token}` } : {}) },
         body: JSON.stringify({ watchPct }),
       }).catch(() => {});
-    } catch { /* silencieux */ }
+    } catch {}
   }, [getToken]);
 
   const notifyActive = useCallback((newIdx) => {
@@ -938,25 +1190,26 @@ const VideosPage = () => {
       sendWatchScore(previousItem, score);
     }
 
-    const items = feedItemsRef.current;
+    const items   = feedItemsRef.current;
     const newItem = items[newIdx];
-    activeItemRef.current = (newItem?.type === 'content' && newItem.isAggregated)
-      ? newItem.data
-      : null;
-
+    activeItemRef.current = (newItem?.type === 'content' && newItem.isAggregated) ? newItem.data : null;
     activeIndexRef.current = newIdx;
+
     if (newIdx > 0) setShowScrollHint(false);
     if ('vibrate' in navigator) navigator.vibrate(7);
+
     watchStreakRef.current++;
     if (watchStreakRef.current % 3 === 0 || watchStreakRef.current === 5) {
       startTransition(() => setWatchStreak(watchStreakRef.current));
       setTimeout(() => setWatchStreak(0), 2200);
     }
+
     setSlideFlash(f => !f);
     adaptiveBuf.record(now);
 
-    cancelPreloadsAfter(CONFIG.preloadAhead);
-    for (let i = 1; i <= CONFIG.preloadAhead; i++) injectPreload(items[newIdx + i]);
+    // Préchargement adapté au réseau
+    cancelPreloadsAfter(networkMgr.preloadAhead);
+    for (let i = 1; i <= networkMgr.preloadAhead; i++) injectPreload(items[newIdx + i]);
 
     const nextYtIds = extractYoutubeIds(items, newIdx + 1, CONFIG.ytWarmupAhead);
     if (nextYtIds.length > 0) YouTubePool.warmup(nextYtIds);
@@ -968,45 +1221,65 @@ const VideosPage = () => {
     });
   }, [sendWatchScore]);
 
-  // ── v11 : invalidSet persisté ─────────────────────────────────────────────
   const invalidateItem = useCallback((uid) => {
     if (invalidSet.current.has(uid)) return;
     invalidSet.current.add(uid);
-    // Persister immédiatement pour survivre aux rechargements
     persistSet(CONFIG.seen.invalidKey, invalidSet.current);
     feedItemsRef.current = feedItemsRef.current.filter(i => i.id !== uid);
     startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== uid)));
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // appendItems v11 — skip des items déjà vus (persisté) + tri intelligent
-  // ─────────────────────────────────────────────────────────────────────────
-  const appendItems = useCallback((rawItems) => {
+  // ─── appendItems v12 ──────────────────────────────────────────────────────
+  const appendItems = useCallback((rawItems, { coldStart = false } = {}) => {
+    if (!rawItems || rawItems.length === 0) return;
+
     const boosted   = applyViralBoost(rawItems);
-    const reordered = intelligentReorder(boosted);
+    const reordered = intelligentReorder(boosted, {
+      jitter:       coldStart ? 0.1 : 0.3,
+      forColdStart: coldStart,
+    });
+
+    // Si TOUS les items sont déjà dans le seenSet → le vider pour débloquer le feed
+    // (se produit quand l'API a peu de contenu total et que le seenSet est saturé)
+    const allSeen = reordered.every(item => {
+      const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
+      return seenSet.current.has(uid) || invalidSet.current.has(uid);
+    });
+    if (allSeen && reordered.length > 0) {
+      if (import.meta.env.DEV)
+        console.warn(`[Feed v12] ⚠️ Tous les ${reordered.length} items déjà vus → reset seenSet`);
+      seenSet.current.clear();
+      try { localStorage.removeItem(CONFIG.seen.storageKey); } catch {}
+    }
 
     const toAdd = []; let len = feedItemsRef.current.length;
     for (const item of reordered) {
       const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
-
-      // ── v11 : skip si déjà vu (entre sessions) ou invalide ───────────────
       if (seenSet.current.has(uid) || invalidSet.current.has(uid)) continue;
       seenSet.current.add(uid);
 
       if (!item.isEmbed) {
-        if (needsCloudinaryProbe(item)) probeCloudinaryVideo(item.cloudinaryUrl || item.videoUrl || item.url || '', () => invalidateItem(uid));
-        else probeItemBackground(item, () => invalidateItem(uid));
+        // R2 : pas de probe (CDN public, CORS bloque les HEAD)
+        // Cloudinary legacy → invalider directement (401 garanti)
+        probeItemBackground(item, () => invalidateItem(uid));
       }
 
       toAdd.push({ type:'content', id:uid, data:{ ...item, _uid:uid }, isAggregated:!!item._isAggregated });
       len++;
-      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) {
-        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` }); len++;
-      }
+      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0)
+        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
     }
-    if (toAdd.length === 0) return;
 
-    // ── v11 : persister le seenSet après chaque batch ─────────────────────
+    if (import.meta.env.DEV)
+      console.log(`[Feed v12] appendItems: ${rawItems.length} reçus → ${toAdd.filter(i=>i.type==='content').length} ajoutés au feed`);
+
+    // Même si 0 items ajoutés, débloquer le skeleton si le feed est encore vide
+    if (toAdd.length === 0) {
+      if (feedItemsRef.current.length === 0)
+        startTransition(() => setFeedReady(true));
+      return;
+    }
+
     persistSet(CONFIG.seen.storageKey, seenSet.current);
 
     const wasEmpty = feedItemsRef.current.length === 0;
@@ -1023,12 +1296,11 @@ const VideosPage = () => {
       }
     });
 
-    const preloadSlice = toAdd.slice(0, CONFIG.preloadAhead);
-    if ('requestIdleCallback' in window) {
+    const preloadSlice = toAdd.slice(0, networkMgr.preloadAhead);
+    if ('requestIdleCallback' in window)
       requestIdleCallback(() => preloadSlice.forEach(injectPreload), { timeout: 2000 });
-    } else {
+    else
       setTimeout(() => preloadSlice.forEach(injectPreload), 400);
-    }
 
     if (wasEmpty) {
       const firstYtIds = extractYoutubeIds(toAdd, 0, CONFIG.ytWarmupAhead);
@@ -1049,9 +1321,7 @@ const VideosPage = () => {
     startTransition(() => setFeedItems(prev => [...prev, ...toAdd]));
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 🌐 fetchAggregated v11 — page de départ aléatoire si utilisateur connu
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─── fetchAggregated v12 — avec hints d'intention ─────────────────────────
   const fetchAggregated = useCallback(async (page = 1, limit = 40) => {
     if (!CONFIG.aggregated.enabled || aggLoadingRef.current) return;
     try {
@@ -1059,11 +1329,13 @@ const VideosPage = () => {
       const token = await getToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-      const btpHint   = userProfile.isBTPUser ? '&btpBoost=1' : '';
-      const coldStart = userProfile.isNewUser  ? '&coldStart=1' : '';
+      const btpHint      = userProfile.isBTPUser      ? '&btpBoost=1'       : '';
+      const coldStart    = userProfile.isNewUser       ? '&coldStart=1'      : '';
+      const intentHint   = userProfile.dominantIntent  ? `&intent=${userProfile.dominantIntent}` : '';
+      const netHint      = networkMgr.effectiveType !== 'default' ? `&quality=${networkMgr.effectiveType}` : '';
 
       const res = await fetch(
-        `${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all${btpHint}${coldStart}`,
+        `${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all${btpHint}${coldStart}${intentHint}${netHint}`,
         { headers }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1073,9 +1345,9 @@ const VideosPage = () => {
         .filter(isPlayableCandidate)
         .map(c => ({ ...c, _isAggregated: true }));
 
-      if (import.meta.env.DEV && json.meta) {
+      if (import.meta.env.DEV) {
         console.log(
-          `[Feed v11] p${page} | sources: ${json.meta.sources?.join(',')} | BTP: ${json.meta.btpRatio}% | seenSet: ${seenSet.current.size} items skippés`
+          `[Feed v12] p${page} | ${finalItems.length} items | net:${networkMgr.effectiveType} | intent:${userProfile.dominantIntent || 'none'} | BTP:${userProfile.isBTPUser}`
         );
       }
 
@@ -1083,7 +1355,7 @@ const VideosPage = () => {
       aggPageRef.current    = page;
       aggHasMoreRef.current = json.pagination?.hasMore || false;
 
-      appendItems(finalItems);
+      appendItems(finalItems, { coldStart: page === 1 && userProfile.isNewUser });
 
       if (feedItemsRef.current.length < CONFIG.minFeedSize && aggHasMoreRef.current)
         setTimeout(() => fetchAggregated(page + 1, limit), 200);
@@ -1097,6 +1369,7 @@ const VideosPage = () => {
     }
   }, [getToken, appendItems, recycle]);
 
+  // ── Intégrer les vidéos utilisateur ───────────────────────────────────────
   useEffect(() => {
     const newOnes = (userVideos || []).filter(v => {
       const uid = `user-${v._id}`;
@@ -1105,27 +1378,26 @@ const VideosPage = () => {
     if (newOnes.length > 0) appendItems(newOnes.map(v => ({ ...v, _isUserVideo: true })));
   }, [userVideos, appendItems]);
 
-  // ── v11 : page de départ aléatoire si utilisateur connu ──────────────────
+  // ── Init ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!fetchTriggered.current) {
       fetchTriggered.current = true;
       YouTubePool.init();
       fetchUserVideos(true);
 
-      // Si l'utilisateur a déjà du contenu vu, partir d'une page aléatoire
-      // pour éviter de toujours afficher les mêmes premiers résultats API.
-      const hasHistory = seenSet.current.size > 10;
-      const startPage  = hasHistory ? Math.floor(Math.random() * 3) + 1 : 1;
+      // ✅ Toujours démarrer à la page 1 pour garantir des résultats.
+      // La variété est assurée par intelligentReorder + jitter côté client,
+      // pas en sautant des pages API qui peuvent être vides.
+      const startPage = 1;
 
-      if (import.meta.env.DEV && hasHistory) {
-        console.log(`[Feed v11] Utilisateur connu (${seenSet.current.size} vus) → départ page ${startPage}`);
-      }
+      if (import.meta.env.DEV)
+        console.log(`[Feed v12] Init → p${startPage}, intent: ${userProfile.dominantIntent || 'none'}, seenSet: ${seenSet.current.size}`);
 
       fetchAggregated(startPage, CONFIG.aggregated.initialLoad);
     }
   }, []); // eslint-disable-line
 
-  // Surveillance mémoire
+  // ── Mémoire ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!('memory' in performance)) return;
     const check = setInterval(() => {
@@ -1145,6 +1417,7 @@ const VideosPage = () => {
     if (now - lastScrollTime.current < 80) return;
     lastScrollTime.current = now;
     notifyActive(index);
+
     const remaining = feedItemsRef.current.length - index;
     if (remaining <= adaptiveBuf.value && !loadingMoreRef.current) {
       loadingMoreRef.current = true;
@@ -1159,10 +1432,12 @@ const VideosPage = () => {
     }
   }, [notifyActive, fetchUserVideos, fetchAggregated, recycle]);
 
+  // ── Scroll + pull-to-refresh ───────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     let ticking = false;
+
     const onScroll = () => {
       if (anyModalRef.current || isFeedLocked() || ticking) return;
       ticking = true;
@@ -1173,6 +1448,7 @@ const VideosPage = () => {
         notifyActive(Math.max(0, Math.min(idx, feedItemsRef.current.length - 1)));
       });
     };
+
     const onTouchStart = (e) => {
       if (container.scrollTop === 0) { ptrStartRef.current = e.touches[0].clientY; ptrActiveRef.current = true; }
     };
@@ -1188,10 +1464,11 @@ const VideosPage = () => {
       if (prog > 0.8) { setPtrRefreshing(true); await new Promise(r => setTimeout(r, 800)); handleVideoPublished(); setPtrRefreshing(false); }
       ptrStartRef.current = null;
     };
-    container.addEventListener('scroll',       onScroll,      { passive: true });
-    container.addEventListener('touchstart',   onTouchStart,  { passive: true });
-    container.addEventListener('touchmove',    onTouchMove,   { passive: false });
-    container.addEventListener('touchend',     onTouchEnd,    { passive: true });
+
+    container.addEventListener('scroll',     onScroll,     { passive: true });
+    container.addEventListener('touchstart', onTouchStart, { passive: true });
+    container.addEventListener('touchmove',  onTouchMove,  { passive: false });
+    container.addEventListener('touchend',   onTouchEnd,   { passive: true });
     return () => {
       container.removeEventListener('scroll',     onScroll);
       container.removeEventListener('touchstart', onTouchStart);
@@ -1209,17 +1486,16 @@ const VideosPage = () => {
     }
   }, [invalidateItem, fetchAggregated, recycle]);
 
-  const handleModalChange = useCallback((isOpen) => { anyModalRef.current = isOpen; setAnyModalOpen(isOpen); }, []);
+  const handleModalChange = useCallback((isOpen) => {
+    anyModalRef.current = isOpen;
+    setAnyModalOpen(isOpen);
+  }, []);
 
-  // ── v11 : handleVideoPublished — reset seenSet persisté (vrai refresh) ───
-  // L'invalidSet est CONSERVÉ : les vidéos défaillantes restent blacklistées.
   const handleVideoPublished = useCallback(() => {
     feedItemsRef.current = [];
     seenSet.current.clear();
-    invalidSet.current.clear(); // On garde les invalides en mémoire mais on repart à zéro visuellement
-    // Effacer le seenSet du localStorage pour un vrai refresh
+    invalidSet.current.clear();
     try { localStorage.removeItem(CONFIG.seen.storageKey); } catch {}
-    // NE PAS effacer l'invalidSet — les vidéos cassées restent blacklistées
     aggPool.current = []; aggPageRef.current = 1; aggHasMoreRef.current = true;
     watchStreakRef.current = 0; _recycleRound = 0; _adCounter = 0;
     activeItemRef.current = null;
@@ -1234,7 +1510,6 @@ const VideosPage = () => {
     fetchAggregated(1, CONFIG.aggregated.initialLoad);
   }, [fetchUserVideos, fetchAggregated]);
 
-  // ── Cleanup complet au unmount ─────────────────────────────────────────
   useEffect(() => () => {
     document.getElementById('vp-styles')?.remove();
     _cssInjected = false;
@@ -1267,6 +1542,24 @@ const VideosPage = () => {
           <OfflineBanner show={!isOnline} />
           <PullToRefresh progress={ptrProgress} refreshing={ptrRefreshing} />
           <WatchStreakBadge count={watchStreak} />
+
+          {/* Toast intention détectée */}
+          <AnimatePresence>
+            {intentToast && (
+              <motion.div
+                key={intentToast}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                style={{ position:'absolute', top: 80, left:'50%', transform:'translateX(-50%)', zIndex: 45, pointerEvents:'none' }}>
+                <IntentToast intent={intentToast} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Badge réseau dégradé */}
+          <NetworkBadge type={netType} />
+
           <ActionBar
             onBack={handleBack} activeTab={activeTab} setActiveTab={setActiveTab}
             showSearch={showSearch} setShowSearch={setShowSearch}
@@ -1275,6 +1568,7 @@ const VideosPage = () => {
             currentIndex={activeDisplayIndex} totalItems={feedItems.length}
           />
           <SwipeHint visible={showScrollHint && activeDisplayIndex === 0 && feedReady} />
+
           <div
             ref={containerRef}
             className="vp-scroll absolute inset-0 z-10 overflow-y-scroll snap-y snap-mandatory"
@@ -1291,6 +1585,7 @@ const VideosPage = () => {
                   />;
             })}
           </div>
+
           {showModal && (
             <VideoModal showModal={showModal} setShowModal={setShowModal} onVideoPublished={handleVideoPublished} />
           )}

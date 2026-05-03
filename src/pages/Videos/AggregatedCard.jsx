@@ -1,19 +1,15 @@
-// 📁 src/pages/Videos/AggregatedCard.jsx — v7 useVideoPlayer
+// 📁 src/pages/Videos/AggregatedCard.jsx — v8 SON PERSISTANT YOUTUBE
 //
 // ═══════════════════════════════════════════════════════════════════════════
-// MIGRATION v7 — useVideoPlayer (source de vérité partagée)
+// NOUVEAUTÉS v8 vs v7 :
 //
-//  ✅ useVideoPlayer LOCAL (DirectVideo/HlsVideo) supprimé → remplacé par
-//     useVideoPlayer() du hook canonique
-//  ✅ DirectVideo refactorisé : src via ref callback + useLayoutEffect
-//     (même fix StrictMode que PostMedia/VideoItem v7)
-//  ✅ HlsVideo : conserve la logique HLS.js mais délègue play/pause/abort
-//     au hook pour cohérence
-//  ✅ AbortController, debounce, canplay, timeout, retry, cleanup → hérités
-//  ✅ Fallback proxy → direct via setCurrentSrc
-//  ✅ Singleton registerPlaying → 1 seule vidéo joue globalement
-//  ✅ TOUT le reste v6 conservé (YouTubeEmbed pool, Vimeo, SeekBar,
-//     ChantilinkSignature, commentaires, download, actions…)
+// ✅ YouTubeEmbed refactorisé — délègue entièrement à YouTubePool v6
+//    (YT.Player officiel, plus de postMessage raw)
+// ✅ SON PERSISTANT — getGlobalMuted/setGlobalMuted propagé à tous les slots
+//    → Activer le son sur une vidéo = son activé sur toutes les suivantes
+// ✅ handleToggleMute / activateSound propagent setGlobalMuted(nm)
+// ✅ useEffect isActive — hérite de getGlobalMuted() au lieu de reset sys.
+// ✅ Tout le reste v7 conservé intact
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React, { useEffect, useRef, useState, memo, useCallback } from 'react';
@@ -21,7 +17,7 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import { lockFeed, unlockFeed } from './VideoCard';
-import YouTubePool from './YouTubePool';
+import YouTubePool, { getGlobalMuted, setGlobalMuted } from './YouTubePool';
 import useVideoPlayer, { USER_INTERACTED_KEY } from '../../hooks/useVideoPlayer';
 import {
   FaHeart, FaRegHeart, FaComment, FaShare, FaExternalLinkAlt,
@@ -75,58 +71,47 @@ const downloadVideoFile = async (src, title = 'chantilink-video') => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎬 YouTubeEmbed v6.1 — poster-first, pool acquire/release (inchangé)
+// 🎬 YouTubeEmbed v8 — délègue à YouTubePool v6 (YT.Player officiel)
 // ─────────────────────────────────────────────────────────────────────────────
 const YouTubeEmbed = memo(({ content, isActive, muted }) => {
   const containerRef = useRef(null);
   const slotRef      = useRef(null);
-  const mutedRef     = useRef(muted);
-  const isActiveRef  = useRef(isActive);
   const videoId      = extractYoutubeId(content.embedUrl || content.videoUrl || '');
 
-  useEffect(() => { mutedRef.current    = muted;    }, [muted]);
-  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
-
-  const postCmd = useCallback((func, args = []) => {
-    const iframe = slotRef.current?.iframe;
-    if (!iframe) return;
-    try { iframe.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*'); } catch {}
-  }, []);
-
+  // Acquérir le slot au montage / changement de videoId
   useEffect(() => {
     if (!videoId || !containerRef.current) return;
-    const slot = YouTubePool.acquire(videoId, containerRef.current);
+
+    YouTubePool.init();
+
+    const slot = YouTubePool.acquire(videoId, containerRef.current, {
+      autoplay: isActive,
+      // muted hérité de _globalMuted dans le pool (pas besoin de le passer)
+    });
     slotRef.current = slot;
-    if (slot.state === 'ready' || slot.state === 'active') {
-      if (isActiveRef.current) postCmd('playVideo');
-      if (!mutedRef.current)   { postCmd('unMute'); postCmd('setVolume', [100]); }
-    }
-    const handleMessage = (event) => {
-      if (!event.origin?.includes('youtube.com')) return;
-      if (!slotRef.current?.iframe || event.source !== slotRef.current.iframe.contentWindow) return;
-      let data;
-      try { data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; }
-      if (data?.event === 'onReady') {
-        if (isActiveRef.current) postCmd('playVideo'); else postCmd('pauseVideo');
-        if (!mutedRef.current) { postCmd('unMute'); postCmd('setVolume', [100]); }
-      }
-      if (data?.event === 'onStateChange' && data?.info === 0) {
-        postCmd('seekTo', [0, true]);
-        if (isActiveRef.current) postCmd('playVideo');
-      }
-    };
-    window.addEventListener('message', handleMessage);
+
     return () => {
-      window.removeEventListener('message', handleMessage);
-      if (slotRef.current) { YouTubePool.release(slotRef.current); slotRef.current = null; }
+      if (slotRef.current) {
+        YouTubePool.release(slotRef.current);
+        slotRef.current = null;
+      }
     };
   }, [videoId]); // eslint-disable-line
 
-  useEffect(() => { if (isActive) postCmd('playVideo'); else postCmd('pauseVideo'); }, [isActive, postCmd]);
+  // Sync play / pause
   useEffect(() => {
-    if (muted) postCmd('mute');
-    else { postCmd('unMute'); postCmd('setVolume', [100]); }
-  }, [muted, postCmd]);
+    const slot = slotRef.current;
+    if (!slot || slot._isDestroyed) return;
+    if (isActive) slot.play();
+    else          slot.pause();
+  }, [isActive]);
+
+  // Sync muted vers le slot (setGlobalMuted est géré dans AggregatedCard)
+  useEffect(() => {
+    const slot = slotRef.current;
+    if (!slot || slot._isDestroyed) return;
+    slot.setMuted(muted);
+  }, [muted]);
 
   if (!videoId) return (
     <div className="w-full h-full bg-gray-900 flex items-center justify-center">
@@ -135,19 +120,24 @@ const YouTubeEmbed = memo(({ content, isActive, muted }) => {
   );
 
   return (
-    <div ref={containerRef}
-      style={{ position:'absolute', inset:0, width:'100%', height:'100%', background:'#080810', overflow:'hidden' }} />
+    <div
+      ref={containerRef}
+      style={{
+        position: 'absolute', inset: 0,
+        width: '100%', height: '100%',
+        background: '#080810', overflow: 'hidden',
+      }}
+    />
   );
 });
 YouTubeEmbed.displayName = 'YouTubeEmbed';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ DirectVideo v7 — utilise useVideoPlayer (fix StrictMode)
+// ✅ DirectVideo v7 — utilise useVideoPlayer (inchangé)
 // ─────────────────────────────────────────────────────────────────────────────
 const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError,
   onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded }) => {
 
-  // buildVideoUrl peut retourner une URL proxy ou directe selon la source
   const rawUrl = buildVideoUrl(content) || '';
 
   const player = useVideoPlayer({
@@ -158,10 +148,9 @@ const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError,
     preload:         'auto',
     onError,
     onMutedChange,
-    useIntersection: false, // contrôle par isActive
+    useIntersection: false,
   });
 
-  // Sync mute depuis le parent (AggregatedCard gère son propre état muted)
   useEffect(() => {
     const vid = player.videoEl;
     if (!vid) return;
@@ -174,10 +163,6 @@ const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError,
 
   return (
     <>
-      {/*
-        ✅ PAS de src={} — géré impérativement par useVideoPlayer
-        muted={true} attribut HTML initial pour autoplay policy navigateur.
-      */}
       <video
         ref={player.videoRef}
         muted
@@ -196,8 +181,6 @@ const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError,
         onDurationChange={onDurationChange}
         onEnded={onEnded}
       />
-
-      {/* Poster jusqu'au premier frame décodé */}
       {player.posterUrl && (
         <img src={player.posterUrl} alt="" draggable="false"
           style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover', pointerEvents:'none', zIndex:player.posterVisible ? 2 : -1, opacity:player.posterVisible ? 1 : 0, transition:'opacity 0.3s ease' }} />
@@ -208,21 +191,20 @@ const DirectVideo = memo(({ content, isActive, muted, onMutedChange, onError,
 DirectVideo.displayName = 'DirectVideo';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HlsVideo — conserve HLS.js, délègue play/pause au hook pour cohérence
+// HlsVideo — inchangé v7
 // ─────────────────────────────────────────────────────────────────────────────
 const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError,
   onTogglePlay, onTimeUpdate, onDurationChange, onDoubleTap, onEnded }) => {
 
-  const videoElRef  = useRef(null);
-  const hlsRef      = useRef(null);
-  const abortRef    = useRef(null);
-  const mutedRef    = useRef(muted);
-  const isActRef    = useRef(isActive);
+  const videoElRef = useRef(null);
+  const hlsRef     = useRef(null);
+  const abortRef   = useRef(null);
+  const mutedRef   = useRef(muted);
+  const isActRef   = useRef(isActive);
 
-  useEffect(() => { mutedRef.current  = muted;    }, [muted]);
-  useEffect(() => { isActRef.current  = isActive; }, [isActive]);
+  useEffect(() => { mutedRef.current = muted;    }, [muted]);
+  useEffect(() => { isActRef.current = isActive; }, [isActive]);
 
-  // ── Initialisation HLS.js ─────────────────────────────────────────────────
   useEffect(() => {
     const vid = videoElRef.current;
     if (!vid || !content.videoUrl) return;
@@ -257,7 +239,6 @@ const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError,
     return () => { abortRef.current?.abort(); hlsRef.current?.destroy(); hlsRef.current = null; };
   }, [content.videoUrl]); // eslint-disable-line
 
-  // ── Play/pause selon isActive ─────────────────────────────────────────────
   useEffect(() => {
     const vid = videoElRef.current; if (!vid) return;
     if (isActive) {
@@ -279,7 +260,6 @@ const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError,
     }
   }, [isActive]); // eslint-disable-line
 
-  // ── Sync muted ────────────────────────────────────────────────────────────
   useEffect(() => {
     const vid = videoElRef.current; if (!vid) return;
     vid.muted = muted; vid.volume = muted ? 0 : 1;
@@ -291,7 +271,6 @@ const HlsVideo = memo(({ content, isActive, muted, onMutedChange, onError,
     }
   }, [muted]); // eslint-disable-line
 
-  // ── Cleanup ───────────────────────────────────────────────────────────────
   useEffect(() => () => {
     abortRef.current?.abort();
     hlsRef.current?.destroy(); hlsRef.current = null;
@@ -363,7 +342,7 @@ const VimeoEmbed = memo(({ content, isActive, muted }) => {
 });
 VimeoEmbed.displayName = 'VimeoEmbed';
 
-// ── Contenus non-vidéo (inchangés) ───────────────────────────────────────────
+// ── Contenus non-vidéo ────────────────────────────────────────────────────────
 const ImageContent = memo(({ content, onDoubleTap }) => {
   const [loaded, setLoaded] = useState(false);
   const [error,  setError]  = useState(false);
@@ -464,7 +443,7 @@ const ChantilinkSignature = memo(({ visible }) => (
 ));
 ChantilinkSignature.displayName = 'ChantilinkSignature';
 
-// ─── SeekBar (identique à VideoCard) ─────────────────────────────────────────
+// ─── SeekBar ──────────────────────────────────────────────────────────────────
 const SeekBar = memo(({ progress, getVideoEl, isEmbed, duration = 0 }) => {
   const trackRef  = useRef(null);
   const dragging  = useRef(false);
@@ -538,18 +517,22 @@ const SeekBar = memo(({ progress, getVideoEl, isEmbed, duration = 0 }) => {
 SeekBar.displayName = 'SeekBar';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AggregatedCard principale v7
+// AggregatedCard v8
 // ─────────────────────────────────────────────────────────────────────────────
 const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVideoError }) => {
   if (!content) return null;
 
   const { user: currentUser, getToken } = useAuth();
 
-  // DirectVideo expose son videoEl via ref externe pour seekBar/download
   const directVideoElRef = useRef(null);
   const hlsVideoElRef    = useRef(null);
 
-  const [muted,         setMuted]         = useState(() => sessionStorage.getItem(USER_INTERACTED_KEY) !== '1');
+  // ── État muted — hérite du son global YouTube si déjà interagi ────────────
+  const [muted, setMuted] = useState(() => {
+    const interacted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
+    return interacted ? getGlobalMuted() : true;
+  });
+
   const [showSoundHint, setShowSoundHint] = useState(false);
   const [isPaused,      setIsPaused]      = useState(false);
   const [showHeart,     setShowHeart]     = useState(false);
@@ -563,16 +546,17 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
   const [showSignature, setShowSignature] = useState(false);
   const [videoError,    setVideoError]    = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+
   const signatureTimer   = useRef(null);
   const isEndedFiredRef  = useRef(false);
   const onVideoEndedRef  = useRef(onVideoEnded);
   useEffect(() => { onVideoEndedRef.current = onVideoEnded; }, [onVideoEnded]);
 
-  const isHLS        = !!content.isHLS;
-  const isEmbed      = !!content.isEmbed;
-  const contentType  = content.contentType || 'video';
-  const isYoutube    = isEmbed && !!(extractYoutubeId(content.embedUrl || content.videoUrl || ''));
-  const isVimeo      = isEmbed && !isYoutube && !!(content.videoUrl?.includes('vimeo') || content.embedUrl?.includes('vimeo'));
+  const isHLS       = !!content.isHLS;
+  const isEmbed     = !!content.isEmbed;
+  const contentType = content.contentType || 'video';
+  const isYoutube   = isEmbed && !!(extractYoutubeId(content.embedUrl || content.videoUrl || ''));
+  const isVimeo     = isEmbed && !isYoutube && !!(content.videoUrl?.includes('vimeo') || content.embedUrl?.includes('vimeo'));
   const isShortVideo = content.type === 'short_video';
   const isDirectVid  = contentType === 'video' && !isEmbed && !isHLS;
   const isImage      = contentType === 'image';
@@ -583,10 +567,9 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
   const showMuteBtn     = showVideoPlayer || showEmbed;
   const videoHasNoAudio = content.hasAudio !== true && !isEmbed && !isHLS && content.platform === 'Pexels';
 
-  // Getter pour seekBar (accès au bon élément vidéo selon le type)
   const getVideoEl = useCallback(() => {
-    if (isHLS)        return hlsVideoElRef.current;
-    if (isDirectVid)  return directVideoElRef.current;
+    if (isHLS)       return hlsVideoElRef.current;
+    if (isDirectVid) return directVideoElRef.current;
     return null;
   }, [isHLS, isDirectVid]);
 
@@ -597,6 +580,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
 
   useEffect(() => { isEndedFiredRef.current = false; }, [content._id]);
 
+  // Hint son au démarrage
   useEffect(() => {
     if (!isActive || (!showVideoPlayer && !showEmbed)) return;
     if (sessionStorage.getItem(USER_INTERACTED_KEY) !== '1') {
@@ -606,6 +590,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     }
   }, [isActive, showVideoPlayer, showEmbed]);
 
+  // Vue comptabilisée après 3s
   useEffect(() => {
     if (!isActive || !content._id) return;
     const t = setTimeout(async () => {
@@ -614,16 +599,26 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     return () => clearTimeout(t);
   }, [isActive, content._id]);
 
+  // ── Reset au changement de card — hérite du son global ───────────────────
   useEffect(() => {
     if (!isActive) {
       if (!videoHasNoAudio) {
         const interacted = sessionStorage.getItem(USER_INTERACTED_KEY) === '1';
-        setMuted(interacted ? false : true);
+        // YouTube : hérite du son global
+        // Natif : si interacted → son activé, sinon muet
+        const shouldMute = isYoutube
+          ? getGlobalMuted()
+          : (interacted ? false : true);
+        setMuted(shouldMute);
       }
-      setVideoError(false); setIsPaused(false); setProgress(0);
-      setShowSoundHint(false); setShowSignature(false); signatureTimer.current = null;
+      setVideoError(false);
+      setIsPaused(false);
+      setProgress(0);
+      setShowSoundHint(false);
+      setShowSignature(false);
+      signatureTimer.current = null;
     }
-  }, [isActive, videoHasNoAudio]);
+  }, [isActive, videoHasNoAudio, isYoutube]);
 
   const handleTimeUpdate = useCallback((e) => {
     const v = e.target; if (!v?.duration) return;
@@ -650,16 +645,25 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     onVideoEndedRef.current?.();
   }, [isEmbed, getVideoEl]);
 
+  // ── Activer le son (premier tap) ─────────────────────────────────────────
   const activateSound = useCallback((e) => {
     e?.stopPropagation();
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
-    setShowSoundHint(false); setMuted(false);
+    setShowSoundHint(false);
+    setMuted(false);
+
+    // Propager aux slots YouTube actifs + mémoriser pour les suivants
+    if (isYoutube) setGlobalMuted(false);
+
     const vid = getVideoEl();
     if (vid && !isEmbed) {
-      vid.muted = false; vid.volume = 1;
-      if (vid.paused && isActive) vid.play().catch(() => { vid.muted = true; setMuted(true); });
+      vid.muted  = false;
+      vid.volume = 1;
+      if (vid.paused && isActive) {
+        vid.play().catch(() => { vid.muted = true; setMuted(true); });
+      }
     }
-  }, [isActive, isEmbed, getVideoEl]);
+  }, [isActive, isEmbed, isYoutube, getVideoEl]);
 
   const handleTogglePlay = useCallback((e) => {
     e?.stopPropagation();
@@ -686,18 +690,30 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
     } catch { setIsLiked(was); setLocalLikes(p => was ? p+1 : p-1); }
   }, [currentUser, isLiked, content._id, getToken]);
 
+  // ── Toggle mute — propage le son globalement pour YouTube ────────────────
   const handleToggleMute = useCallback((e) => {
     e.stopPropagation();
     if (videoHasNoAudio) return;
+
     sessionStorage.setItem(USER_INTERACTED_KEY, '1');
     setShowSoundHint(false);
-    const nm = !muted; setMuted(nm);
+
+    const nm = !muted;
+    setMuted(nm);
+
+    // ✅ Propager à tous les slots YouTube actifs + mémoriser pour les suivants
+    if (isYoutube) setGlobalMuted(nm);
+
+    // Vidéos natives
     const vid = getVideoEl();
     if (vid && !isEmbed) {
-      vid.muted = nm; vid.volume = nm ? 0 : 1;
-      if (!nm && vid.paused && isActive) vid.play().catch(() => { vid.muted = true; setMuted(true); });
+      vid.muted  = nm;
+      vid.volume = nm ? 0 : 1;
+      if (!nm && vid.paused && isActive) {
+        vid.play().catch(() => { vid.muted = true; setMuted(true); });
+      }
     }
-  }, [muted, isActive, isEmbed, videoHasNoAudio, getVideoEl]);
+  }, [muted, isActive, isEmbed, isYoutube, videoHasNoAudio, getVideoEl]);
 
   const handleCommentSubmit = useCallback(async () => {
     if (!newComment.trim() || !currentUser) return;
@@ -734,7 +750,6 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
   const openComments  = useCallback((e) => { e.stopPropagation(); lockFeed(); setShowComments(true);  onModalChange?.(true);  }, [onModalChange]);
   const closeComments = useCallback(()  => { unlockFeed(); setShowComments(false); onModalChange?.(false); }, [onModalChange]);
 
-  // DirectVideo expose son videoEl via une ref callback passée en prop
   const onDirectVideoRef = useCallback((el) => { directVideoElRef.current = el; }, []);
   const onHlsVideoRef    = useCallback((el) => { hlsVideoElRef.current    = el; }, []);
 
@@ -787,7 +802,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
   return (
     <div className="relative w-full h-full bg-black overflow-hidden select-none">
 
-      {/* ── Lecteurs directs ────────────────────────────────────────────────── */}
+      {/* ── Lecteurs directs ─────────────────────────────────────────────── */}
       {showVideoPlayer && isHLS && (
         <HlsVideo content={content} isActive={isActive} muted={muted} onMutedChange={setMuted}
           onError={handleVideoError} onTogglePlay={handleTogglePlay}
@@ -805,19 +820,19 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         />
       )}
 
-      {/* ── Embeds ──────────────────────────────────────────────────────────── */}
+      {/* ── Embeds ───────────────────────────────────────────────────────── */}
       {showEmbed && isYoutube && <YouTubeEmbed content={content} isActive={isActive} muted={muted} />}
       {showEmbed && isVimeo   && <VimeoEmbed  content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />}
       {showEmbed && !isYoutube && !isVimeo && <VimeoEmbed content={content} isActive={isActive} muted={muted} onMutedChange={setMuted} />}
 
-      {/* ── Erreur ──────────────────────────────────────────────────────────── */}
+      {/* ── Erreur ───────────────────────────────────────────────────────── */}
       {(isShortVideo || isDirectVid || isHLS || isEmbed) && videoError && !onVideoError && <VideoError thumbnail={content.thumbnail} />}
 
-      {/* ── Contenus non-vidéo ──────────────────────────────────────────────── */}
+      {/* ── Contenus non-vidéo ───────────────────────────────────────────── */}
       {isImage && !isShortVideo && !isDirectVid && !isHLS && <ImageContent content={content} onDoubleTap={handleDoubleTap} />}
       {isText  && !isShortVideo && !isDirectVid && !isHLS && !isImage && <ArticleContent content={content} />}
 
-      {/* ── Overlays ────────────────────────────────────────────────────────── */}
+      {/* ── Overlays ─────────────────────────────────────────────────────── */}
       {!isText && <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/85 pointer-events-none" />}
       {videoHasNoAudio && isActive && <NoAudioBadge />}
 
@@ -842,7 +857,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         )}
       </AnimatePresence>
 
-      {/* ── Infos contenu ───────────────────────────────────────────────────── */}
+      {/* ── Infos contenu ────────────────────────────────────────────────── */}
       {!isText && (
         <div className="absolute left-4 right-16 z-30" style={{ bottom:'calc(72px + env(safe-area-inset-bottom))' }}>
           <div className="flex items-center gap-3 mb-3">
@@ -870,7 +885,7 @@ const AggregatedCard = ({ content, isActive, onVideoEnded, onModalChange, onVide
         </div>
       )}
 
-      {/* ── Actions ─────────────────────────────────────────────────────────── */}
+      {/* ── Actions ──────────────────────────────────────────────────────── */}
       <div className="absolute right-2 flex flex-col items-center gap-5 z-40 pointer-events-auto"
         style={{ bottom:'calc(72px + env(safe-area-inset-bottom))' }}
         onPointerDown={onActDown} onPointerUp={onActUp} onPointerCancel={onActUp}

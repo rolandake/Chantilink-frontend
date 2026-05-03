@@ -589,23 +589,21 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
 BoostModal.displayName = "BoostModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GlobalModalManager — v24 debug complet
+// GlobalModalManager — stable, mémoïsé, listener jamais perdu
 // ─────────────────────────────────────────────────────────────────────────────
-export const GlobalModalManager = () => {
+const GlobalModalManagerBase = () => {
   const { isDarkMode } = useDarkMode();
   const [modalState, setModalState] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const renderCountRef = useRef(0);
   renderCountRef.current++;
 
-  // Log chaque render du GlobalModalManager
   dbgPC(`[4] GlobalModalManager render #${renderCountRef.current} | modalState=`, modalState?.action ?? "null");
 
   useEffect(() => {
     dbgPC("[3] GlobalModalManager MONTÉ — addEventListener MODAL_EVENT sur window");
 
     if (_isDebug()) {
-      // Vérifie après 0ms que le composant est bien dans l'arbre React
       setTimeout(() => {
         dbgPC("[3] GlobalModalManager check post-mount → modal-root existant:", document.getElementById("modal-root"));
       }, 0);
@@ -625,7 +623,6 @@ export const GlobalModalManager = () => {
       setIsDeleting(false);
       setModalState({ action, post, onDeleted, showToast, mockPost });
 
-      // Vérification 50ms après setModalState
       if (_isDebug()) {
         setTimeout(() => {
           const mr = document.getElementById("modal-root");
@@ -636,8 +633,6 @@ export const GlobalModalManager = () => {
               console.error(
                 "%c[PostCard DEBUG] [6] ❌ modal-root VIDE 50ms après setModalState !",
                 "color:red;font-weight:bold",
-                "\nGlobalModalManager n'a pas re-rendu ou createPortal n'a pas injecté.",
-                "\nVérifiez que GlobalModalManager n'est pas dans un arbre React.memo ou Suspense qui bloque le re-render.",
               );
             } else {
               console.info(
@@ -659,7 +654,7 @@ export const GlobalModalManager = () => {
       window.removeEventListener(MODAL_EVENT, handler);
       dbgPC("[3] GlobalModalManager DÉMONTÉ — removeEventListener");
     };
-  }, []);
+  }, []); // ← tableau vide : mount/unmount uniquement, listener jamais perdu
 
   const close = useCallback(() => {
     dbgPC("[4] GlobalModalManager → close() → setModalState(null)");
@@ -723,6 +718,8 @@ export const GlobalModalManager = () => {
     container
   );
 };
+
+export const GlobalModalManager = memo(GlobalModalManagerBase);
 GlobalModalManager.displayName = "GlobalModalManager";
 
 // ─────────────────────────────────────────────────────────────────────────────

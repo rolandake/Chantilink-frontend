@@ -32,6 +32,9 @@ import About          from "./pages/About";
 import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
 import StoryViewer    from "./pages/Home/StoryViewer";
 
+// ✅ AJOUT — GlobalModalManager toujours monté, indépendant des routes
+import { GlobalModalManager } from "./pages/Home/PostCard";
+
 export const HOME_REFRESH_EVENT    = "home:refresh";
 export const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
 
@@ -481,8 +484,6 @@ function AppContent() {
     else navigate("/");
   }, [navigate]);
 
-  // ✅ FIX — mainStyle dynamique : top et bottom suivent isNavVisible
-  // pour éviter les espaces vides quand header/navbar disparaissent au scroll
   const mainStyle = useMemo(() => ({
     top: showHeader
       ? (isNavVisible ? 72 : 0)
@@ -615,6 +616,13 @@ function AppContent() {
           onDelete={async (id, idx) => await deleteSlide(id, idx)}
         />
       )}
+
+      {/* ✅ GESTIONNAIRE GLOBAL DES MODAUX (delete, boost)
+          Toujours monté ici — indépendant des routes.
+          Rend null tant qu'aucun modal n'est ouvert.
+          Utilise createPortal vers document.body → aucun impact sur le layout. */}
+      <GlobalModalManager />
+
     </div>
   );
 }
