@@ -1,33 +1,19 @@
-// 📁 src/pages/Home/Home.jsx — v20 PERF MAX
-// ✅ CORRECTIONS v20 vs v19 :
+// 📁 src/pages/Home/Home.jsx — v22 PERF MOBILE
+// ✅ CORRECTIONS v22 vs v21 :
 //
-// 🔴 BUG 1 — scoringDepsRef stale supprimé :
-//   La ref intermédiaire était lue avant que le useEffect de sync la mette à jour.
-//   FIX : deps explicites directement dans le useEffect du scoring.
+// 🐛 BUG 1 — MAX_DOM_POSTS trop élevé sur mobile (40 était déjà en place mais insuffisant) :
+//   40 PostCards montées simultanément sur un téléphone faible = ~40 layout trees actifs.
+//   FIX : réduit à 25 sur mobile (< 768px) et appareils low-end.
 //
-// 🔴 BUG 2 — followingIds Set instable :
-//   new Set() à chaque fetch = référence différente = re-score inutile.
-//   FIX : followingIdsRef (stable) + followingVer (compteur de vraie diff).
+// 🐛 BUG 2 — scheduleIdlePrefetch déclenche des décodages d'images pendant le scroll :
+//   requestIdleCallback n'est pas respecté pendant le scroll sur mobile Chrome < 120.
+//   Le décodage des images préchargées bloque le thread principal.
+//   FIX : scheduleIdlePrefetch désactivé sur IS_LOW_END_MOBILE.
 //
-// 🔴 BUG 3 — renderItem recrée sur chaque changement de newsArticles :
-//   newsArticles dans les deps de useCallback → VirtualFeed re-render complet.
-//   FIX : newsArticlesRef + suggestedUsersRef lus dans la closure, pas dans les deps.
+// 🐛 BUG 3 — IS_LOW_END_MOBILE calculé à chaque appel (via navigator inline) :
+//   FIX : constante calculée UNE SEULE FOIS au chargement du module.
 //
-// 🔴 BUG 4 — abortRef global unique :
-//   Un seul AbortController pour toutes les requêtes → abort() coupe tout.
-//   FIX : controller local par useEffect (pattern annulation propre).
-//
-// 🔴 BUG 5 — prefetchedUrls Set infini :
-//   Jamais purgé → memory leak sur longue session.
-//   FIX : LRU plafonné à PREFETCH_URL_MAX = 300.
-//
-// 🔴 BUG 6 — SEED_ROTATE_MS déclenchait setResetSig :
-//   Reset complet du Feed toutes les 4 min → saut de scroll perceptible.
-//   FIX : invalidateScoreCache() + setSeed() seulement, plus de setResetSig.
-//
-// 🟡 handleNeedMorePosts : hasMore/fetchNextPage stale → refs.
-// 🟡 saveSeenIds : flush au unmount garanti.
-// 🟡 poll 30s : backoff si document.hidden + visibilitychange listener.
+// Tous les autres fixes v21 sont conservés (taggedCache stable, userPool SuggestedAccounts, etc.)
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -65,8 +51,23 @@ const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
 const AD_CONFIG             = DEFAULT_AD_CONFIG;
 const MOCK_CONFIG           = DEFAULT_MOCK_CONFIG;
 
-const PAGE_SIZE     = 15;
-const MAX_DOM_POSTS = typeof window !== "undefined" && window.innerWidth < 768 ? 40 : 80;
+// ✅ FIX v22 — Détection appareil faible, calculée UNE SEULE FOIS au chargement du module
+const IS_LOW_END_MOBILE = typeof navigator !== "undefined" && (
+  (navigator.hardwareConcurrency || 4) <= 2 ||
+  (navigator.deviceMemory || 4) <= 2 ||
+  (/Android/i.test(navigator.userAgent) && (navigator.hardwareConcurrency || 4) <= 4)
+);
+
+const PAGE_SIZE = 15;
+
+// ✅ FIX v22 — MAX_DOM_POSTS réduit sur mobile faible
+const MAX_DOM_POSTS = (() => {
+  if (typeof window === "undefined") return 80;
+  if (IS_LOW_END_MOBILE) return 25;
+  if (window.innerWidth < 768) return 30;
+  return 80;
+})();
+
 const MAX_POOL      = 500;
 
 const FRESH_POOL_THRESHOLD   = 10;
@@ -102,7 +103,6 @@ const SCROLL_IDLE_MS     = 2000;
 
 const EXPLORATION_RATE = 0.10;
 
-// ✅ FIX BUG 5 — prefetchedUrls LRU plafonné
 const PREFETCH_URL_MAX = 300;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -953,13 +953,16 @@ const createDwellTracker = (post, onDwell, onSkip) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PREFETCH — LRU plafonné (FIX BUG 5)
+// ✅ PREFETCH — désactivé sur mobile faible (v22)
 // ══════════════════════════════════════════════════════════════════════════════
 const prefetchedUrls = new Set();
 
 const prefetchOneUrl = (url) => {
+  // ✅ FIX v22 — Pas de prefetch sur mobile faible : le décodage d'images
+  // pendant le scroll bloque le thread principal sur les appareils < 3 cœurs.
+  if (IS_LOW_END_MOBILE) return;
+
   if (!url || typeof url !== "string" || prefetchedUrls.has(url)) return;
-  // ✅ LRU : supprimer la plus ancienne entrée si le Set est plein
   if (prefetchedUrls.size >= PREFETCH_URL_MAX) {
     prefetchedUrls.delete(prefetchedUrls.values().next().value);
   }
@@ -985,6 +988,8 @@ const getPostAllMediaUrls = (post) => {
 };
 
 const scheduleIdlePrefetch = (posts, fromIndex, count=PREFETCH_AHEAD, minScore=0) => {
+  // ✅ FIX v22 — Désactivé sur mobile faible
+  if (IS_LOW_END_MOBILE) return;
   if (!posts?.length) return;
   const targets=posts.slice(fromIndex,fromIndex+count).filter(p=>(p._score||0)>=minScore);
   if (!targets.length) return;
@@ -1259,7 +1264,6 @@ const Feed = ({
   const onNeedMorePostsRef  = useRef(onNeedMorePosts);
   const onPostsSeenRef      = useRef(onPostsSeen);
 
-  // ✅ FIX BUG 3 — refs stables pour newsArticles et suggestedUsers
   const newsArticlesRef   = useRef(newsArticles);
   const suggestedUsersRef = useRef(suggestedUsers);
 
@@ -1270,14 +1274,28 @@ const Feed = ({
   useEffect(()=>{ newsArticlesRef.current=newsArticles; },        [newsArticles]);
   useEffect(()=>{ suggestedUsersRef.current=suggestedUsers; },    [suggestedUsers]);
 
-  const tagPost = useCallback((post) => ({
-    ...post,
-    _displayKey: `dk_${nextKey()}_${post._id || "x"}`,
-  }), []);
+  // ✅ taggedCache stable (v21) — _displayKey assigné une seule fois par post._id
+  const taggedCache = useRef(new Map());
+
+  const tagPost = useCallback((post) => {
+    if (post._id && taggedCache.current.has(post._id)) {
+      const cached = taggedCache.current.get(post._id);
+      if (cached._displayKey) {
+        return { ...post, _displayKey: cached._displayKey };
+      }
+    }
+    const tagged = {
+      ...post,
+      _displayKey: `dk_${nextKey()}_${post._id || "x"}`,
+    };
+    if (post._id) taggedCache.current.set(post._id, tagged);
+    return tagged;
+  }, []);
 
   const initFeed = useCallback((pool) => {
     loadingRef.current = false;
     cursorRef.current  = 0;
+    taggedCache.current.clear();
     const batch = pool.slice(0, PAGE_SIZE).map(tagPost);
     cursorRef.current = batch.length;
     accRef.current = batch;
@@ -1389,7 +1407,6 @@ const Feed = ({
 
   const displayedPosts = accRef.current;
 
-  // ✅ FIX BUG 3 — newsArticles et suggestedUsers via refs, retirés des deps
   const renderItem = useCallback((post, index) => {
     const articles      = newsArticlesRef.current;
     const sugUsers      = suggestedUsersRef.current;
@@ -1433,6 +1450,7 @@ const Feed = ({
             key={`sa-${index}`}
             isDarkMode={isDarkMode}
             instanceId={Math.floor(index / SUGGEST_ACCOUNTS_EVERY)}
+            userPool={sugUsers.length > 0 ? sugUsers : null}
           />
         )}
       </>
@@ -1441,7 +1459,6 @@ const Feed = ({
     isDarkMode,
     handlePostVisible, handleDwell, handleSkip,
     onDeleted, showToast,
-    // newsArticles et suggestedUsers retirés — lus via refs
   ]);
 
   if (isLoading && !displayedPosts.length) return <FeedSkeleton isDarkMode={isDarkMode}/>;
@@ -1490,7 +1507,7 @@ const Feed = ({
 Feed.displayName = "Feed";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HOME v20
+// HOME v22
 // ══════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
@@ -1514,7 +1531,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const [seed,         setSeed]         = useState(()=>Math.floor(Math.random()*0xffffffff));
   const [suggestedUsers, setSuggestedUsers] = useState([]);
 
-  // ✅ FIX BUG 2 — followingIds : ref stable + compteur de vraie diff
   const followingIdsRef = useRef(new Set());
   const [followingVer,  setFollowingVer] = useState(0);
 
@@ -1527,8 +1543,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return cached.filter(p => isValidPost(p) && !hasExpirable(p)).slice(0, PAGE_SIZE);
   });
 
-  // ✅ FIX BUG 1 — scoring sans scoringDepsRef intermédiaire
-  // deps directes : livePostsVer, mockCount, seed, followingVer
   const [rawPool, setRawPool] = useState([]);
 
   useEffect(() => {
@@ -1538,7 +1552,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       if (cancelled) return;
 
       const live       = livePostsRef.current;
-      const fi         = followingIdsRef.current; // Set stable via ref
+      const fi         = followingIdsRef.current;
       const sm         = MOCK_CONFIG.enabled;
       const mc         = mockCount;
       const s          = seed;
@@ -1597,7 +1611,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       clearTimeout(scoreTimer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [livePostsVer, mockCount, seed, followingVer]); // followingVer au lieu de followingIds
+  }, [livePostsVer, mockCount, seed, followingVer]);
 
   const persistedSeenIdsRef = useRef(loadSeenIds());
 
@@ -1623,7 +1637,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const fetchingNextPageRef = useRef(false);
   const saveSeenIdsTimer    = useRef(null);
 
-  // ✅ FIX BUG 7 — refs pour hasMore et fetchNextPage (évite deps stale)
   const hasMoreRef       = useRef(hasMore);
   const fetchNextPageRef2 = useRef(fetchNextPage);
   const refetchRef       = useRef(refetch);
@@ -1635,8 +1648,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const TOTAL_TOP = STORIES_H;
   const showMock  = MOCK_CONFIG.enabled;
 
-  // ✅ FIX BUG 4 — pas d'abortRef global : chaque useEffect a son propre controller
-  // Cleanup au unmount pour saveSeenIds
   useEffect(() => {
     return () => {
       clearTimeout(saveSeenIdsTimer.current);
@@ -1697,7 +1708,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return true;
   },[]);
 
-  // ✅ FIX BUG 2 — fetch following avec controller local
   useEffect(()=>{
     if(!user)return;
     const ctrl = new AbortController();
@@ -1706,7 +1716,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         const{data}=await axiosClient.get("/users/following?limit=500",{signal:ctrl.signal});
         const list=Array.isArray(data)?data:(data?.users||data?.following||[]);
         const newSet = new Set(list.map(u=>u._id||u.id).filter(Boolean));
-        // Comparer avant de mettre à jour pour éviter re-render inutile
         const prev = followingIdsRef.current;
         const changed = newSet.size !== prev.size || [...newSet].some(id => !prev.has(id));
         if (changed) {
@@ -1718,7 +1727,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return () => ctrl.abort();
   },[user]);
 
-  // ✅ FIX BUG 7 — handleNeedMorePosts utilise les refs
   const handleNeedMorePosts=useCallback(async()=>{
     if(fetchingNextPageRef.current||!user)return;
     fetchingNextPageRef.current=true;
@@ -1735,7 +1743,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       }
     }catch(e){ if(e?.name==="CanceledError"||e?.name==="AbortError") return; }
     finally{fetchingNextPageRef.current=false;}
-  },[user,addLivePosts]); // hasMore et fetchNextPage retirés des deps
+  },[user,addLivePosts]);
 
   useEffect(()=>{
     const scrollEl=scrollRef.current;if(!scrollEl)return;
@@ -1848,7 +1856,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     startTransition(()=>setLivePostsVer(v=>v+1));
   },[rawPosts]);
 
-  // Pipeline d'affichage : resolved depuis rawPool
   useEffect(()=>{
     if(!rawPool.length){setResolved([]);return;}
     const controller = new AbortController();
@@ -1878,14 +1885,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return()=>{ cancelled=true; controller.abort(); };
   },[rawPool]);
 
-  // ✅ FIX BUG 6 — SEED_ROTATE_MS : invalidation douce sans setResetSig
   useEffect(()=>{
     if(!user)return;
     const id=setInterval(()=>{
       if(document.hidden)return;
       invalidateScoreCache();
       setSeed(Math.floor(Math.random()*0xffffffff));
-      // Plus de setResetSig → pas de reset complet du Feed → pas de saut de scroll
     },SEED_ROTATE_MS);
     return()=>clearInterval(id);
   },[user]);
@@ -1960,14 +1965,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   useEffect(()=>{window.addEventListener(HOME_REFRESH_EVENT,handleRefresh);return()=>window.removeEventListener(HOME_REFRESH_EVENT,handleRefresh);},[handleRefresh]);
   useEffect(()=>{const h=()=>scrollRef.current?.scrollTo({top:0,behavior:"smooth"});window.addEventListener(HOME_SCROLL_TOP_EVENT,h);return()=>window.removeEventListener(HOME_SCROLL_TOP_EVENT,h);},[]);
 
-  // ✅ poll 30s avec visibilitychange pour reprendre après onglet caché
   useEffect(()=>{
     if(!user)return;
     let lastHiddenAt = 0;
 
     const poll=async()=>{
       if(document.hidden||isRefreshing||loadingRef.current)return;
-      // backoff si l'onglet vient juste d'être réactivé (< 5s)
       if(Date.now()-lastHiddenAt<5000)return;
       try{
         const r=await refetchRef.current?.();const fp=r?.posts||[];
@@ -1986,7 +1989,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
     const onVisibility = () => {
       if (document.hidden) { lastHiddenAt = Date.now(); }
-      else { setTimeout(poll, 1000); } // reprend après retour onglet
+      else { setTimeout(poll, 1000); }
     };
 
     const id=setInterval(poll,POLL_INTERVAL);
@@ -2024,7 +2027,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       if(showMock&&mockCount<MOCK_POSTS.length)setMockCount(p=>Math.min(p+MOCK_CONFIG.loadMoreCount,MOCK_POSTS.length));
       if(hasMoreRef.current){fetchNextPageRef2.current?.();setApiPages(p=>p+1);currentApiPageRef.current++;}
     });
-  },[isRefreshing,showMock,mockCount]); // hasMore et fetchNextPage retirés
+  },[isRefreshing,showMock,mockCount]);
   useEffect(()=>{apiObsFnRef.current=apiObsFn;},[apiObsFn]);
   useEffect(()=>{
     const node=apiObsRef.current;if(!node)return;
@@ -2113,7 +2116,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
               <div className={`px-4 pt-3 pb-2 border-b ${isDarkMode?"border-gray-800":"border-gray-100"}`}>
                 <p className={`text-[13px] font-bold ${isDarkMode?"text-gray-200":"text-gray-800"}`}>Suggestions pour vous</p>
               </div>
-              <SuggestedAccounts isDarkMode={isDarkMode} instanceId={99} />
+              <SuggestedAccounts
+                isDarkMode={isDarkMode}
+                instanceId={99}
+                userPool={suggestedUsers.length > 0 ? suggestedUsers : null}
+              />
             </div>
             <div className={`rounded-2xl overflow-hidden border ${isDarkMode?"border-gray-800 bg-gray-900":"border-gray-200 bg-gray-50"}`}>
               <div className={`px-4 pt-3 pb-2 border-b ${isDarkMode?"border-gray-800":"border-gray-100"}`}>

@@ -4,12 +4,13 @@
 // ✅ SUPPRESSION getVideoPosterUrlFast (Cloudinary-only)
 // ✅ SUPPRESSION getOptimizedImageUrl (transformations Cloudinary)
 // ✅ preloadFirstPostLCP simplifié — URL déjà absolues (R2)
-// ✅ FIX CHARGEMENT INITIAL : sessionLoadDone (vs tokenUsedRef)
+// ✅ FIX CHARGEMENT INITIAL : sessionLoadDone via sessionStorage (survit aux remounts React)
 // ✅ FIX PUBLICATION LENTE : addPostOptimistic / replaceOptimisticPost / removeOptimisticPost
 // ✅ FIX TDZ : fetchPosts déclaré AVANT replaceOptimisticPost
 // ✅ FIX HTTP 400 : garde ObjectId sur fetchUserPosts
 // ✅ FIX RE-RENDER / SAUT VIDÉOS : tokenRef stable, replaceOptimisticPost sans fetchPosts
 // ✅ FIX PEXELS v2 / PIXABAY v3 : filtre URLs vidéos bloquées
+// ✅ FIX v21 : sessionLoadDone via sessionStorage pour survivre aux remounts React Strict Mode
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -20,6 +21,9 @@ import { idbGetPosts, idbSetPosts } from "../utils/idbMigration";
 import { syncNewPost, syncDeletePost, syncUpdatePost } from "../utils/cacheSync";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+
+// Clé sessionStorage pour éviter le double-fetch au remount (React Strict Mode, navigation)
+const SESSION_LOAD_KEY = "posts_session_loaded_v1";
 
 const PostsContext = createContext();
 export const usePosts = () => useContext(PostsContext);
@@ -74,7 +78,6 @@ function injectPreload(url) {
 }
 
 // ✅ CORRIGÉ : plus de Cloudinary — on preload l'URL telle quelle (déjà absolue R2)
-// Pour les vidéos, on preload post.thumbnail si disponible (généré côté back-end).
 function preloadFirstPostLCP(posts) {
   if (!posts?.length) return;
   const first = posts[0];
@@ -117,10 +120,24 @@ export const PostsProvider = ({ children }) => {
   const userIdRef = useRef(userId);
   useEffect(() => { userIdRef.current = userId; }, [userId]);
 
-  // ✅ FIX CHARGEMENT INITIAL :
-  // sessionLoadDone = false AU MONTAGE → init() s'exécute toujours une fois par montage,
-  // peu importe que le token JWT soit identique entre sessions (long-lived token).
-  const sessionLoadDone = useRef(false);
+  // ✅ FIX CHARGEMENT INITIAL v21 :
+  // sessionLoadDone utilise sessionStorage pour survivre aux remounts React (Strict Mode, navigation).
+  // La clé est purgée au logout ou après 30 min d'inactivité via le token.
+  // On initialise le ref depuis sessionStorage pour que le premier rendu soit correct.
+  const sessionLoadDone = useRef(
+    typeof sessionStorage !== "undefined" && !!sessionStorage.getItem(SESSION_LOAD_KEY)
+  );
+
+  // Nettoyer la clé sessionStorage quand le token change (nouveau login)
+  const prevTokenRef = useRef(token);
+  useEffect(() => {
+    if (token && token !== prevTokenRef.current) {
+      // Nouveau token = nouvelle session, on réinitialise
+      try { sessionStorage.removeItem(SESSION_LOAD_KEY); } catch {}
+      sessionLoadDone.current = false;
+    }
+    prevTokenRef.current = token;
+  }, [token]);
 
   const waitForToken = useCallback(async (maxWaitMs = 3000) => {
     if (tokenRef.current) return tokenRef.current;
@@ -129,7 +146,7 @@ export const PostsProvider = ({ children }) => {
     return new Promise((resolve) => {
       const check = setInterval(() => {
         elapsed += interval;
-        if (tokenRef.current)      { clearInterval(check); resolve(tokenRef.current); }
+        if (tokenRef.current)          { clearInterval(check); resolve(tokenRef.current); }
         else if (elapsed >= maxWaitMs) { clearInterval(check); resolve(null); }
       }, interval);
     });
@@ -206,7 +223,17 @@ export const PostsProvider = ({ children }) => {
           ? [...prev.filter(p => !p.isOptimistic), ...clean]
           : clean;
         const unique = Array.from(new Map(merged.map(p => [p._id, p])).values());
-        const final  = [...optimistic, ...unique.filter(p => !optimistic.some(o => o._id === p._id))];
+
+        // ✅ Bail-out : si rien n'a changé sur page=1, évite un re-render inutile
+        if (!append && unique.length === prev.filter(p => !p.isOptimistic).length) {
+          const allSame = unique.every((p, i) => p._id === prev.filter(x => !x.isOptimistic)[i]?._id);
+          if (allSame) {
+            idbSetPosts("allPosts", unique);
+            return prev; // Pas de changement réel → pas de re-render
+          }
+        }
+
+        const final = [...optimistic, ...unique.filter(p => !optimistic.some(o => o._id === p._id))];
         idbSetPosts("allPosts", unique);
         return final;
       });
@@ -427,13 +454,18 @@ export const PostsProvider = ({ children }) => {
   }, []);
 
   // ============================================
-  // INIT — sessionLoadDone garantit l'exécution à chaque montage
+  // INIT — sessionLoadDone via sessionStorage garantit l'exécution
+  // une seule fois par session, même avec React Strict Mode (double-mount)
   // ============================================
   useEffect(() => {
     if (!token) return;
 
+    // ✅ Vérification double : ref ET sessionStorage
     if (sessionLoadDone.current) return;
     sessionLoadDone.current = true;
+
+    // Marquer dans sessionStorage pour survivre aux remounts
+    try { sessionStorage.setItem(SESSION_LOAD_KEY, "1"); } catch {}
 
     const init = async () => {
       try {

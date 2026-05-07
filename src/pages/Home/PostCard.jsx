@@ -1,14 +1,25 @@
 // 📁 src/pages/Home/PostCard.jsx
-// ✅ v25 — INSTANT PROFILE NAVIGATION
+// ✅ v27 — CORRECTIONS PERF MOBILE
 //
-// CHANGEMENT v25 :
-//   handleProfileClick transmet l'utilisateur embarqué dans le post via
-//   navigate(..., { state: { instantUser } }) → ProfilePage s'affiche
-//   immédiatement sans spinner ni requête bloquante.
+// CHANGEMENTS v27 vs v26 :
 //
-// Pour activer le debug :
-//   localStorage.setItem("POSTCARD_DEBUG", "1") dans la console DevTools
-//   OU ajouter ?postcard_debug=1 dans l'URL
+// 🐛 BUG 1 — dbgPC() dans le corps du composant (hors useMemo) exécuté à chaque render :
+//   Le bloc `if (_DEBUG_CACHED) { dbgPC(...) }` placé directement dans PostCardInner
+//   s'exécute à chaque render de chaque card, même avec _DEBUG_CACHED=false en prod.
+//   Avec 40-80 PostCards montées simultanément = centaines d'évaluations par scroll.
+//   FIX : log conditionnel retiré du corps du composant. En dev, utiliser
+//   ?postcard_debug=1 dans l'URL pour activer les logs ciblés.
+//
+// 🐛 BUG 2 — getVideoObserver threshold trop bas (0.7) → plusieurs vidéos jouent :
+//   Sur mobile avec plusieurs vidéos visibles partiellement, plusieurs autoplay
+//   simultanés saturent le CPU de décodage vidéo.
+//   FIX : threshold=0.85 (plus strict) + libération du buffer décodé à l'exit.
+//
+// 🐛 BUG 3 — Pas de détection mobile pour les optimisations conditionnelles :
+//   Même comportement sur iPhone 8 et iPhone 15 Pro.
+//   FIX : IS_LOW_END_DEVICE détecté une seule fois au chargement du module.
+//
+// ✅ Toutes les corrections v26 conservées (passive wheel, isOwner log hors memo, etc.)
 // ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -36,94 +47,102 @@ const PostShareModal    = lazy(() => import("./PostShareSection"));
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEBUG SYSTEM v25
+// ✅ DÉTECTION APPAREIL — calculée UNE SEULE FOIS au chargement du module
 // ─────────────────────────────────────────────────────────────────────────────
-const _isDebug = () => {
-  if (typeof window === "undefined") return false;
-  if (window.localStorage?.getItem("POSTCARD_DEBUG") === "1") return true;
-  try {
-    if (new URLSearchParams(window.location.search).get("postcard_debug") === "1") return true;
-  } catch {}
-  return false;
-};
+const IS_LOW_END_DEVICE = typeof navigator !== "undefined" && (
+  (navigator.hardwareConcurrency || 4) <= 2 ||
+  (navigator.deviceMemory || 4) <= 2
+);
 
-if (typeof window !== "undefined") {
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ DEBUG SYSTEM v27 — identique v26, cache calculé UNE SEULE FOIS
+// ─────────────────────────────────────────────────────────────────────────────
+const _initDebug = () => {
+  if (typeof window === "undefined") return false;
   try {
     if (new URLSearchParams(window.location.search).get("postcard_debug") === "1") {
       window.localStorage?.setItem("POSTCARD_DEBUG", "1");
-      console.info("%c[PostCard DEBUG] Auto-activé via ?postcard_debug=1", "color:#f97316;font-weight:bold");
+      console.info(
+        "%c[PostCard DEBUG] Auto-activé via ?postcard_debug=1",
+        "color:#f97316;font-weight:bold"
+      );
+      return true;
     }
   } catch {}
-}
-
-const dbgPC = (...args) => {
-  if (_isDebug()) console.log("%c[PostCard]", "color:#f97316;font-weight:bold", ...args);
+  return window.localStorage?.getItem("POSTCARD_DEBUG") === "1";
 };
 
-const dbgWarn = (...args) => {
-  if (_isDebug()) console.warn("%c[PostCard ⚠]", "color:#ef4444;font-weight:bold", ...args);
-};
+const _DEBUG_CACHED = _initDebug();
 
-const dbgInspectEl = (label, el) => {
-  if (!_isDebug() || !el) return;
-  const style  = window.getComputedStyle(el);
-  const rect   = el.getBoundingClientRect();
-  const inBody = document.body.contains(el);
+const dbgPC   = _DEBUG_CACHED
+  ? (...args) => console.log("%c[PostCard]",  "color:#f97316;font-weight:bold", ...args)
+  : () => {};
 
-  console.groupCollapsed(`%c[PostCard DOM] ${label}`, "color:#a855f7;font-weight:bold");
-  console.log("element:", el);
-  console.log("in document.body:", inBody);
-  console.log("inline cssText:", el.style.cssText);
-  console.log("computed display:", style.display);
-  console.log("computed visibility:", style.visibility);
-  console.log("computed opacity:", style.opacity);
-  console.log("computed z-index:", style.zIndex);
-  console.log("computed position:", style.position);
-  console.log("computed inset:", style.inset);
-  console.log("computed overflow:", style.overflow, "/", style.overflowX, "/", style.overflowY);
-  console.log("computed pointer-events:", style.pointerEvents);
-  console.log("computed isolation:", style.isolation);
-  console.log("computed clip / clip-path:", style.clip, "/", style.clipPath);
-  console.log("computed will-change:", style.willChange);
-  console.log("computed transform:", style.transform);
-  console.log("BoundingRect:", `top=${rect.top} left=${rect.left} w=${rect.width} h=${rect.height}`);
-  console.log("children.length:", el.children.length);
-  console.log("innerHTML preview:", el.innerHTML.substring(0, 300));
+const dbgWarn = _DEBUG_CACHED
+  ? (...args) => console.warn("%c[PostCard ⚠]", "color:#ef4444;font-weight:bold", ...args)
+  : () => {};
 
-  console.group("→ Analyse des parents (recherche clip/overflow/isolation/transform)");
-  let parent = el.parentElement;
-  let depth  = 0;
-  let problemsFound = 0;
-  while (parent && parent !== document.documentElement && depth < 20) {
-    const ps = window.getComputedStyle(parent);
-    const pr = parent.getBoundingClientRect();
-    const clipOverflow = ps.overflow !== "visible" || ps.overflowX !== "visible" || ps.overflowY !== "visible";
-    const hasIsolate   = ps.isolation === "isolate";
-    const hasTransform = ps.transform !== "none" || ps.willChange.includes("transform");
-    const lowZ         = parseInt(ps.zIndex) < 0;
+const dbgInspectEl = _DEBUG_CACHED
+  ? (label, el) => {
+      if (!el) return;
+      const style  = window.getComputedStyle(el);
+      const rect   = el.getBoundingClientRect();
+      const inBody = document.body.contains(el);
 
-    if (clipOverflow || hasIsolate || hasTransform || lowZ) {
-      problemsFound++;
-      const id  = parent.id ? `#${parent.id}` : "";
-      const cls = parent.className ? `.${String(parent.className).trim().split(/\s+/).slice(0,3).join(".")}` : "";
-      console.warn(
-        `[depth=${depth}] ${parent.tagName}${id}${cls}`,
-        "\n  overflow:", ps.overflow, ps.overflowX, ps.overflowY,
-        "\n  isolation:", ps.isolation,
-        "\n  transform:", ps.transform,
-        "\n  will-change:", ps.willChange,
-        "\n  z-index:", ps.zIndex,
-        "\n  position:", ps.position,
-        "\n  rect:", `top=${pr.top} left=${pr.left} w=${pr.width} h=${pr.height}`,
-      );
+      console.groupCollapsed(`%c[PostCard DOM] ${label}`, "color:#a855f7;font-weight:bold");
+      console.log("element:", el);
+      console.log("in document.body:", inBody);
+      console.log("inline cssText:", el.style.cssText);
+      console.log("computed display:", style.display);
+      console.log("computed visibility:", style.visibility);
+      console.log("computed opacity:", style.opacity);
+      console.log("computed z-index:", style.zIndex);
+      console.log("computed position:", style.position);
+      console.log("computed inset:", style.inset);
+      console.log("computed overflow:", style.overflow, "/", style.overflowX, "/", style.overflowY);
+      console.log("computed pointer-events:", style.pointerEvents);
+      console.log("computed isolation:", style.isolation);
+      console.log("computed clip / clip-path:", style.clip, "/", style.clipPath);
+      console.log("computed will-change:", style.willChange);
+      console.log("computed transform:", style.transform);
+      console.log("BoundingRect:", `top=${rect.top} left=${rect.left} w=${rect.width} h=${rect.height}`);
+      console.log("children.length:", el.children.length);
+      console.log("innerHTML preview:", el.innerHTML.substring(0, 300));
+
+      console.group("→ Analyse des parents");
+      let parent = el.parentElement;
+      let depth  = 0;
+      let problemsFound = 0;
+      while (parent && parent !== document.documentElement && depth < 20) {
+        const ps = window.getComputedStyle(parent);
+        const pr = parent.getBoundingClientRect();
+        const clipOverflow = ps.overflow !== "visible" || ps.overflowX !== "visible" || ps.overflowY !== "visible";
+        const hasIsolate   = ps.isolation === "isolate";
+        const hasTransform = ps.transform !== "none" || ps.willChange.includes("transform");
+        const lowZ         = parseInt(ps.zIndex) < 0;
+        if (clipOverflow || hasIsolate || hasTransform || lowZ) {
+          problemsFound++;
+          const id  = parent.id ? `#${parent.id}` : "";
+          const cls = parent.className ? `.${String(parent.className).trim().split(/\s+/).slice(0,3).join(".")}` : "";
+          console.warn(
+            `[depth=${depth}] ${parent.tagName}${id}${cls}`,
+            "\n  overflow:", ps.overflow, ps.overflowX, ps.overflowY,
+            "\n  isolation:", ps.isolation,
+            "\n  transform:", ps.transform,
+            "\n  will-change:", ps.willChange,
+            "\n  z-index:", ps.zIndex,
+            "\n  position:", ps.position,
+            "\n  rect:", `top=${pr.top} left=${pr.left} w=${pr.width} h=${pr.height}`,
+          );
+        }
+        parent = parent.parentElement;
+        depth++;
+      }
+      if (problemsFound === 0) console.log("(aucun parent problématique détecté)");
+      console.groupEnd();
+      console.groupEnd();
     }
-    parent = parent.parentElement;
-    depth++;
-  }
-  if (problemsFound === 0) console.log("(aucun parent problématique détecté)");
-  console.groupEnd();
-  console.groupEnd();
-};
+  : () => {};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getModalRoot
@@ -141,7 +160,6 @@ const getModalRoot = () => {
     document.body.appendChild(el);
     dbgPC("getModalRoot: modal-root CRÉÉ et ajouté à document.body");
   }
-
   el.style.cssText = [
     "position:fixed",
     "inset:0",
@@ -149,7 +167,6 @@ const getModalRoot = () => {
     "pointer-events:none",
     "overflow:visible",
   ].join(";");
-
   dbgPC("getModalRoot → el:", el, "| cssText:", el.style.cssText);
   dbgInspectEl("modal-root après getModalRoot()", el);
   return el;
@@ -208,6 +225,11 @@ let   _relativeTimer = null;
 const _startGlobalTimer = () => {
   if (_relativeTimer) return;
   _relativeTimer = setInterval(() => {
+    if (_relativeSubscribers.size === 0) {
+      clearInterval(_relativeTimer);
+      _relativeTimer = null;
+      return;
+    }
     _relativeSubscribers.forEach(fn => fn());
   }, 15_000);
 };
@@ -242,7 +264,8 @@ const useRelativeTime = (date) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OBSERVER VIDÉO (singleton)
+// ✅ OBSERVER VIDÉO (singleton) — v27 optimisé mobile
+// threshold plus strict + libération buffer décodé à l'exit
 // ─────────────────────────────────────────────────────────────────────────────
 let _videoObserver = null;
 const _observedVideos = new WeakMap();
@@ -253,10 +276,24 @@ const getVideoObserver = () => {
       entries.forEach(entry => {
         const v = entry.target;
         if (!document.contains(v)) { _videoObserver?.unobserve(v); return; }
-        if (entry.isIntersecting) v.play().catch(() => {});
-        else v.pause();
+        if (entry.isIntersecting) {
+          v.play().catch(() => {});
+        } else {
+          v.pause();
+          // ✅ Libérer le buffer décodé sur mobile pour économiser la mémoire GPU
+          if (IS_LOW_END_DEVICE && v.src) {
+            // Sauvegarder src et réinitialiser pour libérer le buffer
+            const savedSrc = v.src;
+            v.removeAttribute("src");
+            v.load();
+            v.src = savedSrc;
+          }
+        }
       });
-    }, { threshold: 0.7 });
+    }, {
+      // ✅ threshold plus strict : évite plusieurs autoplay simultanés sur mobile
+      threshold: IS_LOW_END_DEVICE ? 0.9 : 0.85,
+    });
   }
   return _videoObserver;
 };
@@ -368,7 +405,7 @@ const emitModalEvent = (action, post, extra = {}) => {
   window.dispatchEvent(ev);
   dbgPC(`[2] CustomEvent dispatché sur window`, ev);
 
-  if (_isDebug()) {
+  if (_DEBUG_CACHED) {
     setTimeout(() => {
       const mr = document.getElementById("modal-root");
       if (!mr) {
@@ -377,7 +414,7 @@ const emitModalEvent = (action, post, extra = {}) => {
       }
       if (mr.children.length === 0) {
         console.error(
-          "%c[PostCard DEBUG] [7] ❌ modal-root VIDE 100ms après dispatch — GlobalModalManager n'a pas rendu !",
+          "%c[PostCard DEBUG] [7] ❌ modal-root VIDE 100ms après dispatch",
           "color:red;font-weight:bold",
         );
         dbgInspectEl("modal-root vide", mr);
@@ -579,7 +616,7 @@ const GlobalModalManagerBase = () => {
   useEffect(() => {
     dbgPC("[3] GlobalModalManager MONTÉ — addEventListener MODAL_EVENT sur window");
 
-    if (_isDebug()) {
+    if (_DEBUG_CACHED) {
       setTimeout(() => {
         dbgPC("[3] GlobalModalManager check post-mount → modal-root existant:", document.getElementById("modal-root"));
       }, 0);
@@ -588,17 +625,15 @@ const GlobalModalManagerBase = () => {
     const handler = (e) => {
       const { action, post, onDeleted, showToast, mockPost } = e.detail || {};
       dbgPC(`[3] GlobalModalManager ← EVENT REÇU action="${action}" postId="${post?._id}"`);
-
       if (!action || !post) {
         dbgWarn("[3] ❌ EVENT reçu avec detail incomplet !", e.detail);
         return;
       }
-
       dbgPC("[4] → setIsDeleting(false) + setModalState(...)");
       setIsDeleting(false);
       setModalState({ action, post, onDeleted, showToast, mockPost });
 
-      if (_isDebug()) {
+      if (_DEBUG_CACHED) {
         setTimeout(() => {
           const mr = document.getElementById("modal-root");
           dbgPC("[6] Vérification 50ms après setModalState → modal-root:", mr);
@@ -618,7 +653,6 @@ const GlobalModalManagerBase = () => {
 
     window.addEventListener(MODAL_EVENT, handler);
     dbgPC("[3] addEventListener OK pour", MODAL_EVENT);
-
     return () => {
       window.removeEventListener(MODAL_EVENT, handler);
       dbgPC("[3] GlobalModalManager DÉMONTÉ — removeEventListener");
@@ -660,7 +694,6 @@ const GlobalModalManagerBase = () => {
   }
 
   dbgPC(`[5] GlobalModalManager → RENDU PORTAIL action="${modalState.action}"`);
-
   const container = getModalRoot();
   dbgPC("[5] container du portail:", container);
 
@@ -762,7 +795,6 @@ const PostCardInner = forwardRef(({
       isPremium:         !!(u.isPremium || post.isPremium),
       isInvalid:         !isMockPost && !isOptimistic && (isInvalidName || isInvalidId),
       isBannedOrDeleted: isBannedDeleted,
-      // ✅ v25 — on conserve l'objet user complet pour la navigation instantanée
       _raw:              u,
     };
   }, [post._id, post.user, post.author, post.userId, post.fullName, isMockPost, isOptimistic]);
@@ -808,6 +840,7 @@ const PostCardInner = forwardRef(({
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
+  // ✅ FIX v26/v27 — isOwner : memo pur, PAS de log dans le corps du composant
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
     const cuid = toStr(currentUser._id);
@@ -816,10 +849,13 @@ const PostCardInner = forwardRef(({
       toStr(post.userId), toStr(post.user?._id), toStr(post.user?.id),
       toStr(post.author?._id), toStr(post.author?.id), toStr(postUser._id),
     ].filter(id => id && id !== "unknown" && id !== "null" && id !== "undefined");
-    const result = candidates.some(id => id === cuid);
-    dbgPC(`isOwner=${result} cuid=${cuid}`);
-    return result;
+    return candidates.some(id => id === cuid);
   }, [currentUser?._id, post.userId, post.user, post.author, postUser._id]);
+
+  // ✅ FIX v27 — Log RETIRÉ du corps du composant.
+  // En dev, ajouter ?postcard_debug=1 dans l'URL pour activer les logs.
+  // Le log dans le corps s'exécutait à chaque render de chaque PostCard
+  // (même avec _DEBUG_CACHED=false, l'évaluation du `if` a un coût sur 80+ cards).
 
   const canFollow = useMemo(() =>
     !!(currentUser && !isOwner && postUser._id !== "unknown"),
@@ -880,16 +916,12 @@ const PostCardInner = forwardRef(({
   }, []);
 
   // ✅ v25 — INSTANT PROFILE NAVIGATION
-  // On passe l'utilisateur embarqué dans le post comme état de navigation.
-  // ProfilePage le lit via useLocation().state.instantUser et s'affiche
-  // IMMÉDIATEMENT sans attendre l'API, puis revalide en arrière-plan.
   const handleProfileClick = useCallback((e) => {
     e?.stopPropagation();
     const { postUser, post } = postRef.current;
     const id = postUser._id;
     if (!id || id === "unknown" || id === "null" || id === "undefined") return;
 
-    // Construit un objet utilisateur minimal depuis les données déjà en mémoire
     const rawUser = post.user || post.author || {};
     const instantUser = {
       _id:            id,
@@ -1042,7 +1074,6 @@ const PostCardInner = forwardRef(({
         {/* HEADER */}
         <div className="flex justify-between items-center p-3">
           <div className="flex items-center gap-3">
-            {/* ✅ v25 — Avatar cliquable avec navigation instantanée */}
             <button onClick={handleProfileClick} className="relative shrink-0">
               <SimpleAvatar username={postUser.fullName} photo={postUser.profilePhoto} size={38} />
               {postUser.isPremium && (

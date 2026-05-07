@@ -1,15 +1,24 @@
 // 📁 src/pages/Home/SuggestedAccounts.jsx
-// ✨ v7 — CORRECTIONS ROBUSTESSE AFFICHAGE
+// ✅ v8 — CORRECTION fetchedRef + reset sur userPool change
 //
-// CORRECTIONS v7 :
-//   → fetchedRef réinitialisé si le premier fetch échoue (permet retry)
-//   → Fallback multi-routes : /users/suggestions → /users?sort=followers → /users
-//   → Timeout explicite (8s) sur toutes les requêtes via AbortController
-//   → userPool accepté en prop depuis Home (évite double-fetch si déjà dispo)
-//   → ContentPreview : skeleton visible dès le mount, pas après IntersectionObserver
-//   → SuggestAvatar : gestion erreur améliorée + initiales toujours visibles
-//   → pickBestMedia : scoring moins strict, fallback texte garanti
-//   → Logs de diagnostic en DEV uniquement
+// CORRECTIONS v8 vs v7 :
+//
+// 🐛 BUG — fetchedRef jamais réinitialisé quand userPool change :
+//   Si le parent (Home) refetch les suggestions et passe un nouveau userPool,
+//   SuggestedAccounts ignorait silencieusement la mise à jour car fetchedRef.current
+//   était déjà true → les nouvelles suggestions n'apparaissaient jamais.
+//
+//   FIX : on compare l'empreinte du userPool (IDs joints) à la valeur précédente.
+//   Si le pool a changé de manière significative, on reset fetchedRef et on
+//   re-applique le scoring. Aucun fetch réseau supplémentaire si userPool est fourni.
+//
+// ✅ Toutes les corrections v7 conservées :
+//   - fetchedRef réinitialisé si premier fetch échoue (retry)
+//   - Fallback multi-routes : /users/suggestions → /users?sort=followers → /users
+//   - Timeout 8s + AbortController
+//   - userPool accepté en prop depuis Home (évite double-fetch)
+//   - ContentPreview skeleton visible dès le mount
+//   - pickBestMedia : fallback texte garanti
 
 import React, {
   useState, useEffect, useRef, useCallback, useMemo, memo,
@@ -29,9 +38,8 @@ const URL_CACHE_PFX   = "murl_";
 const URL_CACHE_TTL   = 80 * 60 * 1000;
 const DISMISSED_KEY   = "sug_dismissed_v7";
 const SHOWN_KEY       = "sug_shown_v7";
-const FATIGUE_WINDOW  = 10;
 const CARD_W          = 178;
-const FETCH_TIMEOUT   = 8_000; // ms
+const FETCH_TIMEOUT   = 8_000;
 
 const isDev = import.meta.env.DEV;
 const log   = (...a) => { if (isDev) console.log("[SuggestedAccounts]", ...a); };
@@ -118,7 +126,7 @@ const scoreUser = (u, currentUser, shownIds) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// pickBestMedia — moins strict, fallback texte garanti
+// pickBestMedia — fallback texte garanti
 // ─────────────────────────────────────────────────────────────────────────────
 const pickBestMedia = async (posts, signal) => {
   if (!posts?.length) return null;
@@ -129,7 +137,6 @@ const pickBestMedia = async (posts, signal) => {
 
   for (const post of posts.slice(0, 15)) {
     if (signal?.aborted) break;
-
     const videoUrl = post.videoUrl || post.embedUrl;
     if (post.hasAudio === false) continue;
 
@@ -222,7 +229,6 @@ const SuggestAvatar = memo(({ username, photo, size = 36 }) => {
 
   const resolvedPhoto = useMemo(() => resolveThumb(photo), [photo]);
 
-  // Toujours afficher les initiales si err ou photo invalide
   if (err || !resolvedPhoto || !isValid(resolvedPhoto)) {
     return (
       <div
@@ -310,7 +316,6 @@ const ContentPreview = memo(({ media, isDarkMode, onClick, loading }) => {
     );
   }
 
-  // Fallback texte
   return (
     <div
       onClick={onClick}
@@ -334,7 +339,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
   const [loading,    setLoading]    = useState(false);
   const [dismissed,  setDismissed]  = useState(false);
   const [media,      setMedia]      = useState(null);
-  // ✅ Fix : skeleton visible dès mount, pas après IntersectionObserver
   const [mediaReady, setMediaReady] = useState(false);
 
   const cardRef    = useRef(null);
@@ -354,7 +358,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
       }
       fetchedRef.current = true;
 
-      // ✅ Timeout explicite via AbortController
       const ctrl = new AbortController();
       abortRef.current = ctrl;
       const timeout = setTimeout(() => {
@@ -446,7 +449,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
           }}
           onClick={goProfile}
         >
-          {/* Bouton fermer */}
           <button
             onClick={handleDismiss}
             className={`absolute top-2 right-2 z-20 w-5 h-5 rounded-full flex items-center justify-center transition-colors
@@ -456,7 +458,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
             <XMarkIcon className="w-3.5 h-3.5" />
           </button>
 
-          {/* Media preview */}
           <ContentPreview
             media={media}
             isDarkMode={isDarkMode}
@@ -464,7 +465,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
             loading={!mediaReady}
           />
 
-          {/* Infos utilisateur */}
           <div className="flex items-center gap-2 pr-5">
             <div className={`rounded-full flex-shrink-0 ${user.isPremium || user.isVerified ? "p-[2px] bg-gradient-to-tr from-orange-400 via-pink-500 to-purple-500" : ""}`}>
               <div className={`rounded-full ${(user.isPremium || user.isVerified) ? `p-[1.5px] ${isDarkMode ? "bg-gray-900" : "bg-white"}` : ""}`}>
@@ -488,7 +488,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
             </div>
           </div>
 
-          {/* Barre de pertinence */}
           <div className={`w-full h-0.5 rounded-full overflow-hidden ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
             <div
               className="h-full rounded-full"
@@ -500,7 +499,6 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
             />
           </div>
 
-          {/* Bouton suivre */}
           <button
             onClick={handleFollow}
             onMouseDown={(e) => e.stopPropagation()}
@@ -531,6 +529,13 @@ SuggestedUserCard.displayName = "SuggestedUserCard";
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPOSANT PRINCIPAL
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ✅ Calcule une empreinte légère du userPool pour détecter les vraies mises à jour
+const poolFingerprint = (pool) => {
+  if (!Array.isArray(pool) || !pool.length) return "";
+  return pool.slice(0, 10).map(u => u._id || "").join(",");
+};
+
 const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null }) => {
   const { user: currentUser, updateUserProfile } = useAuth();
 
@@ -544,11 +549,11 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
     try { return JSON.parse(sessionStorage.getItem(SHOWN_KEY) || "[]"); } catch { return []; }
   });
 
-  const scrollRef  = useRef(null);
-  const fetchedRef = useRef(false);
-  const retryCount = useRef(0);
+  const scrollRef     = useRef(null);
+  const fetchedRef    = useRef(false);
+  // ✅ FIX — mémoriser l'empreinte du dernier userPool traité
+  const lastPoolFpRef = useRef("");
 
-  // ✅ Essaie plusieurs routes en cascade
   const fetchUsers = useCallback(async (signal) => {
     const routes = [
       "/users/suggestions?limit=24",
@@ -576,21 +581,32 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
   }, []);
 
   useEffect(() => {
-    // ✅ Si userPool fourni par le parent, on l'utilise directement
-    if (userPool && userPool.length > 0 && !fetchedRef.current) {
-      fetchedRef.current = true;
+    if (!currentUser) return;
+
+    // ✅ FIX — si userPool est fourni, vérifier si c'est un NOUVEAU pool
+    if (userPool && userPool.length > 0) {
+      const fp = poolFingerprint(userPool);
+
+      // Même pool qu'avant → ne pas re-appliquer le scoring inutilement
+      if (fp === lastPoolFpRef.current) return;
+
+      lastPoolFpRef.current = fp;
+      fetchedRef.current    = true; // bloquer le fetch réseau
+
       const filtered = userPool.filter(u => u?._id && u._id !== currentUser?._id);
       const scored = filtered.map(u => ({
         ...u,
         _relevanceScore: scoreUser(u, currentUser, shownIds),
       })).sort((a, b) => b._relevanceScore - a._relevanceScore);
+
       setUsers(scored);
       setLoading(false);
-      log("Using userPool prop:", scored.length, "users");
+      log("Using updated userPool:", scored.length, "users (fp:", fp, ")");
       return;
     }
 
-    if (fetchedRef.current || !currentUser) return;
+    // Pas de userPool → fetch réseau (une seule fois)
+    if (fetchedRef.current) return;
     fetchedRef.current = true;
 
     const ctrl = new AbortController();
@@ -622,7 +638,7 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
         if (e?.name === "CanceledError" || e?.name === "AbortError") return;
         warn("Fatal fetch error:", e?.message);
         setError(true);
-        // ✅ Permet un retry au prochain mount si ça échoue
+        // Permet un retry au prochain mount si ça échoue
         fetchedRef.current = false;
       } finally {
         clearTimeout(timeout);
@@ -631,9 +647,9 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
     })();
 
     return () => { ctrl.abort(); clearTimeout(timeout); };
+  // ✅ userPool dans les deps pour détecter les changements
   }, [currentUser, userPool, fetchUsers, shownIds]);
 
-  // Enregistrer les IDs affichés
   useEffect(() => {
     if (!users.length) return;
     const ids = users.slice(0, 6).map(u => u._id);
@@ -669,7 +685,6 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
 
   if (!currentUser) return null;
 
-  // Skeleton
   if (loading) {
     return (
       <div className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
@@ -694,7 +709,6 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
     );
   }
 
-  // Erreur ou aucun utilisateur visible
   if (error || visibleUsers.length === 0) {
     log("No visible users to display (error:", error, "visible:", visibleUsers.length, ")");
     return null;
@@ -713,7 +727,6 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
       </div>
 
       <div className="relative px-4 pb-5">
-        {/* Flèche gauche */}
         <button
           onClick={() => scrollByDir(-1)}
           className={`hidden sm:flex absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full items-center justify-center shadow-lg border transition-all hover:scale-105 active:scale-95
@@ -750,7 +763,6 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null })
           ))}
         </div>
 
-        {/* Flèche droite */}
         <button
           onClick={() => scrollByDir(1)}
           className={`hidden sm:flex absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full items-center justify-center shadow-lg border transition-all hover:scale-105 active:scale-95

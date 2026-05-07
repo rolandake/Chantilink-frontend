@@ -1,31 +1,29 @@
 // src/pages/Home/VirtualFeed.jsx
-// ✅ v4 — PERFORMANCE MAX : zéro lag avec beaucoup de contenu
+// ✅ v6 — CORRECTIONS PERF MOBILE
 //
-// PROBLÈMES v3 corrigés :
+// CHANGEMENTS v6 vs v5 :
 //
-// 🐛 BUG 1 — BUFFER_BELOW = 12 :
-//   Avec 12 posts sous le viewport, chaque post vidéo lance VideoItem
-//   (IntersectionObserver + setTimeout + <video preload="metadata">).
-//   Sur un feed chargé = 12-15 vidéos qui chargent en background → GPU saturé.
-//   FIX : BUFFER_BELOW = 3, BUFFER_ABOVE = 2. Seuls 5-6 posts max dans le DOM.
+// 🐛 BUG 1 — BUFFER_BELOW trop petit (3) → re-mounts constants au scroll :
+//   Avec BUFFER_BELOW=3, dès que l'utilisateur scrolle de quelques posts,
+//   les items en bas de la fenêtre virtuelle sont unmountés/remountés.
+//   Sur mobile lent, chaque remount = recalcul layout + re-render complet PostCard.
+//   FIX : BUFFER_BELOW=6, BUFFER_ABOVE=3.
 //
-// 🐛 BUG 2 — 1 ResizeObserver + 1 IntersectionObserver PAR ITEM :
-//   80 posts = 160 observers actifs simultanément. Chaque callback
-//   déclenche un layout thrash (getBoundingClientRect force un reflow).
-//   FIX : ZÉRO ResizeObserver par item. Les hauteurs sont mesurées une seule
-//   fois via getBoundingClientRect() après le paint (requestAnimationFrame).
-//   Un seul IntersectionObserver "sentinel" suffit pour le chargement infini.
+// 🐛 BUG 2 — Hysteresis réductrice vers le haut cause des re-mounts en remontant :
+//   shouldShrinkStart recalculait la fenêtre haute à chaque scroll vers le haut,
+//   causant des unmount/remount des items déjà vus.
+//   FIX : shouldShrinkStart = false (on ne réduit jamais la borne haute).
+//         shouldShrinkEnd avec multiplicateur x3 (moins agressif).
 //
-// 🐛 BUG 3 — Réduction de fenêtre pendant scroll :
-//   La garde "la nouvelle fenêtre doit englober l'ancienne" empêchait la
-//   réduction, accumulant des items dans le DOM indéfiniment.
-//   FIX : Réduction autorisée mais douce (hysteresis de 2× buffer).
+// 🐛 BUG 3 — SCROLL_THROTTLE_MS trop faible sur mobile lent :
+//   32ms (2 frames) est insuffisant sur les téléphones < 4 cœurs.
+//   FIX : adaptatif selon hardwareConcurrency (48ms sur mobile faible).
 //
-// 🐛 BUG 4 — setItemRef recrée une closure par (index, el) :
-//   Déclenche des re-renders en cascade sur PostCard.
-//   FIX : ref callback stable via useRef map, aucune dépendance dynamique.
-//
-// ✅ RÉSULTAT : 5-7 nodes DOM actifs, 0 observer par item, scroll à 60fps.
+// ✅ Toutes les optimisations v5 conservées :
+//   - refCallbacks (Map stable) — 0 re-création de closure par render
+//   - 0 ResizeObserver par item
+//   - 1 seul IntersectionObserver sentinel
+//   - Mesure périodique idle (2s)
 
 import React, {
   useState, useRef, useEffect, useCallback, memo,
@@ -33,13 +31,15 @@ import React, {
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 const ITEM_ESTIMATED_HEIGHT = 580;
-const BUFFER_ABOVE          = 2;   // posts montés au-dessus du viewport
-const BUFFER_BELOW          = 3;   // posts montés en-dessous (était 12 → lag)
-const SCROLL_THROTTLE_MS    = 32;  // ~2 frames — moins de reflows qu'à 16ms
-const HEIGHT_MEASURE_DELAY  = 100; // ms après mount avant mesure des hauteurs
+const BUFFER_ABOVE          = 3;   // était 2
+const BUFFER_BELOW          = 6;   // était 3 → trop agressif sur mobile
+const HEIGHT_MEASURE_DELAY  = 100;
+
+// ✅ Throttle adaptatif : 48ms sur mobile faible, 32ms sinon
+const SCROLL_THROTTLE_MS = typeof navigator !== "undefined" &&
+  (navigator.hardwareConcurrency || 4) <= 2 ? 48 : 32;
 
 // ─── Helper : offset estimé sûr ──────────────────────────────────────────────
-// Évite topPad=0 si offsetsRef n'est pas encore prêt.
 const estimatedOffset = (index, heights, offsets) => {
   if (offsets[index] !== undefined) return offsets[index];
   let cumul = 0;
@@ -56,20 +56,34 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
   const initialEnd = Math.min(posts.length - 1, BUFFER_BELOW + 2);
   const [range, setRange] = useState({ start: 0, end: initialEnd });
 
-  // Hauteurs et offsets mesurés (pas de ResizeObserver par item)
-  const heightsRef  = useRef({});
-  const offsetsRef  = useRef({});
-  const totalRef    = useRef(posts.length * ITEM_ESTIMATED_HEIGHT);
+  const heightsRef = useRef({});
+  const offsetsRef = useRef({});
+  const totalRef   = useRef(posts.length * ITEM_ESTIMATED_HEIGHT);
 
-  // Refs DOM des items — Map stable, jamais recréée
-  const itemDOMRefs = useRef({});
+  // ✅ Map stable de closures ref (v5) — jamais recréée
+  const itemDOMRefs  = useRef({});
+  const refCallbacks = useRef({});
 
-  // Contrôle du scroll throttle
   const rafRef        = useRef(null);
   const lastScrollRef = useRef(0);
   const rangeRef      = useRef({ start: 0, end: initialEnd });
 
-  // Mesure batch des hauteurs (une seule passe, pas un ResizeObserver par item)
+  // ── Ref callback stable ───────────────────────────────────────────────────
+  const getItemRef = useCallback((index) => {
+    if (!refCallbacks.current[index]) {
+      refCallbacks.current[index] = (el) => {
+        if (el) {
+          itemDOMRefs.current[index] = el;
+        } else {
+          delete itemDOMRefs.current[index];
+          delete refCallbacks.current[index];
+        }
+      };
+    }
+    return refCallbacks.current[index];
+  }, []);
+
+  // ── Mesure batch des hauteurs ─────────────────────────────────────────────
   const measureHeights = useCallback(() => {
     let changed = false;
     const refs = itemDOMRefs.current;
@@ -95,16 +109,6 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
     totalRef.current = cumul;
   }, [posts.length]);
 
-  // ── Ref callback stable (pas de closure par index) ────────────────────────
-  // On stocke l'élément dans la Map, aucun observer créé ici.
-  const setItemRef = useCallback((index) => (el) => {
-    if (el) {
-      itemDOMRefs.current[index] = el;
-    } else {
-      delete itemDOMRefs.current[index];
-    }
-  }, []);
-
   // ── Calcul de la fenêtre visible ──────────────────────────────────────────
   const computeRange = useCallback(() => {
     const scrollEl = containerRef?.current;
@@ -116,7 +120,6 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
     const n          = posts.length;
     if (n === 0) return;
 
-    // Premier item visible
     let firstVisible = 0;
     for (let i = 0; i < n; i++) {
       const top    = estimatedOffset(i, heightsRef.current, offsetsRef.current);
@@ -127,7 +130,6 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
       }
     }
 
-    // Dernier item visible
     let lastVisible = firstVisible;
     for (let i = firstVisible; i < n; i++) {
       const top = estimatedOffset(i, heightsRef.current, offsetsRef.current);
@@ -140,9 +142,11 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
 
     const prev = rangeRef.current;
 
-    // Hysteresis douce : on réduit uniquement si l'écart est supérieur à 2× le buffer
-    const shouldShrinkStart = newStart > prev.start + BUFFER_ABOVE * 2;
-    const shouldShrinkEnd   = newEnd   < prev.end   - BUFFER_BELOW * 2;
+    // ✅ FIX v6 — Hysteresis corrigée :
+    // On ne réduit JAMAIS la borne haute (évite les re-mounts en remontant).
+    // On ne réduit la borne basse que si l'écart est > 3× le buffer (moins agressif).
+    const shouldShrinkStart = false;
+    const shouldShrinkEnd   = newEnd < prev.end - BUFFER_BELOW * 3;
 
     const finalStart = shouldShrinkStart ? newStart : Math.min(prev.start, newStart);
     const finalEnd   = shouldShrinkEnd   ? newEnd   : Math.max(prev.end,   newEnd);
@@ -156,7 +160,7 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
     }
   }, [posts.length, containerRef]);
 
-  // ── Scroll throttlé (RAF, pas un listener brut) ───────────────────────────
+  // ── Scroll throttlé (RAF) ─────────────────────────────────────────────────
   const onScroll = useCallback(() => {
     const now = Date.now();
     if (now - lastScrollRef.current < SCROLL_THROTTLE_MS) {
@@ -177,7 +181,6 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
     recomputeOffsets();
     computeRange();
 
-    // Mesure initiale des hauteurs après le premier paint
     const t = setTimeout(measureHeights, HEIGHT_MEASURE_DELAY);
 
     return () => {
@@ -193,23 +196,19 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
     const n = posts.length;
     if (n === 0) return;
 
-    // Étendre la fenêtre si de nouveaux posts arrivent, sans jamais la réduire
-    const prev = rangeRef.current;
+    const prev   = rangeRef.current;
     const newEnd = Math.min(n - 1, Math.max(prev.end, prev.end + 2));
     if (newEnd !== prev.end) {
       rangeRef.current = { ...prev, end: newEnd };
       setRange({ ...prev, end: newEnd });
     }
 
-    // Mesurer après le paint pour que les nouveaux items soient dans le DOM
     const t1 = setTimeout(computeRange,    50);
     const t2 = setTimeout(measureHeights, 150);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [posts.length, recomputeOffsets, computeRange, measureHeights]);
 
-  // ── Mesure périodique légère (remplace ResizeObserver) ────────────────────
-  // Les images et vidéos qui chargent changent la hauteur des items.
-  // On mesure en idle toutes les 2s au lieu d'un observer par item.
+  // ── Mesure périodique légère en idle ──────────────────────────────────────
   useEffect(() => {
     const id = setInterval(() => {
       if (typeof requestIdleCallback !== "undefined") {
@@ -225,7 +224,8 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
   useEffect(() => {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      itemDOMRefs.current = {};
+      itemDOMRefs.current  = {};
+      refCallbacks.current = {};
     };
   }, []);
 
@@ -254,7 +254,7 @@ const VirtualFeed = ({ posts, renderItem, containerRef }) => {
         return (
           <div
             key={post._displayKey || post._id || absIdx}
-            ref={setItemRef(absIdx)}
+            ref={getItemRef(absIdx)}
           >
             {renderItem(post, absIdx)}
           </div>

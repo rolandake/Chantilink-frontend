@@ -1,4 +1,12 @@
 // 📁 src/App.jsx
+// ✨ DIFF vs version précédente :
+//
+//   1. Import de useSmartScroll depuis le hook dédié (supprime la fonction inline)
+//   2. Destructuration { headerVisible, navbarVisible } au lieu de isNavVisible unique
+//   3. Header utilise headerVisible, Navbar utilise navbarVisible
+//   4. mainStyle recalculé avec les deux valeurs séparées
+//   5. Tout le reste est identique
+
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
 } from "react";
@@ -24,6 +32,9 @@ import { setupIndexedDB }    from "./utils/idbMigration";
 import { initializeStorage } from "./utils/idbCleanup";
 import { BACKEND_URL }       from "./api/axiosClientGlobal";
 
+// ✅ NOUVEAU — hook dédié avec vélocité + idle timer + états séparés
+import { useSmartScroll } from "./hooks/useSmartScroll";
+
 import {
   Home as HomePage, Profile, ChatPage, VideosPage, CalculsPage, Messages, AuthPage
 } from "./imports/importsPages.js";
@@ -31,8 +42,6 @@ import {
 import About          from "./pages/About";
 import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
 import StoryViewer    from "./pages/Home/StoryViewer";
-
-// ✅ AJOUT — GlobalModalManager toujours monté, indépendant des routes
 import { GlobalModalManager } from "./pages/Home/PostCard";
 
 export const HOME_REFRESH_EVENT    = "home:refresh";
@@ -42,7 +51,7 @@ export const emitHomeRefresh = () =>
   window.dispatchEvent(new CustomEvent(HOME_REFRESH_EVENT));
 
 // ============================================
-// PRÉCHARGEMENT — rend les transitions instantanées
+// PRÉCHARGEMENT
 // ============================================
 const preloadPages = () => {
   const pages = [
@@ -51,30 +60,23 @@ const preloadPages = () => {
     () => import("./pages/Videos/VideosPage"),
     () => import("./pages/Calculs/CalculsPage"),
   ];
-  pages.forEach((load) => {
-    try { load(); } catch (_) {}
-  });
+  pages.forEach((load) => { try { load(); } catch (_) {} });
 };
 
 // ============================================
-// ICÔNES 3D SVG — style glassmorphism coloré
+// ICÔNES 3D SVG
 // ============================================
 const Icon3D = memo(({ gradient, shadow, children, size = 40 }) => (
   <span
     className="flex items-center justify-center rounded-2xl flex-shrink-0 relative overflow-hidden"
     style={{
-      width: size,
-      height: size,
+      width: size, height: size,
       background: gradient,
       boxShadow: `0 4px 14px ${shadow}40, 0 1px 3px ${shadow}30, inset 0 1px 0 rgba(255,255,255,0.35)`,
     }}
   >
-    <span
-      className="absolute top-0 left-0 right-0 rounded-t-2xl pointer-events-none"
-      style={{
-        height: "45%",
-        background: "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(255,255,255,0.0) 100%)",
-      }}
+    <span className="absolute top-0 left-0 right-0 rounded-t-2xl pointer-events-none"
+      style={{ height: "45%", background: "linear-gradient(180deg, rgba(255,255,255,0.32) 0%, rgba(255,255,255,0.0) 100%)" }}
     />
     {children}
   </span>
@@ -126,7 +128,7 @@ const NAV_ICON_CONFIGS = {
         <rect x="14" y="12" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
         <rect x="7" y="16" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
         <rect x="10.5" y="16" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
-        <rect x="14" y="16" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.3)" />
+        <rect x="14" y="16" width="3" height="3" rx="0.5" fill="rgba(255,255,255,0.55)" />
       </svg>
     ),
   },
@@ -165,28 +167,13 @@ const NAV_ICON_CONFIGS = {
 // SKELETON
 // ============================================
 const PageSkeleton = memo(({ isDarkMode }) => (
-  <div
-    className={`flex flex-col gap-4 p-4 ${isDarkMode ? "bg-gray-900" : "bg-gray-50"}`}
-    style={{ minHeight: "100%" }}
-  >
+  <div className={`flex flex-col gap-4 p-4 ${isDarkMode ? "bg-gray-900" : "bg-gray-50"}`} style={{ minHeight: "100%" }}>
     {[1, 2, 3].map((i) => (
-      <div
-        key={i}
-        className={`rounded-2xl ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`}
-        style={{
-          height: 120,
-          opacity: 1 - i * 0.2,
-          animation: "skeleton-pulse 1.4s ease-in-out infinite",
-          animationDelay: `${i * 150}ms`,
-        }}
+      <div key={i} className={`rounded-2xl ${isDarkMode ? "bg-gray-800" : "bg-gray-200"}`}
+        style={{ height: 120, opacity: 1 - i * 0.2, animation: "skeleton-pulse 1.4s ease-in-out infinite", animationDelay: `${i * 150}ms` }}
       />
     ))}
-    <style>{`
-      @keyframes skeleton-pulse {
-        0%, 100% { opacity: 0.6; }
-        50%       { opacity: 0.3; }
-      }
-    `}</style>
+    <style>{`@keyframes skeleton-pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 0.3; } }`}</style>
   </div>
 ));
 PageSkeleton.displayName = "PageSkeleton";
@@ -198,10 +185,8 @@ const FloatingBackButton = memo(({ isDarkMode, onBack }) => {
   const { t } = useTranslation();
   return (
     <motion.button
-      initial={{ opacity: 0, x: -12 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -12 }}
-      transition={{ duration: 0.18, ease: "easeOut" }}
+      initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -12 }} transition={{ duration: 0.18, ease: "easeOut" }}
       onClick={onBack}
       className="fixed z-[60] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full transition-all active:scale-95"
       style={{
@@ -213,8 +198,7 @@ const FloatingBackButton = memo(({ isDarkMode, onBack }) => {
       }}
     >
       <span className="flex items-center justify-center w-7 h-7 rounded-full"
-        style={{ background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}
-      >
+        style={{ background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)" }}>
         <ArrowLeft size={16} strokeWidth={2.5} />
       </span>
       <span className="text-sm font-semibold">{t("common.back")}</span>
@@ -222,51 +206,6 @@ const FloatingBackButton = memo(({ isDarkMode, onBack }) => {
   );
 });
 FloatingBackButton.displayName = "FloatingBackButton";
-
-// ============================================
-// SCROLL
-// ============================================
-function useSmartScroll(threshold = 10) {
-  const [isVisible, setIsVisible] = useState(true);
-  const lastScrollY     = useRef(0);
-  const scrollDirection = useRef("up");
-  const ticking         = useRef(false);
-
-  useEffect(() => {
-    const update = (currentScrollY) => {
-      if (ticking.current) return;
-      ticking.current = true;
-      window.requestAnimationFrame(() => {
-        if (currentScrollY < 80) {
-          setIsVisible(true);
-          lastScrollY.current = currentScrollY;
-          ticking.current = false;
-          return;
-        }
-        const diff = currentScrollY - lastScrollY.current;
-        if (diff > threshold && scrollDirection.current !== "down") {
-          scrollDirection.current = "down";
-          setIsVisible(false);
-        } else if (diff < -threshold && scrollDirection.current !== "up") {
-          scrollDirection.current = "up";
-          setIsVisible(true);
-        }
-        lastScrollY.current = currentScrollY;
-        ticking.current = false;
-      });
-    };
-    const onAppScroll    = (e) => update(e.detail?.scrollTop ?? 0);
-    const onWindowScroll = ()  => update(window.scrollY || document.documentElement.scrollTop || 0);
-    window.addEventListener("app:scroll", onAppScroll,    { passive: true });
-    window.addEventListener("scroll",     onWindowScroll, { passive: true });
-    return () => {
-      window.removeEventListener("app:scroll", onAppScroll);
-      window.removeEventListener("scroll",     onWindowScroll);
-    };
-  }, [threshold]);
-
-  return isVisible;
-}
 
 // ============================================
 // useBackendReady
@@ -284,10 +223,7 @@ function useBackendReady() {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 4000);
-        const res = await fetch(`${BACKEND_URL}/api/health`, {
-          method: "GET",
-          signal: controller.signal,
-        });
+        const res = await fetch(`${BACKEND_URL}/api/health`, { method: "GET", signal: controller.signal });
         clearTimeout(timer);
         if (res.ok && mountedRef.current) {
           clearInterval(pollingRef.current);
@@ -329,17 +265,11 @@ export default function App() {
       setupIndexedDB().catch(() => console.warn("IDB init failed")),
       initializeStorage().catch((err) => console.error("❌ [App] Erreur init storage:", err)),
     ]).catch(() => {});
-
     const timer = setTimeout(preloadPages, 1000);
-
-    const fixVh = () =>
-      document.documentElement.style.setProperty("--vh", `${window.innerHeight * 0.01}px`);
+    const fixVh = () => document.documentElement.style.setProperty("--vh", `${window.innerHeight * 0.01}px`);
     fixVh();
     window.addEventListener("resize", fixVh, { passive: true });
-    return () => {
-      window.removeEventListener("resize", fixVh);
-      clearTimeout(timer);
-    };
+    return () => { window.removeEventListener("resize", fixVh); clearTimeout(timer); };
   }, []);
 
   if (!ready) return null;
@@ -364,7 +294,8 @@ function AppContent() {
   const [storyViewerData, setStoryViewerData] = useState({ stories: [], owner: null });
   const [liveNotifications, setLiveNotifications] = useState([]);
 
-  const isNavVisible = useSmartScroll(10);
+  // ✅ NOUVEAU — deux états séparés avec vélocité + idle timer
+  const { headerVisible, navbarVisible } = useSmartScroll();
 
   useEffect(() => {
     if (typeof window.__hideSplash === "function") window.__hideSplash();
@@ -467,7 +398,6 @@ function AppContent() {
     }
   }, [location.pathname, navigate]);
 
-  // ── Flags de route ──────────────────────────────────────
   const isHome     = location.pathname === "/";
   const isAuth     = location.pathname === "/auth";
   const isVideos   = location.pathname === "/videos";
@@ -476,7 +406,6 @@ function AppContent() {
 
   const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
   const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
-
   const showBackButton = !!user && !isAuth && !isHome && !isVideos && !isMessages && !storyViewerOpen;
 
   const handleBack = useCallback(() => {
@@ -484,19 +413,21 @@ function AppContent() {
     else navigate("/");
   }, [navigate]);
 
+  // ✅ mainStyle utilise maintenant headerVisible ET navbarVisible séparément
   const mainStyle = useMemo(() => ({
     top: showHeader
-      ? (isNavVisible ? 72 : 0)
+      ? (headerVisible ? 72 : 0)
       : 0,
     bottom: showNav
-      ? (isNavVisible ? 64 : 0)
+      ? (navbarVisible ? 64 : 0)
       : 0,
-    transition: "top 200ms ease-out, bottom 200ms ease-out",
+    // Transition plus douce : spring-like via cubic-bezier
+    transition: "top 220ms cubic-bezier(0.4,0,0.2,1), bottom 220ms cubic-bezier(0.4,0,0.2,1)",
     overflowX: "hidden",
     overflowY: isHome ? "hidden" : "auto",
     WebkitOverflowScrolling: "touch",
     paddingBottom: isHome ? 0 : "env(safe-area-inset-bottom)",
-  }), [showHeader, showNav, isHome, isNavVisible]);
+  }), [showHeader, showNav, isHome, headerVisible, navbarVisible]);
 
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
@@ -513,14 +444,15 @@ function AppContent() {
         ))}
       </AnimatePresence>
 
-      {/* HEADER */}
+      {/* HEADER — utilise headerVisible */}
       {showHeader && (
         <div
           className="fixed top-0 right-0 z-40 lg:left-[260px] left-0"
           style={{
-            height:     72,
-            transform:  isNavVisible ? "translateY(0)" : "translateY(-100%)",
-            transition: "transform 200ms ease-out",
+            height: 72,
+            // ✅ Transform CSS : le header glisse vers le haut indépendamment
+            transform:  headerVisible ? "translateY(0)" : "translateY(-100%)",
+            transition: "transform 220ms cubic-bezier(0.4,0,0.2,1)",
             willChange: "transform",
           }}
         >
@@ -528,7 +460,7 @@ function AppContent() {
         </div>
       )}
 
-      {/* BOUTON RETOUR FLOTTANT — masqué sur /messages */}
+      {/* BOUTON RETOUR FLOTTANT */}
       <AnimatePresence>
         {showBackButton && (
           <FloatingBackButton
@@ -586,13 +518,15 @@ function AppContent() {
         </div>
       </main>
 
-      {/* NAVBAR MOBILE */}
+      {/* NAVBAR MOBILE — utilise navbarVisible (indépendant du header) */}
       {showNav && (
         <div
           className="fixed bottom-0 left-0 right-0 z-50"
           style={{
-            transform:  isNavVisible ? "translateY(0)" : "translateY(100%)",
-            transition: "transform 200ms ease-out",
+            // ✅ Transform CSS : la navbar glisse vers le bas indépendamment
+            // avec un léger décalage naturel grâce au NAVBAR_DELAY dans le hook
+            transform:  navbarVisible ? "translateY(0)" : "translateY(100%)",
+            transition: "transform 220ms cubic-bezier(0.4,0,0.2,1)",
             willChange: "transform",
           }}
         >
@@ -617,12 +551,7 @@ function AppContent() {
         />
       )}
 
-      {/* ✅ GESTIONNAIRE GLOBAL DES MODAUX (delete, boost)
-          Toujours monté ici — indépendant des routes.
-          Rend null tant qu'aucun modal n'est ouvert.
-          Utilise createPortal vers document.body → aucun impact sur le layout. */}
       <GlobalModalManager />
-
     </div>
   );
 }
@@ -634,12 +563,9 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
   const { t } = useTranslation();
   return (
     <motion.div
-      initial={{ opacity: 0, y: -20, x: 100 }}
-      animate={{ opacity: 1, y: 0, x: 0 }}
-      exit={{ opacity: 0, x: 100 }}
-      transition={{ duration: 0.2, ease: "easeOut" }}
-      className="fixed top-20 right-4 z-[100] max-w-sm"
-      onClick={onClose}
+      initial={{ opacity: 0, y: -20, x: 100 }} animate={{ opacity: 1, y: 0, x: 0 }}
+      exit={{ opacity: 0, x: 100 }} transition={{ duration: 0.2, ease: "easeOut" }}
+      className="fixed top-20 right-4 z-[100] max-w-sm" onClick={onClose}
     >
       <div className={`relative flex items-start gap-3 px-4 py-3 rounded-2xl shadow-2xl backdrop-blur-xl border cursor-pointer overflow-hidden ${
         isDarkMode ? "bg-gray-800/95 border-gray-700" : "bg-white/95 border-gray-200"
@@ -653,8 +579,7 @@ const LiveNotification = memo(({ notification, isDarkMode, onClose }) => {
           <p className={`text-sm font-medium ${isDarkMode ? "text-white" : "text-gray-900"}`}>{notification.message}</p>
           <p className={`text-xs mt-0.5 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>{t("common.just_now")}</p>
         </div>
-        <div
-          className="absolute bottom-0 left-0 right-0 h-0.5 origin-left rounded-b-2xl"
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 origin-left rounded-b-2xl"
           style={{ background: "linear-gradient(90deg, #f97316, #ec4899)", animation: "notif-progress 5s linear forwards" }}
         />
         <style>{`@keyframes notif-progress { from { transform: scaleX(1); } to { transform: scaleX(0); } }`}</style>
@@ -670,15 +595,8 @@ LiveNotification.displayName = "LiveNotification";
 const Badge = memo(({ count }) => {
   if (!count || count <= 0) return null;
   return (
-    <span
-      className="absolute -top-1 -right-1 flex items-center justify-center rounded-full text-white font-black border-2"
-      style={{
-        minWidth: 18, height: 18, fontSize: 10,
-        background: "linear-gradient(135deg, #f43f5e, #fb923c)",
-        borderColor: "inherit", lineHeight: 1, padding: "0 3px",
-        boxShadow: "0 2px 6px rgba(244,63,94,0.5)",
-      }}
-    >
+    <span className="absolute -top-1 -right-1 flex items-center justify-center rounded-full text-white font-black border-2"
+      style={{ minWidth: 18, height: 18, fontSize: 10, background: "linear-gradient(135deg, #f43f5e, #fb923c)", borderColor: "inherit", lineHeight: 1, padding: "0 3px", boxShadow: "0 2px 6px rgba(244,63,94,0.5)" }}>
       {count > 99 ? "99+" : count}
     </span>
   );
@@ -689,25 +607,15 @@ Badge.displayName = "Badge";
 // NAVBAR MOBILE
 // ============================================
 const NavBtn = memo(({ icon: Icon, label, active, onClick, badge, isDarkMode }) => (
-  <button
-    onClick={onClick}
+  <button onClick={onClick}
     className="relative flex flex-col items-center justify-center flex-1 gap-1 py-2 select-none active:scale-95 transition-transform"
-    style={{ WebkitTapHighlightColor: "transparent" }}
-  >
+    style={{ WebkitTapHighlightColor: "transparent" }}>
     <span className="relative">
-      <Icon
-        size={24}
-        strokeWidth={active ? 2.5 : 1.8}
-        fill={active ? "currentColor" : "none"}
-        className={`transition-all duration-150 ${
-          active ? "text-orange-500" : isDarkMode ? "text-gray-400" : "text-gray-500"
-        }`}
-      />
+      <Icon size={24} strokeWidth={active ? 2.5 : 1.8} fill={active ? "currentColor" : "none"}
+        className={`transition-all duration-150 ${active ? "text-orange-500" : isDarkMode ? "text-gray-400" : "text-gray-500"}`} />
       <Badge count={badge} />
     </span>
-    <span className={`text-[10px] font-semibold transition-colors duration-150 ${
-      active ? "text-orange-500" : isDarkMode ? "text-gray-500" : "text-gray-400"
-    }`}>
+    <span className={`text-[10px] font-semibold transition-colors duration-150 ${active ? "text-orange-500" : isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
       {label}
     </span>
   </button>
@@ -748,51 +656,27 @@ NavbarMobileMemo.displayName = "NavbarMobileMemo";
 // ============================================
 const NavItemDesktop = memo(({ iconKey, label, onClick, isDarkMode, active, badge }) => {
   const cfg = NAV_ICON_CONFIGS[iconKey] || NAV_ICON_CONFIGS.home;
-
   return (
-    <button
-      onClick={onClick}
+    <button onClick={onClick}
       className={`group relative flex items-center gap-4 w-full px-3 py-3 rounded-2xl transition-all duration-200 active:scale-[0.97] ${
-        active
-          ? isDarkMode ? "bg-white/6" : "bg-black/[0.05]"
-          : isDarkMode ? "hover:bg-white/5" : "hover:bg-black/[0.04]"
-      }`}
-      style={{ WebkitTapHighlightColor: "transparent" }}
-    >
+        active ? isDarkMode ? "bg-white/6" : "bg-black/[0.05]" : isDarkMode ? "hover:bg-white/5" : "hover:bg-black/[0.04]"
+      }`} style={{ WebkitTapHighlightColor: "transparent" }}>
       <span className="relative flex-shrink-0">
-        <Icon3D gradient={cfg.gradient} shadow={cfg.shadow} size={42}>
-          {cfg.icon(20)}
-        </Icon3D>
+        <Icon3D gradient={cfg.gradient} shadow={cfg.shadow} size={42}>{cfg.icon(20)}</Icon3D>
         {!!badge && badge > 0 && (
-          <span
-            className="absolute -top-1 -right-1 flex items-center justify-center rounded-full text-white font-black"
-            style={{
-              minWidth: 18, height: 18, fontSize: 10,
-              background: "linear-gradient(135deg, #f43f5e, #fb923c)",
-              boxShadow: "0 2px 6px rgba(244,63,94,0.5)",
-              border: `2px solid ${isDarkMode ? "#111827" : "#ffffff"}`,
-              padding: "0 3px",
-            }}
-          >
+          <span className="absolute -top-1 -right-1 flex items-center justify-center rounded-full text-white font-black"
+            style={{ minWidth: 18, height: 18, fontSize: 10, background: "linear-gradient(135deg, #f43f5e, #fb923c)", boxShadow: "0 2px 6px rgba(244,63,94,0.5)", border: `2px solid ${isDarkMode ? "#111827" : "#ffffff"}`, padding: "0 3px" }}>
             {badge > 99 ? "99+" : badge}
           </span>
         )}
       </span>
-      <span
-        className={`text-[16px] leading-none transition-all duration-200 ${active ? "font-black" : "font-semibold"}`}
-        style={{
-          color: active
-            ? isDarkMode ? "#ffffff" : "#111827"
-            : isDarkMode ? "rgba(255,255,255,0.60)" : "rgba(0,0,0,0.55)",
-        }}
-      >
+      <span className={`text-[16px] leading-none transition-all duration-200 ${active ? "font-black" : "font-semibold"}`}
+        style={{ color: active ? isDarkMode ? "#ffffff" : "#111827" : isDarkMode ? "rgba(255,255,255,0.60)" : "rgba(0,0,0,0.55)" }}>
         {label}
       </span>
       {active && (
-        <span
-          className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full"
-          style={{ background: cfg.gradient, boxShadow: `0 0 8px ${cfg.shadow}80` }}
-        />
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full"
+          style={{ background: cfg.gradient, boxShadow: `0 0 8px ${cfg.shadow}80` }} />
       )}
     </button>
   );
@@ -826,80 +710,36 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
 
   return (
     <aside
-      className={`hidden lg:flex fixed left-0 top-0 bottom-0 w-[260px] flex-col z-30 border-r ${
-        isDarkMode ? "border-gray-800/50" : "border-gray-200/80"
-      }`}
-      style={{
-        background: isDarkMode
-          ? "linear-gradient(180deg, #0d0d0f 0%, #111115 100%)"
-          : "linear-gradient(180deg, #ffffff 0%, #f9f9fb 100%)",
-      }}
+      className={`hidden lg:flex fixed left-0 top-0 bottom-0 w-[260px] flex-col z-30 border-r ${isDarkMode ? "border-gray-800/50" : "border-gray-200/80"}`}
+      style={{ background: isDarkMode ? "linear-gradient(180deg, #0d0d0f 0%, #111115 100%)" : "linear-gradient(180deg, #ffffff 0%, #f9f9fb 100%)" }}
     >
-      {/* Logo */}
-      <div
-        className={`flex items-center gap-3 px-5 flex-shrink-0 border-b ${
-          isDarkMode ? "border-gray-800/60" : "border-gray-100"
-        }`}
-        style={{ height: 72 }}
-      >
-        <div
-          className="w-10 h-10 rounded-2xl flex items-center justify-center text-white text-lg font-black flex-shrink-0 relative overflow-hidden"
-          style={{
-            background: "linear-gradient(145deg, #f97316 0%, #ec4899 100%)",
-            boxShadow: "0 4px 16px rgba(249,115,22,0.45), inset 0 1px 0 rgba(255,255,255,0.3)",
-          }}
-        >
+      <div className={`flex items-center gap-3 px-5 flex-shrink-0 border-b ${isDarkMode ? "border-gray-800/60" : "border-gray-100"}`} style={{ height: 72 }}>
+        <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-white text-lg font-black flex-shrink-0 relative overflow-hidden"
+          style={{ background: "linear-gradient(145deg, #f97316 0%, #ec4899 100%)", boxShadow: "0 4px 16px rgba(249,115,22,0.45), inset 0 1px 0 rgba(255,255,255,0.3)" }}>
           <span className="absolute top-0 left-0 right-0 h-1/2 rounded-t-2xl"
-            style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, transparent 100%)" }}
-          />
-          C
+            style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, transparent 100%)" }} />C
         </div>
-        <span
-          className={`text-[22px] font-black ${isDarkMode ? "text-white" : "text-gray-900"}`}
-          style={{ letterSpacing: "-0.045em" }}
-        >
-          Chantilink
-        </span>
+        <span className={`text-[22px] font-black ${isDarkMode ? "text-white" : "text-gray-900"}`} style={{ letterSpacing: "-0.045em" }}>Chantilink</span>
       </div>
-
-      {/* Nav items */}
       <nav className="flex flex-col px-3 py-4 flex-1 overflow-hidden">
         <div className="flex flex-col justify-between h-full">
           <div className="flex flex-col gap-1.5">
             {NAV_ITEMS.map((item) => (
-              <NavItemDesktop
-                key={item.key}
-                iconKey={item.key}
-                label={item.label}
-                onClick={item.onClick}
+              <NavItemDesktop key={item.key} iconKey={item.key} label={item.label} onClick={item.onClick}
                 isDarkMode={isDarkMode}
-                active={
-                  item.path === "/"
-                    ? isActive("/")
-                    : item.path === "/profile"
-                      ? location.pathname.includes("/profile")
-                      : isActive(item.path)
-                }
+                active={item.path === "/" ? isActive("/") : item.path === "/profile" ? location.pathname.includes("/profile") : isActive(item.path)}
                 badge={item.badge}
               />
             ))}
             {isAdminUser && (
               <>
                 <div className={`w-full h-px my-2 ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-                <NavItemDesktop
-                  iconKey="admin"
-                  label="Admin"
-                  onClick={goAdmin}
-                  isDarkMode={isDarkMode}
-                  active={location.pathname.includes("/admin")}
-                />
+                <NavItemDesktop iconKey="admin" label="Admin" onClick={goAdmin} isDarkMode={isDarkMode} active={location.pathname.includes("/admin")} />
               </>
             )}
           </div>
           <div className={`pt-3 pb-2 border-t ${isDarkMode ? "border-gray-800/60" : "border-gray-100"}`}>
-            <p className={`text-[12px] font-semibold px-3 ${isDarkMode ? "text-gray-600" : "text-gray-400"}`}>
-              © {new Date().getFullYear()} Chantilink
-            </p>
+            <p className={`text-[12px] font-semibold px-3 ${isDarkMode ? "text-gray-600" : "text-gray-400"}`}>© {new Date().getFullYear()} Chantilink</p>
           </div>
         </div>
       </nav>
@@ -926,47 +766,30 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
 
   return (
     <div className="fixed inset-0 z-[110] flex items-end">
-      <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-        transition={{ duration: 0.15, ease: "easeOut" }}
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      <motion.div
-        initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15, ease: "easeOut" }}
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
         transition={{ duration: 0.22, ease: [0.25, 1, 0.5, 1] }}
         className={`relative w-full rounded-t-3xl pb-8 px-6 pt-4 ${isDarkMode ? "bg-gray-900" : "bg-white"}`}
-        style={{ boxShadow: "0 -12px 48px rgba(0,0,0,0.25)", paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}
-      >
+        style={{ boxShadow: "0 -12px 48px rgba(0,0,0,0.25)", paddingBottom: "calc(2rem + env(safe-area-inset-bottom))" }}>
         <div className={`mx-auto mb-5 rounded-full ${isDarkMode ? "bg-gray-700" : "bg-gray-200"}`} style={{ width: 36, height: 4 }} />
-        <button
-          onClick={onClose}
-          className={`absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"}`}
-        >
+        <button onClick={onClose}
+          className={`absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full ${isDarkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"}`}>
           <X size={16} />
         </button>
-        <p className={`text-xs font-bold uppercase tracking-widest mb-4 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
-          {t("messages.nav_label")}
-        </p>
+        <p className={`text-xs font-bold uppercase tracking-widest mb-4 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>{t("messages.nav_label")}</p>
         <div className="grid grid-cols-3 gap-3">
           {items.map((item) => {
             const cfg = NAV_ICON_CONFIGS[item.iconKey] || NAV_ICON_CONFIGS.home;
             return (
-              <button
-                key={item.path}
-                onClick={() => { navigate(item.path); onClose(); }}
+              <button key={item.path} onClick={() => { navigate(item.path); onClose(); }}
                 className={`relative flex flex-col items-center gap-3 py-4 px-2 rounded-2xl transition-all active:scale-95 ${isDarkMode ? "bg-gray-800/70 hover:bg-gray-800" : "bg-gray-50 hover:bg-gray-100"}`}
-                style={{ WebkitTapHighlightColor: "transparent" }}
-              >
-                <Icon3D gradient={cfg.gradient} shadow={cfg.shadow} size={46}>
-                  {cfg.icon(22)}
-                </Icon3D>
+                style={{ WebkitTapHighlightColor: "transparent" }}>
+                <Icon3D gradient={cfg.gradient} shadow={cfg.shadow} size={46}>{cfg.icon(22)}</Icon3D>
                 <span className={`text-xs font-bold ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>{item.label}</span>
                 {!!item.badge && item.badge > 0 && (
-                  <span
-                    className="absolute top-2 right-2 flex items-center justify-center rounded-full text-white font-black text-[10px] border-2"
-                    style={{ minWidth: 18, height: 18, background: "linear-gradient(135deg, #f43f5e, #fb923c)", borderColor: isDarkMode ? "#1f2937" : "#fff", padding: "0 3px" }}
-                  >
+                  <span className="absolute top-2 right-2 flex items-center justify-center rounded-full text-white font-black text-[10px] border-2"
+                    style={{ minWidth: 18, height: 18, background: "linear-gradient(135deg, #f43f5e, #fb923c)", borderColor: isDarkMode ? "#1f2937" : "#fff", padding: "0 3px" }}>
                     {item.badge > 99 ? "99+" : item.badge}
                   </span>
                 )}

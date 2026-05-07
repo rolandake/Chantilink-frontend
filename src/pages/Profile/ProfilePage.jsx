@@ -6,7 +6,15 @@
 //   et initialise le profil IMMÉDIATEMENT sans spinner ni requête bloquante.
 //   La revalidation API tourne en arrière-plan et met à jour silencieusement.
 //
-// Conserve toute la logique métier v7 (cache, IDB, socket, offline, etc.)
+// ✅ FIX CORS v8.1 :
+//   Suppression des headers "Cache-Control" / "Pragma" dans fetchUserById.
+//   Ces headers déclenchaient une pré-requête OPTIONS bloquée par CORS si le
+//   serveur ne les autorisait pas dans Access-Control-Allow-Headers.
+//   La solution propre : ne pas envoyer ces headers depuis le client.
+//   (La solution complémentaire est d'ajouter Cache-Control/Pragma/Expires
+//    dans allowedHeaders de corsOptions côté serveur — server.js.)
+//
+// Conserve toute la logique métier v7/v8 (cache, IDB, socket, offline, etc.)
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { motion } from "framer-motion";
@@ -317,7 +325,7 @@ const EmptyPostsState = memo(({ isOwner, isDarkMode }) => (
 EmptyPostsState.displayName = "EmptyPostsState";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROFILE PAGE v8 — INSTANT NAVIGATION
+// PROFILE PAGE v8.1 — INSTANT NAVIGATION + FIX CORS
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ProfilePage({
   initialUser  = null,
@@ -326,10 +334,9 @@ export default function ProfilePage({
 }) {
   const { userId } = useParams();
   const navigate   = useNavigate();
-  const location   = useLocation();                          // ✅ v8
+  const location   = useLocation();
 
   // ✅ v8 — Récupère l'utilisateur passé par navigate(..., { state: { instantUser } })
-  // Mis en cache dans une ref pour ne pas déclencher de re-render inutile
   const navInstantUserRef = useRef(location.state?.instantUser || null);
   const navInstantUser    = navInstantUserRef.current;
 
@@ -344,11 +351,6 @@ export default function ProfilePage({
   const targetUserId = userId || authUserId;
   const isOwner      = isSameUser(targetUserId, authUserId);
 
-  // ✅ v8 — Initialisation instantanée depuis :
-  //   1. initialUser (prop server-side)
-  //   2. navInstantUser (passé par PostCard via navigate state) ← NOUVEAU
-  //   3. authUser si profil propre
-  //   4. null (chargement normal)
   const [profileUser,    setProfileUser]    = useState(
     initialUser || navInstantUser || (isOwner ? authUser : null)
   );
@@ -361,13 +363,11 @@ export default function ProfilePage({
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
   const [isBot,          setIsBot]          = useState(false);
 
-  // ✅ v8 — Pas de spinner si on a déjà un utilisateur (depuis navInstantUser ou authUser)
   const [isLoadingUser,  setIsLoadingUser]  = useState(
     !initialUser && !navInstantUser && !(isOwner && authUser)
   );
   const [userNotFound,   setUserNotFound]   = useState(false);
 
-  // Flag pour savoir si la revalidation silencieuse a déjà tourné
   const silentRevalidatedRef = useRef(false);
 
   const loadingRef        = useRef(false);
@@ -399,6 +399,10 @@ export default function ProfilePage({
     authUser?.website,
   ]);
 
+  // ✅ FIX CORS v8.1 — suppression des headers Cache-Control/Pragma
+  // Ces headers déclenchaient une pré-requête OPTIONS bloquée par CORS.
+  // axios.get sans headers personnalisés n'envoie pas de headers non-standard,
+  // ce qui évite le preflight et la réponse CORS bloquée.
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
     if (!isValidObjectId(uid)) return null;
@@ -406,9 +410,13 @@ export default function ProfilePage({
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
     if (!navigator.onLine) return null;
     try {
-      const { data } = await axios.get(`${API_URL}/users/${uid}`, {
+      const { data } = await axios.get(`${API_URL}/api/users/${uid}`, {
         withCredentials: true,
-        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+        // ✅ SUPPRIMÉ : headers: { "Cache-Control": "no-cache", Pragma: "no-cache" }
+        // Ces headers nécessitent un preflight OPTIONS et déclenchent une erreur CORS
+        // si le serveur ne les inclut pas dans Access-Control-Allow-Headers.
+        // La solution : soit ajouter ces headers côté serveur (corsOptions.allowedHeaders),
+        // soit ne pas les envoyer ici. On choisit de ne pas les envoyer.
         timeout: 8000,
       });
       let raw = extractUserFromResponse(data);
@@ -447,13 +455,13 @@ export default function ProfilePage({
 
   const followUser   = useCallback(async (uid) => {
     if (mockHandlers?.followUser) return await mockHandlers.followUser(uid);
-    const { data } = await axios.post(`${API_URL}/users/${uid}/follow`, {}, { withCredentials: true });
+    const { data } = await axios.post(`${API_URL}/api/users/${uid}/follow`, {}, { withCredentials: true });
     return data;
   }, [mockHandlers]);
 
   const unfollowUser = useCallback(async (uid) => {
     if (mockHandlers?.unfollowUser) return await mockHandlers.unfollowUser(uid);
-    const { data } = await axios.post(`${API_URL}/users/${uid}/unfollow`, {}, { withCredentials: true });
+    const { data } = await axios.post(`${API_URL}/api/users/${uid}/unfollow`, {}, { withCredentials: true });
     return data;
   }, [mockHandlers]);
 
@@ -610,14 +618,13 @@ export default function ProfilePage({
   }, [profileUser?._id, loadProfilePosts]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // useEffect principal — v8 avec gestion de la navigation instantanée
+  // useEffect principal — v8.1
   // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return;
     if (!authUser) { navigate("/auth", { replace: true }); return; }
 
-    // ✅ v8 — FAST PATH : on a déjà un utilisateur depuis navInstantUser
-    // On affiche immédiatement et on revalide en arrière-plan (une seule fois)
+    // ✅ FAST PATH — utilisateur déjà disponible depuis navInstantUser
     if (navInstantUser && !initialUser && !silentRevalidatedRef.current) {
       silentRevalidatedRef.current = true;
       setIsLoadingUser(false);
@@ -625,15 +632,13 @@ export default function ProfilePage({
       setIsBot(!!navInstantUser.isBot);
 
       if (targetUserId && isValidObjectId(targetUserId)) {
-        // Charge les posts immédiatement (IDB cache → réseau)
         loadProfilePosts(targetUserId, 1, false).catch(() => {});
 
-        // Revalidation silencieuse du profil en arrière-plan
+        // Revalidation silencieuse en arrière-plan (sans headers Cache-Control)
         if (navigator.onLine) {
           fetchUserById(targetUserId)
             .then(fresh => {
               if (fresh) {
-                // Enrichit les données sans flash (merge avec ce qu'on a déjà)
                 setProfileUser(prev => ({ ...(prev || {}), ...fresh }));
                 saveUser(fresh).catch(() => {});
               }
@@ -641,10 +646,10 @@ export default function ProfilePage({
             .catch(() => {});
         }
       }
-      return; // ← Sort du useEffect, le rendu est déjà fait
+      return;
     }
 
-    // ── SLOW PATH : chargement normal (accès direct, refresh, etc.) ────────
+    // ── SLOW PATH — chargement normal ──────────────────────────────────────
     if (initialUser) {
       setProfileUser(initialUser); setIsBot(!!initialUser.isBot); setIsLoadingUser(false); setUserNotFound(false);
       if (targetUserId && isValidObjectId(targetUserId)) loadProfilePosts(targetUserId, 1, false);
@@ -768,7 +773,6 @@ export default function ProfilePage({
 
   // ── ÉTATS D'ÉCRAN ──────────────────────────────────────────────────────────
 
-  // ✅ v8 — Ne montre le grand spinner que si VRAIMENT aucun utilisateur connu
   if (authLoading || (isLoadingUser && !profileUser)) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: pageBg }}>
@@ -808,7 +812,6 @@ export default function ProfilePage({
         @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap');
       `}</style>
 
-      {/* Bannière mock */}
       {isMockProfile && (
         <div style={{ maxWidth: 820, margin: '0 auto 16px', padding: '12px 20px', borderRadius: 16, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
           <p style={{ fontSize: 13, color: '#3b82f6', textAlign: 'center', margin: 0, fontWeight: 500 }}>
@@ -820,7 +823,6 @@ export default function ProfilePage({
       <div style={{ maxWidth: 820, margin: '0 auto' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-          {/* Header */}
           <ProfileHeader
             user={profileUser}
             isOwnProfile={isOwner}
@@ -830,7 +832,6 @@ export default function ProfilePage({
             showToast={showLocalToast}
           />
 
-          {/* Bouton S'abonner */}
           {!isOwner && (
             <div style={{ display: 'flex', justifyContent: 'center' }}>
               <FollowButton
@@ -842,7 +843,6 @@ export default function ProfilePage({
             </div>
           )}
 
-          {/* Menu onglets */}
           <ProfileMenu
             selectedTab={selectedTab}
             onSelectTab={setSelectedTab}
@@ -850,7 +850,6 @@ export default function ProfilePage({
             stats={stats}
           />
 
-          {/* ── ONGLET PUBLICATIONS ── */}
           {selectedTab === "posts" && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {isOwner && !isMockProfile && !isBot && (
@@ -882,7 +881,6 @@ export default function ProfilePage({
             </div>
           )}
 
-          {/* ── ONGLET PHOTOS ── */}
           {selectedTab === "photos" && (
             <ProfileMediaGrid
               posts={profilePosts}
@@ -899,14 +897,12 @@ export default function ProfilePage({
             />
           )}
 
-          {/* ── ONGLET PARAMÈTRES ── */}
           {selectedTab === "settings" && isOwner && !isBot && (
             <SettingsSection user={authUser} showToast={showLocalToast} />
           )}
         </div>
       </div>
 
-      {/* Toast */}
       {toast && <Toast message={toast.message} type={toast.type} />}
     </div>
   );
