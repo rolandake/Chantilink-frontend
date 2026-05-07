@@ -1,10 +1,16 @@
 // src/pages/profile/ProfilePage.jsx
-// ✅ v7 — NOUVEAU DESIGN moderne TikTok/Instagram fusionné
-// Conserve toute la logique métier v6 (cache, IDB, socket, offline, etc.)
+// ✅ v8 — INSTANT PROFILE NAVIGATION
+//
+// CHANGEMENT v8 :
+//   Lit location.state.instantUser (passé par PostCard via navigate(..., { state }))
+//   et initialise le profil IMMÉDIATEMENT sans spinner ni requête bloquante.
+//   La revalidation API tourne en arrière-plan et met à jour silencieusement.
+//
+// Conserve toute la logique métier v7 (cache, IDB, socket, offline, etc.)
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { motion } from "framer-motion";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import ProfileHeader from "./ProfileHeader";
 import ProfileMenu from "./ProfileMenu";
 import ProfileMediaGrid from "./ProfileMediaGrid";
@@ -212,7 +218,7 @@ const getPostsFromHomePool = (targetId) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPOSANTS UI — Avec nouveau design
+// COMPOSANTS UI
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LoadingSpinner = memo(({ darkMode = false, text = "Chargement..." }) => (
@@ -311,7 +317,7 @@ const EmptyPostsState = memo(({ isOwner, isDarkMode }) => (
 EmptyPostsState.displayName = "EmptyPostsState";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROFILE PAGE
+// PROFILE PAGE v8 — INSTANT NAVIGATION
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ProfilePage({
   initialUser  = null,
@@ -320,6 +326,13 @@ export default function ProfilePage({
 }) {
   const { userId } = useParams();
   const navigate   = useNavigate();
+  const location   = useLocation();                          // ✅ v8
+
+  // ✅ v8 — Récupère l'utilisateur passé par navigate(..., { state: { instantUser } })
+  // Mis en cache dans une ref pour ne pas déclencher de re-render inutile
+  const navInstantUserRef = useRef(location.state?.instantUser || null);
+  const navInstantUser    = navInstantUserRef.current;
+
   const { user: authUser, loading: authLoading, socket, getToken } = useAuth();
   const { fetchUserPosts: realFetchUserPosts } = usePosts();
   const { isDarkMode } = useDarkMode();
@@ -331,7 +344,14 @@ export default function ProfilePage({
   const targetUserId = userId || authUserId;
   const isOwner      = isSameUser(targetUserId, authUserId);
 
-  const [profileUser,    setProfileUser]    = useState(initialUser || (isOwner ? authUser : null));
+  // ✅ v8 — Initialisation instantanée depuis :
+  //   1. initialUser (prop server-side)
+  //   2. navInstantUser (passé par PostCard via navigate state) ← NOUVEAU
+  //   3. authUser si profil propre
+  //   4. null (chargement normal)
+  const [profileUser,    setProfileUser]    = useState(
+    initialUser || navInstantUser || (isOwner ? authUser : null)
+  );
   const [profilePosts,   setProfilePosts]   = useState(initialPosts || []);
   const [selectedTab,    setSelectedTab]    = useState("posts");
   const [toast,          setToast]          = useState(null);
@@ -340,8 +360,15 @@ export default function ProfilePage({
   const [hasMore,        setHasMore]        = useState(true);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
   const [isBot,          setIsBot]          = useState(false);
-  const [isLoadingUser,  setIsLoadingUser]  = useState(!initialUser && !(isOwner && authUser));
+
+  // ✅ v8 — Pas de spinner si on a déjà un utilisateur (depuis navInstantUser ou authUser)
+  const [isLoadingUser,  setIsLoadingUser]  = useState(
+    !initialUser && !navInstantUser && !(isOwner && authUser)
+  );
   const [userNotFound,   setUserNotFound]   = useState(false);
+
+  // Flag pour savoir si la revalidation silencieuse a déjà tourné
+  const silentRevalidatedRef = useRef(false);
 
   const loadingRef        = useRef(false);
   const saveDebounceTimer = useRef(null);
@@ -356,7 +383,7 @@ export default function ProfilePage({
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // ✅ FIX DÉFINITIF SYNC PHOTO — Re-sync profileUser depuis authUser
+  // ✅ Sync photo depuis authUser (profil propre)
   useEffect(() => {
     if (!isOwner || !authUser) return;
     setProfileUser(prev => ({ ...(prev || {}), ...authUser }));
@@ -379,7 +406,11 @@ export default function ProfilePage({
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
     if (!navigator.onLine) return null;
     try {
-      const { data } = await axios.get(`${API_URL}/users/${uid}`, { withCredentials: true, headers: { "Cache-Control": "no-cache", Pragma: "no-cache" }, timeout: 8000 });
+      const { data } = await axios.get(`${API_URL}/users/${uid}`, {
+        withCredentials: true,
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+        timeout: 8000,
+      });
       let raw = extractUserFromResponse(data);
       if (!raw && data) raw = data.data || data.user || (data._id || data.id ? data : null);
       if (raw) {
@@ -455,8 +486,6 @@ export default function ProfilePage({
     startTransition(() => setProfilePosts(prev => prev.filter(p => p._id !== postId)));
     showLocalToast("Post supprimé");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
-
-  const handleFollowSuccess = useCallback(() => showLocalToast("Abonné !"), [showLocalToast]);
 
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
     if (!targetId || loadingRef.current) return;
@@ -580,10 +609,42 @@ export default function ProfilePage({
     return () => window.removeEventListener("online", handleOnline);
   }, [profileUser?._id, loadProfilePosts]);
 
-  // useEffect principal
+  // ─────────────────────────────────────────────────────────────────────────
+  // useEffect principal — v8 avec gestion de la navigation instantanée
+  // ─────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return;
     if (!authUser) { navigate("/auth", { replace: true }); return; }
+
+    // ✅ v8 — FAST PATH : on a déjà un utilisateur depuis navInstantUser
+    // On affiche immédiatement et on revalide en arrière-plan (une seule fois)
+    if (navInstantUser && !initialUser && !silentRevalidatedRef.current) {
+      silentRevalidatedRef.current = true;
+      setIsLoadingUser(false);
+      setUserNotFound(false);
+      setIsBot(!!navInstantUser.isBot);
+
+      if (targetUserId && isValidObjectId(targetUserId)) {
+        // Charge les posts immédiatement (IDB cache → réseau)
+        loadProfilePosts(targetUserId, 1, false).catch(() => {});
+
+        // Revalidation silencieuse du profil en arrière-plan
+        if (navigator.onLine) {
+          fetchUserById(targetUserId)
+            .then(fresh => {
+              if (fresh) {
+                // Enrichit les données sans flash (merge avec ce qu'on a déjà)
+                setProfileUser(prev => ({ ...(prev || {}), ...fresh }));
+                saveUser(fresh).catch(() => {});
+              }
+            })
+            .catch(() => {});
+        }
+      }
+      return; // ← Sort du useEffect, le rendu est déjà fait
+    }
+
+    // ── SLOW PATH : chargement normal (accès direct, refresh, etc.) ────────
     if (initialUser) {
       setProfileUser(initialUser); setIsBot(!!initialUser.isBot); setIsLoadingUser(false); setUserNotFound(false);
       if (targetUserId && isValidObjectId(targetUserId)) loadProfilePosts(targetUserId, 1, false);
@@ -705,8 +766,9 @@ export default function ProfilePage({
 
   const pageBg = isDarkMode ? '#080808' : '#f5f5f7';
 
-  // ── STATES D'ÉCRAN ──────────────────────────────────────────────────────────
+  // ── ÉTATS D'ÉCRAN ──────────────────────────────────────────────────────────
 
+  // ✅ v8 — Ne montre le grand spinner que si VRAIMENT aucun utilisateur connu
   if (authLoading || (isLoadingUser && !profileUser)) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: pageBg }}>

@@ -1,66 +1,29 @@
 // 📁 src/pages/Home/PostMedia.jsx
-// ✅ MIGRATION R2 COMPLÈTE
-// ✅ FIX VIDÉOS NON AFFICHÉES v7 — CORRECTION DÉFINITIVE VideoItem
-// ✅ FIX v8 — IMAGES R2 CACHÉES PAR TIMEOUT useMediaValidation
+// ✅ v10 — CORRECTIONS PERF
 //
-// ══════════════════════════════════════════════════════════════════════════════
-// CORRECTIONS v8 vs v7 :
+// CHANGEMENTS v10 vs v9 :
 //
-// 🐛 BUG RACINE — useMediaValidation cache les images R2 valides :
+// ✅ headCheckCache LRU — importé depuis useMediaValidation.js
+//    → Map plafonnée à 200 entrées (LRU) au lieu d'une Map illimitée
+//    → partagée entre PostMedia et useMediaValidation pour éviter les doublons
 //
-//   SYMPTÔME : "image timeout → hidden url=https://...r2.dev/...png"
-//   suivi immédiatement de "image OK url=..." → l'image charge bien,
-//   mais le timeout de 5 000 ms a déjà résolu la promesse à false.
+// ✅ _relativeTimer auto-stop — le setInterval de useRelativeTime
+//    s'arrête automatiquement quand il n'y a plus de subscribers
+//    → plus de timer fantôme après unmount de tous les PostCard
 //
-//   CAUSE 1 — React StrictMode double-mount :
-//     StrictMode exécute mount→unmount→remount en dev.
-//     Le useEffect se lance 2 fois. La 1ère exécution démarre un Image()
-//     avec setTimeout(5000). L'effet est cleanup → cancelled=true.
-//     La 2ème exécution repart de zéro. Mais le navigateur a mis l'image
-//     en cache entre-temps (depuis la 1ère tentative) → réponse presque
-//     instantanée. Or la 1ère tentative avait déjà schedulé son timeout
-//     à 5s → celui-ci expire quand même et marque l'image hidden
-//     APRÈS que la 2ème exécution ait déjà marqué valid=true.
-//     Résultat : état incohérent, validIndices=[].
-//
-//   CAUSE 2 — Timeout trop court pour R2 cold start :
-//     Cloudflare R2 sur un CDN "froid" (première requête, pas de cache)
-//     peut prendre 2-8 secondes. 5 000 ms est insuffisant.
-//
-//   CAUSE 3 — L'élément Image() créé dans le timeout de cleanup
-//     n'est pas annulé → il continue de charger, son onload/onerror
-//     fire sur le mauvais cycle et pollue l'état.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// FIXES APPLIQUÉS :
-//
-// ✅ FIX 1 — Pour les URLs R2/CDN HTTPS avec extension image connue :
-//    Confiance totale (comme CAS1/CAS2 pour les vidéos). Pas de validation
-//    asynchrone → validIndices immédiat. Couvre 99% des cas réels.
-//
-// ✅ FIX 2 — Timeout image augmenté 5 000 ms → 15 000 ms pour les URLs
-//    sans extension connue (cas rare, ex: signed URLs sans extension).
-//
-// ✅ FIX 3 — L'objet Image() est correctement annulé au cleanup :
-//    img.src = "" dans la fonction de cleanup du useEffect. Empêche
-//    les callbacks stale de modifier l'état après unmount.
-//
-// ✅ FIX 4 — Flag `cancelled` vérifié dans TOUS les callbacks (onload,
-//    onerror, setTimeout) avant d'appeler resolve().
-//
-// ✅ Toutes les corrections v7 conservées (VideoItem src impératif, etc.)
-// ══════════════════════════════════════════════════════════════════════════════
+// ✅ Toutes les corrections v9 conservées
 
 import React, {
   useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo
 } from "react";
 import { AnimatePresence } from "framer-motion";
 import MediaLightbox from "./MediaLightbox";
+import useMediaValidation, { setHeadCache, headCheckCache } from "./useMediaValidation";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEBUG HELPER — activable via localStorage.setItem('POSTMEDIA_DEBUG', '1')
+// DEBUG
 // ─────────────────────────────────────────────────────────────────────────────
-const DEBUG = () => typeof window !== "undefined" && window.localStorage?.getItem("POSTMEDIA_DEBUG") === "1";
+const DEBUG   = () => typeof window !== "undefined" && window.localStorage?.getItem("POSTMEDIA_DEBUG") === "1";
 const dbg     = (...args) => { if (DEBUG()) console.log("[PostMedia]",  ...args); };
 const dbgWarn = (...args) => { if (DEBUG()) console.warn("[PostMedia]", ...args); };
 
@@ -109,18 +72,6 @@ const hasKnownVideoExtension = (url) => {
 const hasKnownImageExtension = (url) => {
   if (!url) return false;
   return /\.(jpg|jpeg|png|gif|webp|avif|svg)$/i.test(url.split("?")[0]);
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ✅ FIX 1 — isTrustedImageUrl : URLs R2/CDN HTTPS avec extension image connue
-// Ces URLs sont fiables à 100% — pas besoin de validation asynchrone.
-// ─────────────────────────────────────────────────────────────────────────────
-const isTrustedImageUrl = (url) => {
-  if (!url || typeof url !== "string") return false;
-  if (url.startsWith("blob:") || url.startsWith("data:")) return true;
-  // Extension image connue = confiance totale (R2, Cloudflare, S3, etc.)
-  if (hasKnownImageExtension(url)) return true;
-  return false;
 };
 
 const isHLSUrl        = url => url && /\.m3u8/i.test(url);
@@ -208,33 +159,26 @@ const getOptimizedUrl = (url) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// resolveSlotType : postMediaType DB = priorité ABSOLUE
+// resolveSlotType
 // ─────────────────────────────────────────────────────────────────────────────
 const resolveSlotType = (url, postMediaType = null) => {
   if (!url) return "unknown";
-  if (postMediaType === "youtube") { dbg(`resolveSlotType → embed (mediaType DB = youtube) url=${url}`); return "embed"; }
-  if (postMediaType === "video")   { dbg(`resolveSlotType → video (mediaType DB = video) url=${url}`);   return "video"; }
-  if (isEmbedUrl(url))     { dbg(`resolveSlotType → embed (isEmbedUrl) url=${url}`);    return "embed"; }
-  if (isHLSUrl(url))       { dbg(`resolveSlotType → hls (isHLSUrl) url=${url}`);        return "hls";   }
-  if (isVideoUrl(url))     { dbg(`resolveSlotType → video (isVideoUrl) url=${url}`);    return "video"; }
-  if (isExternalVideo(url)){ dbg(`resolveSlotType → video (isExternal) url=${url}`);    return "video"; }
-  dbg(`resolveSlotType → image (fallback) url=${url}`);
+  if (postMediaType === "youtube") return "embed";
+  if (postMediaType === "video")   return "video";
+  if (isEmbedUrl(url))     return "embed";
+  if (isHLSUrl(url))       return "hls";
+  if (isVideoUrl(url))     return "video";
+  if (isExternalVideo(url))return "video";
   return "image";
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkContentType : gestion CORS R2 + fallback video element
+// checkContentType — utilise headCheckCache importé (LRU 200)
 // ─────────────────────────────────────────────────────────────────────────────
-const headCheckCache = new Map();
-
 const checkContentType = async (url) => {
-  if (headCheckCache.has(url)) {
-    dbg(`checkContentType cache hit → ${headCheckCache.get(url)} url=${url}`);
-    return headCheckCache.get(url);
-  }
+  if (headCheckCache.has(url)) return headCheckCache.get(url);
   if (/\/(videos?|video[-_]|[-_]video)\//i.test(url)) {
-    dbg(`checkContentType path pattern → video url=${url}`);
-    headCheckCache.set(url, "video");
+    setHeadCache(url, "video");
     return "video";
   }
   try {
@@ -244,11 +188,9 @@ const checkContentType = async (url) => {
     clearTimeout(timer);
     const ct   = res.headers.get("content-type") || "";
     const type = ct.startsWith("video/") ? "video" : "image";
-    dbg(`checkContentType HEAD OK → ${type} (ct="${ct}") url=${url}`);
-    headCheckCache.set(url, type);
+    setHeadCache(url, type);
     return type;
-  } catch (headErr) {
-    dbgWarn(`checkContentType HEAD failed (${headErr.message}) → trying video element url=${url}`);
+  } catch {
     return new Promise((resolve) => {
       let resolved = false;
       const vid = document.createElement("video");
@@ -258,18 +200,12 @@ const checkContentType = async (url) => {
         if (resolved) return;
         resolved = true;
         try { vid.onloadedmetadata = null; vid.onerror = null; vid.src = ""; } catch {}
-        dbg(`checkContentType video-element → ${type} url=${url}`);
-        headCheckCache.set(url, type);
+        setHeadCache(url, type);
         resolve(type);
       };
       const timer = setTimeout(() => done("image"), 3000);
       vid.onloadedmetadata = () => { clearTimeout(timer); done("video"); };
-      vid.onerror = () => {
-        clearTimeout(timer);
-        const likelyCors = url.startsWith("https://");
-        dbgWarn(`checkContentType video-element onerror likelyCors=${likelyCors} url=${url}`);
-        done(likelyCors ? "video" : "image");
-      };
+      vid.onerror = () => { clearTimeout(timer); done(url.startsWith("https://") ? "video" : "image"); };
       vid.src = url;
     });
   }
@@ -279,14 +215,14 @@ const checkContentType = async (url) => {
 // TEXT ONLY CARD
 // ─────────────────────────────────────────────────────────────────────────────
 const TEXT_CARD_PALETTES = [
-  ["#1877F2", "#0D5FCC", "#ffffff"],
-  ["#E4405F", "#C13584", "#ffffff"],
-  ["#FF6B35", "#F7C59F", "#ffffff"],
-  ["#2EC4B6", "#0B7A75", "#ffffff"],
-  ["#6A0572", "#AB83A1", "#ffffff"],
-  ["#1A1A2E", "#16213E", "#ffffff"],
-  ["#2D6A4F", "#52B788", "#ffffff"],
-  ["#8B2FC9", "#5A108F", "#ffffff"],
+  ["#1877F2","#0D5FCC","#ffffff"],
+  ["#E4405F","#C13584","#ffffff"],
+  ["#FF6B35","#F7C59F","#ffffff"],
+  ["#2EC4B6","#0B7A75","#ffffff"],
+  ["#6A0572","#AB83A1","#ffffff"],
+  ["#1A1A2E","#16213E","#ffffff"],
+  ["#2D6A4F","#52B788","#ffffff"],
+  ["#8B2FC9","#5A108F","#ffffff"],
 ];
 
 const hashText = (str) => {
@@ -474,7 +410,7 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
 HLSItem.displayName = "HLSItem";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO ITEM — v7 : src impératif via ref callback + useLayoutEffect
+// VIDEO ITEM
 // ─────────────────────────────────────────────────────────────────────────────
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
@@ -503,13 +439,10 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
     videoRef.current = el;
     onRegisterVideoEl?.(slotIndex, el);
     if (el && currentSrc) {
-      dbg(`VideoItem refCallback — setting src imperatively src=${currentSrc} slotIndex=${slotIndex}`);
       el.muted   = isMutedLocal.current;
       el.volume  = isMutedLocal.current ? 0 : 1;
       el.preload = preloadStrat;
-      if (el.src !== currentSrc) {
-        el.src = currentSrc;
-      }
+      if (el.src !== currentSrc) el.src = currentSrc;
     }
   }, [currentSrc, preloadStrat, onRegisterVideoEl, slotIndex]); // eslint-disable-line
 
@@ -517,7 +450,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
     const vid = videoRef.current;
     if (!vid || !currentSrc) return;
     if (vid.src !== currentSrc) {
-      dbg(`VideoItem useLayoutEffect src mismatch → forcing src=${currentSrc} slotIndex=${slotIndex}`);
       vid.src     = currentSrc;
       vid.muted   = isMutedLocal.current;
       vid.volume  = isMutedLocal.current ? 0 : 1;
@@ -543,11 +475,9 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
       const vid = videoRef.current; if (!vid) return;
       abortRef.current?.abort();
       const ctrl = new AbortController(); abortRef.current = ctrl;
-
       vid.muted  = isMutedLocal.current;
       vid.volume = isMutedLocal.current ? 0 : 1;
       userPausedRef.current = false;
-
       const doPlay = () => {
         if (ctrl.signal.aborted) return;
         if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -556,42 +486,32 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
         if (!p) return;
         p.then(() => {
           if (ctrl.signal.aborted) { vid.pause(); return; }
-          dbg(`VideoItem play() OK slotIndex=${slotIndex}`);
           setPosterVisible(false);
-        })
-          .catch(err => {
-            if (ctrl.signal.aborted || err.name === "AbortError") return;
-            dbgWarn(`VideoItem play() error: ${err.name} ${err.message} slotIndex=${slotIndex}`);
-            if (err.name === "NotAllowedError") {
-              vid.muted = true; isMutedLocal.current = true;
-              if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
-              vid.play().catch(() => {});
-            } else {
-              setTimeout(() => {
-                if (ctrl.signal.aborted) return;
-                vid.play().catch(() => { vid.muted = true; isMutedLocal.current = true; });
-              }, 300);
-            }
-          });
+        }).catch(err => {
+          if (ctrl.signal.aborted || err.name === "AbortError") return;
+          if (err.name === "NotAllowedError") {
+            vid.muted = true; isMutedLocal.current = true;
+            if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
+            vid.play().catch(() => {});
+          } else {
+            setTimeout(() => {
+              if (ctrl.signal.aborted) return;
+              vid.play().catch(() => { vid.muted = true; isMutedLocal.current = true; });
+            }, 300);
+          }
+        });
       };
-
       if (vid.readyState >= 3) { doPlay(); }
       else {
         timerRef.current = setTimeout(() => {
           timerRef.current = null;
-          if (!ctrl.signal.aborted && vid.readyState < 1) {
-            dbgWarn(`VideoItem timeout readyState=${vid.readyState} src=${vid.src} slotIndex=${slotIndex}`);
-            setVideoError(true);
-            onVideoError?.();
-          }
+          if (!ctrl.signal.aborted && vid.readyState < 1) { setVideoError(true); onVideoError?.(); }
         }, 6000);
-
         if (canplayRef.current) vid.removeEventListener("canplay", canplayRef.current);
         const onCan = () => {
           vid.removeEventListener("canplay", onCan);
           canplayRef.current = null;
           if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-          dbg(`VideoItem canplay readyState=${vid.readyState} slotIndex=${slotIndex}`);
           doPlay();
         };
         canplayRef.current = onCan;
@@ -642,18 +562,9 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
   const handlePlay  = useCallback(() => { registerPlayingVideo(videoRef.current); setPosterVisible(false); userPausedRef.current = false; }, []);
   const handlePause = useCallback(() => { if (isVisibleRef.current) userPausedRef.current = true; }, []);
 
-  const handleError = useCallback((e) => {
-    const vid = videoRef.current;
-    const errCode = vid?.error?.code;
-    const errMsg  = vid?.error?.message || "unknown";
-    dbgWarn(`VideoItem onerror code=${errCode} msg="${errMsg}" src=${vid?.src} slotIndex=${slotIndex}`);
-
+  const handleError = useCallback(() => {
     const { proxy, direct } = videoUrls;
-    if (currentSrc === proxy && direct) {
-      dbg(`VideoItem fallback proxy→direct slotIndex=${slotIndex}`);
-      setCurrentSrc(direct);
-      return;
-    }
+    if (currentSrc === proxy && direct) { setCurrentSrc(direct); return; }
     setVideoError(true);
     onVideoError?.();
   }, [videoUrls, currentSrc, onVideoError]);
@@ -682,13 +593,12 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
       {showBadge && <VideoSourceBadge url={url} />}
       {onOpenLightbox && (
         <button onClick={(e) => { e.stopPropagation(); onOpenLightbox(); }}
-          style={{ position: "absolute", top: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}
-          title="Plein écran">
+          style={{ position: "absolute", top: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
           <svg viewBox="0 0 24 24" width="14" height="14" fill="white"><path d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 4h-4v2h6v-6h-2v4z"/></svg>
         </button>
       )}
       <button ref={muteButtonRef} onClick={handleMuteClick}
-        style={{ position: "absolute", bottom: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", touchAction: "manipulation", WebkitTapHighlightColor: "transparent" }}
+        style={{ position: "absolute", bottom: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
         dangerouslySetInnerHTML={{ __html: ICON_MUTED }} />
     </div>
   );
@@ -734,7 +644,7 @@ const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideo
         {overlay && (
           <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10, cursor: onOpenLightbox ? "zoom-in" : "default" }}
             onClick={onOpenLightbox ? (e) => { e.stopPropagation(); onOpenLightbox(); } : undefined}>
-            <span style={{ color: "white", fontSize: 26, fontWeight: 800, letterSpacing: -1 }}>{overlay}</span>
+            <span style={{ color: "white", fontSize: 26, fontWeight: 800 }}>{overlay}</span>
           </div>
         )}
       </div>
@@ -775,157 +685,8 @@ const MediaCellAuto = React.memo((props) => {
 MediaCellAuto.displayName = "MediaCellAuto";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// useMediaValidation v6 — FIX TIMEOUT R2 + StrictMode
-//
-// CHANGEMENTS vs v5 :
-//
-// ✅ CAS IMAGE TRUSTED (nouveau) :
-//    URLs avec extension image connue (.png, .jpg, .webp, etc.) ou blob/data
-//    → validé immédiatement, sans Image() ni setTimeout.
-//    Couvre 100% des images R2 uploadées (UUID.png, UUID.jpg, etc.).
-//    Plus de timeout, plus de race condition StrictMode.
-//
-// ✅ CAS IMAGE NON-TRUSTED :
-//    URLs sans extension (signed URLs, proxies, etc.)
-//    → timeout augmenté 5 000 ms → 15 000 ms.
-//    Image() annulée proprement au cleanup (img.src = "").
-//    Flag `cancelled` vérifié dans TOUS les callbacks.
-//
-// ✅ Tous les CAS vidéo inchangés (CAS1 DB, CAS2 extension, CAS3 canplay).
+// MediaPlaceholder
 // ─────────────────────────────────────────────────────────────────────────────
-const useMediaValidation = (urls, slotTypes, postMediaType = null) => {
-  const [validIndices, setValidIndices] = useState(null);
-
-  useEffect(() => {
-    if (!urls.length) { setValidIndices([]); return; }
-    let cancelled = false;
-    setValidIndices(null);
-
-    const safetyTimer = setTimeout(() => {
-      dbgWarn(`useMediaValidation safety timer → all valid urls=${urls.join(",")}`);
-      if (!cancelled) setValidIndices(urls.map((_, i) => i));
-    }, 20000);
-
-    // Références des Image() créés — pour cleanup propre
-    const imageRefs = [];
-
-    const checks = urls.map((url, i) => {
-      const type = slotTypes[i];
-      dbg(`useMediaValidation check[${i}] type=${type} postMediaType=${postMediaType} url=${url}`);
-
-      if (type === "embed" || type === "hls") return Promise.resolve({ i, ok: true });
-      if (!url) return Promise.resolve({ i, ok: false });
-      if (url.startsWith("blob:") || url.startsWith("data:")) return Promise.resolve({ i, ok: !!url });
-
-      if (type === "image") {
-        // ✅ FIX v8 CAS IMAGE TRUSTED — extension connue = confiance totale
-        // Les images R2 ont toujours une extension (.png, .jpg, .webp…).
-        // On skip la validation asynchrone entièrement → plus de timeout.
-        if (isTrustedImageUrl(url)) {
-          dbg(`useMediaValidation image TRUSTED (known ext/blob/data) → valid url=${url}`);
-          return Promise.resolve({ i, ok: true });
-        }
-
-        // CAS IMAGE NON-TRUSTED — URL sans extension (signed URL, proxy…)
-        // Timeout augmenté à 15s + cleanup de l'objet Image()
-        return new Promise((resolve) => {
-          const img   = new Image();
-          imageRefs.push(img);
-          let settled = false;
-
-          const settle = (ok) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            if (!cancelled) {
-              if (ok) dbg(`useMediaValidation image OK url=${url}`);
-              else dbgWarn(`useMediaValidation image error → hidden url=${url}`);
-              resolve({ i, ok });
-            }
-          };
-
-          // ✅ FIX v8 : timeout augmenté 5 000 → 15 000 ms pour CDN cold start
-          const timer = setTimeout(() => {
-            if (!cancelled) dbgWarn(`useMediaValidation image timeout → hidden url=${url}`);
-            settle(false);
-          }, 15000);
-
-          img.onload  = () => settle(true);
-          img.onerror = () => settle(false);
-          img.src = url;
-        });
-      }
-
-      if (type === "video") {
-        // CAS 1 — DB mediaType = "video" : confiance totale
-        if (postMediaType === "video") {
-          dbg(`useMediaValidation video CAS1 (DB mediaType) → valid url=${url}`);
-          return Promise.resolve({ i, ok: true });
-        }
-        // CAS 2 — extension vidéo connue
-        if (hasKnownVideoExtension(url)) {
-          dbg(`useMediaValidation video CAS2 (known ext) → valid url=${url}`);
-          return Promise.resolve({ i, ok: true });
-        }
-        // CAS 3 — URL sans extension → test canplay avec bénéfice du doute HTTPS
-        dbg(`useMediaValidation video CAS3 (no ext, testing canplay) url=${url}`);
-        return new Promise((resolve) => {
-          let resolved = false;
-          const vid    = document.createElement("video");
-          vid.muted    = true;
-          vid.preload  = "metadata";
-          const cleanup = () => setTimeout(() => {
-            try { vid.oncanplay = null; vid.onloadedmetadata = null; vid.onerror = null; vid.src = ""; } catch {}
-          }, 0);
-          const timer = setTimeout(() => {
-            if (!resolved) {
-              resolved = true;
-              dbgWarn(`useMediaValidation video CAS3 timeout (10s) → valid (CDN slow) url=${url}`);
-              resolve({ i, ok: true }); cleanup();
-            }
-          }, 10000);
-          vid.oncanplay = () => {
-            if (!resolved) { resolved = true; clearTimeout(timer); dbg(`useMediaValidation video CAS3 oncanplay → valid url=${url}`); resolve({ i, ok: true }); cleanup(); }
-          };
-          vid.onloadedmetadata = () => {
-            if (!resolved) { resolved = true; clearTimeout(timer); dbg(`useMediaValidation video CAS3 onloadedmetadata → valid url=${url}`); resolve({ i, ok: true }); cleanup(); }
-          };
-          vid.onerror = () => {
-            if (!resolved) {
-              resolved = true; clearTimeout(timer);
-              const isTrustedCDN = url.startsWith("https://");
-              dbgWarn(`useMediaValidation video CAS3 onerror isTrustedCDN=${isTrustedCDN} → ok=${isTrustedCDN} url=${url}`);
-              resolve({ i, ok: isTrustedCDN }); cleanup();
-            }
-          };
-          vid.src = url;
-        });
-      }
-
-      return Promise.resolve({ i, ok: true });
-    });
-
-    Promise.all(checks).then((results) => {
-      if (cancelled) return;
-      clearTimeout(safetyTimer);
-      const valid = results.filter(r => r.ok).map(r => r.i);
-      dbg(`useMediaValidation done valid=[${valid}] total=${urls.length}`);
-      setValidIndices(valid);
-    });
-
-    return () => {
-      cancelled = true;
-      clearTimeout(safetyTimer);
-      // ✅ FIX v8 : annule tous les Image() en cours pour éviter callbacks stale
-      imageRefs.forEach(img => {
-        try { img.onload = null; img.onerror = null; img.src = ""; } catch {}
-      });
-    };
-  }, [urls.join(","), slotTypes.join(","), postMediaType]); // eslint-disable-line
-
-  return validIndices;
-};
-
 const MediaPlaceholder = React.memo(({ total }) => {
   const pb = total === 1 ? "75%" : total === 2 ? "50%" : "66%";
   return (
@@ -979,7 +740,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       if (!url || typeof url !== "string") return;
       if (url.startsWith("blob:")) { if (!seen.has(url)) { seen.add(url); result.push(url); } return; }
       if (!url.startsWith("data:") && !isStructurallyValid(url)) return;
-      if (isWebPageUrl(url)) { dbgWarn(`safeMediaUrls — filtered web page URL: ${url}`); return; }
+      if (isWebPageUrl(url)) return;
       if (!seen.has(url)) { seen.add(url); result.push(url); }
     };
     if (Array.isArray(mediaUrls)) mediaUrls.filter(Boolean).forEach(add);
@@ -997,7 +758,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     let cancelled = false;
 
     const initial = urls.map((url) => resolveSlotType(url, post?.mediaType));
-    dbg(`PostMedia resolvedSlotTypes initial=[${initial}] postMediaType=${post?.mediaType} urls=${urls.join(",")}`);
     setResolvedSlotTypes(initial);
 
     const suspects = initial
@@ -1011,21 +771,13 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
     if (!suspects.length) return;
 
-    dbg(`PostMedia HEAD-checking ${suspects.length} suspect(s): ${suspects.map(s => s.url).join(", ")}`);
-
     Promise.all(suspects.map(({ i, url }) => checkContentType(url).then(t => ({ i, type: t }))))
       .then((updates) => {
         if (cancelled) return;
-        dbg(`PostMedia HEAD-check results: ${JSON.stringify(updates)}`);
         setResolvedSlotTypes(prev => {
           if (!prev) return prev;
           const next = [...prev];
-          updates.forEach(({ i, type }) => {
-            if (next[i] !== type) {
-              dbg(`PostMedia slotType[${i}] changed: ${next[i]} → ${type} url=${urls[i]}`);
-              next[i] = type;
-            }
-          });
+          updates.forEach(({ i, type }) => { if (next[i] !== type) next[i] = type; });
           return next;
         });
       });
@@ -1040,6 +792,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   );
 
   const total = urls.length;
+
   const validIndices = useMediaValidation(urls, slotTypes, post?.mediaType);
 
   const activeIndices = useMemo(() => {
@@ -1049,7 +802,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   const validUrls      = activeIndices ? activeIndices.map(i => urls[i])      : [];
   const validSlotTypes = activeIndices ? activeIndices.map(i => slotTypes[i]) : [];
-  const validPosters   = activeIndices ? activeIndices.map(i => posterUrls[i]): [];
+  const validPosters   = activeIndices ? activeIndices.map(i => posterUrls[i]) : [];
   const validTotal     = validUrls.length;
 
   const lightboxUrls = useMemo(() =>

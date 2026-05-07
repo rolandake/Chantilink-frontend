@@ -1,16 +1,15 @@
 // 📁 src/pages/Home/SuggestedAccounts.jsx
-// ✨ v6 — R2 MIGRATION
+// ✨ v7 — CORRECTIONS ROBUSTESSE AFFICHAGE
 //
-// MIGRATION v6 (R2) :
-//   → Suppression de IMG_BASE Cloudinary et de toutes ses transformations
-//   → resolveThumb() simplifié : URL directe R2, chemin relatif préfixé par VITE_R2_PUBLIC_URL
-//   → resolveExpired() / pickBestMedia() : logique inchangée, URLs retournées telles quelles
-//   → SuggestAvatar : URL photo directe, plus de crop/thumb Cloudinary
-//
-// v5 (conservé) :
-//   🧠 Scoring multi-critères, pénalité fatigue, bonus verified/premium
-//   ⚡ IntersectionObserver lazy-load, AbortController, cache sessionStorage
-//   🎨 Scroll snap, flèches desktop, dismiss, gradient ring premium
+// CORRECTIONS v7 :
+//   → fetchedRef réinitialisé si le premier fetch échoue (permet retry)
+//   → Fallback multi-routes : /users/suggestions → /users?sort=followers → /users
+//   → Timeout explicite (8s) sur toutes les requêtes via AbortController
+//   → userPool accepté en prop depuis Home (évite double-fetch si déjà dispo)
+//   → ContentPreview : skeleton visible dès le mount, pas après IntersectionObserver
+//   → SuggestAvatar : gestion erreur améliorée + initiales toujours visibles
+//   → pickBestMedia : scoring moins strict, fallback texte garanti
+//   → Logs de diagnostic en DEV uniquement
 
 import React, {
   useState, useEffect, useRef, useCallback, useMemo, memo,
@@ -25,17 +24,21 @@ import { useAuth } from "../../context/AuthContext";
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ v6 : R2_PUBLIC_URL remplace IMG_BASE Cloudinary
 const R2_PUBLIC_URL   = import.meta.env.VITE_R2_PUBLIC_URL || "";
 const URL_CACHE_PFX   = "murl_";
 const URL_CACHE_TTL   = 80 * 60 * 1000;
-const DISMISSED_KEY   = "sug_dismissed_v5";
-const SHOWN_KEY       = "sug_shown_v5";
+const DISMISSED_KEY   = "sug_dismissed_v7";
+const SHOWN_KEY       = "sug_shown_v7";
 const FATIGUE_WINDOW  = 10;
 const CARD_W          = 178;
+const FETCH_TIMEOUT   = 8_000; // ms
+
+const isDev = import.meta.env.DEV;
+const log   = (...a) => { if (isDev) console.log("[SuggestedAccounts]", ...a); };
+const warn  = (...a) => { if (isDev) console.warn("[SuggestedAccounts]", ...a); };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// URL HELPERS — v6 R2
+// URL HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 const EXPIRABLE = [
   (u) => u.includes("videos.pexels.com/video-files/"),
@@ -45,17 +48,17 @@ const DEAD = ["youtube.com/watch", "youtu.be/", "dailymotion.com/video", "tiktok
 
 const urlRead  = (k) => { try { const r = sessionStorage.getItem(URL_CACHE_PFX + k); if (!r) return null; const { url, exp } = JSON.parse(r); if (Date.now() > exp) { sessionStorage.removeItem(URL_CACHE_PFX + k); return null; } return url; } catch { return null; } };
 const urlWrite = (k, url) => { try { sessionStorage.setItem(URL_CACHE_PFX + k, JSON.stringify({ url, exp: Date.now() + URL_CACHE_TTL })); } catch {} };
+
 const isExpirable = (u) => typeof u === "string" && EXPIRABLE.some(fn => fn(u));
 const isDead      = (u) => typeof u === "string" && DEAD.some(p => u.includes(p));
-const isValid     = (u) => { if (!u || typeof u !== "string" || u.length < 10) return false; if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("/")) return true; try { const x = new URL(u); return !!(x.hostname && x.pathname !== "/"); } catch { return false; } };
+const isValid     = (u) => {
+  if (!u || typeof u !== "string" || u.length < 8) return false;
+  if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("/")) return true;
+  try { const x = new URL(u); return !!(x.hostname && x.pathname !== "/"); } catch { return false; }
+};
 const isUsable    = (u) => u && !isExpirable(u) && !isDead(u) && isValid(u);
 const isVideoUrl  = (u) => u && /\.(mp4|webm|mov|avi)$/i.test(u.split("?")[0]);
 
-/**
- * resolveThumb — v6 R2
- * Retourne l'URL directement si elle est absolue.
- * Pour les chemins relatifs (ex: "users/abc.jpg"), préfixe avec R2_PUBLIC_URL.
- */
 const resolveThumb = (u) => {
   if (!u || typeof u !== "string") return null;
   if (u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("http")) return u;
@@ -87,7 +90,7 @@ const getFirstMediaUrl = (post) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SCORING UTILISATEUR (inchangé)
+// SCORING UTILISATEUR
 // ─────────────────────────────────────────────────────────────────────────────
 const scoreUser = (u, currentUser, shownIds) => {
   let score = 50;
@@ -115,7 +118,7 @@ const scoreUser = (u, currentUser, shownIds) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// pickBestMedia — v6 R2 : resolveThumb retourne l'URL directe
+// pickBestMedia — moins strict, fallback texte garanti
 // ─────────────────────────────────────────────────────────────────────────────
 const pickBestMedia = async (posts, signal) => {
   if (!posts?.length) return null;
@@ -124,7 +127,9 @@ const pickBestMedia = async (posts, signal) => {
   const imageCandidates = [];
   const textCandidates  = [];
 
-  for (const post of posts.slice(0, 12)) {
+  for (const post of posts.slice(0, 15)) {
+    if (signal?.aborted) break;
+
     const videoUrl = post.videoUrl || post.embedUrl;
     if (post.hasAudio === false) continue;
 
@@ -133,26 +138,31 @@ const pickBestMedia = async (posts, signal) => {
       if (isUsable(url)) {
         videoCandidates.push({ url: resolveThumb(url), isVid: true, text: post.content || post.contenu || "", postId: post._id, likes: post.likesCount || 0 });
       } else if (isExpirable(url)) {
-        const fresh = await resolveExpired(url, post.externalId, signal);
-        if (fresh) videoCandidates.push({ url: resolveThumb(fresh), isVid: true, text: post.content || post.contenu || "", postId: post._id, likes: post.likesCount || 0 });
+        try {
+          const fresh = await resolveExpired(url, post.externalId, signal);
+          if (fresh) videoCandidates.push({ url: resolveThumb(fresh), isVid: true, text: post.content || post.contenu || "", postId: post._id, likes: post.likesCount || 0 });
+        } catch {}
       }
       continue;
     }
 
     const imgUrl = getFirstMediaUrl(post);
-    if (imgUrl) {
+    if (imgUrl && !isDead(imgUrl)) {
       if (isUsable(imgUrl)) {
         const eng = (post.likesCount || 0) + (post.commentsCount || 0) * 2;
         imageCandidates.push({ url: resolveThumb(imgUrl), isVid: false, text: post.content || post.contenu || "", postId: post._id, eng });
       } else if (isExpirable(imgUrl)) {
-        const fresh = await resolveExpired(imgUrl, post.externalId, signal);
-        if (fresh) imageCandidates.push({ url: resolveThumb(fresh), isVid: false, text: post.content || post.contenu || "", postId: post._id, eng: 0 });
+        try {
+          const fresh = await resolveExpired(imgUrl, post.externalId, signal);
+          if (fresh) imageCandidates.push({ url: resolveThumb(fresh), isVid: false, text: post.content || post.contenu || "", postId: post._id, eng: 0 });
+        } catch {}
       }
       continue;
     }
 
-    if (post.content || post.contenu) {
-      textCandidates.push({ url: null, isVid: false, text: post.content || post.contenu || "", postId: post._id });
+    const text = post.content || post.contenu;
+    if (text && text.trim().length > 0) {
+      textCandidates.push({ url: null, isVid: false, text: text.trim(), postId: post._id });
     }
   }
 
@@ -166,7 +176,7 @@ const pickBestMedia = async (posts, signal) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FORMAT HELPERS
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 const fmtFollowers = (n) => {
   if (!n) return null;
@@ -176,19 +186,14 @@ const fmtFollowers = (n) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SILHOUETTE FALLBACK SVG
+// SILHOUETTE FALLBACK
 // ─────────────────────────────────────────────────────────────────────────────
 const SilhouetteFallback = ({ height = 140, rounded = true }) => (
   <div
     className={`w-full flex items-center justify-center overflow-hidden cursor-pointer${rounded ? " rounded-xl" : ""}`}
-    style={{ height, background: "#2a2a2a" }}
+    style={{ height, background: "#1e1e24" }}
   >
-    <svg
-      viewBox="0 0 100 100"
-      style={{ width: height * 0.58, height: height * 0.58, opacity: 0.45 }}
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
+    <svg viewBox="0 0 100 100" style={{ width: height * 0.52, height: height * 0.52, opacity: 0.25 }} fill="none">
       <circle cx="50" cy="36" r="21" fill="#888" />
       <ellipse cx="50" cy="86" rx="33" ry="23" fill="#888" />
     </svg>
@@ -196,73 +201,132 @@ const SilhouetteFallback = ({ height = 140, rounded = true }) => (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AVATAR — v6 R2 : URL directe, plus de transformation Cloudinary
+// AVATAR
 // ─────────────────────────────────────────────────────────────────────────────
+const AVATAR_COLORS = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
+
 const SuggestAvatar = memo(({ username, photo, size = 36 }) => {
   const [err, setErr] = useState(false);
+
   const initials = useMemo(() => {
     if (!username) return "?";
     const p = username.trim().split(" ");
     return p.length > 1 ? (p[0][0] + p[1][0]).toUpperCase() : username.substring(0, 2).toUpperCase();
   }, [username]);
+
   const bg = useMemo(() => {
-    const c = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
     let h = 0;
     for (let i = 0; i < (username || "").length; i++) h = username.charCodeAt(i) + ((h << 5) - h);
-    return c[Math.abs(h) % c.length];
+    return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
   }, [username]);
-  // ✅ v6 : URL directe R2
+
   const resolvedPhoto = useMemo(() => resolveThumb(photo), [photo]);
-  if (err || !resolvedPhoto)
-    return <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0" style={{ width: size, height: size, backgroundColor: bg, fontSize: size * 0.38 }}>{initials}</div>;
-  return <img src={resolvedPhoto} alt={username} className="rounded-full object-cover flex-shrink-0" style={{ width: size, height: size }} onError={() => setErr(true)} loading="lazy" />;
+
+  // Toujours afficher les initiales si err ou photo invalide
+  if (err || !resolvedPhoto || !isValid(resolvedPhoto)) {
+    return (
+      <div
+        className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
+        style={{ width: size, height: size, backgroundColor: bg, fontSize: size * 0.38 }}
+      >
+        {initials}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={resolvedPhoto}
+      alt={username}
+      className="rounded-full object-cover flex-shrink-0"
+      style={{ width: size, height: size }}
+      onError={() => setErr(true)}
+      loading="lazy"
+    />
+  );
 });
 SuggestAvatar.displayName = "SuggestAvatar";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONTENT PREVIEW (inchangé)
+// CONTENT PREVIEW
 // ─────────────────────────────────────────────────────────────────────────────
 const ContentPreview = memo(({ media, isDarkMode, onClick, loading }) => {
   const [imgErr, setImgErr] = useState(false);
 
-  if (loading) return (
-    <div className={`w-full rounded-xl animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} style={{ height: 140 }} />
-  );
+  if (loading) {
+    return (
+      <div
+        className={`w-full rounded-xl ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}
+        style={{ height: 140, animation: "sa-pulse 1.5s ease-in-out infinite" }}
+      />
+    );
+  }
 
-  if (!media || (!media.url && !media.text)) return (
-    <div onClick={onClick}>
-      <SilhouetteFallback height={140} rounded />
-    </div>
-  );
+  if (!media || (!media.url && !media.text)) {
+    return <div onClick={onClick}><SilhouetteFallback height={140} rounded /></div>;
+  }
 
-  if (media.isVid) return (
-    <div onClick={onClick} className="w-full rounded-xl overflow-hidden cursor-pointer relative flex items-center justify-center" style={{ height: 140, background: "#0d0d0d" }}>
-      {media.url && !imgErr && <img src={media.url} alt="" className="absolute inset-0 w-full h-full object-cover" loading="lazy" onError={() => setImgErr(true)} />}
-      <div className="absolute inset-0 bg-black/40" />
-      <div className="relative z-10 w-11 h-11 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/30 shadow-lg">
-        <PlayIcon className="w-5 h-5 text-white ml-0.5" />
+  if (media.isVid) {
+    return (
+      <div
+        onClick={onClick}
+        className="w-full rounded-xl overflow-hidden cursor-pointer relative flex items-center justify-center"
+        style={{ height: 140, background: "#0d0d0d" }}
+      >
+        {media.url && !imgErr && (
+          <img
+            src={media.url}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover"
+            loading="lazy"
+            onError={() => setImgErr(true)}
+          />
+        )}
+        <div className="absolute inset-0 bg-black/40" />
+        <div className="relative z-10 w-11 h-11 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/30 shadow-lg">
+          <PlayIcon className="w-5 h-5 text-white ml-0.5" />
+        </div>
+        {media.likes > 0 && (
+          <span className="absolute bottom-2 left-2.5 text-white text-[10px] font-bold drop-shadow">
+            ❤️ {media.likes}
+          </span>
+        )}
       </div>
-      {media.likes > 0 && <span className="absolute bottom-2 left-2.5 text-white text-[10px] font-bold drop-shadow">❤️ {media.likes}</span>}
-    </div>
-  );
+    );
+  }
 
-  if (media.url && !imgErr) return (
-    <div onClick={onClick} className="w-full rounded-xl overflow-hidden cursor-pointer relative" style={{ height: 140 }}>
-      <img src={media.url} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setImgErr(true)} />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
-    </div>
-  );
+  if (media.url && !imgErr) {
+    return (
+      <div onClick={onClick} className="w-full rounded-xl overflow-hidden cursor-pointer relative" style={{ height: 140 }}>
+        <img
+          src={media.url}
+          alt=""
+          className="w-full h-full object-cover"
+          loading="lazy"
+          onError={() => setImgErr(true)}
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
+      </div>
+    );
+  }
 
+  // Fallback texte
   return (
-    <div onClick={onClick} className={`w-full rounded-xl overflow-hidden cursor-pointer p-3 flex items-center justify-center ${isDarkMode ? "bg-gray-800" : "bg-gray-50"}`} style={{ height: 140 }}>
-      <p className={`text-[11px] leading-relaxed line-clamp-5 text-center ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>{media.text || "Voir le profil"}</p>
+    <div
+      onClick={onClick}
+      className={`w-full rounded-xl overflow-hidden cursor-pointer p-3 flex items-center justify-center ${isDarkMode ? "bg-gray-800" : "bg-gray-50"}`}
+      style={{ height: 140 }}
+    >
+      <p className={`text-[11px] leading-relaxed line-clamp-5 text-center ${isDarkMode ? "text-gray-300" : "text-gray-600"}`}>
+        {media.text || "Voir le profil"}
+      </p>
     </div>
   );
 });
 ContentPreview.displayName = "ContentPreview";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CARTE UTILISATEUR (inchangé sauf avatar)
+// CARTE UTILISATEUR
 // ─────────────────────────────────────────────────────────────────────────────
 const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevanceScore }) => {
   const navigate = useNavigate();
@@ -270,6 +334,7 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
   const [loading,    setLoading]    = useState(false);
   const [dismissed,  setDismissed]  = useState(false);
   const [media,      setMedia]      = useState(null);
+  // ✅ Fix : skeleton visible dès mount, pas après IntersectionObserver
   const [mediaReady, setMediaReady] = useState(false);
 
   const cardRef    = useRef(null);
@@ -279,33 +344,60 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
   useEffect(() => {
     const el = cardRef.current;
     if (!el || fetchedRef.current) return;
+
     const obs = new IntersectionObserver(([entry]) => {
       if (!entry.isIntersecting) return;
       obs.disconnect();
-      if (fetchedRef.current || !user._id) return;
+      if (fetchedRef.current || !user._id) {
+        setMediaReady(true);
+        return;
+      }
       fetchedRef.current = true;
-      abortRef.current = new AbortController();
-      const { signal } = abortRef.current;
 
-      const delay = 60 + Math.random() * 300;
+      // ✅ Timeout explicite via AbortController
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      const timeout = setTimeout(() => {
+        ctrl.abort();
+        warn(`Timeout fetch posts user=${user._id}`);
+      }, FETCH_TIMEOUT);
+
+      const delay = 60 + Math.random() * 200;
       setTimeout(async () => {
         try {
-          const { data } = await axiosClient.get(`/posts/user/${user._id}?limit=10&page=1`, { signal });
+          const { data } = await axiosClient.get(
+            `/posts/user/${user._id}?limit=12&page=1`,
+            { signal: ctrl.signal }
+          );
           const posts = Array.isArray(data) ? data : (data?.posts || []);
-          const picked = await pickBestMedia(posts, signal);
+          log(`User ${user._id} → ${posts.length} posts`);
+          const picked = await pickBestMedia(posts, ctrl.signal);
+          log(`User ${user._id} → media picked:`, picked?.url || picked?.text || null);
           setMedia(picked);
-        } catch { setMedia(null); }
-        finally { setMediaReady(true); }
+        } catch (e) {
+          if (e?.name !== "CanceledError" && e?.name !== "AbortError") {
+            warn(`Fetch posts failed for user=${user._id}`, e?.message);
+          }
+          setMedia(null);
+        } finally {
+          clearTimeout(timeout);
+          setMediaReady(true);
+        }
       }, delay);
-    }, { rootMargin: "100px", threshold: 0 });
+    }, { rootMargin: "200px", threshold: 0 });
+
     obs.observe(el);
-    return () => { obs.disconnect(); abortRef.current?.abort(); };
-  }, [user._id]);
+    return () => {
+      obs.disconnect();
+      abortRef.current?.abort();
+    };
+  }, [user._id]); // eslint-disable-line
 
   const handleFollow = useCallback(async (e) => {
     e.stopPropagation();
     if (loading || following) return;
-    setFollowing(true); setLoading(true);
+    setFollowing(true);
+    setLoading(true);
     try { await onFollow?.(user._id); }
     catch { setFollowing(false); }
     finally { setLoading(false); }
@@ -317,22 +409,21 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
     setTimeout(() => onDismiss?.(user._id), 260);
   }, [onDismiss, user._id]);
 
-  const goProfile = useCallback(() => { if (user._id) navigate(`/profile/${user._id}`); }, [navigate, user._id]);
+  const goProfile = useCallback(() => {
+    if (user._id) navigate(`/profile/${user._id}`);
+  }, [navigate, user._id]);
 
   const subText = useMemo(() => {
     if (user.mutualCount > 0) return `${user.mutualCount} ami${user.mutualCount > 1 ? "s" : ""} en commun`;
     if (user.followedByNames?.length) return `Suivi par ${user.followedByNames[0]}`;
     const fl = fmtFollowers(user.followersCount || user.followers?.length);
     if (fl) return fl;
-    return user.bio ? user.bio.substring(0, 40) + (user.bio.length > 40 ? "…" : "") : "Suggéré pour toi";
+    return user.bio
+      ? user.bio.substring(0, 40) + (user.bio.length > 40 ? "…" : "")
+      : "Suggéré pour toi";
   }, [user]);
 
   const relevancePct = Math.round(Math.min(100, Math.max(0, relevanceScore || 50)));
-
-  const followBtnStyle = useMemo(() => ({
-    WebkitTapHighlightColor: "transparent",
-    ...(following ? {} : { background: "linear-gradient(135deg,#f97316,#ec4899)" }),
-  }), [following]);
 
   return (
     <AnimatePresence>
@@ -355,39 +446,66 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
           }}
           onClick={goProfile}
         >
-          <button onClick={handleDismiss}
+          {/* Bouton fermer */}
+          <button
+            onClick={handleDismiss}
             className={`absolute top-2 right-2 z-20 w-5 h-5 rounded-full flex items-center justify-center transition-colors
               ${isDarkMode ? "text-gray-600 hover:text-gray-300 hover:bg-white/10" : "text-gray-400 hover:text-gray-700 hover:bg-gray-100"}`}
-            style={{ WebkitTapHighlightColor: "transparent" }}>
+            style={{ WebkitTapHighlightColor: "transparent" }}
+          >
             <XMarkIcon className="w-3.5 h-3.5" />
           </button>
 
-          <ContentPreview media={media} isDarkMode={isDarkMode} onClick={goProfile} loading={!mediaReady} />
+          {/* Media preview */}
+          <ContentPreview
+            media={media}
+            isDarkMode={isDarkMode}
+            onClick={goProfile}
+            loading={!mediaReady}
+          />
 
+          {/* Infos utilisateur */}
           <div className="flex items-center gap-2 pr-5">
             <div className={`rounded-full flex-shrink-0 ${user.isPremium || user.isVerified ? "p-[2px] bg-gradient-to-tr from-orange-400 via-pink-500 to-purple-500" : ""}`}>
               <div className={`rounded-full ${(user.isPremium || user.isVerified) ? `p-[1.5px] ${isDarkMode ? "bg-gray-900" : "bg-white"}` : ""}`}>
-                <SuggestAvatar username={user.fullName} photo={user.profilePhoto || user.avatar || user.profilePicture} size={34} />
+                <SuggestAvatar
+                  username={user.fullName}
+                  photo={user.profilePhoto || user.avatar || user.profilePicture}
+                  size={34}
+                />
               </div>
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1">
-                <span className={`text-[12px] font-bold truncate ${isDarkMode ? "text-white" : "text-gray-900"}`}>{user.fullName}</span>
+                <span className={`text-[12px] font-bold truncate ${isDarkMode ? "text-white" : "text-gray-900"}`}>
+                  {user.fullName || "Utilisateur"}
+                </span>
                 {user.isVerified && <CheckBadgeIcon className="w-3.5 h-3.5 text-orange-500 flex-shrink-0" />}
               </div>
-              <p className={`text-[10px] leading-tight truncate mt-0.5 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>{subText}</p>
+              <p className={`text-[10px] leading-tight truncate mt-0.5 ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
+                {subText}
+              </p>
             </div>
           </div>
 
+          {/* Barre de pertinence */}
           <div className={`w-full h-0.5 rounded-full overflow-hidden ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`}>
-            <div className="h-full rounded-full" style={{ width: `${relevancePct}%`, background: "linear-gradient(90deg,#f97316,#ec4899)", transition: "width 0.6s ease" }} />
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${relevancePct}%`,
+                background: "linear-gradient(90deg,#f97316,#ec4899)",
+                transition: "width 0.6s ease",
+              }}
+            />
           </div>
 
+          {/* Bouton suivre */}
           <button
             onClick={handleFollow}
             onMouseDown={(e) => e.stopPropagation()}
             disabled={loading}
-            style={followBtnStyle}
+            style={following ? {} : { background: "linear-gradient(135deg,#f97316,#ec4899)" }}
             className={`w-full py-2 rounded-xl text-[12px] font-bold transition-all active:scale-95 flex items-center justify-center gap-1.5
               ${following
                 ? isDarkMode
@@ -411,55 +529,117 @@ const SuggestedUserCard = memo(({ user, onFollow, onDismiss, isDarkMode, relevan
 SuggestedUserCard.displayName = "SuggestedUserCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPOSANT PRINCIPAL (inchangé)
+// COMPOSANT PRINCIPAL
 // ─────────────────────────────────────────────────────────────────────────────
-const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
+const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0, userPool = null }) => {
   const { user: currentUser, updateUserProfile } = useAuth();
+
   const [users,     setUsers]     = useState([]);
   const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState(false);
   const [dismissed, setDismissed] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem(DISMISSED_KEY) || "[]"); } catch { return []; }
   });
-  const [shownIds]  = useState(() => {
+  const [shownIds] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem(SHOWN_KEY) || "[]"); } catch { return []; }
   });
 
   const scrollRef  = useRef(null);
   const fetchedRef = useRef(false);
+  const retryCount = useRef(0);
+
+  // ✅ Essaie plusieurs routes en cascade
+  const fetchUsers = useCallback(async (signal) => {
+    const routes = [
+      "/users/suggestions?limit=24",
+      "/users/suggestions?limit=24&fallback=true",
+      "/users?limit=24&sort=followers",
+      "/users?limit=24",
+    ];
+
+    for (const route of routes) {
+      try {
+        const { data } = await axiosClient.get(route, { signal });
+        const list = Array.isArray(data)
+          ? data
+          : (data?.users || data?.suggestions || data?.data || []);
+        if (list.length > 0) {
+          log(`Fetched ${list.length} users via ${route}`);
+          return list;
+        }
+      } catch (e) {
+        if (e?.name === "CanceledError" || e?.name === "AbortError") throw e;
+        warn(`Route ${route} failed:`, e?.message);
+      }
+    }
+    return [];
+  }, []);
 
   useEffect(() => {
+    // ✅ Si userPool fourni par le parent, on l'utilise directement
+    if (userPool && userPool.length > 0 && !fetchedRef.current) {
+      fetchedRef.current = true;
+      const filtered = userPool.filter(u => u?._id && u._id !== currentUser?._id);
+      const scored = filtered.map(u => ({
+        ...u,
+        _relevanceScore: scoreUser(u, currentUser, shownIds),
+      })).sort((a, b) => b._relevanceScore - a._relevanceScore);
+      setUsers(scored);
+      setLoading(false);
+      log("Using userPool prop:", scored.length, "users");
+      return;
+    }
+
     if (fetchedRef.current || !currentUser) return;
     fetchedRef.current = true;
 
-    const fetchUsers = async () => {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => {
+      ctrl.abort();
+      warn("Fetch users timeout");
+    }, FETCH_TIMEOUT);
+
+    (async () => {
       try {
-        const { data } = await axiosClient.get("/users/suggestions?limit=20");
-        const list = Array.isArray(data) ? data : (data?.users || data?.suggestions || []);
+        const list = await fetchUsers(ctrl.signal);
         const filtered = list.filter(u => u?._id && u._id !== currentUser._id);
+
+        if (!filtered.length) {
+          warn("No users returned from any route");
+          setError(true);
+          return;
+        }
+
         const scored = filtered.map(u => ({
           ...u,
           _relevanceScore: scoreUser(u, currentUser, shownIds),
         })).sort((a, b) => b._relevanceScore - a._relevanceScore);
+
         setUsers(scored);
-      } catch {
-        try {
-          const { data } = await axiosClient.get("/users?limit=20&sort=followers");
-          const list = Array.isArray(data) ? data : (data?.users || []);
-          setUsers(list.filter(u => u?._id && u._id !== currentUser._id).slice(0, 16));
-        } catch { setUsers([]); }
-      } finally { setLoading(false); }
-    };
+        setError(false);
+        log("Fetched and scored:", scored.length, "users");
+      } catch (e) {
+        if (e?.name === "CanceledError" || e?.name === "AbortError") return;
+        warn("Fatal fetch error:", e?.message);
+        setError(true);
+        // ✅ Permet un retry au prochain mount si ça échoue
+        fetchedRef.current = false;
+      } finally {
+        clearTimeout(timeout);
+        setLoading(false);
+      }
+    })();
 
-    fetchUsers();
-  }, [currentUser]); // eslint-disable-line
+    return () => { ctrl.abort(); clearTimeout(timeout); };
+  }, [currentUser, userPool, fetchUsers, shownIds]);
 
+  // Enregistrer les IDs affichés
   useEffect(() => {
     if (!users.length) return;
     const ids = users.slice(0, 6).map(u => u._id);
     try {
       const prev = JSON.parse(sessionStorage.getItem(SHOWN_KEY) || "[]");
-      const next = [...prev, ...ids].slice(-50);
-      sessionStorage.setItem(SHOWN_KEY, JSON.stringify(next));
+      sessionStorage.setItem(SHOWN_KEY, JSON.stringify([...prev, ...ids].slice(-50)));
     } catch {}
   }, [users]);
 
@@ -489,25 +669,41 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
 
   if (!currentUser) return null;
 
-  if (loading) return (
-    <div className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
-      <div className="flex items-center gap-3 px-4 pt-5 pb-3">
-        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
-        <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>✨ Suggestions pour toi</span>
-        <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+  // Skeleton
+  if (loading) {
+    return (
+      <div className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
+        <style>{`@keyframes sa-pulse{0%,100%{opacity:1}50%{opacity:.45}}.sa-pulse{animation:sa-pulse 1.5s ease infinite}`}</style>
+        <div className="flex items-center gap-3 px-4 pt-5 pb-3">
+          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+          <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
+            ✨ Suggestions pour toi
+          </span>
+          <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
+        </div>
+        <div className="flex gap-3 px-4 pb-5 overflow-hidden">
+          {[0, 1, 2].map(i => (
+            <div
+              key={i}
+              className={`sa-pulse flex-shrink-0 rounded-2xl ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`}
+              style={{ width: CARD_W, height: 270 }}
+            />
+          ))}
+        </div>
       </div>
-      <div className="flex gap-3 px-4 pb-5 overflow-hidden">
-        {[0, 1, 2].map(i => (
-          <div key={i} className={`flex-shrink-0 rounded-2xl animate-pulse ${isDarkMode ? "bg-gray-900" : "bg-gray-100"}`} style={{ width: CARD_W, height: 270 }} />
-        ))}
-      </div>
-    </div>
-  );
+    );
+  }
 
-  if (visibleUsers.length === 0) return null;
+  // Erreur ou aucun utilisateur visible
+  if (error || visibleUsers.length === 0) {
+    log("No visible users to display (error:", error, "visible:", visibleUsers.length, ")");
+    return null;
+  }
 
   return (
     <div className={`w-full ${isDarkMode ? "bg-black" : "bg-white"}`}>
+      <style>{`@keyframes sa-pulse{0%,100%{opacity:1}50%{opacity:.45}}.sa-pulse{animation:sa-pulse 1.5s ease infinite}`}</style>
+
       <div className="flex items-center gap-3 px-4 pt-5 pb-3">
         <div className={`flex-1 h-px ${isDarkMode ? "bg-gray-800" : "bg-gray-100"}`} />
         <span className={`text-[10px] font-black uppercase tracking-widest ${isDarkMode ? "text-orange-500" : "text-orange-400"}`}>
@@ -517,19 +713,30 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
       </div>
 
       <div className="relative px-4 pb-5">
-        <button onClick={() => scrollByDir(-1)}
+        {/* Flèche gauche */}
+        <button
+          onClick={() => scrollByDir(-1)}
           className={`hidden sm:flex absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full items-center justify-center shadow-lg border transition-all hover:scale-105 active:scale-95
             ${isDarkMode ? "bg-gray-800 text-white border-gray-700 hover:bg-gray-700" : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"}`}
-          style={{ WebkitTapHighlightColor: "transparent" }}>
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+          style={{ WebkitTapHighlightColor: "transparent" }}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
         </button>
 
         <div
           ref={scrollRef}
-          className="flex gap-3 overflow-x-auto sug-scroll"
-          style={{ scrollSnapType: "x mandatory", WebkitOverflowScrolling: "touch", scrollbarWidth: "none", msOverflowStyle: "none", paddingBottom: 2 }}
+          className="flex gap-3 overflow-x-auto"
+          style={{
+            scrollSnapType: "x mandatory",
+            WebkitOverflowScrolling: "touch",
+            scrollbarWidth: "none",
+            msOverflowStyle: "none",
+            paddingBottom: 2,
+          }}
         >
-          <style>{`.sug-scroll::-webkit-scrollbar{display:none}`}</style>
+          <style>{`.sa-scroll::-webkit-scrollbar{display:none}`}</style>
           {visibleUsers.map(u => (
             <div key={u._id} style={{ scrollSnapAlign: "start" }}>
               <SuggestedUserCard
@@ -543,11 +750,16 @@ const SuggestedAccounts = memo(({ isDarkMode, instanceId = 0 }) => {
           ))}
         </div>
 
-        <button onClick={() => scrollByDir(1)}
+        {/* Flèche droite */}
+        <button
+          onClick={() => scrollByDir(1)}
           className={`hidden sm:flex absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full items-center justify-center shadow-lg border transition-all hover:scale-105 active:scale-95
             ${isDarkMode ? "bg-gray-800 text-white border-gray-700 hover:bg-gray-700" : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50"}`}
-          style={{ WebkitTapHighlightColor: "transparent" }}>
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+          style={{ WebkitTapHighlightColor: "transparent" }}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
         </button>
       </div>
     </div>

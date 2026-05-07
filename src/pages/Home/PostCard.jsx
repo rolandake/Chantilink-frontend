@@ -1,20 +1,14 @@
 // 📁 src/pages/Home/PostCard.jsx
-// ✅ v24 — DEBUG COMPLET modaux invisibles
+// ✅ v25 — INSTANT PROFILE NAVIGATION
+//
+// CHANGEMENT v25 :
+//   handleProfileClick transmet l'utilisateur embarqué dans le post via
+//   navigate(..., { state: { instantUser } }) → ProfilePage s'affiche
+//   immédiatement sans spinner ni requête bloquante.
 //
 // Pour activer le debug :
 //   localStorage.setItem("POSTCARD_DEBUG", "1") dans la console DevTools
-//   OU ajouter ?postcard_debug=1 dans l'URL (auto-set dans localStorage)
-//
-// Ce que le debug trace :
-//   [1] Clic bouton → handleOpenDelete/handleOpenBoost
-//   [2] emitModalEvent → CustomEvent dispatché sur window
-//   [3] GlobalModalManager → réception de l'event → setModalState
-//   [4] GlobalModalManager → re-render → rendu du portail
-//   [5] getModalRoot() → container DOM inspecté (cssText, rect, parents)
-//   [6] 50ms après setModalState → modal-root contient-il quelque chose ?
-//   [7] 100ms après dispatch → modal-root vide ou non ?
-//   [8] DeleteModal/BoostModal → montage + inspection overlay
-//   [9] Remontée des parents jusqu'à body → détection overflow/clip/isolation
+//   OU ajouter ?postcard_debug=1 dans l'URL
 // ══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -42,7 +36,7 @@ const PostShareModal    = lazy(() => import("./PostShareSection"));
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DEBUG SYSTEM v24
+// DEBUG SYSTEM v25
 // ─────────────────────────────────────────────────────────────────────────────
 const _isDebug = () => {
   if (typeof window === "undefined") return false;
@@ -53,7 +47,6 @@ const _isDebug = () => {
   return false;
 };
 
-// Auto-enable via ?postcard_debug=1
 if (typeof window !== "undefined") {
   try {
     if (new URLSearchParams(window.location.search).get("postcard_debug") === "1") {
@@ -71,7 +64,6 @@ const dbgWarn = (...args) => {
   if (_isDebug()) console.warn("%c[PostCard ⚠]", "color:#ef4444;font-weight:bold", ...args);
 };
 
-// Inspecte un élément DOM et remonte ses parents pour détecter les causes de clipping
 const dbgInspectEl = (label, el) => {
   if (!_isDebug() || !el) return;
   const style  = window.getComputedStyle(el);
@@ -98,7 +90,6 @@ const dbgInspectEl = (label, el) => {
   console.log("children.length:", el.children.length);
   console.log("innerHTML preview:", el.innerHTML.substring(0, 300));
 
-  // Remonte les parents → cherche overflow:hidden, isolation:isolate, transform
   console.group("→ Analyse des parents (recherche clip/overflow/isolation/transform)");
   let parent = el.parentElement;
   let depth  = 0;
@@ -135,7 +126,7 @@ const dbgInspectEl = (label, el) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getModalRoot — v24 avec diagnostic complet
+// getModalRoot
 // ─────────────────────────────────────────────────────────────────────────────
 const getModalRoot = () => {
   let el = document.getElementById("modal-root");
@@ -151,8 +142,6 @@ const getModalRoot = () => {
     dbgPC("getModalRoot: modal-root CRÉÉ et ajouté à document.body");
   }
 
-  // ✅ FIX v23 : inset:0 (taille réelle), pointer-events:none sur le conteneur,
-  // overflow:visible, PAS d'isolation:isolate
   el.style.cssText = [
     "position:fixed",
     "inset:0",
@@ -167,7 +156,7 @@ const getModalRoot = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper robuste pour comparer des IDs MongoDB
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 const toStr = (v) => {
   if (v === null || v === undefined) return "";
@@ -175,9 +164,6 @@ const toStr = (v) => {
   return String(v);
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// URL HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
 const isStructurallyValid = (url) => {
   if (!url || typeof url !== "string" || url.length < 10) return false;
   if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith("/")) return true;
@@ -382,7 +368,6 @@ const emitModalEvent = (action, post, extra = {}) => {
   window.dispatchEvent(ev);
   dbgPC(`[2] CustomEvent dispatché sur window`, ev);
 
-  // Vérifie 100ms après si le modal-root a reçu du contenu
   if (_isDebug()) {
     setTimeout(() => {
       const mr = document.getElementById("modal-root");
@@ -394,11 +379,6 @@ const emitModalEvent = (action, post, extra = {}) => {
         console.error(
           "%c[PostCard DEBUG] [7] ❌ modal-root VIDE 100ms après dispatch — GlobalModalManager n'a pas rendu !",
           "color:red;font-weight:bold",
-          "\nCauses possibles:",
-          "\n  - <GlobalModalManager /> absent de Home.jsx",
-          "\n  - GlobalModalManager démonté/remonté (key change)",
-          "\n  - setModalState bloqué (React Strict Mode double-invoke ?)",
-          "\n  - startTransition wrapping le setState ?",
         );
         dbgInspectEl("modal-root vide", mr);
       } else {
@@ -413,7 +393,7 @@ const emitModalEvent = (action, post, extra = {}) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DELETE MODAL — v24 debug
+// DELETE MODAL
 // ─────────────────────────────────────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
   const isClosingRef = useRef(false);
@@ -421,9 +401,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
 
   useEffect(() => {
     dbgPC("[8] DeleteModal MONTÉ ✅");
-    if (overlayRef.current) {
-      dbgInspectEl("[8] DeleteModal overlay (monté)", overlayRef.current);
-    }
+    if (overlayRef.current) dbgInspectEl("[8] DeleteModal overlay (monté)", overlayRef.current);
     return () => dbgPC("[8] DeleteModal DÉMONTÉ");
   }, []);
 
@@ -510,7 +488,7 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
 DeleteModal.displayName = "DeleteModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BOOST MODAL — v24 debug
+// BOOST MODAL
 // ─────────────────────────────────────────────────────────────────────────────
 const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
   const isClosingRef = useRef(false);
@@ -518,9 +496,7 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
 
   useEffect(() => {
     dbgPC("[8] BoostModal MONTÉ ✅");
-    if (overlayRef.current) {
-      dbgInspectEl("[8] BoostModal overlay (monté)", overlayRef.current);
-    }
+    if (overlayRef.current) dbgInspectEl("[8] BoostModal overlay (monté)", overlayRef.current);
     return () => dbgPC("[8] BoostModal DÉMONTÉ");
   }, []);
 
@@ -589,7 +565,7 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
 BoostModal.displayName = "BoostModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GlobalModalManager — stable, mémoïsé, listener jamais perdu
+// GlobalModalManager
 // ─────────────────────────────────────────────────────────────────────────────
 const GlobalModalManagerBase = () => {
   const { isDarkMode } = useDarkMode();
@@ -612,14 +588,13 @@ const GlobalModalManagerBase = () => {
     const handler = (e) => {
       const { action, post, onDeleted, showToast, mockPost } = e.detail || {};
       dbgPC(`[3] GlobalModalManager ← EVENT REÇU action="${action}" postId="${post?._id}"`);
-      dbgPC(`[3] detail complet:`, e.detail);
 
       if (!action || !post) {
-        dbgWarn("[3] ❌ EVENT reçu avec detail incomplet — action ou post manquant !", e.detail);
+        dbgWarn("[3] ❌ EVENT reçu avec detail incomplet !", e.detail);
         return;
       }
 
-      dbgPC("[4] → setIsDeleting(false) + setModalState({ action, post, ... })");
+      dbgPC("[4] → setIsDeleting(false) + setModalState(...)");
       setIsDeleting(false);
       setModalState({ action, post, onDeleted, showToast, mockPost });
 
@@ -630,15 +605,9 @@ const GlobalModalManagerBase = () => {
           if (mr) {
             dbgInspectEl("[6] modal-root 50ms après setModalState", mr);
             if (mr.children.length === 0) {
-              console.error(
-                "%c[PostCard DEBUG] [6] ❌ modal-root VIDE 50ms après setModalState !",
-                "color:red;font-weight:bold",
-              );
+              console.error("%c[PostCard DEBUG] [6] ❌ modal-root VIDE 50ms après setModalState !", "color:red;font-weight:bold");
             } else {
-              console.info(
-                `%c[PostCard DEBUG] [6] ✅ modal-root a ${mr.children.length} enfant(s)`,
-                "color:green;font-weight:bold",
-              );
+              console.info(`%c[PostCard DEBUG] [6] ✅ modal-root a ${mr.children.length} enfant(s)`, "color:green;font-weight:bold");
             }
           } else {
             console.error("%c[PostCard DEBUG] [6] ❌ modal-root ABSENT 50ms après setModalState !", "color:red");
@@ -654,7 +623,7 @@ const GlobalModalManagerBase = () => {
       window.removeEventListener(MODAL_EVENT, handler);
       dbgPC("[3] GlobalModalManager DÉMONTÉ — removeEventListener");
     };
-  }, []); // ← tableau vide : mount/unmount uniquement, listener jamais perdu
+  }, []);
 
   const close = useCallback(() => {
     dbgPC("[4] GlobalModalManager → close() → setModalState(null)");
@@ -793,6 +762,8 @@ const PostCardInner = forwardRef(({
       isPremium:         !!(u.isPremium || post.isPremium),
       isInvalid:         !isMockPost && !isOptimistic && (isInvalidName || isInvalidId),
       isBannedOrDeleted: isBannedDeleted,
+      // ✅ v25 — on conserve l'objet user complet pour la navigation instantanée
+      _raw:              u,
     };
   }, [post._id, post.user, post.author, post.userId, post.fullName, isMockPost, isOptimistic]);
 
@@ -908,12 +879,38 @@ const PostCardInner = forwardRef(({
       .finally(() => setLoadingFollow(false));
   }, []);
 
+  // ✅ v25 — INSTANT PROFILE NAVIGATION
+  // On passe l'utilisateur embarqué dans le post comme état de navigation.
+  // ProfilePage le lit via useLocation().state.instantUser et s'affiche
+  // IMMÉDIATEMENT sans attendre l'API, puis revalide en arrière-plan.
   const handleProfileClick = useCallback((e) => {
     e?.stopPropagation();
-    const { postUser } = postRef.current;
+    const { postUser, post } = postRef.current;
     const id = postUser._id;
     if (!id || id === "unknown" || id === "null" || id === "undefined") return;
-    navigate(`/profile/${id}`);
+
+    // Construit un objet utilisateur minimal depuis les données déjà en mémoire
+    const rawUser = post.user || post.author || {};
+    const instantUser = {
+      _id:            id,
+      fullName:       postUser.fullName,
+      profilePhoto:   postUser.profilePhoto,
+      isVerified:     postUser.isVerified,
+      isPremium:      postUser.isPremium,
+      username:       rawUser.username       || rawUser.email?.split("@")[0] || "",
+      bio:            rawUser.bio            || "",
+      location:       rawUser.location       || "",
+      website:        rawUser.website        || "",
+      isBot:          rawUser.isBot          || false,
+      followers:      rawUser.followers      || [],
+      following:      rawUser.following      || [],
+      followersCount: rawUser.followersCount || 0,
+      followingCount: rawUser.followingCount || 0,
+      createdAt:      rawUser.createdAt      || null,
+    };
+
+    dbgPC(`[v25] handleProfileClick → navigate /profile/${id} avec instantUser`, instantUser);
+    navigate(`/profile/${id}`, { state: { instantUser } });
   }, [navigate]);
 
   const handleOpenComments = useCallback((e) => { e?.stopPropagation(); setShowCommentsModal(true); }, []);
@@ -934,7 +931,7 @@ const PostCardInner = forwardRef(({
     openingRef.current = true;
     setTimeout(() => { openingRef.current = false; }, 300);
     const { post, onDeleted, showToast, isMockPost } = postRef.current;
-    dbgPC("[1] handleOpenDelete → emitModalEvent pour post._id:", post?._id, "| isMockPost:", isMockPost);
+    dbgPC("[1] handleOpenDelete → emitModalEvent pour post._id:", post?._id);
     emitModalEvent("delete", post, { onDeleted, showToast, mockPost: isMockPost });
   }, []);
 
@@ -1045,6 +1042,7 @@ const PostCardInner = forwardRef(({
         {/* HEADER */}
         <div className="flex justify-between items-center p-3">
           <div className="flex items-center gap-3">
+            {/* ✅ v25 — Avatar cliquable avec navigation instantanée */}
             <button onClick={handleProfileClick} className="relative shrink-0">
               <SimpleAvatar username={postUser.fullName} photo={postUser.profilePhoto} size={38} />
               {postUser.isPremium && (

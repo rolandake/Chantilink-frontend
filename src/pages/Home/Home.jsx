@@ -1,10 +1,33 @@
-// 📁 src/pages/Home/Home.jsx — v18 INSTANT LOAD
-// ✅ FIX CHARGEMENT INSTANTANÉ :
-//   - livePool affiché immédiatement depuis sessionStorage au mount
-//   - setResetSig décalé avec setTimeout(0) pour ne pas bloquer le premier render
-//   - startTransition retiré du setResolved(immediate) → affichage synchrone
-//   - Skeleton affiché UNIQUEMENT si livePool vide (vraiment première visite)
-//   - rawPool scoring différé via startTransition pour ne pas bloquer le paint
+// 📁 src/pages/Home/Home.jsx — v20 PERF MAX
+// ✅ CORRECTIONS v20 vs v19 :
+//
+// 🔴 BUG 1 — scoringDepsRef stale supprimé :
+//   La ref intermédiaire était lue avant que le useEffect de sync la mette à jour.
+//   FIX : deps explicites directement dans le useEffect du scoring.
+//
+// 🔴 BUG 2 — followingIds Set instable :
+//   new Set() à chaque fetch = référence différente = re-score inutile.
+//   FIX : followingIdsRef (stable) + followingVer (compteur de vraie diff).
+//
+// 🔴 BUG 3 — renderItem recrée sur chaque changement de newsArticles :
+//   newsArticles dans les deps de useCallback → VirtualFeed re-render complet.
+//   FIX : newsArticlesRef + suggestedUsersRef lus dans la closure, pas dans les deps.
+//
+// 🔴 BUG 4 — abortRef global unique :
+//   Un seul AbortController pour toutes les requêtes → abort() coupe tout.
+//   FIX : controller local par useEffect (pattern annulation propre).
+//
+// 🔴 BUG 5 — prefetchedUrls Set infini :
+//   Jamais purgé → memory leak sur longue session.
+//   FIX : LRU plafonné à PREFETCH_URL_MAX = 300.
+//
+// 🔴 BUG 6 — SEED_ROTATE_MS déclenchait setResetSig :
+//   Reset complet du Feed toutes les 4 min → saut de scroll perceptible.
+//   FIX : invalidateScoreCache() + setSeed() seulement, plus de setResetSig.
+//
+// 🟡 handleNeedMorePosts : hasMore/fetchNextPage stale → refs.
+// 🟡 saveSeenIds : flush au unmount garanti.
+// 🟡 poll 30s : backoff si document.hidden + visibilitychange listener.
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -78,6 +101,9 @@ const SILENT_COOLDOWN_MS = 8_000;
 const SCROLL_IDLE_MS     = 2000;
 
 const EXPLORATION_RATE = 0.10;
+
+// ✅ FIX BUG 5 — prefetchedUrls LRU plafonné
+const PREFETCH_URL_MAX = 300;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SCORE CACHE
@@ -927,11 +953,16 @@ const createDwellTracker = (post, onDwell, onSkip) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PREFETCH
+// PREFETCH — LRU plafonné (FIX BUG 5)
 // ══════════════════════════════════════════════════════════════════════════════
 const prefetchedUrls = new Set();
+
 const prefetchOneUrl = (url) => {
-  if (!url||typeof url!=="string"||prefetchedUrls.has(url)) return;
+  if (!url || typeof url !== "string" || prefetchedUrls.has(url)) return;
+  // ✅ LRU : supprimer la plus ancienne entrée si le Set est plein
+  if (prefetchedUrls.size >= PREFETCH_URL_MAX) {
+    prefetchedUrls.delete(prefetchedUrls.values().next().value);
+  }
   prefetchedUrls.add(url);
   try {
     const isVideo=/\.(mp4|webm|mov|avi)(\?|$)/i.test(url.split("?")[0]);
@@ -1204,7 +1235,7 @@ const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest
 PostCardWrapper.displayName = "PostCardWrapper";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// FEED v18
+// FEED
 // ══════════════════════════════════════════════════════════════════════════════
 const Feed = ({
   posts,
@@ -1228,10 +1259,16 @@ const Feed = ({
   const onNeedMorePostsRef  = useRef(onNeedMorePosts);
   const onPostsSeenRef      = useRef(onPostsSeen);
 
+  // ✅ FIX BUG 3 — refs stables pour newsArticles et suggestedUsers
+  const newsArticlesRef   = useRef(newsArticles);
+  const suggestedUsersRef = useRef(suggestedUsers);
+
   useEffect(()=>{ onScrollProgressRef.current=onScrollProgress; },[onScrollProgress]);
   useEffect(()=>{ onNeedMorePostsRef.current=onNeedMorePosts; },  [onNeedMorePosts]);
   useEffect(()=>{ postsRef.current=posts; },                      [posts]);
   useEffect(()=>{ onPostsSeenRef.current=onPostsSeen; },          [onPostsSeen]);
+  useEffect(()=>{ newsArticlesRef.current=newsArticles; },        [newsArticles]);
+  useEffect(()=>{ suggestedUsersRef.current=suggestedUsers; },    [suggestedUsers]);
 
   const tagPost = useCallback((post) => ({
     ...post,
@@ -1352,11 +1389,14 @@ const Feed = ({
 
   const displayedPosts = accRef.current;
 
+  // ✅ FIX BUG 3 — newsArticles et suggestedUsers via refs, retirés des deps
   const renderItem = useCallback((post, index) => {
+    const articles      = newsArticlesRef.current;
+    const sugUsers      = suggestedUsersRef.current;
     const newsSlot = index > 0 && index % NEWS_EVERY === 0
       ? Math.floor(index / NEWS_EVERY) - 1 : -1;
-    const newsItem = newsSlot >= 0 && newsArticles.length > 0
-      ? newsArticles[newsSlot % newsArticles.length] : null;
+    const newsItem = newsSlot >= 0 && articles.length > 0
+      ? articles[newsSlot % articles.length] : null;
 
     return (
       <>
@@ -1383,7 +1423,7 @@ const Feed = ({
           <SuggestedPostPreview
             key={`spp-${index}`}
             isDarkMode={isDarkMode}
-            userPool={suggestedUsers}
+            userPool={sugUsers}
             slotIndex={Math.floor(index / SUGGEST_PROFILE_EVERY)}
           />
         )}
@@ -1398,13 +1438,12 @@ const Feed = ({
       </>
     );
   }, [
-    newsArticles, isDarkMode, suggestedUsers,
+    isDarkMode,
     handlePostVisible, handleDwell, handleSkip,
     onDeleted, showToast,
+    // newsArticles et suggestedUsers retirés — lus via refs
   ]);
 
-  // ✅ FIX v18 — Skeleton uniquement si VRAIMENT aucun post et chargement en cours
-  // Si resolved a des posts (depuis cache), on les affiche même si postsLoading=true
   if (isLoading && !displayedPosts.length) return <FeedSkeleton isDarkMode={isDarkMode}/>;
   if (!isLoading && !displayedPosts.length) return (
     <div className="flex flex-col items-center justify-center py-24 gap-3">
@@ -1451,7 +1490,7 @@ const Feed = ({
 Feed.displayName = "Feed";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HOME v18 — INSTANT LOAD
+// HOME v20
 // ══════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
@@ -1474,21 +1513,91 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const [apiPages,     setApiPages]     = useState(1);
   const [seed,         setSeed]         = useState(()=>Math.floor(Math.random()*0xffffffff));
   const [suggestedUsers, setSuggestedUsers] = useState([]);
-  const [followingIds, setFollowingIds] = useState(new Set());
 
-  // ✅ FIX v18 — livePool initialisé SYNCHRONEMENT depuis sessionStorage
-  // Pas d'attente : le cache est lu au constructeur du state
+  // ✅ FIX BUG 2 — followingIds : ref stable + compteur de vraie diff
+  const followingIdsRef = useRef(new Set());
+  const [followingVer,  setFollowingVer] = useState(0);
+
   const livePostsRef = useRef(loadLivePool());
   const [livePostsVer, setLivePostsVer] = useState(0);
 
-  // ✅ FIX v18 — resolved initialisé immédiatement avec les posts du cache
-  // si livePool non-vide, le feed s'affiche AVANT tout appel réseau
   const [resolved, setResolved] = useState(() => {
     const cached = loadLivePool();
     if (!cached.length) return [];
-    // Retourner directement les posts valides du cache (pas d'expirables au boot)
     return cached.filter(p => isValidPost(p) && !hasExpirable(p)).slice(0, PAGE_SIZE);
   });
+
+  // ✅ FIX BUG 1 — scoring sans scoringDepsRef intermédiaire
+  // deps directes : livePostsVer, mockCount, seed, followingVer
+  const [rawPool, setRawPool] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const scoreTimer = setTimeout(() => {
+      if (cancelled) return;
+
+      const live       = livePostsRef.current;
+      const fi         = followingIdsRef.current; // Set stable via ref
+      const sm         = MOCK_CONFIG.enabled;
+      const mc         = mockCount;
+      const s          = seed;
+
+      if (!live.length) {
+        startTransition(() => setRawPool([]));
+        return;
+      }
+
+      const dedup = (arr) => {
+        const seen = new Set();
+        return arr.filter(p => {
+          if (seen.has(p._id)) return false;
+          seen.add(p._id);
+          return true;
+        });
+      };
+
+      const valid       = dedup(live.filter(p => isValidPost(p)));
+      const vReal       = valid.filter(p => !p.isBot && !p.user?.isBot);
+      const vBots       = valid.filter(p =>  p.isBot ||  p.user?.isBot);
+      const seenIds     = persistedSeenIdsRef.current;
+      const unseenReal  = vReal.filter(p => !seenIds.has(p._id));
+      const useUnseen   = unseenReal.length >= MIN_UNSEEN_BEFORE_LOOP;
+      const realToScore = useUnseen ? unseenReal : vReal;
+
+      let built;
+      if (!sm) {
+        built = smartBuildFeed(realToScore, vBots, seenIds, fi, getScoringContext());
+      } else {
+        const mocks = dedup(MOCK_POSTS.slice(0, mc));
+        if (MOCK_CONFIG.mixWithRealPosts && realToScore.length > 0) {
+          built = smartBuildFeed(realToScore, [...vBots, ...mocks], seenIds, fi, getScoringContext());
+        } else {
+          built = seededShuffle(mocks, s);
+        }
+      }
+
+      const deduped = (() => {
+        const seen = new Set();
+        return built.filter(p => {
+          const key = p._id;
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      })();
+
+      if (!cancelled) {
+        startTransition(() => setRawPool(deduped));
+      }
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(scoreTimer);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [livePostsVer, mockCount, seed, followingVer]); // followingVer au lieu de followingIds
 
   const persistedSeenIdsRef = useRef(loadSeenIds());
 
@@ -1512,34 +1621,37 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const scrollIdleTimerRef = useRef(null);
   const currentApiPageRef   = useRef(1);
   const fetchingNextPageRef = useRef(false);
-  const abortRef = useRef(new AbortController());
-  const saveSeenIdsTimer = useRef(null);
+  const saveSeenIdsTimer    = useRef(null);
+
+  // ✅ FIX BUG 7 — refs pour hasMore et fetchNextPage (évite deps stale)
+  const hasMoreRef       = useRef(hasMore);
+  const fetchNextPageRef2 = useRef(fetchNextPage);
+  const refetchRef       = useRef(refetch);
+  useEffect(() => { hasMoreRef.current = hasMore; },           [hasMore]);
+  useEffect(() => { fetchNextPageRef2.current = fetchNextPage; }, [fetchNextPage]);
+  useEffect(() => { refetchRef.current = refetch; },           [refetch]);
 
   const STORIES_H = 92;
   const TOTAL_TOP = STORIES_H;
   const showMock  = MOCK_CONFIG.enabled;
 
+  // ✅ FIX BUG 4 — pas d'abortRef global : chaque useEffect a son propre controller
+  // Cleanup au unmount pour saveSeenIds
   useEffect(() => {
-    abortRef.current = new AbortController();
     return () => {
-      abortRef.current.abort();
       clearTimeout(saveSeenIdsTimer.current);
+      saveSeenIds(persistedSeenIdsRef.current);
     };
   }, []);
 
-  // ✅ FIX v18 — seed et resetSig séparés pour ne pas bloquer le premier render
-  // setSeed est immédiat, setResetSig est différé après le premier paint
   useEffect(() => {
     const freshSeed = Math.floor(Math.random() * 0xffffffff);
     setSeed(freshSeed);
-    // ✅ NE PAS réinitialiser seenIds si on a déjà du cache → évite de
-    // rescorer tous les posts et de retarder l'affichage
     const hasCachedPosts = livePostsRef.current.length > 0;
     if (!hasCachedPosts) {
       persistedSeenIdsRef.current = new Set();
       saveSeenIds(new Set());
     }
-    // ✅ Décaler le resetSig après le premier render pour ne pas bloquer
     setTimeout(() => startTransition(() => setResetSig(k => k + 1)), 0);
   }, []);
 
@@ -1585,34 +1697,45 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return true;
   },[]);
 
+  // ✅ FIX BUG 2 — fetch following avec controller local
   useEffect(()=>{
     if(!user)return;
+    const ctrl = new AbortController();
     (async()=>{
       try{
-        const{data}=await axiosClient.get("/users/following?limit=500",{signal:abortRef.current.signal});
+        const{data}=await axiosClient.get("/users/following?limit=500",{signal:ctrl.signal});
         const list=Array.isArray(data)?data:(data?.users||data?.following||[]);
-        setFollowingIds(new Set(list.map(u=>u._id||u.id).filter(Boolean)));
+        const newSet = new Set(list.map(u=>u._id||u.id).filter(Boolean));
+        // Comparer avant de mettre à jour pour éviter re-render inutile
+        const prev = followingIdsRef.current;
+        const changed = newSet.size !== prev.size || [...newSet].some(id => !prev.has(id));
+        if (changed) {
+          followingIdsRef.current = newSet;
+          setFollowingVer(v => v + 1);
+        }
       }catch(e){ if(e?.name==="CanceledError"||e?.name==="AbortError") return; }
     })();
+    return () => ctrl.abort();
   },[user]);
 
+  // ✅ FIX BUG 7 — handleNeedMorePosts utilise les refs
   const handleNeedMorePosts=useCallback(async()=>{
     if(fetchingNextPageRef.current||!user)return;
     fetchingNextPageRef.current=true;
     try{
-      if(hasMore&&typeof fetchNextPage==="function"){
+      if(hasMoreRef.current&&typeof fetchNextPageRef2.current==="function"){
         const nextPage=currentApiPageRef.current+1;currentApiPageRef.current=nextPage;
-        const result=await fetchNextPage();const newApiPosts=result?.posts||[];
+        const result=await fetchNextPageRef2.current();const newApiPosts=result?.posts||[];
         if(newApiPosts.length>0){addLivePosts(newApiPosts);setApiPages(nextPage);return;}
       }
       const now=Date.now();
       if(now-silentLastFetchRef.current>=SILENT_COOLDOWN_MS/2){
-        silentLastFetchRef.current=now;const result=await refetch?.();const fp=result?.posts||[];
+        silentLastFetchRef.current=now;const result=await refetchRef.current?.();const fp=result?.posts||[];
         if(fp.length>0){const added=addLivePosts(fp);if(!added)startTransition(()=>setLivePostsVer(v=>v+1));}
       }
     }catch(e){ if(e?.name==="CanceledError"||e?.name==="AbortError") return; }
     finally{fetchingNextPageRef.current=false;}
-  },[user,hasMore,fetchNextPage,refetch,addLivePosts]);
+  },[user,addLivePosts]); // hasMore et fetchNextPage retirés des deps
 
   useEffect(()=>{
     const scrollEl=scrollRef.current;if(!scrollEl)return;
@@ -1623,21 +1746,23 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   useEffect(()=>{
     if(!user||sugFetched.current)return;sugFetched.current=true;
+    const ctrl = new AbortController();
     (async()=>{
       try{
-        const{data}=await axiosClient.get("/users/suggestions?limit=20",{signal:abortRef.current.signal});
+        const{data}=await axiosClient.get("/users/suggestions?limit=20",{signal:ctrl.signal});
         const list=Array.isArray(data)?data:(data?.users||data?.suggestions||[]);
         setSuggestedUsers(list.filter(u=>u?._id&&u._id!==user._id));
       }
       catch(e){
         if(e?.name==="CanceledError"||e?.name==="AbortError") return;
         try{
-          const{data}=await axiosClient.get("/users?limit=20&sort=followers",{signal:abortRef.current.signal});
+          const{data}=await axiosClient.get("/users?limit=20&sort=followers",{signal:ctrl.signal});
           const list=Array.isArray(data)?data:(data?.users||[]);
           setSuggestedUsers(list.filter(u=>u?._id&&u._id!==user._id).slice(0,16));
         }catch{ setSuggestedUsers([]); }
       }
     })();
+    return () => ctrl.abort();
   },[user]);
 
   const fetchFallbackPosts=useCallback(async()=>{
@@ -1645,12 +1770,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     const now=Date.now();
     if(now-fallbackLastRun.current<FALLBACK_COOLDOWN_MS||fallbackFetchedRef.current)return;
     fallbackFetchedRef.current=true;fallbackLastRun.current=now;
+    const ctrl = new AbortController();
     try{
       const cachedProfilePosts=readAllCachedProfilePosts();
       if(cachedProfilePosts.length>0){addLivePosts(cachedProfilePosts);const er=livePostsRef.current.filter(p=>!p._isMock&&!p.isMockPost).length;if(er>=FALLBACK_THRESHOLD*2)return;}
       let userPool=suggestedUsers.length>0?suggestedUsers:await(async()=>{
         try{
-          const{data}=await axiosClient.get("/users?limit=30&sort=followers",{signal:abortRef.current.signal});
+          const{data}=await axiosClient.get("/users?limit=30&sort=followers",{signal:ctrl.signal});
           return Array.isArray(data)?data:(data?.users||[]);
         }catch{ return[]; }
       })();
@@ -1660,12 +1786,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       if(!window.__fallbackPostsRoutePromise__){
         const probeUid=probeTarget?._id||probeTarget?.id;
         window.__fallbackPostsRoutePromise__=probeUid?(async()=>{
-          const sig=abortRef.current.signal;
-          try{await axiosClient.get(`/users/${probeUid}/posts?limit=1&page=1`,{signal:sig});return"user_posts";}
+          try{await axiosClient.get(`/users/${probeUid}/posts?limit=1&page=1`,{signal:ctrl.signal});return"user_posts";}
           catch(e1){if(e1.response?.status!==404)return"user_posts";
-            try{await axiosClient.get(`/posts?userId=${probeUid}&limit=1`,{signal:sig});return"posts_filter";}
+            try{await axiosClient.get(`/posts?userId=${probeUid}&limit=1`,{signal:ctrl.signal});return"posts_filter";}
             catch(e2){if(e2.response?.status!==404)return"posts_filter";
-              try{await axiosClient.get(`/posts/user/${probeUid}?limit=1`,{signal:sig});return"posts_user";}
+              try{await axiosClient.get(`/posts/user/${probeUid}?limit=1`,{signal:ctrl.signal});return"posts_user";}
               catch{return"none";}}}
         })():Promise.resolve("none");
         window.__fallbackPostsRoutePromise__.catch(()=>{delete window.__fallbackPostsRoutePromise__;});
@@ -1678,12 +1803,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         if(route==="posts_user")  return`/posts/user/${uid}?limit=${FALLBACK_POSTS_LIMIT}`;
         return null;
       };
-      const sig=abortRef.current.signal;
       const results=await Promise.allSettled([probeTarget,...targets].filter(Boolean).map(async(u)=>{
         const uid=u._id||u.id;if(!uid)return[];
         const url=buildUrl(uid);if(!url)return[];
         try{
-          const{data}=await axiosClient.get(url,{signal:sig});
+          const{data}=await axiosClient.get(url,{signal:ctrl.signal});
           const posts=Array.isArray(data)?data:(data?.posts||data?.data||[]);
           return posts.map(p=>({...p,_fromFallback:true}));
         }
@@ -1696,6 +1820,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       const allFallback=results.filter(r=>r.status==="fulfilled").flatMap(r=>r.value).filter(p=>p?._id);
       if(allFallback.length)addLivePosts(allFallback);
     }catch(e){ if(e?.name==="CanceledError"||e?.name==="AbortError") return; }
+    finally { ctrl.abort(); }
   },[user,suggestedUsers,addLivePosts]);
 
   const fetchFallbackRef=useRef(fetchFallbackPosts);
@@ -1723,41 +1848,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     startTransition(()=>setLivePostsVer(v=>v+1));
   },[rawPosts]);
 
-  const ctx = getScoringContext();
-
-  const rawPool=useMemo(()=>{
-    const live=livePostsRef.current;
-    const dedup=(arr)=>{const s=new Set();return arr.filter(p=>{if(s.has(p._id))return false;s.add(p._id);return true;});};
-    const valid=dedup(live.filter(p=>isValidPost(p)));
-    const vReal=valid.filter(p=>!p.isBot&&!p.user?.isBot);
-    const vBots=valid.filter(p=> p.isBot|| p.user?.isBot);
-    const seenIds = persistedSeenIdsRef.current;
-    const unseenReal = vReal.filter(p => !seenIds.has(p._id));
-    const useUnseen  = unseenReal.length >= MIN_UNSEEN_BEFORE_LOOP;
-    const realToScore = useUnseen ? unseenReal : vReal;
-    let built;
-    if(!showMock){
-      built = smartBuildFeed(realToScore, vBots, seenIds, followingIds, ctx);
-    } else {
-      const mocks=dedup(MOCK_POSTS.slice(0,mockCount));
-      if(MOCK_CONFIG.mixWithRealPosts&&realToScore.length>0)
-        built = smartBuildFeed(realToScore, [...vBots,...mocks], seenIds, followingIds, ctx);
-      else
-        built = seededShuffle(mocks, seed);
-    }
-    const seen = new Set();
-    return built.filter(p => {
-      const key = p._id;
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  },[livePostsVer,mockCount,showMock,seed,followingIds]); // eslint-disable-line
-
-  // ✅ FIX v18 — Pipeline d'affichage instantané
-  // 1. Les posts sans URL expirable s'affichent IMMÉDIATEMENT (setResolved synchrone)
-  // 2. startTransition retiré du setResolved(immediate) → React ne le diffère plus
-  // 3. resolveBatch tourne en arrière-plan et enrichit progressivement
+  // Pipeline d'affichage : resolved depuis rawPool
   useEffect(()=>{
     if(!rawPool.length){setResolved([]);return;}
     const controller = new AbortController();
@@ -1766,7 +1857,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     const immediate=rawPool.filter(p=>!hasExpirable(p));
     const exp=rawPool.filter(p=>hasExpirable(p));
 
-    // ✅ Affichage SYNCHRONE — pas de startTransition, pas de délai
     setResolved(immediate);
 
     if(!exp.length) return () => { cancelled = true; };
@@ -1777,7 +1867,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     resolveBatch(exp,(partials)=>{
       if(cancelled||controller.signal.aborted)return;
       partials.forEach(p=>rm.set(p._id,p));
-      // ✅ Les mises à jour partielles restent en startTransition (non-urgentes)
       startTransition(()=>setResolved(rawPool.map(p=>rm.get(p._id)||p).filter(Boolean)));
     }, controller.signal).then(fr=>{
       if(cancelled||controller.signal.aborted)return;
@@ -1789,11 +1878,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return()=>{ cancelled=true; controller.abort(); };
   },[rawPool]);
 
+  // ✅ FIX BUG 6 — SEED_ROTATE_MS : invalidation douce sans setResetSig
   useEffect(()=>{
     if(!user)return;
     const id=setInterval(()=>{
-      if(!document.hidden&&!isScrollingRef.current)
-        startTransition(()=>{setSeed(Math.floor(Math.random()*0xffffffff));setResetSig(k=>k+1);});
+      if(document.hidden)return;
+      invalidateScoreCache();
+      setSeed(Math.floor(Math.random()*0xffffffff));
+      // Plus de setResetSig → pas de reset complet du Feed → pas de saut de scroll
     },SEED_ROTATE_MS);
     return()=>clearInterval(id);
   },[user]);
@@ -1806,9 +1898,8 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return resolved.filter(p=>(p.content||"").toLowerCase().includes(q)||(p.user?.fullName||"").toLowerCase().includes(q));
   },[resolved,searchQuery]);
 
-  // ✅ FIX v18 — isLoading = true UNIQUEMENT si resolved est vide
-  // Si on a des posts depuis le cache, on ne montre pas le skeleton
-  const isLoading = postsLoading && resolved.length === 0;
+  const isLoading = postsLoading && resolved.length === 0 && livePostsRef.current.length === 0;
+
   useEffect(()=>{loadingRef.current=postsLoading;},[postsLoading]);
 
   useEffect(()=>{
@@ -1848,12 +1939,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     fetchingNextPageRef.current=false;fallbackFetchedRef.current=false;
     try{
       if(postsLoading)await new Promise(resolve=>{const maxWait=setTimeout(resolve,2000);const check=setInterval(()=>{if(!loadingRef.current){clearInterval(check);clearTimeout(maxWait);resolve();}},100);});
-      const[,r]=await Promise.allSettled([fetchStories(true),refetch?.()]);
+      const[,r]=await Promise.allSettled([fetchStories(true),refetchRef.current?.()]);
       const fp=r?.value?.posts||[];
       if(fp.length>0){latestId.current=fp[0]._id;addLivePosts(fp);}
     }catch{showToast("Erreur lors de l'actualisation","error");}
     finally{setIsRefreshing(false);triggerReset();}
-  },[isRefreshing,postsLoading,refetch,fetchStories,showToast,triggerReset,addLivePosts]);
+  },[isRefreshing,postsLoading,fetchStories,showToast,triggerReset,addLivePosts]);
 
   const handleScrollProgress=useCallback(async(ratio)=>{
     if(!user||isRefreshing)return;
@@ -1861,20 +1952,25 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if(!cooldownOk)return;
     if(ratio>=PREFETCH_THRESHOLD&&!prefetchTriggeredRef.current){
       prefetchTriggeredRef.current=true;silentFetchingRef.current=true;silentLastFetchRef.current=now;
-      try{const r=await refetch?.();addLivePosts(r?.posts||[]);}catch{}
+      try{const r=await refetchRef.current?.();addLivePosts(r?.posts||[]);}catch{}
       finally{silentFetchingRef.current=false;setTimeout(()=>{prefetchTriggeredRef.current=false;},10_000);}
     }
-  },[user,isRefreshing,refetch,addLivePosts]);
+  },[user,isRefreshing,addLivePosts]);
 
   useEffect(()=>{window.addEventListener(HOME_REFRESH_EVENT,handleRefresh);return()=>window.removeEventListener(HOME_REFRESH_EVENT,handleRefresh);},[handleRefresh]);
   useEffect(()=>{const h=()=>scrollRef.current?.scrollTo({top:0,behavior:"smooth"});window.addEventListener(HOME_SCROLL_TOP_EVENT,h);return()=>window.removeEventListener(HOME_SCROLL_TOP_EVENT,h);},[]);
 
+  // ✅ poll 30s avec visibilitychange pour reprendre après onglet caché
   useEffect(()=>{
     if(!user)return;
+    let lastHiddenAt = 0;
+
     const poll=async()=>{
       if(document.hidden||isRefreshing||loadingRef.current)return;
+      // backoff si l'onglet vient juste d'être réactivé (< 5s)
+      if(Date.now()-lastHiddenAt<5000)return;
       try{
-        const r=await refetch?.();const fp=r?.posts||[];
+        const r=await refetchRef.current?.();const fp=r?.posts||[];
         if(!fp.length||!latestId.current)return;
         const idx=fp.findIndex(p=>p._id===latestId.current);
         const newer=idx>0?fp.slice(0,idx):[];if(!newer.length)return;
@@ -1887,8 +1983,16 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         setNewPosts(newer.length);startTransition(()=>setLivePostsVer(v=>v+1));
       }catch{}
     };
-    const id=setInterval(poll,POLL_INTERVAL);return()=>clearInterval(id);
-  },[user,refetch,isRefreshing]);
+
+    const onVisibility = () => {
+      if (document.hidden) { lastHiddenAt = Date.now(); }
+      else { setTimeout(poll, 1000); } // reprend après retour onglet
+    };
+
+    const id=setInterval(poll,POLL_INTERVAL);
+    document.addEventListener("visibilitychange", onVisibility);
+    return()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVisibility); };
+  },[user,isRefreshing]);
 
   const handleShowNew=useCallback(()=>{
     setNewPosts(0);currentApiPageRef.current=1;fetchingNextPageRef.current=false;
@@ -1918,9 +2022,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if(!entries[0].isIntersecting||loadingRef.current||isRefreshing)return;
     startPageTrans(()=>{
       if(showMock&&mockCount<MOCK_POSTS.length)setMockCount(p=>Math.min(p+MOCK_CONFIG.loadMoreCount,MOCK_POSTS.length));
-      if(hasMore){fetchNextPage();setApiPages(p=>p+1);currentApiPageRef.current++;}
+      if(hasMoreRef.current){fetchNextPageRef2.current?.();setApiPages(p=>p+1);currentApiPageRef.current++;}
     });
-  },[hasMore,fetchNextPage,isRefreshing,showMock,mockCount]);
+  },[isRefreshing,showMock,mockCount]); // hasMore et fetchNextPage retirés
   useEffect(()=>{apiObsFnRef.current=apiObsFn;},[apiObsFn]);
   useEffect(()=>{
     const node=apiObsRef.current;if(!node)return;
@@ -1998,7 +2102,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
               onScrollProgress={handleScrollProgress}
               onNeedMorePosts={handleNeedMorePosts}
               scrollContainerRef={scrollRef}
-              followingIds={followingIds}
+              followingIds={followingIdsRef.current}
               onPostsSeen={handlePostsSeen}
             />
           </div>
