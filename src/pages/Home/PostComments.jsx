@@ -6,6 +6,11 @@
 //   → Appelée après chaque ajout/suppression de commentaire (pas de réponse)
 //   → Utilise commentsCount retourné par l'API si disponible
 //   → Fallback sur safeComments.length si l'API ne retourne pas commentsCount
+//
+// ✅ v3 — FIX WARNING forwardRef :
+//   → ReplyRow et CommentRow wrappés avec React.forwardRef()
+//   → Nécessaire car enfants directs de AnimatePresence mode="popLayout"
+//   → framer-motion passe un ref implicite pour mesurer les animations de sortie
 
 import React, {
   useState, useRef, useEffect, useCallback, useMemo, memo
@@ -86,8 +91,12 @@ const timeAgo = (date) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REPLY ROW
+// ✅ v3 : forwardRef ajouté — requis par AnimatePresence mode="popLayout"
+// Le ref est passé directement au motion.div racine (c'est l'élément racine du composant)
 // ─────────────────────────────────────────────────────────────────────────────
-const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNavigate, isReacting, isDeleting }) => {
+const ReplyRow = memo(React.forwardRef(({
+  reply, currentUser, isDarkMode, onLike, onDelete, onNavigate, isReacting, isDeleting
+}, ref) => {
   const user = reply.user || {};
   const isMe = currentUser && (user._id === currentUser._id);
   const likes = Array.isArray(reply.likes) ? reply.likes : [];
@@ -97,6 +106,7 @@ const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNav
 
   return (
     <motion.div
+      ref={ref}
       layout="position"
       initial={{ opacity: 0, x: -8 }}
       animate={{ opacity: reply.isOptimistic ? 0.55 : 1, x: 0 }}
@@ -163,17 +173,20 @@ const ReplyRow = memo(({ reply, currentUser, isDarkMode, onLike, onDelete, onNav
       </div>
     </motion.div>
   );
-});
+}));
 ReplyRow.displayName = "ReplyRow";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMMENT ROW
+// ✅ v3 : forwardRef ajouté — requis par AnimatePresence mode="popLayout"
+// Le ref est passé au div racine (wrapper non-animé) — c'est lui que framer-motion
+// observe pour mesurer la position lors des animations d'entrée/sortie popLayout
 // ─────────────────────────────────────────────────────────────────────────────
-const CommentRow = memo(({
+const CommentRow = memo(React.forwardRef(({
   comment, currentUser, isDarkMode,
   onLike, onDelete, onReply, onNavigate,
   isReacting, isDeleting, replyingToId,
-}) => {
+}, ref) => {
   const user = comment.user || {};
   const isMe = currentUser && (user._id === currentUser._id);
   const likes = Array.isArray(comment.likes) ? comment.likes : [];
@@ -187,7 +200,7 @@ const CommentRow = memo(({
   const isReplying = replyingToId === comment._id;
 
   return (
-    <div className="mb-1">
+    <div ref={ref} className="mb-1">
       <motion.div
         layout="position"
         initial={{ opacity: 0, y: 8 }}
@@ -314,7 +327,7 @@ const CommentRow = memo(({
       </AnimatePresence>
     </div>
   );
-});
+}));
 CommentRow.displayName = "CommentRow";
 
 // ─────────────────────────────────────────────────────────────────────────────

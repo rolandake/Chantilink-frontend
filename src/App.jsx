@@ -1,11 +1,11 @@
 // 📁 src/App.jsx
 // ✨ DIFF vs version précédente :
 //
-//   1. Import de useSmartScroll depuis le hook dédié (supprime la fonction inline)
-//   2. Destructuration { headerVisible, navbarVisible } au lieu de isNavVisible unique
-//   3. Header utilise headerVisible, Navbar utilise navbarVisible
-//   4. mainStyle recalculé avec les deux valeurs séparées
-//   5. Tout le reste est identique
+//   1. Header TOUJOURS visible — ne se cache plus jamais (transform retiré)
+//   2. mainStyle.top = toujours 72 quand showHeader (header fixe)
+//   3. Navbar mobile garde le scroll intelligent via navbarVisible
+//   4. goProfile utilise user._id (AuthContext) au lieu de location.state?.userId
+//      → corrige "profil introuvable" sur desktop quand state est absent
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -32,7 +32,8 @@ import { setupIndexedDB }    from "./utils/idbMigration";
 import { initializeStorage } from "./utils/idbCleanup";
 import { BACKEND_URL }       from "./api/axiosClientGlobal";
 
-// ✅ NOUVEAU — hook dédié avec vélocité + idle timer + états séparés
+// ✅ Hook dédié avec vélocité + idle timer + états séparés
+// On ne s'en sert plus que pour navbarVisible (header est désormais fixe)
 import { useSmartScroll } from "./hooks/useSmartScroll";
 
 import {
@@ -294,8 +295,8 @@ function AppContent() {
   const [storyViewerData, setStoryViewerData] = useState({ stories: [], owner: null });
   const [liveNotifications, setLiveNotifications] = useState([]);
 
-  // ✅ NOUVEAU — deux états séparés avec vélocité + idle timer
-  const { headerVisible, navbarVisible } = useSmartScroll();
+  // ✅ On ne récupère que navbarVisible — le header n'utilise plus headerVisible
+  const { navbarVisible } = useSmartScroll();
 
   useEffect(() => {
     if (typeof window.__hideSplash === "function") window.__hideSplash();
@@ -413,21 +414,20 @@ function AppContent() {
     else navigate("/");
   }, [navigate]);
 
-  // ✅ mainStyle utilise maintenant headerVisible ET navbarVisible séparément
+  // ✅ FIX — Header toujours fixe à 72px quand showHeader=true.
+  // On ne le cache plus jamais : seul le contenu principal s'ajuste.
+  // La navbar mobile garde le comportement intelligent (glisse vers le bas).
   const mainStyle = useMemo(() => ({
-    top: showHeader
-      ? (headerVisible ? 72 : 0)
-      : 0,
+    top: showHeader ? 72 : 0,
     bottom: showNav
       ? (navbarVisible ? 64 : 0)
       : 0,
-    // Transition plus douce : spring-like via cubic-bezier
-    transition: "top 220ms cubic-bezier(0.4,0,0.2,1), bottom 220ms cubic-bezier(0.4,0,0.2,1)",
+    transition: "bottom 220ms cubic-bezier(0.4,0,0.2,1)",
     overflowX: "hidden",
     overflowY: isHome ? "hidden" : "auto",
     WebkitOverflowScrolling: "touch",
     paddingBottom: isHome ? 0 : "env(safe-area-inset-bottom)",
-  }), [showHeader, showNav, isHome, headerVisible, navbarVisible]);
+  }), [showHeader, showNav, isHome, navbarVisible]);
 
   return (
     <div className={`fixed inset-0 overflow-hidden ${isDarkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}>
@@ -444,17 +444,12 @@ function AppContent() {
         ))}
       </AnimatePresence>
 
-      {/* HEADER — utilise headerVisible */}
+      {/* ✅ HEADER — toujours visible, pas de transform/hide.
+          On garde juste le positionnement fixe standard. */}
       {showHeader && (
         <div
           className="fixed top-0 right-0 z-40 lg:left-[260px] left-0"
-          style={{
-            height: 72,
-            // ✅ Transform CSS : le header glisse vers le haut indépendamment
-            transform:  headerVisible ? "translateY(0)" : "translateY(-100%)",
-            transition: "transform 220ms cubic-bezier(0.4,0,0.2,1)",
-            willChange: "transform",
-          }}
+          style={{ height: 72 }}
         >
           <Header />
         </div>
@@ -478,6 +473,7 @@ function AppContent() {
           isAdminUser={isAdmin}
           unreadCount={safeUnread}
           onHomeClick={handleHomeClick}
+          currentUser={user}
         />
       )}
 
@@ -518,13 +514,11 @@ function AppContent() {
         </div>
       </main>
 
-      {/* NAVBAR MOBILE — utilise navbarVisible (indépendant du header) */}
+      {/* NAVBAR MOBILE — garde le comportement intelligent (navbarVisible) */}
       {showNav && (
         <div
           className="fixed bottom-0 left-0 right-0 z-50"
           style={{
-            // ✅ Transform CSS : la navbar glisse vers le bas indépendamment
-            // avec un léger décalage naturel grâce au NAVBAR_DELAY dans le hook
             transform:  navbarVisible ? "translateY(0)" : "translateY(100%)",
             transition: "transform 220ms cubic-bezier(0.4,0,0.2,1)",
             willChange: "transform",
@@ -685,8 +679,11 @@ NavItemDesktop.displayName = "NavItemDesktop";
 
 // ============================================
 // SIDEBAR DESKTOP
+// ✅ FIX — goProfile utilise currentUser._id (passé en prop depuis AppContent)
+//    au lieu de location.state?.userId qui est undefined quand on navigue
+//    directement depuis la sidebar sans passer par un lien de post.
 // ============================================
-const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick }) => {
+const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick, currentUser }) => {
   const { t }    = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
@@ -696,8 +693,12 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
   const goVideos   = useCallback(() => navigate("/videos"),  [navigate]);
   const goCalculs  = useCallback(() => navigate("/calculs"), [navigate]);
   const goMessages = useCallback(() => navigate("/messages"),[navigate]);
-  const goProfile  = useCallback(() => navigate(`/profile/${location.state?.userId || "me"}`), [navigate, location.state?.userId]);
   const goAdmin    = useCallback(() => navigate("/admin"),   [navigate]);
+
+  // ✅ FIX — on utilise currentUser._id directement, jamais location.state
+  const goProfile  = useCallback(() => {
+    if (currentUser?._id) navigate(`/profile/${currentUser._id}`);
+  }, [navigate, currentUser?._id]);
 
   const NAV_ITEMS = useMemo(() => [
     { key: "home",     label: t("navbar.home"),     onClick: onHomeClick, path: "/" },

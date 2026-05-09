@@ -1,19 +1,26 @@
-// 📁 src/pages/Home/Home.jsx — v22 PERF MOBILE
-// ✅ CORRECTIONS v22 vs v21 :
+// 📁 src/pages/Home/Home.jsx — v23 SANS MOCKS
+// ✅ CORRECTIONS v23 vs v22 :
 //
-// 🐛 BUG 1 — MAX_DOM_POSTS trop élevé sur mobile (40 était déjà en place mais insuffisant) :
-//   40 PostCards montées simultanément sur un téléphone faible = ~40 layout trees actifs.
-//   FIX : réduit à 25 sur mobile (< 768px) et appareils low-end.
+// 🗑 SUPPRESSION COMPLÈTE des posts mock
 //
-// 🐛 BUG 2 — scheduleIdlePrefetch déclenche des décodages d'images pendant le scroll :
-//   requestIdleCallback n'est pas respecté pendant le scroll sur mobile Chrome < 120.
-//   Le décodage des images préchargées bloque le thread principal.
-//   FIX : scheduleIdlePrefetch désactivé sur IS_LOW_END_MOBILE.
+// 🐛 FIX CLÉS DUPLIQUÉES (dk_XX_id) — 3 corrections combinées :
 //
-// 🐛 BUG 3 — IS_LOW_END_MOBILE calculé à chaque appel (via navigator inline) :
-//   FIX : constante calculée UNE SEULE FOIS au chargement du module.
+//   FIX A — initFeed : accRef.current vidé AVANT taggedCache.clear()
+//     Avant : taggedCache.current.clear() laissait accRef.current avec des items
+//     qui avaient des clés de l'ancienne session. Si le même post revenait dans
+//     le pool suivant, tagPost lui assignait une NOUVELLE clé → doublon React.
+//     Après : accRef.current = [] avant clear() → aucune clé orpheline.
 //
-// Tous les autres fixes v21 sont conservés (taggedCache stable, userPool SuggestedAccounts, etc.)
+//   FIX B — loadMore : déduplication sur _id avant merge dans accRef
+//     Avant : batch filtré par tagPost mais pas contre accRef.current existant.
+//     Si un post était déjà présent (scroll rapide, double-trigger), il était
+//     ajouté une 2e fois avec une nouvelle clé → doublon React.
+//     Après : existingKeys = new Set(accRef.current.map(p => p._id)) → filter.
+//
+//   FIX C — useEffect rawPosts→livePostsRef : déduplication interne de rawPosts
+//     Avant : rawPosts pouvait contenir des doublons internes (même _id, _displayKey
+//     différent). Ils passaient dans livePostsRef et remontaient dans rawPool.
+//     Après : Map(_id→post) sur cleanRaw avant le merge.
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -34,11 +41,6 @@ import SuggestedAccounts    from "./SuggestedAccounts";
 import SuggestedPostPreview from "./SuggestedPostPreview";
 import PostCard, { GlobalModalManager } from "./PostCard";
 import VirtualFeed          from "./VirtualFeed";
-import MOCK_POSTS, { generateFullDataset } from "../../data/mockPosts";
-import {
-  MOCK_CONFIG as DEFAULT_MOCK_CONFIG,
-  AD_CONFIG   as DEFAULT_AD_CONFIG,
-} from "../../data/mockConfig";
 import { readAllCachedProfilePosts } from "../Profile/ProfilePage";
 
 const StoryCreator             = lazy(() => import("./StoryCreator"));
@@ -48,10 +50,7 @@ const ArticleReaderModal       = lazy(() => import("./ArticleReaderModal"));
 
 const HOME_REFRESH_EVENT    = "home:refresh";
 const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
-const AD_CONFIG             = DEFAULT_AD_CONFIG;
-const MOCK_CONFIG           = DEFAULT_MOCK_CONFIG;
 
-// ✅ FIX v22 — Détection appareil faible, calculée UNE SEULE FOIS au chargement du module
 const IS_LOW_END_MOBILE = typeof navigator !== "undefined" && (
   (navigator.hardwareConcurrency || 4) <= 2 ||
   (navigator.deviceMemory || 4) <= 2 ||
@@ -60,7 +59,6 @@ const IS_LOW_END_MOBILE = typeof navigator !== "undefined" && (
 
 const PAGE_SIZE = 15;
 
-// ✅ FIX v22 — MAX_DOM_POSTS réduit sur mobile faible
 const MAX_DOM_POSTS = (() => {
   if (typeof window === "undefined") return 80;
   if (IS_LOW_END_MOBILE) return 25;
@@ -78,7 +76,6 @@ const SUGGEST_PROFILE_EVERY  = 7;
 const NEWS_EVERY             = 4;
 
 const POLL_INTERVAL  = 30_000;
-const SEED_ROTATE_MS = 4 * 60 * 1000;
 const API_PREFETCH   = 3;
 const MIX_BLOCK      = 5;
 const MIX_MAX_BOTS   = 2;
@@ -262,7 +259,6 @@ const scorePost = (post, now = Date.now()) => {
   else if (followers > 1000)  score += 1;
 
   if (post.isBot || post.user?.isBot) score -= 5;
-  if (post._isMock || post.isMockPost) score -= 3;
   if (post._fromFallback) score -= 1;
 
   return Math.max(0, Math.min(100, score));
@@ -953,15 +949,12 @@ const createDwellTracker = (post, onDwell, onSkip) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ✅ PREFETCH — désactivé sur mobile faible (v22)
+// PREFETCH
 // ══════════════════════════════════════════════════════════════════════════════
 const prefetchedUrls = new Set();
 
 const prefetchOneUrl = (url) => {
-  // ✅ FIX v22 — Pas de prefetch sur mobile faible : le décodage d'images
-  // pendant le scroll bloque le thread principal sur les appareils < 3 cœurs.
   if (IS_LOW_END_MOBILE) return;
-
   if (!url || typeof url !== "string" || prefetchedUrls.has(url)) return;
   if (prefetchedUrls.size >= PREFETCH_URL_MAX) {
     prefetchedUrls.delete(prefetchedUrls.values().next().value);
@@ -988,7 +981,6 @@ const getPostAllMediaUrls = (post) => {
 };
 
 const scheduleIdlePrefetch = (posts, fromIndex, count=PREFETCH_AHEAD, minScore=0) => {
-  // ✅ FIX v22 — Désactivé sur mobile faible
   if (IS_LOW_END_MOBILE) return;
   if (!posts?.length) return;
   const targets=posts.slice(fromIndex,fromIndex+count).filter(p=>(p._score||0)>=minScore);
@@ -1078,15 +1070,8 @@ const resolveBatch = async (posts, onPartialResult, signal) => {
   return results.filter(Boolean);
 };
 
-const seededShuffle = (arr, seed) => {
-  const r=[...arr];let s=seed>>>0;
-  for(let i=r.length-1;i>0;i--){s=(Math.imul(s^(s>>>15),s|1)^(s+Math.imul(s^(s>>>7),s|61)))>>>0;const j=s%(i+1);[r[i],r[j]]=[r[j],r[i]];}
-  return r;
-};
-
 const isValidPost = (p) => {
   if(!p?._id)return false;
-  if(p._isMock||p.isMockPost||p._id?.startsWith("post_"))return true;
   const u=p.user||p.author||{};
   if(u.isBanned||u.isDeleted||["deleted","banned"].includes(u.status))return false;
   if(!u._id&&!u.id&&!p.userId&&!p.author?._id)return false;
@@ -1274,7 +1259,7 @@ const Feed = ({
   useEffect(()=>{ newsArticlesRef.current=newsArticles; },        [newsArticles]);
   useEffect(()=>{ suggestedUsersRef.current=suggestedUsers; },    [suggestedUsers]);
 
-  // ✅ taggedCache stable (v21) — _displayKey assigné une seule fois par post._id
+  // taggedCache stable — _displayKey assigné une seule fois par post._id
   const taggedCache = useRef(new Map());
 
   const tagPost = useCallback((post) => {
@@ -1292,10 +1277,13 @@ const Feed = ({
     return tagged;
   }, []);
 
+  // ✅ FIX A — accRef.current vidé AVANT taggedCache.clear()
+  // Empêche toute clé orpheline de survivre à un reset de session.
   const initFeed = useCallback((pool) => {
     loadingRef.current = false;
     cursorRef.current  = 0;
-    taggedCache.current.clear();
+    accRef.current     = []; // ← vider d'abord les items taggués de l'ancienne session
+    taggedCache.current.clear(); // ← puis vider le cache de clés
     const batch = pool.slice(0, PAGE_SIZE).map(tagPost);
     cursorRef.current = batch.length;
     accRef.current = batch;
@@ -1326,6 +1314,9 @@ const Feed = ({
     }
   }, [resetSignal, posts, initFeed]);
 
+  // ✅ FIX B — déduplication sur _id avant merge dans accRef
+  // Évite les doublons si loadMore est déclenché deux fois rapidement
+  // ou si le même post apparaît aux deux bouts d'un pool paginé.
   const loadMore = useCallback(()=>{
     if (loadingRef.current) return;
     const pool=postsRef.current;
@@ -1343,14 +1334,21 @@ const Feed = ({
     if (!batch.length){setShowAllSeen(true);setIsFetchingAPI(true);loadingRef.current=false;onNeedMorePostsRef.current?.();return;}
     setShowAllSeen(false);
     setIsFetchingAPI(false);
+
     const tagged = batch.map(tagPost);
     cursorRef.current=cursor+tagged.length;
+
     if (onPostsSeenRef.current) {
       onPostsSeenRef.current(tagged.map(p => p._id).filter(Boolean));
     }
     const ctx=getScoringContext();
     tagged.forEach(p=>{ctx.fatigue.record(p);ctx.trend.record(p);ctx.session.recordView();});
-    const next=[...accRef.current,...tagged];
+
+    // ✅ FIX B : filtrer les _id déjà présents dans accRef avant le merge
+    const existingIds = new Set(accRef.current.map(p => p._id).filter(Boolean));
+    const dedupedTagged = tagged.filter(p => !p._id || !existingIds.has(p._id));
+
+    const next=[...accRef.current, ...dedupedTagged];
     accRef.current = next.length > MAX_DOM_POSTS
       ? next.slice(next.length - MAX_DOM_POSTS)
       : next;
@@ -1425,7 +1423,6 @@ const Feed = ({
           onSkip={handleSkip}
           onDeleted={onDeleted}
           showToast={showToast}
-          mockPost={!!post._isMock || !!post.isMockPost}
           priority={index === 0}
         />
         {newsItem && (
@@ -1507,7 +1504,7 @@ const Feed = ({
 Feed.displayName = "Feed";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HOME v22
+// HOME v23
 // ══════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
@@ -1523,12 +1520,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showPyramid,  setShowPyramid]  = useState(false);
   const [toast,        setToast]        = useState(null);
-  const [mockCount,    setMockCount]    = useState(MOCK_CONFIG.initialCount);
   const [pullDist,     setPullDist]     = useState(0);
   const [newPosts,     setNewPosts]     = useState(0);
   const [resetSig,     setResetSig]     = useState(0);
   const [apiPages,     setApiPages]     = useState(1);
-  const [seed,         setSeed]         = useState(()=>Math.floor(Math.random()*0xffffffff));
   const [suggestedUsers, setSuggestedUsers] = useState([]);
 
   const followingIdsRef = useRef(new Set());
@@ -1551,11 +1546,8 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     const scoreTimer = setTimeout(() => {
       if (cancelled) return;
 
-      const live       = livePostsRef.current;
-      const fi         = followingIdsRef.current;
-      const sm         = MOCK_CONFIG.enabled;
-      const mc         = mockCount;
-      const s          = seed;
+      const live = livePostsRef.current;
+      const fi   = followingIdsRef.current;
 
       if (!live.length) {
         startTransition(() => setRawPool([]));
@@ -1571,25 +1563,15 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         });
       };
 
-      const valid       = dedup(live.filter(p => isValidPost(p)));
-      const vReal       = valid.filter(p => !p.isBot && !p.user?.isBot);
-      const vBots       = valid.filter(p =>  p.isBot ||  p.user?.isBot);
-      const seenIds     = persistedSeenIdsRef.current;
-      const unseenReal  = vReal.filter(p => !seenIds.has(p._id));
-      const useUnseen   = unseenReal.length >= MIN_UNSEEN_BEFORE_LOOP;
+      const valid      = dedup(live.filter(p => isValidPost(p)));
+      const vReal      = valid.filter(p => !p.isBot && !p.user?.isBot);
+      const vBots      = valid.filter(p =>  p.isBot ||  p.user?.isBot);
+      const seenIds    = persistedSeenIdsRef.current;
+      const unseenReal = vReal.filter(p => !seenIds.has(p._id));
+      const useUnseen  = unseenReal.length >= MIN_UNSEEN_BEFORE_LOOP;
       const realToScore = useUnseen ? unseenReal : vReal;
 
-      let built;
-      if (!sm) {
-        built = smartBuildFeed(realToScore, vBots, seenIds, fi, getScoringContext());
-      } else {
-        const mocks = dedup(MOCK_POSTS.slice(0, mc));
-        if (MOCK_CONFIG.mixWithRealPosts && realToScore.length > 0) {
-          built = smartBuildFeed(realToScore, [...vBots, ...mocks], seenIds, fi, getScoringContext());
-        } else {
-          built = seededShuffle(mocks, s);
-        }
-      }
+      const built = smartBuildFeed(realToScore, vBots, seenIds, fi, getScoringContext());
 
       const deduped = (() => {
         const seen = new Set();
@@ -1611,14 +1593,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       clearTimeout(scoreTimer);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [livePostsVer, mockCount, seed, followingVer]);
+  }, [livePostsVer, followingVer]);
 
   const persistedSeenIdsRef = useRef(loadSeenIds());
 
   const scrollRef    = useRef(null);
   const apiObsRef    = useRef(null);
   const loadingRef   = useRef(false);
-  const mockGenRef   = useRef(false);
   const touchStartY  = useRef(0);
   const isPulling    = useRef(false);
   const canPull      = useRef(true);
@@ -1646,7 +1627,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   const STORIES_H = 92;
   const TOTAL_TOP = STORIES_H;
-  const showMock  = MOCK_CONFIG.enabled;
 
   useEffect(() => {
     return () => {
@@ -1656,8 +1636,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   }, []);
 
   useEffect(() => {
-    const freshSeed = Math.floor(Math.random() * 0xffffffff);
-    setSeed(freshSeed);
     const hasCachedPosts = livePostsRef.current.length > 0;
     if (!hasCachedPosts) {
       persistedSeenIdsRef.current = new Set();
@@ -1836,21 +1814,29 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   useEffect(()=>{
     if(!user||postsLoading)return;
-    const rc=livePostsRef.current.filter(p=>!p._isMock&&!p.isMockPost&&!p._fromFallback).length;
+    const rc=livePostsRef.current.filter(p=>!p._fromFallback).length;
     if(rc<FALLBACK_THRESHOLD)fetchFallbackRef.current();
   },[livePostsVer,postsLoading,user]);
 
   useEffect(()=>{
     if(!user)return;
-    const h=()=>{const rc=livePostsRef.current.filter(p=>!p._isMock&&!p.isMockPost&&!p._fromFallback&&!p._fromProfileCache).length;if(rc<FALLBACK_THRESHOLD){const c=readAllCachedProfilePosts();if(c.length>0)addLivePosts(c);}};
+    const h=()=>{const rc=livePostsRef.current.filter(p=>!p._fromFallback&&!p._fromProfileCache).length;if(rc<FALLBACK_THRESHOLD){const c=readAllCachedProfilePosts();if(c.length>0)addLivePosts(c);}};
     window.addEventListener("profilePostsCached",h);return()=>window.removeEventListener("profilePostsCached",h);
   },[user,addLivePosts]);
 
+  // ✅ FIX C — déduplication interne de rawPosts avant merge dans livePostsRef
+  // Si rawPosts contient des doublons (_id identiques, _displayKey différents),
+  // ils passaient tels quels dans livePostsRef et généraient deux entrées distinctes.
   useEffect(()=>{
     if(!rawPosts.length)return;
     const ids=new Set(rawPosts.map(p=>p._id));
     const filtered=livePostsRef.current.filter(p=>!ids.has(p._id));
-    const cleanRaw=rawPosts.map(({ _displayKey, ...rest })=>rest);
+
+    // ✅ FIX C : Map(_id→post) pour dédupliquer rawPosts lui-même
+    const cleanRaw = Array.from(
+      new Map(rawPosts.filter(p=>p?._id).map(p=>[p._id, p])).values()
+    ).map(({ _displayKey, ...rest }) => rest);
+
     livePostsRef.current=[...filtered,...cleanRaw].slice(0,MAX_POOL);
     saveLivePool(livePostsRef.current);
     startTransition(()=>setLivePostsVer(v=>v+1));
@@ -1885,16 +1871,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     return()=>{ cancelled=true; controller.abort(); };
   },[rawPool]);
 
-  useEffect(()=>{
-    if(!user)return;
-    const id=setInterval(()=>{
-      if(document.hidden)return;
-      invalidateScoreCache();
-      setSeed(Math.floor(Math.random()*0xffffffff));
-    },SEED_ROTATE_MS);
-    return()=>clearInterval(id);
-  },[user]);
-
   useEffect(()=>{if(resolved.length>0&&!latestId.current)latestId.current=resolved[0]._id;},[resolved]);
 
   const filtered=useMemo(()=>{
@@ -1906,17 +1882,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const isLoading = postsLoading && resolved.length === 0 && livePostsRef.current.length === 0;
 
   useEffect(()=>{loadingRef.current=postsLoading;},[postsLoading]);
-
-  useEffect(()=>{
-    if(mockGenRef.current||isLoading||!MOCK_CONFIG.enabled)return;
-    if(!(MOCK_CONFIG.totalPosts>100&&MOCK_CONFIG.lazyGeneration?.enabled!==false))return;
-    const t=setTimeout(()=>{
-      if(mockGenRef.current)return;mockGenRef.current=true;
-      const run=()=>generateFullDataset(()=>{}).catch(()=>{mockGenRef.current=false;});
-      typeof requestIdleCallback!=="undefined"?requestIdleCallback(run,{timeout:60000}):setTimeout(run,1000);
-    },30000);
-    return()=>clearTimeout(t);
-  },[isLoading]);
 
   useEffect(()=>()=>{clearTimeout(waveTimer.current);},[]);
   useEffect(()=>{
@@ -1936,7 +1901,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if(isRefreshing)return;
     scrollRef.current?.scrollTo({top:0,behavior:"smooth"});
     setIsRefreshing(true);setNewPosts(0);setApiPages(1);
-    setSeed(Math.floor(Math.random()*0xffffffff));
     persistedSeenIdsRef.current = new Set();
     saveSeenIds(new Set());
     invalidateScoreCache();
@@ -2000,7 +1964,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const handleShowNew=useCallback(()=>{
     setNewPosts(0);currentApiPageRef.current=1;fetchingNextPageRef.current=false;
     invalidateScoreCache();
-    startTransition(()=>{setSeed(Math.floor(Math.random()*0xffffffff));setResetSig(k=>k+1);});
+    startTransition(()=>setResetSig(k=>k+1));
   },[]);
 
   const PTR=72;
@@ -2024,10 +1988,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const apiObsFn=useCallback((entries)=>{
     if(!entries[0].isIntersecting||loadingRef.current||isRefreshing)return;
     startPageTrans(()=>{
-      if(showMock&&mockCount<MOCK_POSTS.length)setMockCount(p=>Math.min(p+MOCK_CONFIG.loadMoreCount,MOCK_POSTS.length));
       if(hasMoreRef.current){fetchNextPageRef2.current?.();setApiPages(p=>p+1);currentApiPageRef.current++;}
     });
-  },[isRefreshing,showMock,mockCount]);
+  },[isRefreshing]);
   useEffect(()=>{apiObsFnRef.current=apiObsFn;},[apiObsFn]);
   useEffect(()=>{
     const node=apiObsRef.current;if(!node)return;
@@ -2094,7 +2057,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
               onDeleted={handleDeleted}
               showToast={showToast}
               apiLoadMoreRef={apiObsRef}
-              hasMoreFromAPI={hasMore||mockCount<MOCK_POSTS.length}
+              hasMoreFromAPI={hasMore}
               isLoading={isLoading}
               newPostsCount={newPosts}
               onShowNewPosts={handleShowNew}

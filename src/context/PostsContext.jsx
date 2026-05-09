@@ -11,6 +11,8 @@
 // ✅ FIX RE-RENDER / SAUT VIDÉOS : tokenRef stable, replaceOptimisticPost sans fetchPosts
 // ✅ FIX PEXELS v2 / PIXABAY v3 : filtre URLs vidéos bloquées
 // ✅ FIX v21 : sessionLoadDone via sessionStorage pour survivre aux remounts React Strict Mode
+// ✅ FIX v22 : déduplication stricte sur append=true (Set sur _id avant merge)
+//             → élimine les doublons de clés dans VirtualFeed lors du chargement page 2+
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -122,8 +124,6 @@ export const PostsProvider = ({ children }) => {
 
   // ✅ FIX CHARGEMENT INITIAL v21 :
   // sessionLoadDone utilise sessionStorage pour survivre aux remounts React (Strict Mode, navigation).
-  // La clé est purgée au logout ou après 30 min d'inactivité via le token.
-  // On initialise le ref depuis sessionStorage pour que le premier rendu soit correct.
   const sessionLoadDone = useRef(
     typeof sessionStorage !== "undefined" && !!sessionStorage.getItem(SESSION_LOAD_KEY)
   );
@@ -132,7 +132,6 @@ export const PostsProvider = ({ children }) => {
   const prevTokenRef = useRef(token);
   useEffect(() => {
     if (token && token !== prevTokenRef.current) {
-      // Nouveau token = nouvelle session, on réinitialise
       try { sessionStorage.removeItem(SESSION_LOAD_KEY); } catch {}
       sessionLoadDone.current = false;
     }
@@ -179,6 +178,9 @@ export const PostsProvider = ({ children }) => {
 
   // ============================================
   // FETCH FEED GLOBAL (Home)
+  // ✅ FIX v22 : déduplication stricte sur append=true
+  //   Avant le merge, on construit un Set des IDs déjà présents dans prev
+  //   (hors optimistic) pour éviter tout doublon quand la page 2 arrive.
   // ============================================
   const fetchPosts = useCallback(async (pageNumber = 1, append = false) => {
     const currentToken = tokenRef.current;
@@ -218,18 +220,30 @@ export const PostsProvider = ({ children }) => {
       preloadFirstPostLCP(clean);
 
       setPosts(prev => {
-        const optimistic = prev.filter(p => p.isOptimistic);
-        const merged     = append
-          ? [...prev.filter(p => !p.isOptimistic), ...clean]
-          : clean;
+        const optimistic    = prev.filter(p => p.isOptimistic);
+        const nonOptimistic = prev.filter(p => !p.isOptimistic);
+
+        let merged;
+        if (append) {
+          // ✅ FIX v22 : déduplication stricte avant le merge
+          // On construit un Set des IDs déjà présents pour filtrer les doublons
+          // que l'API renverrait en chevauchement entre page N et page N+1.
+          const existingIds = new Set(nonOptimistic.map(p => p._id));
+          const freshOnly   = clean.filter(p => p._id && !existingIds.has(p._id));
+          merged = [...nonOptimistic, ...freshOnly];
+        } else {
+          merged = clean;
+        }
+
+        // Déduplication finale par Map (sécurité supplémentaire)
         const unique = Array.from(new Map(merged.map(p => [p._id, p])).values());
 
         // ✅ Bail-out : si rien n'a changé sur page=1, évite un re-render inutile
-        if (!append && unique.length === prev.filter(p => !p.isOptimistic).length) {
-          const allSame = unique.every((p, i) => p._id === prev.filter(x => !x.isOptimistic)[i]?._id);
+        if (!append && unique.length === nonOptimistic.length) {
+          const allSame = unique.every((p, i) => p._id === nonOptimistic[i]?._id);
           if (allSame) {
             idbSetPosts("allPosts", unique);
-            return prev; // Pas de changement réel → pas de re-render
+            return prev;
           }
         }
 
@@ -460,11 +474,9 @@ export const PostsProvider = ({ children }) => {
   useEffect(() => {
     if (!token) return;
 
-    // ✅ Vérification double : ref ET sessionStorage
     if (sessionLoadDone.current) return;
     sessionLoadDone.current = true;
 
-    // Marquer dans sessionStorage pour survivre aux remounts
     try { sessionStorage.setItem(SESSION_LOAD_KEY, "1"); } catch {}
 
     const init = async () => {

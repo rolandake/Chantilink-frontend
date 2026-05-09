@@ -1,17 +1,43 @@
 // 📁 src/pages/Home/PostMedia.jsx
-// ✅ v10 — CORRECTIONS PERF
+// ✅ v12 — LECTURE VIDÉO FLUIDE
 //
-// CHANGEMENTS v10 vs v9 :
+// CHANGEMENTS v12 vs v11 :
 //
-// ✅ headCheckCache LRU — importé depuis useMediaValidation.js
-//    → Map plafonnée à 200 entrées (LRU) au lieu d'une Map illimitée
-//    → partagée entre PostMedia et useMediaValidation pour éviter les doublons
+// ✅ FIX 1 — debounce playVideo réduit 200ms→80ms
+//    200ms cumulé avec l'IO observer causait un démarrage tardif
+//    perceptible (le poster "accrochait" 200ms de trop).
 //
-// ✅ _relativeTimer auto-stop — le setInterval de useRelativeTime
-//    s'arrête automatiquement quand il n'y a plus de subscribers
-//    → plus de timer fantôme après unmount de tous les PostCard
+// ✅ FIX 2 — threshold IO observer 0.4→0.25 + rootMargin "-2% 0px"
+//    La vidéo commence à charger dès qu'elle est visible à 25%
+//    au lieu d'attendre 40%. Élimine le "fond noir" qui apparaissait
+//    au scroll rapide.
 //
-// ✅ Toutes les corrections v9 conservées
+// ✅ FIX 3 — preload="auto" pour les vidéos sans LCP, "metadata" uniquement
+//    pour les vidéos hors-viewport initiales.
+//    Avant : toutes les vidéos non-LCP démarraient avec "metadata" → attente
+//    systématique du canplay avant de jouer.
+//    Après : preload="auto" dès que la vidéo entre dans le viewport.
+//
+// ✅ FIX 4 — timeout erreur réduit 6000ms→3500ms
+//    6s de délai avant de signaler une erreur = UX dégradée.
+//
+// ✅ FIX 5 — registerPlayingVideo via requestAnimationFrame
+//    Le pause() synchrone d'une vidéo précédente pouvait freezer le thread
+//    pendant le decode de la nouvelle. RAF permet au browser de finir son
+//    layout avant d'interrompre la vidéo précédente.
+//
+// ✅ FIX 6 — useNaturalRatio : ratio vidéo mis en cache (Map module-level)
+//    Avant : nouvelle <video> DOM créée à chaque recalcul.
+//    Après : le ratio est mis en cache par URL → 0 création inutile.
+//
+// ✅ FIX 7 — abort de l'observer nettoyé proprement lors du unmount
+//    Avant : l'observer pouvait appeler playVideo sur un élément démonté
+//    → "Cannot read properties of null (reading 'play')" en console.
+//
+// ✅ FIX 8 — canplay listener retiré après premier déclenchement (once:true)
+//    Évite des appels multiples à doPlay si le browser re-émet canplay.
+//
+// ✅ Toutes les corrections v11 conservées (globalMuted, etc.)
 
 import React, {
   useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo
@@ -31,19 +57,43 @@ const API_BASE      = (import.meta.env.VITE_API_URL || "http://localhost:5000").
 const R2_PUBLIC_URL = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO MANAGER GLOBAL
+// ✅ ÉTAT MUTED GLOBAL (v11 conservé)
+// ─────────────────────────────────────────────────────────────────────────────
+let _globalMuted = true;
+const getGlobalMuted  = ()      => _globalMuted;
+const setGlobalMuted  = (value) => { _globalMuted = value; };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VIDEO MANAGER GLOBAL — ✅ FIX 5 : pause via RAF (évite freeze thread)
 // ─────────────────────────────────────────────────────────────────────────────
 let currentPlayingVideo = null;
 const registerPlayingVideo = (video) => {
   if (!video) return;
   if (currentPlayingVideo && currentPlayingVideo !== video && document.contains(currentPlayingVideo)) {
-    try { currentPlayingVideo.pause(); } catch {}
+    const prev = currentPlayingVideo;
+    // ✅ RAF : on laisse le browser finir son travail avant de pauser l'ancienne vidéo
+    requestAnimationFrame(() => {
+      try { prev.pause(); } catch {}
+    });
   }
   currentPlayingVideo = video;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
+// ✅ FIX 6 : cache ratio vidéo par URL (Map module-level)
+// ─────────────────────────────────────────────────────────────────────────────
+const VIDEO_RATIO_CACHE = new Map();
+const VIDEO_RATIO_MAX   = 200;
+
+const cacheVideoRatio = (url, ratio) => {
+  if (VIDEO_RATIO_CACHE.size >= VIDEO_RATIO_MAX) {
+    VIDEO_RATIO_CACHE.delete(VIDEO_RATIO_CACHE.keys().next().value);
+  }
+  VIDEO_RATIO_CACHE.set(url, ratio);
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS (identiques à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const isStructurallyValid = (url) => {
   if (!url || typeof url !== "string" || url.length < 10) return false;
@@ -173,7 +223,7 @@ const resolveSlotType = (url, postMediaType = null) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// checkContentType — utilise headCheckCache importé (LRU 200)
+// checkContentType
 // ─────────────────────────────────────────────────────────────────────────────
 const checkContentType = async (url) => {
   if (headCheckCache.has(url)) return headCheckCache.get(url);
@@ -212,7 +262,7 @@ const checkContentType = async (url) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TEXT ONLY CARD
+// TEXT ONLY CARD (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const TEXT_CARD_PALETTES = [
   ["#1877F2","#0D5FCC","#ffffff"],
@@ -283,7 +333,7 @@ export const TextOnlyCard = React.memo(({ content, forceIndex }) => {
 TextOnlyCard.displayName = "TextOnlyCard";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BADGE SOURCE
+// BADGE SOURCE (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const VideoSourceBadge = React.memo(({ url }) => {
   const info = useMemo(() => {
@@ -309,7 +359,7 @@ const VideoSourceBadge = React.memo(({ url }) => {
 VideoSourceBadge.displayName = "VideoSourceBadge";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EMBED ITEM
+// EMBED ITEM (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
   const [showEmbed,    setShowEmbed]    = useState(false);
@@ -381,7 +431,7 @@ const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
 EmbedItem.displayName = "EmbedItem";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HLS ITEM
+// HLS ITEM (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
   const [imgError, setImgError] = useState(false);
@@ -410,30 +460,39 @@ const HLSItem = React.memo(({ thumbnail, externalUrl, title }) => {
 HLSItem.displayName = "HLSItem";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO ITEM
+// VIDEO ITEM — v12 : lecture fluide
 // ─────────────────────────────────────────────────────────────────────────────
 const ICON_MUTED   = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06A8.99 8.99 0 0 0 17.73 18l1.99 2L21 18.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
 const ICON_UNMUTED = `<svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
 
-const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRegisterVideoEl, slotIndex, showBadge = true, onVideoError, onOpenLightbox }) => {
+const VideoItem = React.memo(({ url, posterUrl, isLCP, onRegisterVideoEl, slotIndex, showBadge = true, onVideoError, onOpenLightbox }) => {
   const videoRef      = useRef(null);
   const containerRef  = useRef(null);
   const muteButtonRef = useRef(null);
   const videoUrls     = useMemo(() => getVideoUrls(url), [url]);
   const abortRef      = useRef(null);
   const debounceRef   = useRef(null);
-  const canplayRef    = useRef(null);
   const timerRef      = useRef(null);
   const isVisibleRef  = useRef(false);
   const userPausedRef = useRef(false);
+  const mountedRef    = useRef(true); // ✅ FIX 7 : guard démontage
 
   const [currentSrc,    setCurrentSrc]    = useState(() => videoUrls.proxy || videoUrls.direct);
   const [videoError,    setVideoError]    = useState(false);
   const [posterVisible, setPosterVisible] = useState(true);
 
-  const isMutedLocal   = useRef(initialMuted);
-  const preloadStrat   = useMemo(() => (isLCP || isExternalVideo(url)) ? "auto" : "metadata", [isLCP, url]);
+  const isMutedLocal   = useRef(getGlobalMuted());
+
+  // ✅ FIX 3 : preload "auto" dès qu'on va jouer, "metadata" en attente initiale
+  const [preloadStrat, setPreloadStrat] = useState(isLCP ? "auto" : "metadata");
+
   const useCrossOrigin = useMemo(() => needsCrossOrigin(url), [url]);
+
+  // ✅ FIX 7 : cleanup au démontage
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const setVideoRef = useCallback((el) => {
     videoRef.current = el;
@@ -441,10 +500,13 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
     if (el && currentSrc) {
       el.muted   = isMutedLocal.current;
       el.volume  = isMutedLocal.current ? 0 : 1;
-      el.preload = preloadStrat;
+      el.preload = isLCP ? "auto" : "metadata";
       if (el.src !== currentSrc) el.src = currentSrc;
+      if (muteButtonRef.current) {
+        muteButtonRef.current.innerHTML = isMutedLocal.current ? ICON_MUTED : ICON_UNMUTED;
+      }
     }
-  }, [currentSrc, preloadStrat, onRegisterVideoEl, slotIndex]); // eslint-disable-line
+  }, [currentSrc, isLCP, onRegisterVideoEl, slotIndex]); // eslint-disable-line
 
   useLayoutEffect(() => {
     const vid = videoRef.current;
@@ -453,33 +515,62 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
       vid.src     = currentSrc;
       vid.muted   = isMutedLocal.current;
       vid.volume  = isMutedLocal.current ? 0 : 1;
-      vid.preload = preloadStrat;
     }
-  }, [currentSrc, preloadStrat]); // eslint-disable-line
+  }, [currentSrc]); // eslint-disable-line
 
+  useEffect(() => {
+    if (muteButtonRef.current) {
+      muteButtonRef.current.innerHTML = isMutedLocal.current ? ICON_MUTED : ICON_UNMUTED;
+    }
+  }, []); // eslint-disable-line
+
+  // ✅ FIX 2 : threshold réduit à 0.25, rootMargin allégé
   useEffect(() => {
     const container = containerRef.current; if (!container) return;
     const obs = new IntersectionObserver(([entry]) => {
       isVisibleRef.current = entry.isIntersecting;
-      if (entry.isIntersecting) { if (!userPausedRef.current) playVideo(); }
-      else { pauseVideo(true); }
-    }, { threshold: 0.4, rootMargin: "-5% 0px" });
+      if (entry.isIntersecting) {
+        if (!userPausedRef.current) playVideo();
+      } else {
+        pauseVideo(true);
+      }
+    }, { threshold: 0.25, rootMargin: "-2% 0px" }); // ✅ était 0.4 / "-5% 0px"
     obs.observe(container);
-    return () => { obs.disconnect(); pauseVideo(false); };
+    return () => {
+      obs.disconnect();
+      pauseVideo(false);
+    };
   }, []); // eslint-disable-line
 
   const playVideo = useCallback(() => {
+    // ✅ FIX 1 : debounce réduit 200ms → 80ms
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
     debounceRef.current = setTimeout(() => {
       debounceRef.current = null;
+      if (!mountedRef.current) return; // ✅ FIX 7
       const vid = videoRef.current; if (!vid) return;
+
       abortRef.current?.abort();
       const ctrl = new AbortController(); abortRef.current = ctrl;
-      vid.muted  = isMutedLocal.current;
-      vid.volume = isMutedLocal.current ? 0 : 1;
+
+      // ✅ FIX 3 : basculer sur preload="auto" avant de tenter le play
+      if (vid.preload !== "auto") {
+        vid.preload = "auto";
+        setPreloadStrat("auto");
+      }
+
+      const muted = getGlobalMuted();
+      isMutedLocal.current = muted;
+      vid.muted  = muted;
+      vid.volume = muted ? 0 : 1;
+      if (muteButtonRef.current) {
+        muteButtonRef.current.innerHTML = muted ? ICON_MUTED : ICON_UNMUTED;
+      }
+
       userPausedRef.current = false;
+
       const doPlay = () => {
-        if (ctrl.signal.aborted) return;
+        if (ctrl.signal.aborted || !mountedRef.current) return; // ✅ FIX 7
         if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
         registerPlayingVideo(vid);
         const p = vid.play();
@@ -490,34 +581,40 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
         }).catch(err => {
           if (ctrl.signal.aborted || err.name === "AbortError") return;
           if (err.name === "NotAllowedError") {
-            vid.muted = true; isMutedLocal.current = true;
+            vid.muted = true;
+            isMutedLocal.current = true;
+            setGlobalMuted(true);
             if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
             vid.play().catch(() => {});
           } else {
             setTimeout(() => {
-              if (ctrl.signal.aborted) return;
-              vid.play().catch(() => { vid.muted = true; isMutedLocal.current = true; });
+              if (ctrl.signal.aborted || !mountedRef.current) return;
+              vid.play().catch(() => {
+                vid.muted = true;
+                isMutedLocal.current = true;
+                setGlobalMuted(true);
+              });
             }, 300);
           }
         });
       };
-      if (vid.readyState >= 3) { doPlay(); }
-      else {
+
+      if (vid.readyState >= 3) {
+        doPlay();
+      } else {
+        // ✅ FIX 4 : timeout erreur réduit 6000ms → 3500ms
         timerRef.current = setTimeout(() => {
           timerRef.current = null;
-          if (!ctrl.signal.aborted && vid.readyState < 1) { setVideoError(true); onVideoError?.(); }
-        }, 6000);
-        if (canplayRef.current) vid.removeEventListener("canplay", canplayRef.current);
-        const onCan = () => {
-          vid.removeEventListener("canplay", onCan);
-          canplayRef.current = null;
-          if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-          doPlay();
-        };
-        canplayRef.current = onCan;
-        vid.addEventListener("canplay", onCan);
+          if (!ctrl.signal.aborted && mountedRef.current && vid.readyState < 1) {
+            setVideoError(true);
+            onVideoError?.();
+          }
+        }, 3500); // était 6000
+
+        // ✅ FIX 8 : { once: true } évite les doPlay multiples
+        vid.addEventListener("canplay", doPlay, { once: true });
       }
-    }, 200);
+    }, 80); // était 200ms
   }, [onVideoError]); // eslint-disable-line
 
   const pauseVideo = useCallback((resetTime = false) => {
@@ -526,34 +623,37 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
     abortRef.current?.abort(); abortRef.current = null;
     const vid = videoRef.current;
     if (vid) {
-      if (canplayRef.current) { vid.removeEventListener("canplay", canplayRef.current); canplayRef.current = null; }
+      // ✅ FIX 8 : plus besoin de retirer canplayRef manuellement (once:true)
       vid.pause();
       if (resetTime) { vid.currentTime = 0; setPosterVisible(true); }
     }
   }, []);
 
   useEffect(() => () => {
+    mountedRef.current = false; // ✅ FIX 7
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (timerRef.current)    clearTimeout(timerRef.current);
     abortRef.current?.abort();
     const vid = videoRef.current;
-    if (vid) {
-      if (canplayRef.current) vid.removeEventListener("canplay", canplayRef.current);
-      vid.pause(); vid.src = ""; vid.load();
-    }
+    if (vid) { vid.pause(); vid.src = ""; vid.load(); }
   }, []); // eslint-disable-line
 
   const handleMuteClick = useCallback((e) => {
     e?.stopPropagation();
     const vid = videoRef.current; if (!vid) return;
     const newMuted = !vid.muted;
-    vid.muted = newMuted; vid.volume = newMuted ? 0 : 1;
+    vid.muted = newMuted;
+    vid.volume = newMuted ? 0 : 1;
     isMutedLocal.current = newMuted;
+    setGlobalMuted(newMuted);
     if (muteButtonRef.current) muteButtonRef.current.innerHTML = newMuted ? ICON_MUTED : ICON_UNMUTED;
     if (!newMuted && vid.paused && isVisibleRef.current) {
       userPausedRef.current = false;
       vid.play().catch(() => {
-        vid.muted = true; vid.volume = 0; isMutedLocal.current = true;
+        vid.muted = true;
+        vid.volume = 0;
+        isMutedLocal.current = true;
+        setGlobalMuted(true);
         if (muteButtonRef.current) muteButtonRef.current.innerHTML = ICON_MUTED;
       });
     }
@@ -606,7 +706,7 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, initialMuted = true, onRe
 VideoItem.displayName = "VideoItem";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IMAGE ITEM
+// IMAGE ITEM (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const ImageItem = React.memo(({ url, isLCP, onOpenLightbox }) => {
   const [loaded, setLoaded] = useState(isLCP);
@@ -623,7 +723,7 @@ const ImageItem = React.memo(({ url, isLCP, onOpenLightbox }) => {
 ImageItem.displayName = "ImageItem";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MEDIA CELL
+// MEDIA CELL (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideoEl, slotIndex, showBadge, post, paddingBottom = "75%", overlay = null, wrapperStyle = {}, onVideoError, onOpenLightbox }) => {
   const embedThumbnail = useMemo(() => post?.thumbnail || getYouTubeThumbnail(url), [post?.thumbnail, url]);
@@ -635,9 +735,8 @@ const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideo
         ) : slotType === "hls" ? (
           <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
         ) : slotType === "video" ? (
-          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} initialMuted={true}
-            onRegisterVideoEl={onRegisterVideoEl} slotIndex={slotIndex} showBadge={showBadge}
-            onVideoError={onVideoError} onOpenLightbox={onOpenLightbox} />
+          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} onRegisterVideoEl={onRegisterVideoEl}
+            slotIndex={slotIndex} showBadge={showBadge} onVideoError={onVideoError} onOpenLightbox={onOpenLightbox} />
         ) : (
           <ImageItem url={url} isLCP={isLCP} onOpenLightbox={onOpenLightbox} />
         )}
@@ -653,22 +752,52 @@ const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideo
 });
 MediaCell.displayName = "MediaCell";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ FIX 6 : useNaturalRatio avec cache module-level pour les vidéos
+// ─────────────────────────────────────────────────────────────────────────────
 const MAX_PB = 177;
 const useNaturalRatio = (url, slotType, fallbackPb) => {
   const [pb, setPb] = useState(null);
   useEffect(() => {
     if (!url || slotType === "embed" || slotType === "hls") { setPb(fallbackPb); return; }
+
     if (slotType === "image") {
       const img = new Image();
-      img.onload  = () => { const r = img.naturalWidth && img.naturalHeight ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); };
+      img.onload  = () => {
+        const r = img.naturalWidth && img.naturalHeight
+          ? Math.min((img.naturalHeight / img.naturalWidth) * 100, MAX_PB)
+          : parseFloat(fallbackPb);
+        setPb(`${r}%`);
+      };
       img.onerror = () => setPb(fallbackPb);
-      img.src = url; return;
+      img.src = url;
+      return;
     }
+
     if (slotType === "video") {
-      const vid = document.createElement("video"); vid.muted = true; vid.preload = "metadata";
+      // ✅ FIX 6 : hit cache → pas de <video> DOM créé
+      if (VIDEO_RATIO_CACHE.has(url)) {
+        setPb(VIDEO_RATIO_CACHE.get(url));
+        return;
+      }
+      const vid = document.createElement("video");
+      vid.muted   = true;
+      vid.preload = "metadata";
       const cleanup = () => { vid.onloadedmetadata = null; vid.onerror = null; vid.src = ""; };
-      vid.onloadedmetadata = () => { const r = vid.videoWidth && vid.videoHeight ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB) : parseFloat(fallbackPb); setPb(`${r}%`); cleanup(); };
-      vid.onerror = () => { setPb(fallbackPb); cleanup(); };
+      vid.onloadedmetadata = () => {
+        const r = vid.videoWidth && vid.videoHeight
+          ? Math.min((vid.videoHeight / vid.videoWidth) * 100, MAX_PB)
+          : parseFloat(fallbackPb);
+        const ratio = `${r}%`;
+        cacheVideoRatio(url, ratio); // ✅ mise en cache
+        setPb(ratio);
+        cleanup();
+      };
+      vid.onerror = () => {
+        cacheVideoRatio(url, fallbackPb); // cache l'échec aussi
+        setPb(fallbackPb);
+        cleanup();
+      };
       vid.src = url;
     }
   }, [url, slotType]); // eslint-disable-line
@@ -685,7 +814,7 @@ const MediaCellAuto = React.memo((props) => {
 MediaCellAuto.displayName = "MediaCellAuto";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MediaPlaceholder
+// MediaPlaceholder (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
 const MediaPlaceholder = React.memo(({ total }) => {
   const pb = total === 1 ? "75%" : total === 2 ? "50%" : "66%";
@@ -699,7 +828,7 @@ const MediaPlaceholder = React.memo(({ total }) => {
 MediaPlaceholder.displayName = "MediaPlaceholder";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST MEDIA — composant principal
+// POST MEDIA — composant principal (identique à v11 sauf imports)
 // ─────────────────────────────────────────────────────────────────────────────
 const GAP = 2;
 
