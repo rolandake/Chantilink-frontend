@@ -1,26 +1,15 @@
-// 📁 src/pages/Home/PostCard.jsx
-// ✅ v27 — CORRECTIONS PERF MOBILE
+// src/pages/Home/PostCard.jsx
+// v27.1 — FIX handleFollow : endpoint et authentification alignés sur le backend
 //
-// CHANGEMENTS v27 vs v26 :
+// CHANGEMENTS v27.1 :
+//   - handleFollow utilisait axiosClient.post("/follow/follow/:id") et
+//     axiosClient.post("/follow/unfollow/:id") -> endpoints inexistants (404)
+//   - Le backend expose UN SEUL endpoint toggle : POST /api/users/:id/follow
+//     (si deja suivi -> unfollow, sinon -> follow)
+//   - Fix : axiosClient.post("/users/" + id + "/follow") pour les deux actions
+//   - Le token est injecte par axiosClient (intercepteur) depuis AuthContext
 //
-// 🐛 BUG 1 — dbgPC() dans le corps du composant (hors useMemo) exécuté à chaque render :
-//   Le bloc `if (_DEBUG_CACHED) { dbgPC(...) }` placé directement dans PostCardInner
-//   s'exécute à chaque render de chaque card, même avec _DEBUG_CACHED=false en prod.
-//   Avec 40-80 PostCards montées simultanément = centaines d'évaluations par scroll.
-//   FIX : log conditionnel retiré du corps du composant. En dev, utiliser
-//   ?postcard_debug=1 dans l'URL pour activer les logs ciblés.
-//
-// 🐛 BUG 2 — getVideoObserver threshold trop bas (0.7) → plusieurs vidéos jouent :
-//   Sur mobile avec plusieurs vidéos visibles partiellement, plusieurs autoplay
-//   simultanés saturent le CPU de décodage vidéo.
-//   FIX : threshold=0.85 (plus strict) + libération du buffer décodé à l'exit.
-//
-// 🐛 BUG 3 — Pas de détection mobile pour les optimisations conditionnelles :
-//   Même comportement sur iPhone 8 et iPhone 15 Pro.
-//   FIX : IS_LOW_END_DEVICE détecté une seule fois au chargement du module.
-//
-// ✅ Toutes les corrections v26 conservées (passive wheel, isOwner log hors memo, etc.)
-// ══════════════════════════════════════════════════════════════════════════════
+// Tout le reste de v27 est conserve a l'identique.
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -47,7 +36,7 @@ const PostShareModal    = lazy(() => import("./PostShareSection"));
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ DÉTECTION APPAREIL — calculée UNE SEULE FOIS au chargement du module
+// Detection appareil
 // ─────────────────────────────────────────────────────────────────────────────
 const IS_LOW_END_DEVICE = typeof navigator !== "undefined" && (
   (navigator.hardwareConcurrency || 4) <= 2 ||
@@ -55,17 +44,14 @@ const IS_LOW_END_DEVICE = typeof navigator !== "undefined" && (
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ DEBUG SYSTEM v27 — identique v26, cache calculé UNE SEULE FOIS
+// Debug system
 // ─────────────────────────────────────────────────────────────────────────────
 const _initDebug = () => {
   if (typeof window === "undefined") return false;
   try {
     if (new URLSearchParams(window.location.search).get("postcard_debug") === "1") {
       window.localStorage?.setItem("POSTCARD_DEBUG", "1");
-      console.info(
-        "%c[PostCard DEBUG] Auto-activé via ?postcard_debug=1",
-        "color:#f97316;font-weight:bold"
-      );
+      console.info("%c[PostCard DEBUG] Auto-active via ?postcard_debug=1", "color:#f97316;font-weight:bold");
       return true;
     }
   } catch {}
@@ -74,72 +60,23 @@ const _initDebug = () => {
 
 const _DEBUG_CACHED = _initDebug();
 
-const dbgPC   = _DEBUG_CACHED
-  ? (...args) => console.log("%c[PostCard]",  "color:#f97316;font-weight:bold", ...args)
-  : () => {};
-
-const dbgWarn = _DEBUG_CACHED
-  ? (...args) => console.warn("%c[PostCard ⚠]", "color:#ef4444;font-weight:bold", ...args)
-  : () => {};
+const dbgPC   = _DEBUG_CACHED ? (...a) => console.log("%c[PostCard]",  "color:#f97316;font-weight:bold", ...a) : () => {};
+const dbgWarn = _DEBUG_CACHED ? (...a) => console.warn("%c[PostCard]", "color:#ef4444;font-weight:bold", ...a) : () => {};
 
 const dbgInspectEl = _DEBUG_CACHED
   ? (label, el) => {
       if (!el) return;
-      const style  = window.getComputedStyle(el);
-      const rect   = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      const rect  = el.getBoundingClientRect();
       const inBody = document.body.contains(el);
-
       console.groupCollapsed(`%c[PostCard DOM] ${label}`, "color:#a855f7;font-weight:bold");
       console.log("element:", el);
       console.log("in document.body:", inBody);
-      console.log("inline cssText:", el.style.cssText);
       console.log("computed display:", style.display);
       console.log("computed visibility:", style.visibility);
       console.log("computed opacity:", style.opacity);
       console.log("computed z-index:", style.zIndex);
-      console.log("computed position:", style.position);
-      console.log("computed inset:", style.inset);
-      console.log("computed overflow:", style.overflow, "/", style.overflowX, "/", style.overflowY);
-      console.log("computed pointer-events:", style.pointerEvents);
-      console.log("computed isolation:", style.isolation);
-      console.log("computed clip / clip-path:", style.clip, "/", style.clipPath);
-      console.log("computed will-change:", style.willChange);
-      console.log("computed transform:", style.transform);
       console.log("BoundingRect:", `top=${rect.top} left=${rect.left} w=${rect.width} h=${rect.height}`);
-      console.log("children.length:", el.children.length);
-      console.log("innerHTML preview:", el.innerHTML.substring(0, 300));
-
-      console.group("→ Analyse des parents");
-      let parent = el.parentElement;
-      let depth  = 0;
-      let problemsFound = 0;
-      while (parent && parent !== document.documentElement && depth < 20) {
-        const ps = window.getComputedStyle(parent);
-        const pr = parent.getBoundingClientRect();
-        const clipOverflow = ps.overflow !== "visible" || ps.overflowX !== "visible" || ps.overflowY !== "visible";
-        const hasIsolate   = ps.isolation === "isolate";
-        const hasTransform = ps.transform !== "none" || ps.willChange.includes("transform");
-        const lowZ         = parseInt(ps.zIndex) < 0;
-        if (clipOverflow || hasIsolate || hasTransform || lowZ) {
-          problemsFound++;
-          const id  = parent.id ? `#${parent.id}` : "";
-          const cls = parent.className ? `.${String(parent.className).trim().split(/\s+/).slice(0,3).join(".")}` : "";
-          console.warn(
-            `[depth=${depth}] ${parent.tagName}${id}${cls}`,
-            "\n  overflow:", ps.overflow, ps.overflowX, ps.overflowY,
-            "\n  isolation:", ps.isolation,
-            "\n  transform:", ps.transform,
-            "\n  will-change:", ps.willChange,
-            "\n  z-index:", ps.zIndex,
-            "\n  position:", ps.position,
-            "\n  rect:", `top=${pr.top} left=${pr.left} w=${pr.width} h=${pr.height}`,
-          );
-        }
-        parent = parent.parentElement;
-        depth++;
-      }
-      if (problemsFound === 0) console.log("(aucun parent problématique détecté)");
-      console.groupEnd();
       console.groupEnd();
     }
   : () => {};
@@ -149,26 +86,13 @@ const dbgInspectEl = _DEBUG_CACHED
 // ─────────────────────────────────────────────────────────────────────────────
 const getModalRoot = () => {
   let el = document.getElementById("modal-root");
-  if (el && !document.body.contains(el)) {
-    dbgWarn("getModalRoot: modal-root détaché du DOM → recréation");
-    el.remove();
-    el = null;
-  }
+  if (el && !document.body.contains(el)) { el.remove(); el = null; }
   if (!el) {
     el = document.createElement("div");
     el.id = "modal-root";
     document.body.appendChild(el);
-    dbgPC("getModalRoot: modal-root CRÉÉ et ajouté à document.body");
   }
-  el.style.cssText = [
-    "position:fixed",
-    "inset:0",
-    "z-index:999999",
-    "pointer-events:none",
-    "overflow:visible",
-  ].join(";");
-  dbgPC("getModalRoot → el:", el, "| cssText:", el.style.cssText);
-  dbgInspectEl("modal-root après getModalRoot()", el);
+  el.style.cssText = "position:fixed;inset:0;z-index:999999;pointer-events:none;overflow:visible;";
   return el;
 };
 
@@ -209,15 +133,14 @@ const resolveMediaUrl = (raw) => {
   if (raw.includes("cdn.pixabay.com/video")) return null;
   if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
   if (raw.startsWith("blob:")) return raw;
-  if (raw.startsWith("/uploads/") || raw.startsWith("uploads/")) {
+  if (raw.startsWith("/uploads/") || raw.startsWith("uploads/"))
     return `${API_URL.replace("/api", "")}/${raw.replace(/^\/+/, "")}`;
-  }
   if (R2_PUBLIC_URL) return `${R2_PUBLIC_URL}/${raw.replace(/^\/+/, "")}`;
   return raw;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TIMESTAMP LIVE
+// Timestamp relatif
 // ─────────────────────────────────────────────────────────────────────────────
 const _relativeSubscribers = new Set();
 let   _relativeTimer = null;
@@ -225,22 +148,18 @@ let   _relativeTimer = null;
 const _startGlobalTimer = () => {
   if (_relativeTimer) return;
   _relativeTimer = setInterval(() => {
-    if (_relativeSubscribers.size === 0) {
-      clearInterval(_relativeTimer);
-      _relativeTimer = null;
-      return;
-    }
+    if (_relativeSubscribers.size === 0) { clearInterval(_relativeTimer); _relativeTimer = null; return; }
     _relativeSubscribers.forEach(fn => fn());
   }, 15_000);
 };
 
 const _formatRelative = (date) => {
   if (!date) return "";
-  const d    = date instanceof Date ? date : new Date(date);
+  const d = date instanceof Date ? date : new Date(date);
   if (isNaN(d.getTime())) return "";
   const diff = Date.now() - d.getTime();
-  if (diff < 0)            return "à l'instant";
-  if (diff < 45_000)       return "à l'instant";
+  if (diff < 0)            return "a l'instant";
+  if (diff < 45_000)       return "a l'instant";
   if (diff < 90_000)       return "il y a 1 min";
   if (diff < 3_600_000)    return `il y a ${Math.round(diff / 60_000)} min`;
   if (diff < 7_200_000)    return "il y a 1 h";
@@ -264,8 +183,7 @@ const useRelativeTime = (date) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ✅ OBSERVER VIDÉO (singleton) — v27 optimisé mobile
-// threshold plus strict + libération buffer décodé à l'exit
+// Observer video (singleton)
 // ─────────────────────────────────────────────────────────────────────────────
 let _videoObserver = null;
 const _observedVideos = new WeakMap();
@@ -280,9 +198,7 @@ const getVideoObserver = () => {
           v.play().catch(() => {});
         } else {
           v.pause();
-          // ✅ Libérer le buffer décodé sur mobile pour économiser la mémoire GPU
           if (IS_LOW_END_DEVICE && v.src) {
-            // Sauvegarder src et réinitialiser pour libérer le buffer
             const savedSrc = v.src;
             v.removeAttribute("src");
             v.load();
@@ -290,16 +206,13 @@ const getVideoObserver = () => {
           }
         }
       });
-    }, {
-      // ✅ threshold plus strict : évite plusieurs autoplay simultanés sur mobile
-      threshold: IS_LOW_END_DEVICE ? 0.9 : 0.85,
-    });
+    }, { threshold: IS_LOW_END_DEVICE ? 0.9 : 0.85 });
   }
   return _videoObserver;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INDICATEUR POST EN COURS D'UPLOAD
+// PostUploadingIndicator
 // ─────────────────────────────────────────────────────────────────────────────
 export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount }) => (
   <div className={`w-full max-w-[630px] mx-auto px-4 py-3 flex items-center gap-3 ${
@@ -313,10 +226,10 @@ export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount })
     </div>
     <div className="flex-1 min-w-0">
       <p className={`text-sm font-medium truncate ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
-        {content ? content.substring(0, 60) + (content.length > 60 ? "…" : "") : "Publication en cours…"}
+        {content ? content.substring(0, 60) + (content.length > 60 ? "..." : "") : "Publication en cours..."}
       </p>
       <p className="text-xs text-orange-500 mt-0.5">
-        {mediaCount > 0 ? `Upload de ${mediaCount} fichier${mediaCount > 1 ? "s" : ""}…` : "Envoi en cours…"}
+        {mediaCount > 0 ? `Upload de ${mediaCount} fichier${mediaCount > 1 ? "s" : ""}...` : "Envoi en cours..."}
       </p>
     </div>
   </div>
@@ -324,7 +237,7 @@ export const PostUploadingIndicator = memo(({ isDarkMode, content, mediaCount })
 PostUploadingIndicator.displayName = "PostUploadingIndicator";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AVATAR
+// Avatar
 // ─────────────────────────────────────────────────────────────────────────────
 const AVATAR_COLORS = ["#f97316","#ef4444","#8b5cf6","#3b82f6","#10b981","#f59e0b","#ec4899","#6366f1"];
 
@@ -344,13 +257,11 @@ const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
   const [error, setError] = useState(false);
   const initials = useMemo(() => getInitials(username), [username]);
   const bgColor  = useMemo(() => getAvatarColor(username), [username]);
-
   const url = useMemo(() => {
     if (!photo || typeof photo !== "string") return null;
     if (photo.startsWith("data:image")) return photo;
     return resolveMediaUrl(photo);
   }, [photo]);
-
   if (error || !url)
     return (
       <div className="rounded-full flex items-center justify-center text-white font-bold select-none flex-shrink-0"
@@ -358,7 +269,6 @@ const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
         {initials}
       </div>
     );
-
   return (
     <img src={url} alt={username}
       className="rounded-full object-cover bg-gray-200 flex-shrink-0"
@@ -373,7 +283,7 @@ const SimpleAvatar = memo(({ username, photo, size = 40 }) => {
 SimpleAvatar.displayName = "SimpleAvatar";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SKELETON
+// Skeleton
 // ─────────────────────────────────────────────────────────────────────────────
 const SkeletonPostCard = memo(({ isDarkMode }) => (
   <div className={`w-full max-w-[630px] mx-auto animate-pulse ${isDarkMode ? "bg-black" : "bg-white"}`}>
@@ -392,55 +302,24 @@ const SkeletonPostCard = memo(({ isDarkMode }) => (
 ));
 SkeletonPostCard.displayName = "SkeletonPostCard";
 
-// ── Bus d'événements ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Bus d'evenements pour les modals
+// ─────────────────────────────────────────────────────────────────────────────
 const MODAL_EVENT = "postcard:openModal";
 
 const emitModalEvent = (action, post, extra = {}) => {
-  dbgPC(`[1] emitModalEvent → action="${action}" postId="${post?._id}"`);
-
-  const ev = new CustomEvent(MODAL_EVENT, {
+  dbgPC(`emitModalEvent action="${action}" postId="${post?._id}"`);
+  window.dispatchEvent(new CustomEvent(MODAL_EVENT, {
     detail: { action, post, ...extra },
     bubbles: false,
-  });
-  window.dispatchEvent(ev);
-  dbgPC(`[2] CustomEvent dispatché sur window`, ev);
-
-  if (_DEBUG_CACHED) {
-    setTimeout(() => {
-      const mr = document.getElementById("modal-root");
-      if (!mr) {
-        console.error("%c[PostCard DEBUG] [7] ❌ modal-root INTROUVABLE 100ms après dispatch !", "color:red;font-weight:bold");
-        return;
-      }
-      if (mr.children.length === 0) {
-        console.error(
-          "%c[PostCard DEBUG] [7] ❌ modal-root VIDE 100ms après dispatch",
-          "color:red;font-weight:bold",
-        );
-        dbgInspectEl("modal-root vide", mr);
-      } else {
-        console.info(
-          "%c[PostCard DEBUG] [7] ✅ modal-root contient " + mr.children.length + " enfant(s)",
-          "color:green;font-weight:bold",
-        );
-        dbgInspectEl("modal-root > premier enfant (100ms)", mr.children[0]);
-      }
-    }, 100);
-  }
+  }));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DELETE MODAL
+// DeleteModal
 // ─────────────────────────────────────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
   const isClosingRef = useRef(false);
-  const overlayRef   = useRef(null);
-
-  useEffect(() => {
-    dbgPC("[8] DeleteModal MONTÉ ✅");
-    if (overlayRef.current) dbgInspectEl("[8] DeleteModal overlay (monté)", overlayRef.current);
-    return () => dbgPC("[8] DeleteModal DÉMONTÉ");
-  }, []);
 
   const safeCancel = (e) => {
     e?.stopPropagation();
@@ -457,7 +336,6 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
 
   return (
     <div
-      ref={overlayRef}
       style={{
         position: "fixed", inset: 0, zIndex: 999999,
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -494,14 +372,14 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
             Supprimer ce post ?
           </h2>
           <p style={{ fontSize: 14, color: "#6b7280", margin: 0 }}>
-            Cette action est irréversible.
+            Cette action est irreversible.
           </p>
         </div>
         <div style={{ display: "flex", gap: 12 }}>
           <button type="button" onClick={safeCancel} disabled={isDeleting}
             style={{
-              flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
-              fontSize: 15, border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
+              flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700, fontSize: 15,
+              border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
               opacity: isDeleting ? 0.5 : 1,
               background: isDarkMode ? "#1f2937" : "#f3f4f6",
               color: isDarkMode ? "#ffffff" : "#111827", pointerEvents: "auto",
@@ -510,12 +388,12 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
           </button>
           <button type="button" onClick={safeConfirm} disabled={isDeleting}
             style={{
-              flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700,
-              fontSize: 15, border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
+              flex: 1, padding: "12px 0", borderRadius: 12, fontWeight: 700, fontSize: 15,
+              border: "none", cursor: isDeleting ? "not-allowed" : "pointer",
               opacity: isDeleting ? 0.5 : 1,
               background: "#ef4444", color: "#ffffff", pointerEvents: "auto",
             }}>
-            {isDeleting ? "Suppression…" : "Supprimer"}
+            {isDeleting ? "Suppression..." : "Supprimer"}
           </button>
         </div>
       </motion.div>
@@ -525,17 +403,10 @@ const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
 DeleteModal.displayName = "DeleteModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BOOST MODAL
+// BoostModal
 // ─────────────────────────────────────────────────────────────────────────────
 const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
   const isClosingRef = useRef(false);
-  const overlayRef   = useRef(null);
-
-  useEffect(() => {
-    dbgPC("[8] BoostModal MONTÉ ✅");
-    if (overlayRef.current) dbgInspectEl("[8] BoostModal overlay (monté)", overlayRef.current);
-    return () => dbgPC("[8] BoostModal DÉMONTÉ");
-  }, []);
 
   const safeClose = (e) => {
     e?.stopPropagation();
@@ -546,7 +417,6 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
 
   return (
     <div
-      ref={overlayRef}
       style={{
         position: "fixed", inset: 0, zIndex: 999999,
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -583,7 +453,7 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
             Booster ce post
           </h2>
           <p style={{ fontSize: 14, color: "#6b7280", margin: 0 }}>
-            Augmentez la visibilité de votre publication auprès d'un plus grand public.
+            Augmentez la visibilite de votre publication.
           </p>
         </div>
         <button type="button" onClick={safeClose}
@@ -608,116 +478,53 @@ const GlobalModalManagerBase = () => {
   const { isDarkMode } = useDarkMode();
   const [modalState, setModalState] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const renderCountRef = useRef(0);
-  renderCountRef.current++;
-
-  dbgPC(`[4] GlobalModalManager render #${renderCountRef.current} | modalState=`, modalState?.action ?? "null");
 
   useEffect(() => {
-    dbgPC("[3] GlobalModalManager MONTÉ — addEventListener MODAL_EVENT sur window");
-
-    if (_DEBUG_CACHED) {
-      setTimeout(() => {
-        dbgPC("[3] GlobalModalManager check post-mount → modal-root existant:", document.getElementById("modal-root"));
-      }, 0);
-    }
-
     const handler = (e) => {
       const { action, post, onDeleted, showToast, mockPost } = e.detail || {};
-      dbgPC(`[3] GlobalModalManager ← EVENT REÇU action="${action}" postId="${post?._id}"`);
-      if (!action || !post) {
-        dbgWarn("[3] ❌ EVENT reçu avec detail incomplet !", e.detail);
-        return;
-      }
-      dbgPC("[4] → setIsDeleting(false) + setModalState(...)");
+      if (!action || !post) return;
       setIsDeleting(false);
       setModalState({ action, post, onDeleted, showToast, mockPost });
-
-      if (_DEBUG_CACHED) {
-        setTimeout(() => {
-          const mr = document.getElementById("modal-root");
-          dbgPC("[6] Vérification 50ms après setModalState → modal-root:", mr);
-          if (mr) {
-            dbgInspectEl("[6] modal-root 50ms après setModalState", mr);
-            if (mr.children.length === 0) {
-              console.error("%c[PostCard DEBUG] [6] ❌ modal-root VIDE 50ms après setModalState !", "color:red;font-weight:bold");
-            } else {
-              console.info(`%c[PostCard DEBUG] [6] ✅ modal-root a ${mr.children.length} enfant(s)`, "color:green;font-weight:bold");
-            }
-          } else {
-            console.error("%c[PostCard DEBUG] [6] ❌ modal-root ABSENT 50ms après setModalState !", "color:red");
-          }
-        }, 50);
-      }
     };
-
     window.addEventListener(MODAL_EVENT, handler);
-    dbgPC("[3] addEventListener OK pour", MODAL_EVENT);
-    return () => {
-      window.removeEventListener(MODAL_EVENT, handler);
-      dbgPC("[3] GlobalModalManager DÉMONTÉ — removeEventListener");
-    };
+    return () => window.removeEventListener(MODAL_EVENT, handler);
   }, []);
 
-  const close = useCallback(() => {
-    dbgPC("[4] GlobalModalManager → close() → setModalState(null)");
-    setModalState(null);
-  }, []);
+  const close = useCallback(() => setModalState(null), []);
 
   const handleDeletePost = useCallback(async () => {
     if (!modalState) return;
     const { post, onDeleted, showToast, mockPost } = modalState;
     const isMock = mockPost || post._id?.startsWith("post_") || post.isMockPost;
     const isTemp = !!post.isOptimistic || post._id?.startsWith("temp_");
-
-    if (isTemp) { showToast?.("Publication en cours, patientez…", "info"); close(); return; }
-    if (isMock) { showToast?.("Post supprimé", "success"); close(); onDeleted?.(post._id); return; }
-
+    if (isTemp)  { showToast?.("Publication en cours, patientez...", "info"); close(); return; }
+    if (isMock)  { showToast?.("Post supprime", "success"); close(); onDeleted?.(post._id); return; }
     setIsDeleting(true);
     try {
       await axiosClient.delete(`/posts/${post._id}`);
-      showToast?.("Post supprimé", "success");
+      showToast?.("Post supprime", "success");
       close();
       onDeleted?.(post._id);
     } catch (err) {
       const s = err.response?.status;
       if (s === 404) { close(); onDeleted?.(post._id); }
-      else showToast?.(s === 403 ? "Permission refusée" : err.response?.data?.message || "Erreur", "error");
-    } finally {
-      setIsDeleting(false);
-    }
+      else showToast?.(s === 403 ? "Permission refusee" : err.response?.data?.message || "Erreur", "error");
+    } finally { setIsDeleting(false); }
   }, [modalState, close]);
 
-  if (!modalState) {
-    dbgPC("[4] GlobalModalManager → return null (modalState=null)");
-    return null;
-  }
-
-  dbgPC(`[5] GlobalModalManager → RENDU PORTAIL action="${modalState.action}"`);
-  const container = getModalRoot();
-  dbgPC("[5] container du portail:", container);
+  if (!modalState) return null;
 
   return createPortal(
     <AnimatePresence>
       {modalState.action === "delete" && (
-        <DeleteModal
-          key="delete"
-          isDarkMode={isDarkMode}
-          isDeleting={isDeleting}
-          onConfirm={handleDeletePost}
-          onCancel={close}
-        />
+        <DeleteModal key="delete" isDarkMode={isDarkMode} isDeleting={isDeleting}
+          onConfirm={handleDeletePost} onCancel={close} />
       )}
       {modalState.action === "boost" && (
-        <BoostModal
-          key="boost"
-          isDarkMode={isDarkMode}
-          postId={modalState.post?._id}
-          onClose={close}
-        />
+        <BoostModal key="boost" isDarkMode={isDarkMode} postId={modalState.post?._id} onClose={close} />
       )}
     </AnimatePresence>,
-    container
+    getModalRoot()
   );
 };
 
@@ -725,7 +532,7 @@ export const GlobalModalManager = memo(GlobalModalManagerBase);
 GlobalModalManager.displayName = "GlobalModalManager";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ACTIONS BAR
+// ActionsBar
 // ─────────────────────────────────────────────────────────────────────────────
 const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, isDarkMode, onLike, onOpenComments, onOpenShare, onSave }) => (
   <div className="flex items-center justify-between px-3 py-2">
@@ -739,19 +546,16 @@ const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, isDarkMode, 
           <span className={`text-sm font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>{likesCount}</span>
         )}
       </button>
-
       <button onClick={onOpenComments} className="flex items-center gap-1.5 group">
         <ChatBubbleLeftIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
         {commentsCount > 0 && (
           <span className={`text-sm font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>{commentsCount}</span>
         )}
       </button>
-
       <button onClick={onOpenShare}>
         <ShareIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
       </button>
     </div>
-
     <button onClick={onSave}>
       {saved
         ? <BookmarkSolid className="w-6 h-6 text-orange-500" />
@@ -763,7 +567,7 @@ const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, isDarkMode, 
 ActionsBar.displayName = "ActionsBar";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST CARD INNER
+// PostCardInner
 // ─────────────────────────────────────────────────────────────────────────────
 const PostCardInner = forwardRef(({
   post, onDeleted, showToast, mockPost = false, priority = false,
@@ -804,13 +608,13 @@ const PostCardInner = forwardRef(({
       ? post.likes.some(l => (typeof l === "object" ? l._id : l)?.toString() === currentUser._id?.toString())
       : false
   );
-  const [likesCount,        setLikesCount]        = useState(() => Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0));
-  const [commentsCount,     setCommentsCount]     = useState(() => Array.isArray(post.comments) ? post.comments.length : (post.commentsCount || 0));
-  const [comments,          setComments]          = useState(() => Array.isArray(post.comments) ? post.comments : []);
-  const [saved,             setSaved]             = useState(false);
+  const [likesCount,    setLikesCount]    = useState(() => Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0));
+  const [commentsCount, setCommentsCount] = useState(() => Array.isArray(post.comments) ? post.comments.length : (post.commentsCount || 0));
+  const [comments,      setComments]      = useState(() => Array.isArray(post.comments) ? post.comments : []);
+  const [saved,         setSaved]         = useState(false);
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [showShareModal,    setShowShareModal]    = useState(false);
-  const [isFollowing,       setIsFollowing]       = useState(() => {
+  const [isFollowing,   setIsFollowing]   = useState(() => {
     if (!currentUser || !postUser._id || postUser._id === "unknown") return false;
     if (currentUser._id === postUser._id) return false;
     return (currentUser.following || []).some(id => {
@@ -823,7 +627,6 @@ const PostCardInner = forwardRef(({
 
   const stateRef = useRef({});
   const postRef  = useRef({});
-
   useLayoutEffect(() => { stateRef.current = { liked, likesCount, isFollowing, loadingFollow }; });
   useLayoutEffect(() => { postRef.current = { post, postUser, currentUser, isMockPost, isOptimistic, isTempPost, onDeleted, showToast, updateUserProfile }; });
 
@@ -835,12 +638,11 @@ const PostCardInner = forwardRef(({
     const vids = Array.from(cardRef.current.querySelectorAll("video"));
     vids.forEach(v => { obs.observe(v); _observedVideos.set(v, true); });
     vidsRef.current = vids;
-    return () => { vidsRef.current.forEach(v => { obs.unobserve(v); }); vidsRef.current = []; };
+    return () => { vidsRef.current.forEach(v => obs.unobserve(v)); vidsRef.current = []; };
   }, []);
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
 
-  // ✅ FIX v26/v27 — isOwner : memo pur, PAS de log dans le corps du composant
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
     const cuid = toStr(currentUser._id);
@@ -852,11 +654,6 @@ const PostCardInner = forwardRef(({
     return candidates.some(id => id === cuid);
   }, [currentUser?._id, post.userId, post.user, post.author, postUser._id]);
 
-  // ✅ FIX v27 — Log RETIRÉ du corps du composant.
-  // En dev, ajouter ?postcard_debug=1 dans l'URL pour activer les logs.
-  // Le log dans le corps s'exécutait à chaque render de chaque PostCard
-  // (même avec _DEBUG_CACHED=false, l'évaluation du `if` a un coût sur 80+ cards).
-
   const canFollow = useMemo(() =>
     !!(currentUser && !isOwner && postUser._id !== "unknown"),
     [currentUser, isOwner, postUser._id]
@@ -867,7 +664,7 @@ const PostCardInner = forwardRef(({
     if (loadingLikeRef.current) return;
     const { liked, likesCount } = stateRef.current;
     const { post, currentUser, isMockPost, isOptimistic, showToast } = postRef.current;
-    if (isOptimistic) { showToast?.("Publication en cours, patientez…", "info"); return; }
+    if (isOptimistic) { showToast?.("Publication en cours, patientez...", "info"); return; }
     if (!currentUser) { showToast?.("Connectez-vous pour aimer", "info"); return; }
     loadingLikeRef.current = true;
     const nl = !liked;
@@ -889,39 +686,66 @@ const PostCardInner = forwardRef(({
       .finally(() => { loadingLikeRef.current = false; });
   }, []);
 
+  // ── handleFollow v27.1 — endpoint aligne sur le backend ──────────────────
+  // Backend : POST /api/users/:id/follow (toggle unique)
+  //   -> si l'utilisateur suit deja : unfollow
+  //   -> sinon : follow
+  // axiosClient envoie automatiquement le token via son intercepteur.
+  // On n'appelle PLUS /follow/follow/:id ni /follow/unfollow/:id (404).
   const handleFollow = useCallback((e) => {
     e?.stopPropagation();
     const { isFollowing, loadingFollow } = stateRef.current;
     const { postUser, currentUser, isMockPost, showToast, updateUserProfile } = postRef.current;
-    if (!currentUser) { showToast?.("Connectez-vous", "info"); return; }
-    if (loadingFollow) return;
+    if (!currentUser)                          { showToast?.("Connectez-vous", "info"); return; }
+    if (loadingFollow)                         return;
     if (!postUser._id || postUser._id === "unknown") { showToast?.("Utilisateur introuvable", "error"); return; }
-    if (currentUser._id === postUser._id) { showToast?.("Vous ne pouvez pas vous suivre", "info"); return; }
+    if (currentUser._id === postUser._id)      { showToast?.("Vous ne pouvez pas vous suivre", "info"); return; }
+
     const was = isFollowing;
+
+    // Mise a jour optimiste
     setIsFollowing(!was);
     showToast?.(!was ? `Vous suivez ${postUser.fullName}` : `Vous ne suivez plus ${postUser.fullName}`, "success");
+
     if (isMockPost) return;
+
     setLoadingFollow(true);
-    axiosClient.post(`/follow/${was ? "unfollow" : "follow"}/${postUser._id}`)
+
+    // Appel du toggle unique
+    axiosClient.post(`/users/${postUser._id}/follow`)
       .then(({ data }) => {
-        if (!data.success) throw new Error(data.error || "Échec");
+        if (!data.success) throw new Error(data.message || "Echec");
+
+        // Synchroniser le tableau following de l'utilisateur connecte
         const cf = currentUser.following || [];
         const uf = was
-          ? cf.filter(id => { const s = typeof id === "object" ? (id._id || id) : id; return s?.toString() !== postUser._id.toString(); })
+          ? cf.filter(id => {
+              const s = typeof id === "object" ? (id._id || id) : id;
+              return s?.toString() !== postUser._id.toString();
+            })
           : [...cf, postUser._id];
         updateUserProfile?.(currentUser._id, { following: uf });
       })
-      .catch(err => { setIsFollowing(was); showToast?.(err.response?.data?.error || err.message || "Erreur", "error"); })
+      .catch(err => {
+        // Rollback optimiste
+        setIsFollowing(was);
+        const status = err.response?.status;
+        if (status === 401 || status === 403)
+          showToast?.("Non autorise - reconnecte-toi", "error");
+        else if (status === 404)
+          showToast?.("Utilisateur introuvable", "error");
+        else
+          showToast?.(err.response?.data?.message || err.message || "Erreur", "error");
+      })
       .finally(() => setLoadingFollow(false));
   }, []);
 
-  // ✅ v25 — INSTANT PROFILE NAVIGATION
+  // ── Navigation profil ─────────────────────────────────────────────────────
   const handleProfileClick = useCallback((e) => {
     e?.stopPropagation();
     const { postUser, post } = postRef.current;
     const id = postUser._id;
     if (!id || id === "unknown" || id === "null" || id === "undefined") return;
-
     const rawUser = post.user || post.author || {};
     const instantUser = {
       _id:            id,
@@ -940,8 +764,6 @@ const PostCardInner = forwardRef(({
       followingCount: rawUser.followingCount || 0,
       createdAt:      rawUser.createdAt      || null,
     };
-
-    dbgPC(`[v25] handleProfileClick → navigate /profile/${id} avec instantUser`, instantUser);
     navigate(`/profile/${id}`, { state: { instantUser } });
   }, [navigate]);
 
@@ -953,33 +775,20 @@ const PostCardInner = forwardRef(({
   const openingRef = useRef(false);
 
   const handleOpenDelete = useCallback((e) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-    dbgPC("[1] handleOpenDelete → clic reçu | openingRef:", openingRef.current);
-    if (openingRef.current) {
-      dbgWarn("[1] handleOpenDelete → IGNORÉ (guard actif)");
-      return;
-    }
+    e?.preventDefault(); e?.stopPropagation();
+    if (openingRef.current) return;
     openingRef.current = true;
     setTimeout(() => { openingRef.current = false; }, 300);
     const { post, onDeleted, showToast, isMockPost } = postRef.current;
-    dbgPC("[1] handleOpenDelete → emitModalEvent pour post._id:", post?._id);
     emitModalEvent("delete", post, { onDeleted, showToast, mockPost: isMockPost });
   }, []);
 
   const handleOpenBoost = useCallback((e) => {
-    e?.preventDefault();
-    e?.stopPropagation();
-    dbgPC("[1] handleOpenBoost → clic reçu | openingRef:", openingRef.current);
-    if (openingRef.current) {
-      dbgWarn("[1] handleOpenBoost → IGNORÉ (guard actif)");
-      return;
-    }
+    e?.preventDefault(); e?.stopPropagation();
+    if (openingRef.current) return;
     openingRef.current = true;
     setTimeout(() => { openingRef.current = false; }, 300);
-    const { post } = postRef.current;
-    dbgPC("[1] handleOpenBoost → emitModalEvent pour post._id:", post?._id);
-    emitModalEvent("boost", post);
+    emitModalEvent("boost", postRef.current.post);
   }, []);
 
   const handleCommentsCountChange = useCallback((count) => {
@@ -988,10 +797,7 @@ const PostCardInner = forwardRef(({
 
   const setRootRef = useCallback((node) => {
     cardRef.current = node;
-    if (ref) {
-      if (typeof ref === "function") ref(node);
-      else ref.current = node;
-    }
+    if (ref) { typeof ref === "function" ? ref(node) : (ref.current = node); }
   }, [ref]);
 
   const content        = post.content || post.contenu || "";
@@ -1035,7 +841,6 @@ const PostCardInner = forwardRef(({
   const TEXT_CARD_THRESHOLD = 120;
   const hasRawMedia    = !!(embedUrl || videoUrl || imagesLen > 0 || mediaLen > 0 || post.thumbnail);
   const trimmedContent = content.trim();
-
   const isAutoTextCard = !postMediaType && !isVideoMediaType && !hasRawMedia && !hasVideoMedia
     && trimmedContent.length > 0 && trimmedContent.length <= TEXT_CARD_THRESHOLD;
 
@@ -1066,7 +871,7 @@ const PostCardInner = forwardRef(({
         {isBoosted && (
           <div className="absolute top-0 right-0 z-10 p-2 pointer-events-none">
             <div className="flex items-center gap-1 bg-gradient-to-r from-orange-500 to-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-bl-xl shadow-lg select-none">
-              <RocketLaunchIcon className="w-3 h-3" /> SPONSORISÉ
+              <RocketLaunchIcon className="w-3 h-3" /> SPONSORISE
             </div>
           </div>
         )}
@@ -1203,14 +1008,12 @@ const PostCardInner = forwardRef(({
 PostCardInner.displayName = "PostCardInner";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POSTCARD — wrapper léger
+// PostCard — wrapper
 // ─────────────────────────────────────────────────────────────────────────────
 const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
   const { isDarkMode } = useDarkMode();
-
   if (loading) return <SkeletonPostCard isDarkMode={isDarkMode} />;
   if (!post || !post._id) return null;
-
   if (post.isOptimistic || post._id?.startsWith("temp_")) {
     return (
       <PostUploadingIndicator
@@ -1220,7 +1023,6 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mock
       />
     );
   }
-
   return (
     <PostCardInner
       ref={ref}

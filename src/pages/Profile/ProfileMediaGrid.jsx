@@ -1,5 +1,11 @@
 // 📁 src/pages/profile/ProfileMediaGrid.jsx
-// ✅ v6 — Miniatures robustes avec fallbacks multiples (R2 / stockage générique)
+// ✅ v7 — Miniatures robustes avec fallbacks multiples (R2 / stockage générique)
+//
+// CORRECTIONS v7 :
+//   1. getMediaUrl — accepte toute URL R2 sans extension reconnue (fallback universel)
+//   2. VideoThumbnail — suppression de crossOrigin="anonymous" qui bloque CORS sur R2
+//   3. urlIsVideo — détection élargie aux chemins contenant /video/ ou /videos/
+//   4. renderMedia dans GridCell — tente <img> sur toute URL disponible, même sans extension
 
 import React, {
   useState, useEffect, useRef, useCallback, useMemo, memo
@@ -30,7 +36,12 @@ const resolveItemUrl = (m) => {
   return m.url || m.path || m.location || m.uri || m.src || null;
 };
 
-const urlIsVideo = (url) => !!(url && VIDEO_EXTS.test(url.split("?")[0]));
+// ✅ FIX 3 : détection vidéo élargie aux chemins R2 contenant /video(s)/
+const urlIsVideo = (url) => !!(url && (
+  VIDEO_EXTS.test(url.split("?")[0]) ||
+  /\/videos?\//i.test(url)
+));
+
 const urlIsImage = (url) => !!(url && IMG_EXTS.test(url.split("?")[0]));
 
 // Thumbnail YouTube (si des liens YT sont embarqués dans des posts)
@@ -40,6 +51,8 @@ const youtubeThumb = (url) => {
   return m ? `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg` : null;
 };
 
+// ✅ FIX 1 : getMediaUrl retourne toute URL disponible, même sans extension
+// Le navigateur (et ImageThumbnail via onError) détermine si c'est chargeable
 const getMediaUrl = (post) => {
   // 1. Champ thumbnail dédié (idéal : généré côté backend lors de l'upload)
   if (post?.thumbnail) return post.thumbnail;
@@ -55,13 +68,13 @@ const getMediaUrl = (post) => {
     }
   }
 
-  // 3. Première URL image directe
+  // 3. Première URL image directe (extension reconnue)
   for (const m of mediaArr) {
     const url = resolveItemUrl(m);
     if (urlIsImage(url)) return url;
   }
 
-  // 4. URL vidéo R2 — VideoThumbnail capturera la frame via canvas
+  // 4. URL vidéo (extension ou chemin R2 reconnu) → VideoThumbnail capturera la frame
   for (const m of mediaArr) {
     const url = resolveItemUrl(m);
     if (urlIsVideo(url)) return url;
@@ -73,8 +86,13 @@ const getMediaUrl = (post) => {
     if (yt) return yt;
   }
 
-  // 6. Toute autre URL disponible (R2 peut servir des fichiers sans extension)
-  if (mediaArr.length > 0) return resolveItemUrl(mediaArr[0]);
+  // ✅ 6. Toute autre URL disponible (R2 sans extension, CDN custom, etc.)
+  //    On retourne la première URL non-nulle — ImageThumbnail tentera de la charger
+  for (const m of mediaArr) {
+    const url = resolveItemUrl(m);
+    if (url) return url;
+  }
+
   return null;
 };
 
@@ -125,7 +143,6 @@ const TEXT_PALETTES = [
   ["#2D6A4F","#52B788"], ["#8B2FC9","#5A108F"],
 ];
 
-// Palettes pour les fallbacks génériques (post sans média visible)
 const FALLBACK_PALETTES = [
   ["#0f2027","#203a43","#2c5364"],
   ["#1a1a2e","#16213e","#0f3460"],
@@ -141,26 +158,27 @@ const hashText = (str = "") => {
   return Math.abs(h);
 };
 
-const getTextPalette = (str) => TEXT_PALETTES[hashText(str) % TEXT_PALETTES.length];
+const getTextPalette     = (str) => TEXT_PALETTES[hashText(str) % TEXT_PALETTES.length];
 const getFallbackPalette = (str) => FALLBACK_PALETTES[hashText(str) % FALLBACK_PALETTES.length];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SQUELETTE
 // ─────────────────────────────────────────────────────────────────────────────
 const SkeletonCell = memo(({ isDarkMode }) => (
-  <div className={`w-full ${isDarkMode ? "bg-gray-800" : "bg-gray-200"} animate-pulse`}
-    style={{ aspectRatio: "9/16", borderRadius: 0 }} />
+  <div
+    className={`w-full ${isDarkMode ? "bg-gray-800" : "bg-gray-200"} animate-pulse`}
+    style={{ aspectRatio: "9/16", borderRadius: 0 }}
+  />
 ));
 SkeletonCell.displayName = "SkeletonCell";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FALLBACK GÉNÉRIQUE — quand aucun média n'est disponible
-// Affiche un fond dégradé avec icône et éventuellement un extrait de texte
+// FALLBACK GÉNÉRIQUE
 // ─────────────────────────────────────────────────────────────────────────────
 const GenericFallback = memo(({ post, isVideoPost, compact = true }) => {
   const id = post?._id || post?.content || "";
   const [c1, c2, c3] = getFallbackPalette(id);
-  const content = (post?.content || "").trim();
+  const content   = (post?.content || "").trim();
   const shortText = content.length > 0 && content.length <= 80 ? content : null;
 
   return (
@@ -172,48 +190,38 @@ const GenericFallback = memo(({ post, isVideoPost, compact = true }) => {
       gap: compact ? 6 : 12, padding: compact ? 8 : 20,
       overflow: "hidden",
     }}>
-      {/* Cercles décoratifs en fond */}
       <div style={{
         position: "absolute",
-        width: compact ? 80 : 160,
-        height: compact ? 80 : 160,
+        width: compact ? 80 : 160, height: compact ? 80 : 160,
         borderRadius: "50%",
         border: "1px solid rgba(255,255,255,0.07)",
-        top: "10%", right: "-15%",
-        pointerEvents: "none",
+        top: "10%", right: "-15%", pointerEvents: "none",
       }} />
       <div style={{
         position: "absolute",
-        width: compact ? 60 : 120,
-        height: compact ? 60 : 120,
+        width: compact ? 60 : 120, height: compact ? 60 : 120,
         borderRadius: "50%",
         border: "1px solid rgba(255,255,255,0.05)",
-        bottom: "5%", left: "-10%",
-        pointerEvents: "none",
+        bottom: "5%", left: "-10%", pointerEvents: "none",
       }} />
 
       {isVideoPost ? (
         <div style={{
-          width: compact ? 36 : 56,
-          height: compact ? 36 : 56,
+          width: compact ? 36 : 56, height: compact ? 36 : 56,
           borderRadius: "50%",
           background: "rgba(255,255,255,0.12)",
           display: "flex", alignItems: "center", justifyContent: "center",
           flexShrink: 0,
         }}>
           <PlayIcon style={{
-            width: compact ? 16 : 26,
-            height: compact ? 16 : 26,
-            color: "rgba(255,255,255,0.65)",
-            marginLeft: 2,
+            width: compact ? 16 : 26, height: compact ? 16 : 26,
+            color: "rgba(255,255,255,0.65)", marginLeft: 2,
           }} />
         </div>
       ) : (
         <PhotoIcon style={{
-          width: compact ? 22 : 40,
-          height: compact ? 22 : 40,
-          color: "rgba(255,255,255,0.2)",
-          flexShrink: 0,
+          width: compact ? 22 : 40, height: compact ? 22 : 40,
+          color: "rgba(255,255,255,0.2)", flexShrink: 0,
         }} />
       )}
 
@@ -242,7 +250,7 @@ GenericFallback.displayName = "GenericFallback";
 // TEXT CARD MINIATURE
 // ─────────────────────────────────────────────────────────────────────────────
 const TextCardThumbnail = memo(({ post }) => {
-  const content = (post?.content || "").trim();
+  const content    = (post?.content || "").trim();
   const [from, to] = getTextPalette(content);
   return (
     <div style={{
@@ -264,7 +272,8 @@ const TextCardThumbnail = memo(({ post }) => {
 TextCardThumbnail.displayName = "TextCardThumbnail";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEO THUMBNAIL — canvas capture 1ère frame avec fallback robuste
+// VIDEO THUMBNAIL — canvas capture 1ère frame
+// ✅ FIX 2 : suppression de crossOrigin="anonymous" qui provoque des erreurs CORS sur R2
 // ─────────────────────────────────────────────────────────────────────────────
 const VideoThumbnail = memo(({ src, post, isDarkMode }) => {
   const videoRef  = useRef(null);
@@ -299,24 +308,17 @@ const VideoThumbnail = memo(({ src, post, isDarkMode }) => {
       setTried(true);
     };
 
-    const onLoaded = () => {
-      // Tente à 0.1s d'abord, puis 1s si l'image est noire
-      video.currentTime = 0.1;
-    };
+    const onLoaded = () => { video.currentTime = 0.1; };
     const onSeeked = () => {
       capture();
-      // Si l'image semble noire, tente à 1s
       if (!frame) {
         setTimeout(() => {
-          if (!frame && !failed) {
-            video.currentTime = 1;
-          }
+          if (!frame && !failed) video.currentTime = 1;
         }, 300);
       }
     };
     const onError  = () => { setFailed(true); setTried(true); };
 
-    // Timeout de sécurité : si rien ne se passe en 5s, on abandonne
     timeout = setTimeout(() => {
       if (!tried) { setFailed(true); setTried(true); }
     }, 5000);
@@ -335,15 +337,25 @@ const VideoThumbnail = memo(({ src, post, isDarkMode }) => {
 
   return (
     <>
-      <video ref={videoRef} src={src} muted playsInline preload="metadata" crossOrigin="anonymous"
-        style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }} />
+      {/* ✅ FIX 2 : crossOrigin retiré — R2 ne l'autorise pas systématiquement */}
+      <video
+        ref={videoRef}
+        src={src}
+        muted
+        playsInline
+        preload="metadata"
+        style={{ position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
+      />
       <canvas ref={canvasRef} style={{ display: "none" }} />
       {frame ? (
-        <img src={frame} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+        <img
+          src={frame}
+          alt=""
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+        />
       ) : !failed ? (
         <div className={`absolute inset-0 animate-pulse ${isDarkMode ? "bg-gray-800" : "bg-gray-300"}`} />
       ) : (
-        // Fallback élégant quand canvas échoue (CORS, format non supporté…)
         <GenericFallback post={post} isVideoPost compact />
       )}
     </>
@@ -353,6 +365,7 @@ VideoThumbnail.displayName = "VideoThumbnail";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IMAGE THUMBNAIL avec chaîne de fallback
+// Accepte désormais toute URL (même sans extension) grâce au fix getMediaUrl
 // ─────────────────────────────────────────────────────────────────────────────
 const ImageThumbnail = memo(({ post, primaryUrl, index, isDarkMode }) => {
   const [currentSrc, setCurrentSrc] = useState(primaryUrl);
@@ -360,24 +373,21 @@ const ImageThumbnail = memo(({ post, primaryUrl, index, isDarkMode }) => {
   const [failed,     setFailed]     = useState(false);
   const triedUrls = useRef(new Set([primaryUrl]));
 
-  // Construit une liste de fallbacks à essayer dans l'ordre
   const fallbackUrls = useMemo(() => {
     const urls = [];
     const mediaArr = Array.isArray(post?.media)  ? post.media
                    : Array.isArray(post?.images) ? post.images : [];
 
-    // Toutes les URLs image du tableau media
     for (const m of mediaArr) {
       const url = resolveItemUrl(m);
       if (url && urlIsImage(url) && url !== primaryUrl) urls.push(url);
     }
 
-    // YouTube fallback (si le post contient un lien YT)
     const playable = getPlayableUrl(post);
     const yt = youtubeThumb(playable || "");
     if (yt && yt !== primaryUrl) urls.push(yt);
 
-    // Toutes les autres URLs du tableau (vidéo incluse, pour R2)
+    // ✅ Inclut toutes les URLs restantes (vidéo R2, URL sans extension…)
     for (const m of mediaArr) {
       const url = resolveItemUrl(m);
       if (url && url !== primaryUrl && !urls.includes(url)) urls.push(url);
@@ -414,7 +424,6 @@ const ImageThumbnail = memo(({ post, primaryUrl, index, isDarkMode }) => {
         alt=""
         loading={index < 9 ? "eager" : "lazy"}
         decoding={index < 9 ? "sync" : "async"}
-        crossOrigin="anonymous"
         style={{
           position: "absolute", inset: 0, width: "100%", height: "100%",
           objectFit: "cover", opacity: imgLoaded ? 1 : 0, transition: "opacity 0.2s ease",
@@ -429,6 +438,7 @@ ImageThumbnail.displayName = "ImageThumbnail";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CELLULE GRILLE
+// ✅ FIX 4 : renderMedia tente <img> sur toute URL disponible, même sans extension
 // ─────────────────────────────────────────────────────────────────────────────
 const GridCell = memo(({ post, index, onClick, isDarkMode, isLarge = false, isPinned = false }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -439,13 +449,11 @@ const GridCell = memo(({ post, index, onClick, isDarkMode, isLarge = false, isPi
   const multiMedia  = isMultiMedia(post);
   const textCard    = isTextCard(post);
 
-  // Décide la stratégie de rendu
-  // 1. Text card → TextCardThumbnail
-  // 2. Vidéo sans image thumb → VideoThumbnail (canvas) 
-  // 3. Image URL disponible → ImageThumbnail (avec fallback chain)
-  // 4. Rien → GenericFallback
-  const needCanvas = videoPost && (!mediaUrl || urlIsVideo(mediaUrl));
-  const videoSrc   = needCanvas ? (urlIsVideo(mediaUrl) ? mediaUrl : playableUrl) : null;
+  // needCanvas : seulement si c'est une vidéo avec extension reconnue
+  // ✅ FIX 4 : une URL R2 sans extension va dans ImageThumbnail (pas VideoThumbnail)
+  //   car le navigateur peut la charger comme image directement
+  const needCanvas = videoPost && mediaUrl && urlIsVideo(mediaUrl);
+  const videoSrc   = needCanvas ? mediaUrl : (videoPost ? playableUrl : null);
 
   const viewsCount    = Array.isArray(post?.views)    ? post.views.length    : (post?.viewsCount    || post?.views    || 0);
   const likesCount    = Array.isArray(post?.likes)    ? post.likes.length    : (post?.likesCount    || 0);
@@ -455,9 +463,11 @@ const GridCell = memo(({ post, index, onClick, isDarkMode, isLarge = false, isPi
     if (textCard) {
       return <div style={{ position: "absolute", inset: 0 }}><TextCardThumbnail post={post} /></div>;
     }
+    // Vidéo avec URL vidéo reconnue → capture canvas
     if (needCanvas && videoSrc) {
       return <VideoThumbnail src={videoSrc} post={post} isDarkMode={isDarkMode} />;
     }
+    // ✅ Toute URL disponible (image, R2 sans extension, YouTube thumb…) → ImageThumbnail
     if (mediaUrl) {
       return <ImageThumbnail post={post} primaryUrl={mediaUrl} index={index} isDarkMode={isDarkMode} />;
     }
@@ -881,10 +891,9 @@ const ProfileMediaGrid = ({
     return () => obs.disconnect();
   }, [hasMore, onLoadMore]);
 
-  const handleCellClick = useCallback((_, index) => setLightboxIndex(index), []);
-  const handleCloseLightbox = useCallback(() => setLightboxIndex(null), []);
+  const handleCellClick       = useCallback((_, index) => setLightboxIndex(index), []);
+  const handleCloseLightbox   = useCallback(() => setLightboxIndex(null), []);
 
-  // Inclut TOUS les posts (même sans média) — le fallback s'en charge
   const sortedPosts = useMemo(() => {
     const arr = [...posts];
     if (sortKey === "popular") {

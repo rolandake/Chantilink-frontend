@@ -1,7 +1,8 @@
 // 📁 src/pages/Home/ImmersivePyramidUniverse.jsx
-// ✅ FIX : fermeture de la Pyramid avant l'ouverture du StoryViewer
-//    → onOpenStory appelle d'abord onClose(), puis déclenche le viewer
-//      après le délai de l'animation de fermeture (250 ms)
+// ✅ FIX : la Pyramid reste ouverte quand on clique une story.
+//    Le StoryViewer s'affiche PAR-DESSUS la Pyramid (géré côté Home.jsx).
+//    onClose() n'est plus appelé automatiquement lors de l'ouverture d'une story.
+//    handleOpenCreator ferme toujours la Pyramid (le Creator la remplace).
 
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
@@ -25,7 +26,7 @@ const PyramidContent = ({
   myStories = [],
   user,
   onClose,
-  onOpenStory,   // ✅ déjà wrappé dans le parent (close + délai + open)
+  onOpenStory,
   onOpenCreator,
   isDarkMode,
 }) => {
@@ -218,8 +219,9 @@ const PyramidContent = ({
                   whileTap={{ scale: 0.95 }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    // ✅ FIX : onOpenStory est maintenant le wrapper qui ferme
-                    //    la pyramid EN PREMIER, puis ouvre le viewer
+                    // ✅ FIX : on ouvre directement le viewer SANS fermer la Pyramid.
+                    // Le StoryViewer est rendu avec z-index: 500 dans Home.jsx,
+                    // il s'affiche donc par-dessus la Pyramid (z-index: 401).
                     onOpenStory(storyData.stories, storyData.owner);
                   }}
                 >
@@ -301,16 +303,14 @@ const ImmersivePyramidUniverse = ({
     return () => { document.body.style.overflow = prev; };
   }, [isOpen]);
 
-  // ✅ FIX PRINCIPAL : on ferme la Pyramid AVANT d'ouvrir le StoryViewer.
-  //    Sans ce délai, le StoryViewer (rendu dans Home.jsx, hors portal) est
-  //    masqué derrière le z-index de la Pyramid et n'apparaît qu'à la
-  //    fermeture de celle-ci.
+  // ✅ FIX : on passe onOpenStory DIRECTEMENT sans appeler onClose().
+  // La Pyramid reste ouverte. Le StoryViewer s'affiche par-dessus
+  // grâce au z-index: 500 appliqué dans Home.jsx.
   const handleOpenStory = useCallback((stories, owner) => {
-    onClose();                                    // 1. ferme la Pyramid
-    setTimeout(() => onOpenStory(stories, owner), 280); // 2. ouvre le viewer après l'animation
-  }, [onClose, onOpenStory]);
+    onOpenStory(stories, owner);
+  }, [onOpenStory]);
 
-  // ✅ Pareil pour "Créer" : on ferme d'abord, puis on ouvre le Creator
+  // Le Creator ferme toujours la Pyramid (il la remplace visuellement).
   const handleOpenCreator = useCallback(() => {
     onClose();
     setTimeout(() => onOpenCreator?.(), 280);
@@ -338,8 +338,8 @@ const ImmersivePyramidUniverse = ({
             myStories={myStories}
             user={user}
             onClose={onClose}
-            onOpenStory={handleOpenStory}       // ✅ wrapper avec délai
-            onOpenCreator={handleOpenCreator}   // ✅ wrapper avec délai
+            onOpenStory={handleOpenStory}       // ✅ ouvre le viewer par-dessus
+            onOpenCreator={handleOpenCreator}   // ferme la Pyramid puis ouvre le Creator
             isDarkMode={isDarkMode}
           />
         </>

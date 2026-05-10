@@ -1,20 +1,14 @@
 // src/pages/profile/ProfilePage.jsx
-// ✅ v8 — INSTANT PROFILE NAVIGATION
+// v8.5 — follow/unfollow : Authorization Bearer + endpoint toggle unique
 //
-// CHANGEMENT v8 :
-//   Lit location.state.instantUser (passé par PostCard via navigate(..., { state }))
-//   et initialise le profil IMMÉDIATEMENT sans spinner ni requête bloquante.
-//   La revalidation API tourne en arrière-plan et met à jour silencieusement.
-//
-// ✅ FIX CORS v8.1 :
-//   Suppression des headers "Cache-Control" / "Pragma" dans fetchUserById.
-//   Ces headers déclenchaient une pré-requête OPTIONS bloquée par CORS si le
-//   serveur ne les autorisait pas dans Access-Control-Allow-Headers.
-//   La solution propre : ne pas envoyer ces headers depuis le client.
-//   (La solution complémentaire est d'ajouter Cache-Control/Pragma/Expires
-//    dans allowedHeaders de corsOptions côté serveur — server.js.)
-//
-// Conserve toute la logique métier v7/v8 (cache, IDB, socket, offline, etc.)
+// CHANGEMENTS v8.5 :
+//   - unfollowUser appelle directement POST /:id/follow (toggle backend)
+//     Le backend detects already following -> unfollow automatique
+//     Plus de fallback /unfollow qui n'existe pas
+//   - getAuthHeaders() : getToken() -> Authorization: Bearer <token>
+//   - followUser + unfollowUser + fetchUserById : tous avec Bearer token
+//   - BASE_URL = API_URL.replace(/\/api\/?$/, "") : évite /api/api/users/...
+//   - padding 0 sur racine : couverture colle sous la navbar
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { motion } from "framer-motion";
@@ -40,7 +34,13 @@ import {
   idbGetProfileUser as idbGetUser,
 } from "../../utils/idbMigration";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+// ─────────────────────────────────────────────────────────────────────────────
+// URL DE BASE
+// VITE_API_URL peut valoir "http://localhost:5000" ou "http://localhost:5000/api"
+// BASE_URL supprime le /api trailing -> on construit les paths manuellement
+// ─────────────────────────────────────────────────────────────────────────────
+const API_URL  = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const BASE_URL = API_URL.replace(/\/api\/?$/, "");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GUARDS ID
@@ -201,7 +201,13 @@ const buildProfileFromEmbeddedUser = (targetId) => {
         const uid = post?.user?._id || post?.user?.id || post?.author?._id;
         if (uid && String(uid) === String(targetId)) {
           const profile = buildUserFromPost(post);
-          if (profile) return { profile, posts: homePool.filter(p => { const pid = p?.user?._id || p?.user?.id || p?.author?._id; return pid && String(pid) === String(targetId); }) };
+          if (profile) return {
+            profile,
+            posts: homePool.filter(p => {
+              const pid = p?.user?._id || p?.user?.id || p?.author?._id;
+              return pid && String(pid) === String(targetId);
+            }),
+          };
         }
       }
     }
@@ -221,7 +227,10 @@ const getPostsFromHomePool = (targetId) => {
   try {
     const homePool = window.__homePostsPool__;
     if (!Array.isArray(homePool)) return [];
-    return homePool.filter(p => { const uid = p?.user?._id || p?.user?.id || p?.author?._id; return uid && String(uid) === String(targetId); });
+    return homePool.filter(p => {
+      const uid = p?.user?._id || p?.user?.id || p?.author?._id;
+      return uid && String(uid) === String(targetId);
+    });
   } catch { return []; }
 };
 
@@ -230,15 +239,15 @@ const getPostsFromHomePool = (targetId) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LoadingSpinner = memo(({ darkMode = false, text = "Chargement..." }) => (
-  <div style={{ textAlign: 'center', padding: '48px 0', fontFamily: "'Sora','DM Sans',sans-serif" }}>
+  <div style={{ textAlign: "center", padding: "48px 0", fontFamily: "'Sora','DM Sans',sans-serif" }}>
     <div style={{
-      display: 'inline-block', width: 44, height: 44,
-      border: `4px solid ${darkMode ? 'rgba(249,115,22,0.2)' : 'rgba(249,115,22,0.15)'}`,
-      borderTopColor: '#f97316',
-      borderRadius: '50%',
-      animation: 'spin 0.8s linear infinite',
+      display: "inline-block", width: 44, height: 44,
+      border: `4px solid ${darkMode ? "rgba(249,115,22,0.2)" : "rgba(249,115,22,0.15)"}`,
+      borderTopColor: "#f97316",
+      borderRadius: "50%",
+      animation: "spin 0.8s linear infinite",
     }} />
-    {text && <p style={{ marginTop: 14, color: darkMode ? '#6b7280' : '#9ca3af', fontSize: 14 }}>{text}</p>}
+    {text && <p style={{ marginTop: 14, color: darkMode ? "#6b7280" : "#9ca3af", fontSize: 14 }}>{text}</p>}
     <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
   </div>
 ));
@@ -251,26 +260,32 @@ const FollowButton = memo(({ isFollowing, isLoading, onClick, isDarkMode }) => (
     whileHover={{ scale: isLoading ? 1 : 1.04, y: isLoading ? 0 : -1 }}
     whileTap={{ scale: isLoading ? 1 : 0.97 }}
     style={{
-      padding: '11px 36px',
+      padding: "11px 36px",
       borderRadius: 999,
       fontFamily: "'Sora','DM Sans',sans-serif",
       fontWeight: 700,
       fontSize: 15,
-      cursor: isLoading ? 'not-allowed' : 'pointer',
-      border: isFollowing ? `1px solid ${isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}` : 'none',
+      cursor: isLoading ? "not-allowed" : "pointer",
+      border: isFollowing
+        ? `1px solid ${isDarkMode ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)"}`
+        : "none",
       background: isFollowing
-        ? (isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)')
-        : 'linear-gradient(135deg,#f97316,#ec4899)',
-      color: isFollowing ? (isDarkMode ? '#9ca3af' : '#6b7280') : '#fff',
-      boxShadow: isFollowing ? 'none' : '0 6px 24px rgba(249,115,22,0.4)',
+        ? (isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)")
+        : "linear-gradient(135deg,#f97316,#ec4899)",
+      color: isFollowing ? (isDarkMode ? "#9ca3af" : "#6b7280") : "#fff",
+      boxShadow: isFollowing ? "none" : "0 6px 24px rgba(249,115,22,0.4)",
       opacity: isLoading ? 0.7 : 1,
-      display: 'flex', alignItems: 'center', gap: 8,
-      transition: 'all 0.2s',
+      display: "flex", alignItems: "center", gap: 8,
+      transition: "all 0.2s",
     }}
   >
     {isLoading ? (
       <>
-        <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid currentColor', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+        <span style={{
+          display: "inline-block", width: 16, height: 16,
+          border: "2px solid currentColor", borderTopColor: "transparent",
+          borderRadius: "50%", animation: "spin 0.8s linear infinite",
+        }} />
         Chargement...
       </>
     ) : isFollowing ? "Se désabonner" : "S'abonner"}
@@ -279,21 +294,25 @@ const FollowButton = memo(({ isFollowing, isLoading, onClick, isDarkMode }) => (
 FollowButton.displayName = "FollowButton";
 
 const Toast = memo(({ message, type }) => {
-  const bg = type === "error" ? '#ef4444' : type === "info" ? '#3b82f6' : 'linear-gradient(135deg,#22c55e,#16a34a)';
+  const bg = type === "error"
+    ? "#ef4444"
+    : type === "info"
+    ? "#3b82f6"
+    : "linear-gradient(135deg,#22c55e,#16a34a)";
   return (
     <motion.div
       initial={{ opacity: 0, y: 20, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 10, scale: 0.95 }}
       style={{
-        position: 'fixed', bottom: 28, right: 28,
-        padding: '12px 22px', borderRadius: 16,
-        background: bg, color: '#fff',
+        position: "fixed", bottom: 28, right: 28,
+        padding: "12px 22px", borderRadius: 16,
+        background: bg, color: "#fff",
         fontFamily: "'Sora','DM Sans',sans-serif",
         fontWeight: 600, fontSize: 14,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
         zIndex: 9999, maxWidth: 340,
-        border: '1px solid rgba(255,255,255,0.15)',
+        border: "1px solid rgba(255,255,255,0.15)",
       }}
     >
       {message}
@@ -306,16 +325,13 @@ const EmptyPostsState = memo(({ isOwner, isDarkMode }) => (
   <motion.div
     initial={{ opacity: 0, y: 16 }}
     animate={{ opacity: 1, y: 0 }}
-    style={{
-      textAlign: 'center', padding: '56px 24px',
-      fontFamily: "'Sora','DM Sans',sans-serif",
-    }}
+    style={{ textAlign: "center", padding: "56px 24px", fontFamily: "'Sora','DM Sans',sans-serif" }}
   >
     <div style={{ fontSize: 52, marginBottom: 16 }}>📭</div>
-    <p style={{ fontSize: 17, fontWeight: 700, color: isDarkMode ? '#d1d5db' : '#374151', marginBottom: 8 }}>
+    <p style={{ fontSize: 17, fontWeight: 700, color: isDarkMode ? "#d1d5db" : "#374151", marginBottom: 8 }}>
       {isOwner ? "Tu n'as pas encore publié de post" : "Aucun post pour l'instant"}
     </p>
-    <p style={{ fontSize: 13, color: isDarkMode ? '#6b7280' : '#9ca3af', maxWidth: 280, margin: '0 auto', lineHeight: 1.7 }}>
+    <p style={{ fontSize: 13, color: isDarkMode ? "#6b7280" : "#9ca3af", maxWidth: 280, margin: "0 auto", lineHeight: 1.7 }}>
       {isOwner
         ? "Partage quelque chose avec ta communauté !"
         : "Cet utilisateur n'a encore rien publié. Reviens plus tard !"}
@@ -325,7 +341,7 @@ const EmptyPostsState = memo(({ isOwner, isDarkMode }) => (
 EmptyPostsState.displayName = "EmptyPostsState";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PROFILE PAGE v8.1 — INSTANT NAVIGATION + FIX CORS
+// PROFILE PAGE — export default
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ProfilePage({
   initialUser  = null,
@@ -336,7 +352,6 @@ export default function ProfilePage({
   const navigate   = useNavigate();
   const location   = useLocation();
 
-  // ✅ v8 — Récupère l'utilisateur passé par navigate(..., { state: { instantUser } })
   const navInstantUserRef = useRef(location.state?.instantUser || null);
   const navInstantUser    = navInstantUserRef.current;
 
@@ -344,7 +359,7 @@ export default function ProfilePage({
   const { fetchUserPosts: realFetchUserPosts } = usePosts();
   const { isDarkMode } = useDarkMode();
 
-  const isMockProfile = !!mockHandlers;
+  const isMockProfile  = !!mockHandlers;
   const fetchUserPosts = mockHandlers?.fetchUserPosts || realFetchUserPosts;
 
   const authUserId   = authUser?._id || authUser?.id;
@@ -362,28 +377,27 @@ export default function ProfilePage({
   const [hasMore,        setHasMore]        = useState(true);
   const [isLoadingPosts, setIsLoadingPosts] = useState(false);
   const [isBot,          setIsBot]          = useState(false);
-
   const [isLoadingUser,  setIsLoadingUser]  = useState(
     !initialUser && !navInstantUser && !(isOwner && authUser)
   );
-  const [userNotFound,   setUserNotFound]   = useState(false);
+  const [userNotFound, setUserNotFound] = useState(false);
 
   const silentRevalidatedRef = useRef(false);
+  const loadingRef           = useRef(false);
+  const saveDebounceTimer    = useRef(null);
+  const writeInProgress      = useRef(false);
+  const prefetchTimer        = useRef(null);
+  const observer             = useRef();
+  const requestCache         = useRef(new Map());
+  const CACHE_DURATION       = 30_000;
 
-  const loadingRef        = useRef(false);
-  const saveDebounceTimer = useRef(null);
-  const writeInProgress   = useRef(false);
-  const prefetchTimer     = useRef(null);
-  const observer          = useRef();
-  const requestCache      = useRef(new Map());
-  const CACHE_DURATION    = 30_000;
-
+  // ── Toast ──────────────────────────────────────────────────────────────────
   const showLocalToast = useCallback((msg, type = "success") => {
     setToast({ message: msg, type });
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // ✅ Sync photo depuis authUser (profil propre)
+  // ── Sync authUser -> profileUser quand owner ───────────────────────────────
   useEffect(() => {
     if (!isOwner || !authUser) return;
     setProfileUser(prev => ({ ...(prev || {}), ...authUser }));
@@ -399,10 +413,19 @@ export default function ProfilePage({
     authUser?.website,
   ]);
 
-  // ✅ FIX CORS v8.1 — suppression des headers Cache-Control/Pragma
-  // Ces headers déclenchaient une pré-requête OPTIONS bloquée par CORS.
-  // axios.get sans headers personnalisés n'envoie pas de headers non-standard,
-  // ce qui évite le preflight et la réponse CORS bloquée.
+  // ── Helper : headers Authorization Bearer ─────────────────────────────────
+  // AuthContext stocke le token en mémoire React (pas localStorage)
+  // -> doit etre passe manuellement dans chaque requete API protegee
+  const getAuthHeaders = useCallback(async () => {
+    const currentToken = await getToken?.();
+    if (!currentToken) throw new Error("Token manquant");
+    return {
+      Authorization: `Bearer ${currentToken}`,
+      "Content-Type": "application/json",
+    };
+  }, [getToken]);
+
+  // ── fetchUserById ──────────────────────────────────────────────────────────
   const fetchUserById = useCallback(async (uid) => {
     if (!uid || uid === "undefined" || uid === "null") return null;
     if (!isValidObjectId(uid)) return null;
@@ -410,14 +433,11 @@ export default function ProfilePage({
     if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
     if (!navigator.onLine) return null;
     try {
-      const { data } = await axios.get(`${API_URL}/api/users/${uid}`, {
+      const currentToken = await getToken?.();
+      const { data } = await axios.get(`${BASE_URL}/api/users/${uid}`, {
         withCredentials: true,
-        // ✅ SUPPRIMÉ : headers: { "Cache-Control": "no-cache", Pragma: "no-cache" }
-        // Ces headers nécessitent un preflight OPTIONS et déclenchent une erreur CORS
-        // si le serveur ne les inclut pas dans Access-Control-Allow-Headers.
-        // La solution : soit ajouter ces headers côté serveur (corsOptions.allowedHeaders),
-        // soit ne pas les envoyer ici. On choisit de ne pas les envoyer.
         timeout: 8000,
+        headers: currentToken ? { Authorization: `Bearer ${currentToken}` } : {},
       });
       let raw = extractUserFromResponse(data);
       if (!raw && data) raw = data.data || data.user || (data._id || data.id ? data : null);
@@ -433,7 +453,7 @@ export default function ProfilePage({
       if (err.response?.status === 401 || err.response?.status === 403) return buildMinimalUser(uid);
       return null;
     }
-  }, []);
+  }, [getToken]);
 
   const tryBuildProfileFromPosts = useCallback(async (uid) => {
     if (!isValidObjectId(uid)) return null;
@@ -453,18 +473,37 @@ export default function ProfilePage({
     return null;
   }, [fetchUserPosts]);
 
-  const followUser   = useCallback(async (uid) => {
+  // ── followUser ─────────────────────────────────────────────────────────────
+  // Le backend POST /api/users/:id/follow est un toggle :
+  //   - si pas encore suivi  -> ajoute dans following/followers
+  //   - si deja suivi        -> retire (unfollow)
+  // On appelle le MEME endpoint pour follow ET unfollow.
+  const followUser = useCallback(async (uid) => {
     if (mockHandlers?.followUser) return await mockHandlers.followUser(uid);
-    const { data } = await axios.post(`${API_URL}/api/users/${uid}/follow`, {}, { withCredentials: true });
+    const headers = await getAuthHeaders();
+    const { data } = await axios.post(
+      `${BASE_URL}/api/users/${uid}/follow`,
+      {},
+      { headers, withCredentials: true, timeout: 8000 }
+    );
     return data;
-  }, [mockHandlers]);
+  }, [mockHandlers, getAuthHeaders]);
 
+  // ── unfollowUser ───────────────────────────────────────────────────────────
+  // Identique a followUser : meme endpoint toggle.
+  // Le backend detecte que l'user suit deja -> retire l'abonnement.
   const unfollowUser = useCallback(async (uid) => {
     if (mockHandlers?.unfollowUser) return await mockHandlers.unfollowUser(uid);
-    const { data } = await axios.post(`${API_URL}/api/users/${uid}/unfollow`, {}, { withCredentials: true });
+    const headers = await getAuthHeaders();
+    const { data } = await axios.post(
+      `${BASE_URL}/api/users/${uid}/follow`,
+      {},
+      { headers, withCredentials: true, timeout: 8000 }
+    );
     return data;
-  }, [mockHandlers]);
+  }, [mockHandlers, getAuthHeaders]);
 
+  // ── savePosts / saveUser (IDB) ─────────────────────────────────────────────
   const savePosts = useCallback((userKey, posts) => {
     if (isMockProfile || !userKey || !Array.isArray(posts)) return;
     if (!isValidObjectId(userKey)) return;
@@ -482,6 +521,7 @@ export default function ProfilePage({
     try { await idbSetUser(user._id, user); } catch (err) { console.warn("IDB User Save Error", err); }
   }, [isMockProfile]);
 
+  // ── Post lifecycle ─────────────────────────────────────────────────────────
   const handlePostCreated = useCallback(async (newPost) => {
     const normalized = normalizePost(newPost);
     if (!isMockProfile) await syncNewPost(normalized, profileUser._id);
@@ -495,6 +535,7 @@ export default function ProfilePage({
     showLocalToast("Post supprimé");
   }, [profileUser?._id, showLocalToast, isMockProfile]);
 
+  // ── loadProfilePosts ───────────────────────────────────────────────────────
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
     if (!targetId || loadingRef.current) return;
     if (!isValidObjectId(targetId)) {
@@ -509,25 +550,49 @@ export default function ProfilePage({
     setIsLoadingPosts(true);
     try {
       let postsArray = [];
-      if (prefetchedPosts && !append) { postsArray = prefetchedPosts; startTransition(() => setProfilePosts(prefetchedPosts)); }
-      if (isMockProfile && initialPosts && !append) { postsArray = initialPosts; startTransition(() => setProfilePosts(initialPosts)); storeProfilePostsInCache(targetId, initialPosts); return; }
+
+      if (prefetchedPosts && !append) {
+        postsArray = prefetchedPosts;
+        startTransition(() => setProfilePosts(prefetchedPosts));
+      }
+
+      if (isMockProfile && initialPosts && !append) {
+        postsArray = initialPosts;
+        startTransition(() => setProfilePosts(initialPosts));
+        storeProfilePostsInCache(targetId, initialPosts);
+        return;
+      }
+
       if (!isMockProfile && !append && !prefetchedPosts) {
         try {
           const cached = await getCachedPosts(targetId);
-          if (Array.isArray(cached) && cached.length > 0) { postsArray = cached; startTransition(() => setProfilePosts(cached)); storeProfilePostsInCache(targetId, cached); }
+          if (Array.isArray(cached) && cached.length > 0) {
+            postsArray = cached;
+            startTransition(() => setProfilePosts(cached));
+            storeProfilePostsInCache(targetId, cached);
+          }
         } catch (e) { console.warn("IDB cache read error:", e); }
       }
+
       if (!append && !prefetchedPosts && postsArray.length === 0) {
         const homePostsForUser = getPostsFromHomePool(targetId);
-        if (homePostsForUser.length > 0) { postsArray = homePostsForUser; startTransition(() => setProfilePosts(homePostsForUser.map(normalizePost))); storeProfilePostsInCache(targetId, homePostsForUser); }
+        if (homePostsForUser.length > 0) {
+          postsArray = homePostsForUser;
+          startTransition(() => setProfilePosts(homePostsForUser.map(normalizePost)));
+          storeProfilePostsInCache(targetId, homePostsForUser);
+        }
       }
+
       if (navigator.onLine && !prefetchedPosts) {
         try {
           const result  = await fetchUserPosts(targetId, pageNumber);
           const fetched = extractPostsFromResult(result);
           if (fetched.length > 0) postsArray = fetched;
-        } catch (networkErr) { if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info"); }
+        } catch {
+          if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info");
+        }
       }
+
       setHasMore(postsArray.length >= 20);
       startTransition(() => {
         setProfilePosts(prev => {
@@ -548,9 +613,11 @@ export default function ProfilePage({
   }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts]);
 
   useEffect(() => {
-    if (profilePosts.length > 0 && profileUser?._id) storeProfilePostsInCache(profileUser._id, profilePosts);
+    if (profilePosts.length > 0 && profileUser?._id)
+      storeProfilePostsInCache(profileUser._id, profilePosts);
   }, [profilePosts, profileUser?._id]);
 
+  // ── Infinite scroll ────────────────────────────────────────────────────────
   const lastPostRef = useCallback((node) => {
     if (loadingRef.current) return;
     if (observer.current) observer.current.disconnect();
@@ -564,31 +631,63 @@ export default function ProfilePage({
     if (node) observer.current.observe(node);
   }, [page, hasMore, isLoadingPosts, loadProfilePosts, profileUser]);
 
+  // ── Follow status ──────────────────────────────────────────────────────────
   const followStatus = profileUser && authUser && !isOwner
-    ? (profileUser.followers || []).some(u => isSameUser(typeof u === "object" ? u._id : u, authUserId))
+    ? (profileUser.followers || []).some(u =>
+        isSameUser(typeof u === "object" ? u._id : u, authUserId)
+      )
     : null;
 
+  // ── handleFollowToggle ─────────────────────────────────────────────────────
   const handleFollowToggle = useCallback(async () => {
     if (!authUser || !profileUser || followLoading) return;
+    if (!isValidObjectId(profileUser._id)) {
+      showLocalToast("Action impossible sur ce profil", "error");
+      return;
+    }
+
     setFollowLoading(true);
     const wasFollowing = followStatus;
+
+    // Mise à jour optimiste
     const newFollowers = wasFollowing
-      ? (profileUser.followers || []).filter(u => !isSameUser(typeof u === "object" ? u._id : u, authUserId))
+      ? (profileUser.followers || []).filter(
+          u => !isSameUser(typeof u === "object" ? u._id : u, authUserId)
+        )
       : [...(profileUser.followers || []), authUserId];
     startTransition(() => setProfileUser(prev => ({ ...prev, followers: newFollowers })));
+
     try {
+      // Les deux branchements appellent le même endpoint toggle
       if (wasFollowing) await unfollowUser(profileUser._id);
-      else await followUser(profileUser._id);
+      else              await followUser(profileUser._id);
       showLocalToast(wasFollowing ? "Désabonné !" : "Abonné !");
     } catch (err) {
-      showLocalToast("Erreur lors de l'action", "error");
+      // Rollback
       const rollback = wasFollowing
         ? [...(profileUser.followers || []), authUserId]
-        : (profileUser.followers || []).filter(u => !isSameUser(typeof u === "object" ? u._id : u, authUserId));
+        : (profileUser.followers || []).filter(
+            u => !isSameUser(typeof u === "object" ? u._id : u, authUserId)
+          );
       startTransition(() => setProfileUser(prev => ({ ...prev, followers: rollback })));
-    } finally { setFollowLoading(false); }
+
+      const status = err?.response?.status;
+      if (status === 401 || status === 403)
+        showLocalToast("Non autorisé — reconnecte-toi", "error");
+      else if (status === 404)
+        showLocalToast("Utilisateur introuvable", "error");
+      else if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED")
+        showLocalToast("Hors ligne — réessaie plus tard", "error");
+      else
+        showLocalToast("Erreur lors de l'action", "error");
+
+      console.error("[Follow] Erreur:", status, err?.response?.data || err.message);
+    } finally {
+      setFollowLoading(false);
+    }
   }, [authUser, profileUser, followStatus, followLoading, followUser, unfollowUser, showLocalToast, authUserId]);
 
+  // ── Effets secondaires ─────────────────────────────────────────────────────
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [targetUserId]);
 
   useEffect(() => {
@@ -611,30 +710,26 @@ export default function ProfilePage({
 
   useEffect(() => {
     const handleOnline = () => {
-      if (profileUser?._id && isValidObjectId(profileUser._id)) loadProfilePosts(profileUser._id, 1, false);
+      if (profileUser?._id && isValidObjectId(profileUser._id))
+        loadProfilePosts(profileUser._id, 1, false);
     };
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
   }, [profileUser?._id, loadProfilePosts]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // useEffect principal — v8.1
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── useEffect principal : chargement du profil ────────────────────────────
   useEffect(() => {
     if (authLoading) return;
     if (!authUser) { navigate("/auth", { replace: true }); return; }
 
-    // ✅ FAST PATH — utilisateur déjà disponible depuis navInstantUser
+    // Cas 1 : navigation instantanée (instantUser depuis PostCard)
     if (navInstantUser && !initialUser && !silentRevalidatedRef.current) {
       silentRevalidatedRef.current = true;
       setIsLoadingUser(false);
       setUserNotFound(false);
       setIsBot(!!navInstantUser.isBot);
-
       if (targetUserId && isValidObjectId(targetUserId)) {
         loadProfilePosts(targetUserId, 1, false).catch(() => {});
-
-        // Revalidation silencieuse en arrière-plan (sans headers Cache-Control)
         if (navigator.onLine) {
           fetchUserById(targetUserId)
             .then(fresh => {
@@ -649,110 +744,196 @@ export default function ProfilePage({
       return;
     }
 
-    // ── SLOW PATH — chargement normal ──────────────────────────────────────
+    // Cas 2 : profil injecté (SSR / parent)
     if (initialUser) {
-      setProfileUser(initialUser); setIsBot(!!initialUser.isBot); setIsLoadingUser(false); setUserNotFound(false);
-      if (targetUserId && isValidObjectId(targetUserId)) loadProfilePosts(targetUserId, 1, false);
+      setProfileUser(initialUser);
+      setIsBot(!!initialUser.isBot);
+      setIsLoadingUser(false);
+      setUserNotFound(false);
+      if (targetUserId && isValidObjectId(targetUserId))
+        loadProfilePosts(targetUserId, 1, false);
       return;
     }
-    if (!targetUserId || targetUserId === "undefined") { setIsLoadingUser(false); setUserNotFound(true); return; }
+
+    // Cas 3 : pas d'ID
+    if (!targetUserId || targetUserId === "undefined") {
+      setIsLoadingUser(false);
+      setUserNotFound(true);
+      return;
+    }
+
+    // Cas 4 : mock ID
     if (isMockId(targetUserId)) {
       const result = buildProfileFromEmbeddedUser(targetUserId);
       if (result) {
-        setProfileUser(result.profile); setIsBot(!!result.profile.isBot); setIsLoadingUser(false); setUserNotFound(false);
-        if (result.posts.length > 0) { startTransition(() => setProfilePosts(result.posts.map(normalizePost))); storeProfilePostsInCache(targetUserId, result.posts); }
+        setProfileUser(result.profile);
+        setIsBot(!!result.profile.isBot);
+        setIsLoadingUser(false);
+        setUserNotFound(false);
+        if (result.posts.length > 0) {
+          startTransition(() => setProfilePosts(result.posts.map(normalizePost)));
+          storeProfilePostsInCache(targetUserId, result.posts);
+        }
       } else {
         setProfileUser(buildMinimalUser(targetUserId, { username: "utilisateur", fullName: "Utilisateur" }));
-        setIsBot(false); setIsLoadingUser(false); setUserNotFound(false);
+        setIsBot(false);
+        setIsLoadingUser(false);
+        setUserNotFound(false);
         showLocalToast("Profil de démonstration", "info");
       }
       return;
     }
+
+    // Cas 5 : ID invalide
     if (!isValidObjectId(targetUserId)) {
-      if (isOwner) { setProfileUser(authUser); setIsBot(false); setIsLoadingUser(false); setUserNotFound(false); }
-      else { setIsLoadingUser(false); setUserNotFound(true); }
+      if (isOwner) {
+        setProfileUser(authUser);
+        setIsBot(false);
+        setIsLoadingUser(false);
+        setUserNotFound(false);
+      } else {
+        setIsLoadingUser(false);
+        setUserNotFound(true);
+      }
       return;
     }
+
+    // Cas 6 : chargement normal depuis l'API
     (async () => {
-      setIsLoadingUser(true); setUserNotFound(false);
+      setIsLoadingUser(true);
+      setUserNotFound(false);
       try {
         await idbClearOtherKeys(`profilePosts_${targetUserId}`);
+
         if (isOwner) {
-          setProfileUser(authUser); setIsBot(false); setUserNotFound(false); saveUser(authUser);
-          if (navigator.onLine) fetchUserById(authUserId).then(fresh => { if (fresh) { setProfileUser(fresh); saveUser(fresh); } }).catch(() => {});
+          setProfileUser(authUser);
+          setIsBot(false);
+          setUserNotFound(false);
+          saveUser(authUser);
+          if (navigator.onLine)
+            fetchUserById(authUserId)
+              .then(fresh => { if (fresh) { setProfileUser(fresh); saveUser(fresh); } })
+              .catch(() => {});
         } else {
           const cachedUser = await idbGetUser(targetUserId);
-          if (cachedUser) { setProfileUser(buildMinimalUser(cachedUser._id || cachedUser.id, cachedUser)); setIsBot(!!cachedUser.isBot); setUserNotFound(false); }
+          if (cachedUser) {
+            setProfileUser(buildMinimalUser(cachedUser._id || cachedUser.id, cachedUser));
+            setIsBot(!!cachedUser.isBot);
+            setUserNotFound(false);
+          }
+
           if (navigator.onLine) {
             const fetchedUser = await fetchUserById(targetUserId);
-            if (fetchedUser) { setProfileUser(fetchedUser); setIsBot(!!fetchedUser.isBot); setUserNotFound(false); saveUser(fetchedUser); }
-            else if (!cachedUser) {
-              const embeddedResult = buildProfileFromEmbeddedUser(targetUserId);
-              if (embeddedResult) {
-                setProfileUser(embeddedResult.profile); setIsBot(!!embeddedResult.profile.isBot); setUserNotFound(false); saveUser(embeddedResult.profile);
-                if (embeddedResult.posts.length > 0) { startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost))); storeProfilePostsInCache(targetUserId, embeddedResult.posts); }
-                setPage(1); setHasMore(true); await loadProfilePosts(targetUserId, 1, false); return;
+            if (fetchedUser) {
+              setProfileUser(fetchedUser);
+              setIsBot(!!fetchedUser.isBot);
+              setUserNotFound(false);
+              saveUser(fetchedUser);
+            } else if (!cachedUser) {
+              const embedded = buildProfileFromEmbeddedUser(targetUserId);
+              if (embedded) {
+                setProfileUser(embedded.profile);
+                setIsBot(!!embedded.profile.isBot);
+                setUserNotFound(false);
+                saveUser(embedded.profile);
+                if (embedded.posts.length > 0) {
+                  startTransition(() => setProfilePosts(embedded.posts.map(normalizePost)));
+                  storeProfilePostsInCache(targetUserId, embedded.posts);
+                }
+                setPage(1); setHasMore(true);
+                await loadProfilePosts(targetUserId, 1, false);
+                return;
               }
               const fallback = await tryBuildProfileFromPosts(targetUserId);
               if (fallback) {
-                setProfileUser(fallback.user); setIsBot(!!fallback.user.isBot); setUserNotFound(false); saveUser(fallback.user);
+                setProfileUser(fallback.user);
+                setIsBot(!!fallback.user.isBot);
+                setUserNotFound(false);
+                saveUser(fallback.user);
                 setPage(1); setHasMore(fallback.posts.length >= 20);
-                await loadProfilePosts(targetUserId, 1, false, fallback.posts); return;
+                await loadProfilePosts(targetUserId, 1, false, fallback.posts);
+                return;
+              }
+              if (isValidObjectId(targetUserId)) {
+                setProfileUser(buildMinimalUser(targetUserId));
+                setIsBot(false);
+                setUserNotFound(false);
+                showLocalToast("Profil partiellement disponible", "info");
               } else {
-                if (isValidObjectId(targetUserId)) { setProfileUser(buildMinimalUser(targetUserId)); setIsBot(false); setUserNotFound(false); showLocalToast("Profil partiellement disponible", "info"); }
-                else setUserNotFound(true);
+                setUserNotFound(true);
               }
             }
           } else if (!cachedUser) {
             if (isValidObjectId(targetUserId)) {
-              const embeddedResult = buildProfileFromEmbeddedUser(targetUserId);
-              if (embeddedResult) {
-                setProfileUser(embeddedResult.profile); setIsBot(!!embeddedResult.profile.isBot); setUserNotFound(false);
-                if (embeddedResult.posts.length > 0) startTransition(() => setProfilePosts(embeddedResult.posts.map(normalizePost)));
+              const embedded = buildProfileFromEmbeddedUser(targetUserId);
+              if (embedded) {
+                setProfileUser(embedded.profile);
+                setIsBot(!!embedded.profile.isBot);
+                setUserNotFound(false);
+                if (embedded.posts.length > 0)
+                  startTransition(() => setProfilePosts(embedded.posts.map(normalizePost)));
               } else {
-                setProfileUser(buildMinimalUser(targetUserId)); setIsBot(false); setUserNotFound(false);
+                setProfileUser(buildMinimalUser(targetUserId));
+                setIsBot(false);
+                setUserNotFound(false);
                 showLocalToast("Profil non disponible hors ligne", "info");
               }
-            } else setUserNotFound(true);
+            } else {
+              setUserNotFound(true);
+            }
           }
         }
-        setPage(1); setHasMore(true); await loadProfilePosts(targetUserId, 1, false);
+
+        setPage(1); setHasMore(true);
+        await loadProfilePosts(targetUserId, 1, false);
       } catch (err) {
         console.error("Profil Load Error:", err);
-        if (!profileUser && isValidObjectId(targetUserId)) { setProfileUser(buildMinimalUser(targetUserId)); setUserNotFound(false); }
+        if (!profileUser && isValidObjectId(targetUserId)) {
+          setProfileUser(buildMinimalUser(targetUserId));
+          setUserNotFound(false);
+        }
         showLocalToast("Erreur lors du chargement", "error");
-      } finally { setIsLoadingUser(false); }
+      } finally {
+        setIsLoadingUser(false);
+      }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, authUser?._id, targetUserId, isOwner]);
 
-  // Socket temps réel
+  // ── Socket temps réel ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket || !profileUser || isMockProfile || isBot) return;
+
     const handleNewPost = (post) => {
       const postUserId = typeof post.user === "object" ? post.user._id : post.user;
       if (!isSameUser(postUserId, profileUser._id)) return;
       startTransition(() => setProfilePosts(prev => {
         if (prev.find(p => p._id === post._id)) return prev;
         const updated = [normalizePost(post), ...prev];
-        savePosts(profileUser._id, updated); storeProfilePostsInCache(profileUser._id, updated);
+        savePosts(profileUser._id, updated);
+        storeProfilePostsInCache(profileUser._id, updated);
         return updated;
       }));
     };
+
     const handleDeletedPost = (postId) => {
       startTransition(() => setProfilePosts(prev => {
         const updated = prev.filter(p => p._id !== postId);
-        savePosts(profileUser._id, updated); storeProfilePostsInCache(profileUser._id, updated);
+        savePosts(profileUser._id, updated);
+        storeProfilePostsInCache(profileUser._id, updated);
         return updated;
       }));
     };
+
     const handleUpdatedPost = (post) => {
       startTransition(() => setProfilePosts(prev => {
         const updated = prev.map(p => p._id === post._id ? normalizePost(post) : p);
-        savePosts(profileUser._id, updated); storeProfilePostsInCache(profileUser._id, updated);
+        savePosts(profileUser._id, updated);
+        storeProfilePostsInCache(profileUser._id, updated);
         return updated;
       }));
     };
+
     socket.on("newPost",     handleNewPost);
     socket.on("postDeleted", handleDeletedPost);
     socket.on("postUpdated", handleUpdatedPost);
@@ -763,19 +944,19 @@ export default function ProfilePage({
     };
   }, [socket, profileUser?._id, savePosts, isMockProfile, isBot]);
 
+  // ── Stats ──────────────────────────────────────────────────────────────────
   const stats = {
     posts:     profilePosts.length,
     followers: profileUser?.followers?.length || profileUser?.followersCount || 0,
     following: profileUser?.following?.length || profileUser?.followingCount || 0,
   };
 
-  const pageBg = isDarkMode ? '#080808' : '#f5f5f7';
+  const pageBg = isDarkMode ? "#080808" : "#f5f5f7";
 
-  // ── ÉTATS D'ÉCRAN ──────────────────────────────────────────────────────────
-
+  // ── Écrans d'état ──────────────────────────────────────────────────────────
   if (authLoading || (isLoadingUser && !profileUser)) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: pageBg }}>
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: pageBg }}>
         <LoadingSpinner darkMode={isDarkMode} />
       </div>
     );
@@ -783,45 +964,52 @@ export default function ProfilePage({
 
   if (userNotFound || (!profileUser && !isLoadingUser)) {
     return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: pageBg, fontFamily: "'Sora','DM Sans',sans-serif" }}>
-        <div style={{ textAlign: 'center' }}>
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: pageBg, fontFamily: "'Sora','DM Sans',sans-serif" }}>
+        <div style={{ textAlign: "center" }}>
           <div style={{ fontSize: 56, marginBottom: 16 }}>🔍</div>
-          <p style={{ fontSize: 18, fontWeight: 700, color: isDarkMode ? '#d1d5db' : '#374151', marginBottom: 20 }}>Profil introuvable</p>
+          <p style={{ fontSize: 18, fontWeight: 700, color: isDarkMode ? "#d1d5db" : "#374151", marginBottom: 20 }}>
+            Profil introuvable
+          </p>
           <motion.button
             onClick={() => navigate(-1)}
-            whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.97 }}
-            style={{ padding: '11px 28px', borderRadius: 999, border: 'none', cursor: 'pointer', background: 'linear-gradient(135deg,#f97316,#ec4899)', color: '#fff', fontWeight: 700, fontSize: 14, boxShadow: '0 6px 24px rgba(249,115,22,0.4)' }}
+            whileHover={{ scale: 1.04, y: -1 }}
+            whileTap={{ scale: 0.97 }}
+            style={{
+              padding: "11px 28px", borderRadius: 999, border: "none", cursor: "pointer",
+              background: "linear-gradient(135deg,#f97316,#ec4899)", color: "#fff",
+              fontWeight: 700, fontSize: 14, boxShadow: "0 6px 24px rgba(249,115,22,0.4)",
+            }}
           >
-            ← Retour
+            Retour
           </motion.button>
         </div>
       </div>
     );
   }
 
+  // ── Rendu principal ────────────────────────────────────────────────────────
   return (
     <div style={{
-      minHeight: '100vh',
+      minHeight: "100vh",
       background: pageBg,
-      padding: '16px',
+      padding: "0",
       fontFamily: "'Sora','DM Sans',sans-serif",
-      transition: 'background 0.3s',
+      transition: "background 0.3s",
     }}>
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap');
-      `}</style>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {isMockProfile && (
-        <div style={{ maxWidth: 820, margin: '0 auto 16px', padding: '12px 20px', borderRadius: 16, background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}>
-          <p style={{ fontSize: 13, color: '#3b82f6', textAlign: 'center', margin: 0, fontWeight: 500 }}>
-            👤 Profil de démonstration — Toutes les interactions sont simulées
-          </p>
+        <div style={{ maxWidth: 820, margin: "0 auto", padding: "12px 16px 0" }}>
+          <div style={{ padding: "12px 20px", borderRadius: 16, background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)" }}>
+            <p style={{ fontSize: 13, color: "#3b82f6", textAlign: "center", margin: 0, fontWeight: 500 }}>
+              Profil de démonstration — Toutes les interactions sont simulées
+            </p>
+          </div>
         </div>
       )}
 
-      <div style={{ maxWidth: 820, margin: '0 auto' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ maxWidth: 820, margin: "0 auto", padding: "0 0 24px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
           <ProfileHeader
             user={profileUser}
@@ -832,74 +1020,89 @@ export default function ProfilePage({
             showToast={showLocalToast}
           />
 
-          {!isOwner && (
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <FollowButton
-                isFollowing={followStatus}
-                isLoading={followLoading}
-                onClick={handleFollowToggle}
-                isDarkMode={isDarkMode}
-              />
-            </div>
-          )}
+          <div style={{ padding: "0 16px", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          <ProfileMenu
-            selectedTab={selectedTab}
-            onSelectTab={setSelectedTab}
-            isOwner={isOwner}
-            stats={stats}
-          />
+            {!isOwner && (
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                <FollowButton
+                  isFollowing={followStatus}
+                  isLoading={followLoading}
+                  onClick={handleFollowToggle}
+                  isDarkMode={isDarkMode}
+                />
+              </div>
+            )}
 
-          {selectedTab === "posts" && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {isOwner && !isMockProfile && !isBot && (
-                <CreatePost user={authUser} onPostCreated={handlePostCreated} showToast={showLocalToast} />
-              )}
-              {isLoadingPosts && profilePosts.length === 0 ? (
-                <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
-              ) : profilePosts.length === 0 && !isLoadingPosts ? (
-                <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                  {profilePosts.map((post, index) => (
-                    <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
-                      <PostCard post={post} onDeleted={handlePostDeleted} showToast={showLocalToast} mockPost={isMockProfile} />
-                    </div>
-                  ))}
-                  {isLoadingPosts && (
-                    <div style={{ textAlign: 'center', padding: '16px 0' }}>
-                      <div style={{ display: 'inline-block', width: 28, height: 28, border: `3px solid ${isDarkMode ? 'rgba(249,115,22,0.2)' : 'rgba(249,115,22,0.15)'}`, borderTopColor: '#f97316', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
-                    </div>
-                  )}
-                  {!hasMore && profilePosts.length > 0 && (
-                    <p style={{ textAlign: 'center', padding: '16px 0', fontSize: 13, color: isDarkMode ? '#4b5563' : '#9ca3af' }}>
-                      · Tous les posts affichés ·
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {selectedTab === "photos" && (
-            <ProfileMediaGrid
-              posts={profilePosts}
-              isDarkMode={isDarkMode}
-              isLoading={isLoadingPosts}
-              hasMore={hasMore}
-              onLoadMore={() => {
-                const nextPage = page + 1;
-                setPage(nextPage);
-                if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
-              }}
-              featuredFirst={false}
+            <ProfileMenu
+              selectedTab={selectedTab}
+              onSelectTab={setSelectedTab}
               isOwner={isOwner}
+              stats={stats}
             />
-          )}
 
-          {selectedTab === "settings" && isOwner && !isBot && (
-            <SettingsSection user={authUser} showToast={showLocalToast} />
-          )}
+            {selectedTab === "posts" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {isOwner && !isMockProfile && !isBot && (
+                  <CreatePost user={authUser} onPostCreated={handlePostCreated} showToast={showLocalToast} />
+                )}
+
+                {isLoadingPosts && profilePosts.length === 0 ? (
+                  <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
+                ) : profilePosts.length === 0 && !isLoadingPosts ? (
+                  <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {profilePosts.map((post, index) => (
+                      <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
+                        <PostCard
+                          post={post}
+                          onDeleted={handlePostDeleted}
+                          showToast={showLocalToast}
+                          mockPost={isMockProfile}
+                        />
+                      </div>
+                    ))}
+                    {isLoadingPosts && (
+                      <div style={{ textAlign: "center", padding: "16px 0" }}>
+                        <div style={{
+                          display: "inline-block", width: 28, height: 28,
+                          border: `3px solid ${isDarkMode ? "rgba(249,115,22,0.2)" : "rgba(249,115,22,0.15)"}`,
+                          borderTopColor: "#f97316", borderRadius: "50%",
+                          animation: "spin 0.8s linear infinite",
+                        }} />
+                      </div>
+                    )}
+                    {!hasMore && profilePosts.length > 0 && (
+                      <p style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: isDarkMode ? "#4b5563" : "#9ca3af" }}>
+                        · Tous les posts affichés ·
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {selectedTab === "photos" && (
+              <ProfileMediaGrid
+                posts={profilePosts}
+                isDarkMode={isDarkMode}
+                isLoading={isLoadingPosts}
+                hasMore={hasMore}
+                onLoadMore={() => {
+                  const nextPage = page + 1;
+                  setPage(nextPage);
+                  if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
+                }}
+                featuredFirst={false}
+                isOwner={isOwner}
+              />
+            )}
+
+            {selectedTab === "settings" && isOwner && !isBot && (
+              <SettingsSection user={authUser} showToast={showLocalToast} />
+            )}
+
+          </div>
         </div>
       </div>
 

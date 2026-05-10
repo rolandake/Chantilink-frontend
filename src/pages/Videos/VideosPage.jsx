@@ -1,47 +1,11 @@
-// 📁 src/pages/Videos/VideosPage.jsx — v12 ULTRA-INTELLIGENT FEED
+// 📁 src/pages/Videos/VideosPage.jsx — v13 SANS TABS / CARDS IMMERSIVES
 //
 // ═══════════════════════════════════════════════════════════════════════════════
-// NOUVEAUTÉS v12 — INTELLIGENCE COMPORTEMENTALE COMPLÈTE
-//
-//  🧠 BEHAVIORAL ENGINE — détection de skip, replay, pause intentionnelle
-//     - Skip rapide (<1.2s) → pénalise la source/catégorie en temps réel
-//     - Replay détecté → boost fort de la source
-//     - Pause longue >3s → signal d'intérêt fort
-//     - Les signaux sont pondérés et propagés immédiatement au scoring
-//
-//  ⚡ LIVE FEED REORDER — re-scoring du buffer à chaque signal fort
-//     - Les 10 prochains items du feed sont re-classés après chaque skip/like
-//     - L'algorithme s'adapte en TEMPS RÉEL sans attendre la prochaine session
-//
-//  📡 NETWORK AWARENESS — préchargement adapté à la connexion
-//     - Détection navigator.connection (effectiveType, saveData)
-//     - Sur 4G : précharge 4 items, 256KB chacun
-//     - Sur 3G : précharge 2 items, 64KB
-//     - Sur saveData ou 2G : 0 préchargement, lecture seule
-//     - Adapte aussi MAX_SLOTS YouTubePool (2 sur mauvais réseau)
-//
-//  🎯 INTENT CLASSIFIER — classe chaque vidéo en 5 catégories d'intention
-//     - "entertainment" / "learning" / "btp_pro" / "news" / "ambient"
-//     - L'utilisateur développe un profil d'intention qui oriente le feed
-//     - Les vidéos sont scorées par correspondance d'intention
-//
-//  🔄 SMART BUFFER PIPELINE — file priorisée en 3 couches
-//     - Layer 1 : "Prêtes" (déjà scorées, triées, dans le DOM)
-//     - Layer 2 : "Réchauffées" (téléchargement partiel en cours)
-//     - Layer 3 : "En attente" (pool brut non encore scoré)
-//     - Le pipeline avance automatiquement selon la vitesse de scroll
-//
-//  🏎️ FRAME-PERFECT TRANSITIONS — zéro black frame entre vidéos
-//     - Les iframes YT sont montées 2 slides à l'avance (hors écran)
-//     - Les vidéos natives ont un double-buffer (current + next)
-//     - Transitions CSS opacity au lieu de mount/unmount
-//
-//  💡 COLD START OPTIMIZER — premiers 5 items toujours variés
-//     - Force 1 BTP pro + 1 viral + 1 récent + 2 découverte au démarrage
-//     - Évite le "tunnel" dès la première session
-//
-//  🔒 HÉRITAGE v11 INTÉGRAL — seenSet persisté, invalidSet, LRU YouTube,
-//     DiversityGuard, UserProfileStore, AdaptiveBuffer, PullToRefresh, etc.
+// CHANGEMENTS v13 :
+//  🗑️  Tabs "Pour toi / Suivis / Découvrir" supprimés
+//  🗑️  activeTab / setActiveTab / hasNewContent supprimés
+//  ✅  ActionBar épurée : retour + recherche + bouton upload
+//  ✅  Héritage v12 intégral (behavioral engine, live reorder, network awareness…)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -57,39 +21,37 @@ import AggregatedCard from './AggregatedCard';
 import VideoModal from './VideoModal';
 import VideoAd from './Publicite/VideoAd.jsx';
 import YouTubePool from './YouTubePool';
-import { FaPlus, FaSearch, FaArrowLeft, FaTimes, FaFire, FaCompass } from 'react-icons/fa';
+import { FaPlus, FaSearch, FaArrowLeft, FaTimes } from 'react-icons/fa';
 
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONFIG v12
+// CONFIG v13
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
   ads:              { enabled: true, frequency: 8 },
   aggregated:       { enabled: true, initialLoad: 40, loadMore: 25 },
-  virtual:          5,          // slides rendues de chaque côté
+  virtual:          5,
   bufferAhead:      10,
   bufferMin:        6,
   recycleMin:       8,
   preloadAhead:     4,
-  momentumLock:     220,        // réduit pour plus de réactivité
+  momentumLock:     220,
   watchScoreMin:    0.12,
-  ytWarmupAhead:    4,          // YouTube : préchauffer 4 vidéos à l'avance
+  ytWarmupAhead:    4,
   minFeedSize:      12,
-  coldStartVariety: 5,          // forcer la variété sur les N premiers items
+  coldStartVariety: 5,
 
-  // ── Comportement ──────────────────────────────────────────────────────────
   behavior: {
-    skipThresholdMs:   1200,    // < 1.2s = skip intentionnel
-    replayThresholdMs: 500,     // retour < 500ms = replay
-    pauseInterestMs:   3000,    // pause > 3s = intérêt fort
-    skipPenalty:       -0.8,    // pénalité de score immédiate sur skip
-    replayBoost:       1.2,     // boost immédiat sur replay
-    pauseBoost:        0.5,     // boost sur pause longue
-    liveReorderDepth:  12,      // re-classer les N prochains items après signal
+    skipThresholdMs:   1200,
+    replayThresholdMs: 500,
+    pauseInterestMs:   3000,
+    skipPenalty:       -0.8,
+    replayBoost:       1.2,
+    pauseBoost:        0.5,
+    liveReorderDepth:  12,
   },
 
-  // ── Réseau adaptatif ─────────────────────────────────────────────────────
   network: {
     '4g':     { preloadBytes: 262144, preloadAhead: 4, ytSlots: 5 },
     '3g':     { preloadBytes: 65536,  preloadAhead: 2, ytSlots: 3 },
@@ -98,7 +60,6 @@ const CONFIG = {
     'default':{ preloadBytes: 131072, preloadAhead: 3, ytSlots: 4 },
   },
 
-  // ── Profil utilisateur ───────────────────────────────────────────────────
   profile: {
     storageKey:    'vp_user_profile_v3',
     decayFactor:   0.92,
@@ -107,14 +68,12 @@ const CONFIG = {
     intentKey:     'vp_intent_profile_v1',
   },
 
-  // ── Persistance ──────────────────────────────────────────────────────────
   seen: {
     storageKey: 'vp_seen_ids_v1',
     invalidKey: 'vp_invalid_ids_v1',
     maxEntries: 300,
   },
 
-  // ── Diversité ────────────────────────────────────────────────────────────
   diversity: {
     sourceWindow:   3,
     categoryWindow: 5,
@@ -124,42 +83,34 @@ const CONFIG = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 📡 NETWORK MANAGER — détecte et surveille la qualité réseau
+// NETWORK MANAGER
 // ─────────────────────────────────────────────────────────────────────────────
 class NetworkManager {
   constructor() {
     this._type     = 'default';
     this._saveData = false;
     this._update();
-
     if ('connection' in navigator) {
       navigator.connection.addEventListener('change', () => this._update());
     }
   }
-
   _update() {
     const conn = navigator.connection;
     if (!conn) { this._type = 'default'; return; }
     this._saveData = conn.saveData || false;
     this._type     = conn.effectiveType || 'default';
   }
-
-  get cfg() {
-    if (this._saveData) return CONFIG.network['2g']; // économie de données
-    return CONFIG.network[this._type] || CONFIG.network['default'];
-  }
-
-  get preloadBytes()  { return this.cfg.preloadBytes; }
-  get preloadAhead()  { return this.cfg.preloadAhead; }
-  get ytSlots()       { return this.cfg.ytSlots; }
-  get canPreload()    { return this.cfg.preloadBytes > 0; }
-  get effectiveType() { return this._type; }
+  get cfg()          { return this._saveData ? CONFIG.network['2g'] : (CONFIG.network[this._type] || CONFIG.network['default']); }
+  get preloadBytes() { return this.cfg.preloadBytes; }
+  get preloadAhead() { return this.cfg.preloadAhead; }
+  get ytSlots()      { return this.cfg.ytSlots; }
+  get canPreload()   { return this.cfg.preloadBytes > 0; }
+  get effectiveType(){ return this._type; }
 }
-
 const networkMgr = new NetworkManager();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎯 INTENT CLASSIFIER — classe les vidéos par intention d'usage
+// INTENT CLASSIFIER
 // ─────────────────────────────────────────────────────────────────────────────
 const INTENT_PATTERNS = {
   btp_pro:       ['chantier','béton','beton','coffrage','ferraillage','maçonnerie','terrassement','grue','pelleteuse','échafaudage','formwork','rebar','excavation','fondation','structure'],
@@ -170,76 +121,48 @@ const INTENT_PATTERNS = {
 };
 
 const classifyIntent = (item) => {
-  const text = [
-    item.title || '', item.description || '', item.channelName || '', item.category || '',
-  ].join(' ').toLowerCase();
-
+  const text = [item.title||'',item.description||'',item.channelName||'',item.category||''].join(' ').toLowerCase();
   const scores = {};
   for (const [intent, keywords] of Object.entries(INTENT_PATTERNS)) {
     scores[intent] = keywords.filter(kw => text.includes(kw)).length;
   }
-
-  const top = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
-  return top[1] > 0 ? top[0] : 'entertainment'; // fallback
+  const top = Object.entries(scores).sort((a,b) => b[1]-a[1])[0];
+  return top[1] > 0 ? top[0] : 'entertainment';
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 💾 HELPERS PERSISTANCE
+// PERSISTANCE
 // ─────────────────────────────────────────────────────────────────────────────
 const loadPersistedSet = (key, max = CONFIG.seen.maxEntries) => {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
-    return new Set(JSON.parse(raw).slice(-max));
-  } catch { return new Set(); }
+  try { const raw = localStorage.getItem(key); if (!raw) return new Set(); return new Set(JSON.parse(raw).slice(-max)); } catch { return new Set(); }
 };
-
 const persistSet = (key, set, max = CONFIG.seen.maxEntries) => {
   try { localStorage.setItem(key, JSON.stringify([...set].slice(-max))); } catch {}
 };
-
-const loadJSON = (key, fallback) => {
-  try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; }
-};
-
-const saveJSON = (key, data) => {
-  try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
-};
+const loadJSON = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) || fallback; } catch { return fallback; } };
+const saveJSON = (key, data) => { try { localStorage.setItem(key, JSON.stringify(data)); } catch {} };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🧠 USER PROFILE STORE v3 — avec intent tracking
+// USER PROFILE STORE
 // ─────────────────────────────────────────────────────────────────────────────
 class UserProfileStore {
-  constructor() {
-    this._data   = this._load();
-    this._intent = loadJSON(CONFIG.profile.intentKey, {});
-    this._timer  = null;
-  }
-
+  constructor() { this._data = this._load(); this._intent = loadJSON(CONFIG.profile.intentKey, {}); this._timer = null; }
   _load() {
     try {
-      const raw  = localStorage.getItem(CONFIG.profile.storageKey);
+      const raw = localStorage.getItem(CONFIG.profile.storageKey);
       if (!raw) return this._defaults();
-      const p    = JSON.parse(raw);
-      const days = (Date.now() - (p.lastVisit || 0)) / 86400000;
+      const p = JSON.parse(raw);
+      const days = (Date.now() - (p.lastVisit||0)) / 86400000;
       if (days > 0.5) {
-        const decay = Math.pow(CONFIG.profile.decayFactor, Math.min(days, 30));
-        for (const k of Object.keys(p.categories || {})) p.categories[k] *= decay;
-        for (const k of Object.keys(p.sources   || {})) p.sources[k]   *= decay;
-        for (const k of Object.keys(p.tags      || {})) p.tags[k]       *= decay;
+        const decay = Math.pow(CONFIG.profile.decayFactor, Math.min(days,30));
+        for (const k of Object.keys(p.categories||{})) p.categories[k] *= decay;
+        for (const k of Object.keys(p.sources||{}))    p.sources[k]   *= decay;
+        for (const k of Object.keys(p.tags||{}))       p.tags[k]      *= decay;
       }
       return { ...this._defaults(), ...p };
     } catch { return this._defaults(); }
   }
-
-  _defaults() {
-    return {
-      categories: {}, sources: {}, tags: {},
-      totalViewed: 0, btpScore: 0,
-      lastVisit: Date.now(), createdAt: Date.now(),
-    };
-  }
-
+  _defaults() { return { categories:{}, sources:{}, tags:{}, totalViewed:0, btpScore:0, lastVisit:Date.now(), createdAt:Date.now() }; }
   _scheduleSave() {
     if (this._timer) clearTimeout(this._timer);
     this._timer = setTimeout(() => {
@@ -248,271 +171,150 @@ class UserProfileStore {
       saveJSON(CONFIG.profile.intentKey, this._intent);
     }, 1500);
   }
-
-  // Signal comportemental : boost ou pénalise immédiatement
   applyBehaviorSignal(item, signalType) {
     if (!item) return;
     const delta = CONFIG.behavior[`${signalType}Boost`] || CONFIG.behavior[`${signalType}Penalty`] || 0;
     if (Math.abs(delta) < 0.01) return;
-
     const src = item.source || 'unknown';
-    this._data.sources[src] = Math.max(-5, (this._data.sources[src] || 0) + delta);
-
+    this._data.sources[src] = Math.max(-5, (this._data.sources[src]||0) + delta);
     const intent = classifyIntent(item);
-    this._intent[intent] = Math.max(-5, (this._intent[intent] || 0) + delta);
-
-    const cats = this._categoriesOf(item);
-    for (const c of cats) {
-      this._data.categories[c] = Math.max(-5, (this._data.categories[c] || 0) + delta * 0.7);
-    }
-
+    this._intent[intent] = Math.max(-5, (this._intent[intent]||0) + delta);
+    for (const c of this._categoriesOf(item)) this._data.categories[c] = Math.max(-5, (this._data.categories[c]||0) + delta*0.7);
     this._scheduleSave();
   }
-
-  recordView(item, watchPct = 0) {
+  recordView(item, watchPct=0) {
     if (!item) return;
-    const boost = 0.1 + watchPct * 0.9;
-    const d = this._data;
-
-    for (const c of this._categoriesOf(item)) d.categories[c] = (d.categories[c] || 0) + boost;
-    const src = item.source || 'unknown';
-    d.sources[src] = (d.sources[src] || 0) + boost;
-    for (const t of this._tagsOf(item)) d.tags[t] = (d.tags[t] || 0) + boost * 0.5;
+    const boost = 0.1 + watchPct*0.9, d = this._data;
+    for (const c of this._categoriesOf(item)) d.categories[c] = (d.categories[c]||0) + boost;
+    d.sources[item.source||'unknown'] = (d.sources[item.source||'unknown']||0) + boost;
+    for (const t of this._tagsOf(item)) d.tags[t] = (d.tags[t]||0) + boost*0.5;
     d.totalViewed++;
-
-    const isBTP  = this._categoriesOf(item).some(c => BTP_CATEGORIES.has(c));
-    d.btpScore   = Math.max(0, Math.min(1, d.btpScore + (isBTP ? boost : -boost * 0.15) * 0.05));
-
+    const isBTP = this._categoriesOf(item).some(c => BTP_CATEGORIES.has(c));
+    d.btpScore = Math.max(0, Math.min(1, d.btpScore + (isBTP ? boost : -boost*0.15)*0.05));
     const intent = classifyIntent(item);
-    this._intent[intent] = (this._intent[intent] || 0) + boost;
-
+    this._intent[intent] = (this._intent[intent]||0) + boost;
     this._scheduleSave();
   }
-
   scoreItem(item) {
     if (!item) return 0;
-    const d = this._data;
-    let score = 0;
-
-    for (const c of this._categoriesOf(item)) score += (d.categories[c] || 0) * 1.5;
-    score += (d.sources[item.source || 'unknown'] || 0) * 0.8;
-    for (const t of this._tagsOf(item)) score += (d.tags[t] || 0) * 0.4;
-
-    // Bonus d'intention
+    const d = this._data; let score = 0;
+    for (const c of this._categoriesOf(item)) score += (d.categories[c]||0)*1.5;
+    score += (d.sources[item.source||'unknown']||0)*0.8;
+    for (const t of this._tagsOf(item)) score += (d.tags[t]||0)*0.4;
     const intent = classifyIntent(item);
-    score += (this._intent[intent] || 0) * 1.2;
-
-    if (d.btpScore > 0.4 && detectBTPLocal(item)) score += CONFIG.profile.boostBTP * 10;
-
+    score += (this._intent[intent]||0)*1.2;
+    if (d.btpScore > 0.4 && detectBTPLocal(item)) score += CONFIG.profile.boostBTP*10;
     return score;
   }
-
-  // Retourne l'intention dominante de l'utilisateur
-  get dominantIntent() {
-    const entries = Object.entries(this._intent);
-    if (!entries.length) return null;
-    return entries.sort((a, b) => b[1] - a[1])[0][0];
-  }
-
+  get dominantIntent() { const e = Object.entries(this._intent); if (!e.length) return null; return e.sort((a,b)=>b[1]-a[1])[0][0]; }
   get isBTPUser()  { return this._data.btpScore > 0.4; }
   get btpScore()   { return this._data.btpScore; }
   get isNewUser()  { return this._data.totalViewed < 5; }
-
-  _categoriesOf(item) {
-    const cats = new Set();
-    if (item.category)  cats.add(item.category.toLowerCase());
-    if (detectBTPLocal(item)) cats.add('btp');
-    return [...cats];
-  }
-  _tagsOf(item) {
-    return [item.title||'',item.description||''].join(' ').toLowerCase()
-      .split(/\W+/).filter(w => w.length > 3).slice(0, 12);
-  }
+  _categoriesOf(item) { const cats=new Set(); if(item.category) cats.add(item.category.toLowerCase()); if(detectBTPLocal(item)) cats.add('btp'); return [...cats]; }
+  _tagsOf(item) { return [item.title||'',item.description||''].join(' ').toLowerCase().split(/\W+/).filter(w=>w.length>3).slice(0,12); }
 }
 
 const BTP_CATEGORIES = new Set(['construction','btp','chantier','engineering','civil','architecture']);
 const userProfile    = new UserProfileStore();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🚦 BEHAVIORAL ENGINE — détecte skip, replay, pause
+// BEHAVIORAL ENGINE
 // ─────────────────────────────────────────────────────────────────────────────
 class BehavioralEngine {
-  constructor() {
-    this._entryTime  = new Map(); // uid → timestamp d'entrée
-    this._callbacks  = [];        // listeners pour live reorder
-  }
-
-  onSignal(cb) { this._callbacks.push(cb); return () => { this._callbacks = this._callbacks.filter(x => x !== cb); }; }
+  constructor() { this._entryTime = new Map(); this._callbacks = []; }
+  onSignal(cb) { this._callbacks.push(cb); return () => { this._callbacks = this._callbacks.filter(x=>x!==cb); }; }
   _emit(signal, item) { for (const cb of this._callbacks) cb(signal, item); }
-
-  enter(uid, item) {
-    this._entryTime.set(uid, { ts: Date.now(), item });
-  }
-
+  enter(uid, item) { this._entryTime.set(uid, { ts:Date.now(), item }); }
   leave(uid) {
     const entry = this._entryTime.get(uid);
     if (!entry) return;
     this._entryTime.delete(uid);
-
-    const elapsed = Date.now() - entry.ts;
-    const { item } = entry;
-
+    const elapsed = Date.now() - entry.ts, { item } = entry;
     if (!item) return;
-
-    if (elapsed < CONFIG.behavior.skipThresholdMs) {
-      // Skip rapide → signal négatif fort
-      userProfile.applyBehaviorSignal(item, 'skip');
-      this._emit('skip', item);
-    } else if (elapsed > 25000) {
-      // Regardé > 25s → signal très positif
-      userProfile.recordView(item, elapsed / 30000);
-      this._emit('longWatch', item);
-    }
+    if (elapsed < CONFIG.behavior.skipThresholdMs) { userProfile.applyBehaviorSignal(item,'skip'); this._emit('skip',item); }
+    else if (elapsed > 25000) { userProfile.recordView(item, elapsed/30000); this._emit('longWatch',item); }
   }
-
-  registerPause(uid, durationMs, item) {
-    if (durationMs > CONFIG.behavior.pauseInterestMs) {
-      userProfile.applyBehaviorSignal(item, 'pause');
-      this._emit('pauseInterest', item);
-    }
-  }
-
-  registerReplay(item) {
-    userProfile.applyBehaviorSignal(item, 'replay');
-    this._emit('replay', item);
-  }
+  registerPause(uid, durationMs, item) { if (durationMs > CONFIG.behavior.pauseInterestMs) { userProfile.applyBehaviorSignal(item,'pause'); this._emit('pauseInterest',item); } }
+  registerReplay(item) { userProfile.applyBehaviorSignal(item,'replay'); this._emit('replay',item); }
 }
-
 const behaviorEngine = new BehavioralEngine();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎯 DIVERSITY GUARD
+// DIVERSITY GUARD
 // ─────────────────────────────────────────────────────────────────────────────
 class DiversityGuard {
-  constructor() {
-    this._recentSources    = [];
-    this._recentCategories = [];
-    this._recentTitles     = [];
-    this._recentIntents    = [];
-  }
-
+  constructor() { this._recentSources=[]; this._recentCategories=[]; this._recentTitles=[]; this._recentIntents=[]; }
   penalty(item) {
     if (!item) return 0;
     let pen = 0;
-    const src = item.source || 'unknown';
-    const srcCount = this._recentSources.slice(-CONFIG.diversity.sourceWindow).filter(s => s === src).length;
-    if (srcCount >= 2) pen += 0.6;
-
-    const cats = this._catsOf(item);
-    for (const c of cats) {
-      if (this._recentCategories.slice(-CONFIG.diversity.categoryWindow).filter(x => x === c).length >= 2)
-        pen += 0.4;
+    const src = item.source||'unknown';
+    if (this._recentSources.slice(-CONFIG.diversity.sourceWindow).filter(s=>s===src).length >= 2) pen += 0.6;
+    for (const c of this._catsOf(item)) {
+      if (this._recentCategories.slice(-CONFIG.diversity.categoryWindow).filter(x=>x===c).length >= 2) pen += 0.4;
     }
-
-    // Pénalise aussi la répétition d'intention
     const intent = classifyIntent(item);
-    const intentCount = this._recentIntents.slice(-4).filter(i => i === intent).length;
-    if (intentCount >= 3) pen += 0.3;
-
-    const titleTokens = this._tokenize(item.title || '');
+    if (this._recentIntents.slice(-4).filter(i=>i===intent).length >= 3) pen += 0.3;
+    const titleTokens = this._tokenize(item.title||'');
     for (const prev of this._recentTitles.slice(-3)) {
-      if (this._jaccard(titleTokens, prev) > CONFIG.diversity.simThreshold)
-        pen += CONFIG.diversity.simPenalty;
+      if (this._jaccard(titleTokens,prev) > CONFIG.diversity.simThreshold) pen += CONFIG.diversity.simPenalty;
     }
-
     return Math.min(1, pen);
   }
-
   register(item) {
     if (!item) return;
-    const src = item.source || 'unknown';
+    const src = item.source||'unknown';
     this._recentSources.push(src);
-    if (this._recentSources.length > CONFIG.diversity.sourceWindow + 2) this._recentSources.shift();
-
-    for (const c of this._catsOf(item)) {
-      this._recentCategories.push(c);
-      if (this._recentCategories.length > CONFIG.diversity.categoryWindow + 2) this._recentCategories.shift();
-    }
-
-    const tokens = this._tokenize(item.title || '');
-    if (tokens.size > 0) {
-      this._recentTitles.push(tokens);
-      if (this._recentTitles.length > 5) this._recentTitles.shift();
-    }
-
+    if (this._recentSources.length > CONFIG.diversity.sourceWindow+2) this._recentSources.shift();
+    for (const c of this._catsOf(item)) { this._recentCategories.push(c); if (this._recentCategories.length > CONFIG.diversity.categoryWindow+2) this._recentCategories.shift(); }
+    const tokens = this._tokenize(item.title||'');
+    if (tokens.size > 0) { this._recentTitles.push(tokens); if (this._recentTitles.length > 5) this._recentTitles.shift(); }
     const intent = classifyIntent(item);
     this._recentIntents.push(intent);
     if (this._recentIntents.length > 6) this._recentIntents.shift();
   }
-
-  reset() {
-    this._recentSources    = [];
-    this._recentCategories = [];
-    this._recentTitles     = [];
-    this._recentIntents    = [];
-  }
-
-  _catsOf(item) {
-    const cats = new Set();
-    if (item.category) cats.add(item.category.toLowerCase());
-    if (detectBTPLocal(item)) cats.add('btp');
-    return [...cats];
-  }
-  _tokenize(text) { return new Set(text.toLowerCase().split(/\W+/).filter(w => w.length > 3)); }
-  _jaccard(a, b) {
-    if (!a.size || !b.size) return 0;
-    let i = 0; for (const x of a) if (b.has(x)) i++;
-    return i / (a.size + b.size - i);
-  }
+  reset() { this._recentSources=[]; this._recentCategories=[]; this._recentTitles=[]; this._recentIntents=[]; }
+  _catsOf(item) { const cats=new Set(); if(item.category) cats.add(item.category.toLowerCase()); if(detectBTPLocal(item)) cats.add('btp'); return [...cats]; }
+  _tokenize(text) { return new Set(text.toLowerCase().split(/\W+/).filter(w=>w.length>3)); }
+  _jaccard(a,b) { if(!a.size||!b.size) return 0; let i=0; for (const x of a) if(b.has(x)) i++; return i/(a.size+b.size-i); }
 }
-
 const diversityGuard = new DiversityGuard();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🎲 INTELLIGENT REORDER v12 — avec jitter + signaux comportementaux live
+// INTELLIGENT REORDER
 // ─────────────────────────────────────────────────────────────────────────────
-const intelligentReorder = (items, { jitter = 0.3, forColdStart = false } = {}) => {
+const intelligentReorder = (items, { jitter=0.3, forColdStart=false }={}) => {
   if (items.length <= 1) return items;
-
-  // Cold start : forcer la variété sur les premiers items
   if (forColdStart && items.length >= CONFIG.coldStartVariety) {
-    const btpItem      = items.find(i => detectBTPLocal(i));
-    const viralItem    = items.find(i => (i.likes || 0) > 500 || (i.views || 0) > 20000);
-    const recentItem   = items.find(i => i.publishedAt && (Date.now() - new Date(i.publishedAt).getTime()) < 48 * 3600000);
-    const anchors      = [...new Set([btpItem, viralItem, recentItem].filter(Boolean))];
-    const rest         = items.filter(i => !anchors.includes(i));
-    const anchorSlots  = [0, 1, 3]; // positions forcées
-    const ordered      = [...items];
-    anchors.forEach((a, idx) => {
-      const slot = anchorSlots[idx];
-      if (slot !== undefined && slot < ordered.length) {
-        const current = ordered[slot];
-        ordered[slot] = a;
-        const swapIdx = ordered.indexOf(a, slot + 1);
-        if (swapIdx >= 0) ordered[swapIdx] = current;
+    const btpItem    = items.find(i=>detectBTPLocal(i));
+    const viralItem  = items.find(i=>(i.likes||0)>500||(i.views||0)>20000);
+    const recentItem = items.find(i=>i.publishedAt&&(Date.now()-new Date(i.publishedAt).getTime())<48*3600000);
+    const anchors    = [...new Set([btpItem,viralItem,recentItem].filter(Boolean))];
+    const ordered    = [...items];
+    anchors.forEach((a,idx) => {
+      const slot = [0,1,3][idx];
+      if (slot!==undefined && slot<ordered.length) {
+        const current=ordered[slot]; ordered[slot]=a;
+        const swapIdx=ordered.indexOf(a,slot+1);
+        if (swapIdx>=0) ordered[swapIdx]=current;
       }
     });
     return ordered;
   }
-
   const scored = items.map(item => {
     const profileScore = userProfile.scoreItem(item);
-    const viralScore   = Math.log1p((item.likes || 0) + (item.views || 0) * 0.01) * 0.5;
-    const freshScore   = item.publishedAt
-      ? Math.max(0, 1 - (Date.now() - new Date(item.publishedAt).getTime()) / (7 * 86400000))
-      : 0;
-    const jitterVal    = (Math.random() - 0.5) * jitter;
-    return { item, raw: profileScore * 2 + viralScore + freshScore + jitterVal };
+    const viralScore   = Math.log1p((item.likes||0)+(item.views||0)*0.01)*0.5;
+    const freshScore   = item.publishedAt ? Math.max(0,1-(Date.now()-new Date(item.publishedAt).getTime())/(7*86400000)) : 0;
+    const jitterVal    = (Math.random()-0.5)*jitter;
+    return { item, raw: profileScore*2+viralScore+freshScore+jitterVal };
   });
-
-  const result = [], remaining = [...scored];
+  const result=[],remaining=[...scored];
   while (remaining.length > 0) {
-    let bestScore = -Infinity, bestIdx = 0;
-    for (let i = 0; i < remaining.length; i++) {
-      const score = remaining[i].raw * (1 - diversityGuard.penalty(remaining[i].item));
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    let bestScore=-Infinity, bestIdx=0;
+    for (let i=0;i<remaining.length;i++) {
+      const score=remaining[i].raw*(1-diversityGuard.penalty(remaining[i].item));
+      if (score>bestScore) { bestScore=score; bestIdx=i; }
     }
-    const chosen = remaining.splice(bestIdx, 1)[0];
+    const chosen=remaining.splice(bestIdx,1)[0];
     diversityGuard.register(chosen.item);
     result.push(chosen.item);
   }
@@ -520,193 +322,157 @@ const intelligentReorder = (items, { jitter = 0.3, forColdStart = false } = {}) 
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🔌 FILTRE DE JOUABILITÉ
+// FILTRES
 // ─────────────────────────────────────────────────────────────────────────────
-// R2_PUBLIC_URL : on accepte n'importe quel sous-domaine r2.dev / pub-*.r2.dev / domaine custom
-const R2_HOSTS     = ['r2.dev', 'pub-'];  // préfixes Cloudflare R2
-const VALID_HOSTS  = ['cdn.pixabay.com/video','player.pixabay.com','vimeocdn.com','player.vimeo.com','youtube.com/embed'];
-const PLAYABLE_EXT = /\.(mp4|webm|mov)(\?|$)/i;
-const BLOCKED_URL  = ['youtu.be','dailymotion.','pexels.com'];
+const R2_HOSTS    = ['r2.dev','pub-'];
+const VALID_HOSTS = ['cdn.pixabay.com/video','player.pixabay.com','vimeocdn.com','player.vimeo.com','youtube.com/embed'];
+const PLAYABLE_EXT= /\.(mp4|webm|mov)(\?|$)/i;
+const BLOCKED_URL = ['youtu.be','dailymotion.','pexels.com'];
 
 const isPlayableCandidate = (item) => {
   if (!item) return false;
-  if (item.source === 'pexels') return false;
+  if (item.source==='pexels') return false;
   if (item.isEmbed && item.embedUrl) {
-    const embed = item.embedUrl.toLowerCase();
-    return embed.includes('youtube.com/embed') || embed.includes('player.vimeo.com');
+    const embed=item.embedUrl.toLowerCase();
+    return embed.includes('youtube.com/embed')||embed.includes('player.vimeo.com');
   }
-  const url = item.videoUrl || item.url || '';
+  const url=item.videoUrl||item.url||'';
   if (!url) return false;
   if (url.includes('.m3u8')) return false;
-  if (BLOCKED_URL.some(p => url.includes(p))) return false;
+  if (BLOCKED_URL.some(p=>url.includes(p))) return false;
   if (url.includes('pexels.com')) return false;
-  if (url.includes('vimeo.com') && !url.includes('vimeocdn.com') && !url.includes('player.vimeo.com')) return false;
-  // ✅ R2 (Cloudflare) — accepté
-  if (R2_HOSTS.some(h => url.includes(h))) return true;
-  if (VALID_HOSTS.some(h => url.includes(h))) return true;
+  if (url.includes('vimeo.com')&&!url.includes('vimeocdn.com')&&!url.includes('player.vimeo.com')) return false;
+  if (R2_HOSTS.some(h=>url.includes(h))) return true;
+  if (VALID_HOSTS.some(h=>url.includes(h))) return true;
   if (PLAYABLE_EXT.test(url)) return true;
-  if (item.source === 'pixabay' && item.externalId) return true;
+  if (item.source==='pixabay'&&item.externalId) return true;
   return false;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
 const BTP_KW = ['chantier','construction','btp','béton','beton','ciment','grue','pelleteuse','pont','route','hydraulique','terrassement','civil engineering','concrete','scaffolding','formwork','rebar'];
 const detectBTPLocal = (item) => {
   if (!item) return false;
-  const text = [item.title||'',item.description||'',item.channelName||'',item.category||''].join(' ').toLowerCase();
-  return BTP_KW.some(kw => text.includes(kw));
+  const text=[item.title||'',item.description||'',item.channelName||'',item.category||''].join(' ').toLowerCase();
+  return BTP_KW.some(kw=>text.includes(kw));
 };
 
-const extractYoutubeIds = (items, fromIndex, count = 4) => {
-  const ids = [];
-  for (let i = fromIndex; i < items.length && ids.length < count; i++) {
-    const item = items[i];
+const extractYoutubeIds = (items, fromIndex, count=4) => {
+  const ids=[];
+  for (let i=fromIndex; i<items.length && ids.length<count; i++) {
+    const item=items[i];
     if (!item?.data?.isEmbed) continue;
-    const embedUrl = item.data.embedUrl || item.data.videoUrl || '';
-    const match    = embedUrl.match(/youtube\.com\/embed\/([^?&/]+)/);
+    const embedUrl=item.data.embedUrl||item.data.videoUrl||'';
+    const match=embedUrl.match(/youtube\.com\/embed\/([^?&/]+)/);
     if (match?.[1]) ids.push(match[1]);
   }
   return ids;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🚀 PRELOAD v3 — réseau adaptatif + priorité dynamique
+// PRELOAD
 // ─────────────────────────────────────────────────────────────────────────────
-const _preloadedUrls  = new Set();
-const _preloadAborts  = new Map();
-const _preloadQueue   = [];
-let   _preloadRunning = 0;
-const _preloadMax     = 2;
+const _preloadedUrls=new Set(), _preloadAborts=new Map(), _preloadQueue=[];
+let _preloadRunning=0;
+const _preloadMax=2;
 
 const _drainPreloadQueue = () => {
   if (!networkMgr.canPreload) return;
-  while (_preloadRunning < _preloadMax && _preloadQueue.length > 0) {
-    const { url, ctrl, bytes } = _preloadQueue.shift();
+  while (_preloadRunning<_preloadMax && _preloadQueue.length>0) {
+    const {url,ctrl,bytes}=_preloadQueue.shift();
     if (_preloadedUrls.has(url)) continue;
-    _preloadedUrls.add(url);
-    _preloadAborts.set(url, ctrl);
-    _preloadRunning++;
-    fetch(url, {
-      method: 'GET',
-      headers: bytes > 0 ? { Range: `bytes=0-${bytes - 1}` } : {},
-      cache:   'force-cache',
-      signal:  ctrl.signal,
-    }).catch(() => {}).finally(() => {
-      _preloadRunning--;
-      _preloadAborts.delete(url);
-      _drainPreloadQueue();
-    });
+    _preloadedUrls.add(url); _preloadAborts.set(url,ctrl); _preloadRunning++;
+    fetch(url,{ method:'GET', headers:bytes>0?{Range:`bytes=0-${bytes-1}`}:{}, cache:'force-cache', signal:ctrl.signal })
+      .catch(()=>{}).finally(()=>{ _preloadRunning--; _preloadAborts.delete(url); _drainPreloadQueue(); });
   }
 };
 
 const injectPreload = (item) => {
-  if (!item?.data || !networkMgr.canPreload) return;
+  if (!item?.data||!networkMgr.canPreload) return;
   if (item.data.isEmbed) return;
-  const url   = item.data.videoUrl || item.data.url || '';
-  const bytes = networkMgr.preloadBytes;
-  if (!url || _preloadedUrls.has(url) || url.includes('.m3u8')) return;
-  const ctrl = new AbortController();
-  const enqueue = () => { _preloadQueue.push({ url, ctrl, bytes }); _drainPreloadQueue(); };
-  if ('requestIdleCallback' in window) requestIdleCallback(enqueue, { timeout: 1500 });
-  else setTimeout(enqueue, 200);
+  const url=item.data.videoUrl||item.data.url||'', bytes=networkMgr.preloadBytes;
+  if (!url||_preloadedUrls.has(url)||url.includes('.m3u8')) return;
+  const ctrl=new AbortController();
+  const enqueue=()=>{ _preloadQueue.push({url,ctrl,bytes}); _drainPreloadQueue(); };
+  if ('requestIdleCallback' in window) requestIdleCallback(enqueue,{timeout:1500});
+  else setTimeout(enqueue,200);
 };
 
 const cancelPreloadsAfter = (keepCount) => {
-  if (_preloadQueue.length > keepCount) {
-    const cancelled = _preloadQueue.splice(keepCount);
-    for (const { ctrl } of cancelled) { try { ctrl.abort(); } catch {} }
+  if (_preloadQueue.length>keepCount) {
+    const cancelled=_preloadQueue.splice(keepCount);
+    for (const {ctrl} of cancelled) { try { ctrl.abort(); } catch {} }
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PROBES — R2 (Cloudflare) seulement, pas de HEAD Cloudinary
-// Les fichiers R2 publics n'ont pas besoin d'être probés : ils sont servis
-// par Cloudflare CDN avec une URL publique stable. On ne fait HEAD que sur
-// des URLs connues-valides (pixabay CDN) pour détecter les 404/410.
-// ─────────────────────────────────────────────────────────────────────────────
-const isR2Url = (url) => R2_HOSTS.some(h => url.includes(h));
-
+const isR2Url = (url) => R2_HOSTS.some(h=>url.includes(h));
 const probeItemBackground = (item, onInvalid) => {
-  if (!item || item._isAggregated || item.isEmbed) return;
-  const url = item.videoUrl || item.url || '';
+  if (!item||item._isAggregated||item.isEmbed) return;
+  const url=item.videoUrl||item.url||'';
   if (!url) { onInvalid(); return; }
-  // R2 : URL publique → pas de probe (CORS bloque les HEAD depuis le browser de toute façon)
   if (isR2Url(url)) return;
-  // Cloudinary legacy → invalider directement sans probe (401 = token expiré = inutilisable)
   if (url.includes('res.cloudinary.com')) { onInvalid(); return; }
-  // Autres CDN (pixabay) → probe léger
-  const ctrl  = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 4000);
-  fetch(url, { method:'HEAD', cache:'no-store', signal:ctrl.signal })
-    .then(r => { clearTimeout(timer); if ([401, 403, 404, 410].includes(r.status)) onInvalid(); })
-    .catch(() => clearTimeout(timer));
+  const ctrl=new AbortController(), timer=setTimeout(()=>ctrl.abort(),4000);
+  fetch(url,{method:'HEAD',cache:'no-store',signal:ctrl.signal})
+    .then(r=>{clearTimeout(timer); if([401,403,404,410].includes(r.status)) onInvalid();})
+    .catch(()=>clearTimeout(timer));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WATCH SCORE + ADAPTIVE BUFFER
 // ─────────────────────────────────────────────────────────────────────────────
 class WatchScoreTracker {
-  constructor() { this._map = new Map(); this._active = null; }
+  constructor() { this._map=new Map(); this._active=null; }
   enter(uid) {
-    if (this._active && this._active !== uid) this._leave(this._active);
-    this._active = uid;
-    if (!this._map.has(uid)) this._map.set(uid, { start: Date.now(), total: 0, score: 0 });
-    else this._map.get(uid).start = Date.now();
+    if (this._active&&this._active!==uid) this._leave(this._active);
+    this._active=uid;
+    if (!this._map.has(uid)) this._map.set(uid,{start:Date.now(),total:0,score:0});
+    else this._map.get(uid).start=Date.now();
   }
-  _leave(uid) {
-    const r = this._map.get(uid); if (!r?.start) return;
-    r.total += Date.now() - r.start; r.start = null;
-    r.score = Math.min(1, r.total / 30000);
-  }
-  leave(uid)    { if (this._active === uid) this._active = null; this._leave(uid); }
-  getScore(uid) { return this._map.get(uid)?.score ?? 0; }
-  clear()       { this._map.clear(); this._active = null; }
+  _leave(uid) { const r=this._map.get(uid); if(!r?.start) return; r.total+=Date.now()-r.start; r.start=null; r.score=Math.min(1,r.total/30000); }
+  leave(uid) { if(this._active===uid) this._active=null; this._leave(uid); }
+  getScore(uid) { return this._map.get(uid)?.score??0; }
+  clear() { this._map.clear(); this._active=null; }
 }
 const watchScore = new WatchScoreTracker();
 
 class AdaptiveBuffer {
-  constructor() { this._times = []; this._value = CONFIG.bufferAhead; }
-  record(now = Date.now()) {
+  constructor() { this._times=[]; this._value=CONFIG.bufferAhead; }
+  record(now=Date.now()) {
     this._times.push(now);
-    if (this._times.length > 6) this._times.shift();
-    if (this._times.length >= 2) {
-      const intervals = [];
-      for (let i = 1; i < this._times.length; i++) intervals.push(this._times[i] - this._times[i-1]);
-      const avg = intervals.reduce((a,b) => a+b,0) / intervals.length;
-      this._value = avg < 600 ? Math.min(CONFIG.bufferAhead + 6, 20) : CONFIG.bufferAhead;
+    if (this._times.length>6) this._times.shift();
+    if (this._times.length>=2) {
+      const intervals=[];
+      for (let i=1;i<this._times.length;i++) intervals.push(this._times[i]-this._times[i-1]);
+      const avg=intervals.reduce((a,b)=>a+b,0)/intervals.length;
+      this._value=avg<600?Math.min(CONFIG.bufferAhead+6,20):CONFIG.bufferAhead;
     }
     return this._value;
   }
   get value() { return this._value; }
-  reset()     { this._times = []; this._value = CONFIG.bufferAhead; }
+  reset() { this._times=[]; this._value=CONFIG.bufferAhead; }
 }
 const adaptiveBuf = new AdaptiveBuffer();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VIRAL BOOST + SMART RECYCLE
 // ─────────────────────────────────────────────────────────────────────────────
-let _adCounter = 0;
+let _adCounter=0;
 const applyViralBoost = (items) => {
-  const viral  = items.filter(i => detectBTPLocal(i) ? (i.likes||0)>500 || (i.views||0)>25000 : (i.likes||0)>1000 || (i.views||0)>50000);
-  const normal = items.filter(i => !viral.includes(i));
-  const result = []; let vi = 0;
-  for (let i = 0; i < normal.length; i++) {
-    result.push(normal[i]);
-    if ((i + 1) % 4 === 0 && vi < viral.length) result.push(viral[vi++]);
-  }
-  while (vi < viral.length) result.push(viral[vi++]);
+  const viral  = items.filter(i=>detectBTPLocal(i)?(i.likes||0)>500||(i.views||0)>25000:(i.likes||0)>1000||(i.views||0)>50000);
+  const normal = items.filter(i=>!viral.includes(i));
+  const result=[]; let vi=0;
+  for (let i=0;i<normal.length;i++) { result.push(normal[i]); if((i+1)%4===0&&vi<viral.length) result.push(viral[vi++]); }
+  while (vi<viral.length) result.push(viral[vi++]);
   return result;
 };
 
-let _recycleRound = 0;
+let _recycleRound=0;
 const smartRecycle = (pool) => {
   _recycleRound++;
   diversityGuard.reset();
-  return intelligentReorder([...pool]).map(item => ({
+  return intelligentReorder([...pool]).map(item=>({
     ...item,
-    _uid: `rec-${_recycleRound}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+    _uid:`rec-${_recycleRound}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
   }));
 };
 
@@ -737,20 +503,19 @@ const VP_CSS = `
   .vp-progress-ring circle { transition:stroke-dashoffset 0.18s linear;stroke-linecap:round; }
   .vp-streak-badge { animation:vp-streak 0.32s cubic-bezier(0.34,1.56,0.64,1) both; }
   .vp-swipe-arrow  { animation:vp-bounce 1.8s ease-in-out infinite; }
-  .vp-tab-dot { width:5px;height:5px;border-radius:50%;background:#ff4d4d;flex-shrink:0;animation:vp-glow 2s ease-in-out infinite; }
   .vp-ptr-spinner { width:26px;height:26px;border-radius:50%;border:2.5px solid rgba(255,255,255,0.15);border-top-color:rgba(255,255,255,0.65);animation:vp-spin 0.7s linear infinite; }
   .vp-intent-toast { animation:vp-intent 3.2s ease-in-out forwards; }
   .vp-net-badge { position:absolute;top:6px;right:6px;font-size:9px;font-weight:700;padding:2px 6px;border-radius:9999px;pointer-events:none;z-index:60; }
 `;
 
-let _cssInjected = false;
+let _cssInjected=false;
 const ensureCSS = () => {
-  if (_cssInjected || typeof document === 'undefined') return;
-  _cssInjected = true;
+  if (_cssInjected||typeof document==='undefined') return;
+  _cssInjected=true;
   if (document.getElementById('vp-styles')) return;
-  const s = document.createElement('style');
-  s.id = 'vp-styles'; s.textContent = VP_CSS;
-  document.head.insertBefore(s, document.head.firstChild);
+  const s=document.createElement('style');
+  s.id='vp-styles'; s.textContent=VP_CSS;
+  document.head.insertBefore(s,document.head.firstChild);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -758,18 +523,18 @@ const ensureCSS = () => {
 // ─────────────────────────────────────────────────────────────────────────────
 const useVhFix = () => {
   useEffect(() => {
-    const set = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
+    const set=()=>document.documentElement.style.setProperty('--vh',`${window.innerHeight*0.01}px`);
     set();
-    window.addEventListener('resize', set, { passive: true });
-    return () => window.removeEventListener('resize', set);
+    window.addEventListener('resize',set,{passive:true});
+    return ()=>window.removeEventListener('resize',set);
   }, []);
 };
 
 const SLIDE_STYLE = {
-  height:    'calc(var(--vh,1vh)*100)',
-  minHeight: 'calc(var(--vh,1vh)*100)',
-  maxHeight: 'calc(var(--vh,1vh)*100)',
-  flexShrink: 0,
+  height:'calc(var(--vh,1vh)*100)',
+  minHeight:'calc(var(--vh,1vh)*100)',
+  maxHeight:'calc(var(--vh,1vh)*100)',
+  flexShrink:0,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -779,290 +544,269 @@ const ActiveIndexContext = createContext(null);
 const ModalOpenContext   = createContext(false);
 
 const useOnline = () => {
-  const [online, setOnline] = useState(navigator.onLine);
-  useEffect(() => {
-    const on = () => setOnline(true), off = () => setOnline(false);
-    window.addEventListener('online', on); window.addEventListener('offline', off);
-    return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
-  }, []);
+  const [online,setOnline]=useState(navigator.onLine);
+  useEffect(()=>{
+    const on=()=>setOnline(true), off=()=>setOnline(false);
+    window.addEventListener('online',on); window.addEventListener('offline',off);
+    return ()=>{ window.removeEventListener('online',on); window.removeEventListener('offline',off); };
+  },[]);
   return online;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UI COMPONENTS
 // ─────────────────────────────────────────────────────────────────────────────
-const ProgressRing = memo(({ progress = 0, size = 36, stroke = 2.5 }) => {
-  const r = (size - stroke * 2) / 2, circ = 2 * Math.PI * r;
+const ProgressRing = memo(({ progress=0, size=36, stroke=2.5 }) => {
+  const r=(size-stroke*2)/2, circ=2*Math.PI*r;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink: 0 }}>
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{flexShrink:0}}>
       <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth={stroke} />
       <circle className="vp-progress-ring" cx={size/2} cy={size/2} r={r} fill="none"
         stroke="url(#vpGrad)" strokeWidth={stroke} strokeDasharray={circ}
-        strokeDashoffset={circ * (1 - Math.max(0, Math.min(1, progress)))}
-        style={{ transform:'rotate(-90deg)', transformOrigin:'50% 50%' }} />
+        strokeDashoffset={circ*(1-Math.max(0,Math.min(1,progress)))}
+        style={{transform:'rotate(-90deg)',transformOrigin:'50% 50%'}} />
       <defs><linearGradient id="vpGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-        <stop offset="0%" stopColor="#ff6b35" /><stop offset="100%" stopColor="#e91e8c" />
+        <stop offset="0%" stopColor="#ff6b35"/><stop offset="100%" stopColor="#e91e8c"/>
       </linearGradient></defs>
     </svg>
   );
 });
-ProgressRing.displayName = 'ProgressRing';
+ProgressRing.displayName='ProgressRing';
 
 const WatchStreakBadge = memo(({ count }) => {
-  if (count < 3) return null;
+  if (count<3) return null;
   return (
     <div className="vp-streak-badge absolute top-16 left-1/2 -translate-x-1/2 z-40 pointer-events-none"
-      style={{ background:'rgba(0,0,0,0.55)', backdropFilter:'blur(12px)', border:'1px solid rgba(255,255,255,0.1)', borderRadius:9999, padding:'4px 12px', display:'flex', alignItems:'center', gap:6 }}>
-      <span style={{ fontSize:13 }}>{count >= 20 ? '🔥🔥' : count >= 10 ? '🔥' : '✨'}</span>
-      <span style={{ color:'rgba(255,255,255,0.75)', fontSize:11, fontWeight:700 }}>{count} vues</span>
+      style={{background:'rgba(0,0,0,0.55)',backdropFilter:'blur(12px)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:9999,padding:'4px 12px',display:'flex',alignItems:'center',gap:6}}>
+      <span style={{fontSize:13}}>{count>=20?'🔥🔥':count>=10?'🔥':'✨'}</span>
+      <span style={{color:'rgba(255,255,255,0.75)',fontSize:11,fontWeight:700}}>{count} vues</span>
     </div>
   );
 });
-WatchStreakBadge.displayName = 'WatchStreakBadge';
+WatchStreakBadge.displayName='WatchStreakBadge';
 
-// Toast d'adaptation de l'intention (affiché quand l'algo change de cap)
 const IntentToast = memo(({ intent }) => {
-  const labels = {
-    btp_pro:       '🏗️ Contenu pro BTP détecté',
-    learning:      '📚 Mode apprentissage',
-    entertainment: '🎬 Mode divertissement',
-    news:          '📰 Actualités du secteur',
-    ambient:       '🎥 Vidéos immersives',
-  };
-  if (!intent || !labels[intent]) return null;
+  const labels = { btp_pro:'🏗️ Contenu pro BTP détecté', learning:'📚 Mode apprentissage', entertainment:'🎬 Mode divertissement', news:'📰 Actualités du secteur', ambient:'🎥 Vidéos immersives' };
+  if (!intent||!labels[intent]) return null;
   return (
     <div className="vp-intent-toast absolute top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none whitespace-nowrap"
-      style={{ background:'rgba(0,0,0,0.65)', backdropFilter:'blur(14px)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:9999, padding:'5px 14px', fontSize:11, fontWeight:600, color:'rgba(255,255,255,0.8)' }}>
+      style={{background:'rgba(0,0,0,0.65)',backdropFilter:'blur(14px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:9999,padding:'5px 14px',fontSize:11,fontWeight:600,color:'rgba(255,255,255,0.8)'}}>
       {labels[intent]}
     </div>
   );
 });
-IntentToast.displayName = 'IntentToast';
+IntentToast.displayName='IntentToast';
 
 const NetworkBadge = memo(({ type }) => {
-  if (type === 'default' || type === '4g') return null;
-  const colors = { '3g':'#f59e0b', '2g':'#ef4444', 'slow-2g':'#ef4444' };
-  const labels = { '3g':'3G', '2g':'2G ⚠️', 'slow-2g':'Lent ⚠️' };
+  if (type==='default'||type==='4g') return null;
+  const colors={'3g':'#f59e0b','2g':'#ef4444','slow-2g':'#ef4444'};
+  const labels={'3g':'3G','2g':'2G ⚠️','slow-2g':'Lent ⚠️'};
   return (
-    <div className="vp-net-badge" style={{ background:'rgba(0,0,0,0.6)', color: colors[type] || '#fff' }}>
-      {labels[type] || type}
+    <div className="vp-net-badge" style={{background:'rgba(0,0,0,0.6)',color:colors[type]||'#fff'}}>
+      {labels[type]||type}
     </div>
   );
 });
-NetworkBadge.displayName = 'NetworkBadge';
+NetworkBadge.displayName='NetworkBadge';
 
 const OfflineBanner = memo(({ show }) => (
-  <AnimatePresence>{show && (
-    <motion.div initial={{ y:-40, opacity:0 }} animate={{ y:0, opacity:1 }} exit={{ y:-40, opacity:0 }}
+  <AnimatePresence>{show&&(
+    <motion.div initial={{y:-40,opacity:0}} animate={{y:0,opacity:1}} exit={{y:-40,opacity:0}}
       className="absolute top-0 left-0 right-0 z-[60] pointer-events-none flex justify-center"
-      style={{ paddingTop:'max(52px, calc(env(safe-area-inset-top) + 52px))' }}>
-      <div style={{ background:'rgba(20,20,20,0.92)', backdropFilter:'blur(16px)', border:'1px solid rgba(255,80,80,0.3)', borderRadius:9999, padding:'6px 16px', display:'flex', alignItems:'center', gap:8 }}>
-        <div style={{ width:7, height:7, borderRadius:'50%', background:'#ff4d4d' }} />
-        <span style={{ color:'rgba(255,255,255,0.7)', fontSize:11, fontWeight:600 }}>Hors ligne — les vidéos en cache sont disponibles</span>
+      style={{paddingTop:'max(52px, calc(env(safe-area-inset-top) + 52px))'}}>
+      <div style={{background:'rgba(20,20,20,0.92)',backdropFilter:'blur(16px)',border:'1px solid rgba(255,80,80,0.3)',borderRadius:9999,padding:'6px 16px',display:'flex',alignItems:'center',gap:8}}>
+        <div style={{width:7,height:7,borderRadius:'50%',background:'#ff4d4d'}}/>
+        <span style={{color:'rgba(255,255,255,0.7)',fontSize:11,fontWeight:600}}>Hors ligne — les vidéos en cache sont disponibles</span>
       </div>
     </motion.div>
   )}</AnimatePresence>
 ));
-OfflineBanner.displayName = 'OfflineBanner';
+OfflineBanner.displayName='OfflineBanner';
 
 const PullToRefresh = memo(({ progress, refreshing }) => {
-  if (progress < 0.05 && !refreshing) return null;
+  if (progress<0.05&&!refreshing) return null;
   return (
-    <div style={{ position:'absolute', top:0, left:0, right:0, zIndex:55, display:'flex', justifyContent:'center', alignItems:'center', height:`${Math.min(72, progress * 72)}px`, pointerEvents:'none', overflow:'hidden' }}>
-      <div style={{ background:'rgba(0,0,0,0.6)', backdropFilter:'blur(14px)', borderRadius:9999, padding:'8px 16px', display:'flex', alignItems:'center', gap:8, opacity:Math.min(1, progress * 2), transform:`scale(${0.8 + Math.min(0.2, progress * 0.2)})`, transition:'opacity 0.1s, transform 0.1s' }}>
-        {refreshing ? <div className="vp-ptr-spinner" /> :
+    <div style={{position:'absolute',top:0,left:0,right:0,zIndex:55,display:'flex',justifyContent:'center',alignItems:'center',height:`${Math.min(72,progress*72)}px`,pointerEvents:'none',overflow:'hidden'}}>
+      <div style={{background:'rgba(0,0,0,0.6)',backdropFilter:'blur(14px)',borderRadius:9999,padding:'8px 16px',display:'flex',alignItems:'center',gap:8,opacity:Math.min(1,progress*2),transform:`scale(${0.8+Math.min(0.2,progress*0.2)})`,transition:'opacity 0.1s, transform 0.1s'}}>
+        {refreshing?<div className="vp-ptr-spinner"/>:
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M9 3v3M9 3L7 5M9 3l2 2" stroke="rgba(255,255,255,0.6)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform:`rotate(${progress * 180}deg)`, transformOrigin:'50% 50%', transition:'transform 0.1s' }} />
-            <path d="M3 9a6 6 0 1 0 12 0 6 6 0 0 0-12 0" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" />
+            <path d="M9 3v3M9 3L7 5M9 3l2 2" stroke="rgba(255,255,255,0.6)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{transform:`rotate(${progress*180}deg)`,transformOrigin:'50% 50%',transition:'transform 0.1s'}}/>
+            <path d="M3 9a6 6 0 1 0 12 0 6 6 0 0 0-12 0" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5"/>
           </svg>}
-        <span style={{ color:'rgba(255,255,255,0.55)', fontSize:11, fontWeight:600 }}>
-          {refreshing ? 'Actualisation…' : progress > 0.8 ? 'Relâcher pour rafraîchir' : 'Tirer pour rafraîchir'}
+        <span style={{color:'rgba(255,255,255,0.55)',fontSize:11,fontWeight:600}}>
+          {refreshing?'Actualisation…':progress>0.8?'Relâcher pour rafraîchir':'Tirer pour rafraîchir'}
         </span>
       </div>
     </div>
   );
 });
-PullToRefresh.displayName = 'PullToRefresh';
+PullToRefresh.displayName='PullToRefresh';
 
 const SlideFlash = memo(({ trigger }) => {
-  const [key, setKey] = useState(0);
-  useEffect(() => { if (trigger) setKey(k => k + 1); }, [trigger]);
-  return <div key={key} className="vp-slide-flash" aria-hidden="true" />;
+  const [key,setKey]=useState(0);
+  useEffect(()=>{ if(trigger) setKey(k=>k+1); },[trigger]);
+  return <div key={key} className="vp-slide-flash" aria-hidden="true"/>;
 });
-SlideFlash.displayName = 'SlideFlash';
+SlideFlash.displayName='SlideFlash';
 
 const SK_BG = [
   'linear-gradient(135deg,#08081a,#18104a,#08081a)','linear-gradient(135deg,#08100a,#0a2818,#08100a)',
   'linear-gradient(135deg,#180808,#2a0818,#180808)','linear-gradient(135deg,#081018,#0a2035,#081018)',
   'linear-gradient(135deg,#181008,#2c1808,#181008)',
 ];
-const SkeletonLayer = memo(() => (
+const SkeletonLayer = memo(()=>(
   <div className="vp-sk-layer" aria-hidden="true">
-    {SK_BG.map((bg, i) => (
-      <div key={i} className="vp-sk-slide" style={{ background: bg }}>
-        <div style={{ position:'absolute', inset:0, background:'linear-gradient(180deg,transparent 42%,rgba(0,0,0,0.9) 100%)' }} />
-        <div style={{ position:'absolute', bottom:80, left:16, right:72 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-            <div className="vp-sk-dot" style={{ width:40, height:40, animationDelay:`${i*0.13}s` }} />
+    {SK_BG.map((bg,i)=>(
+      <div key={i} className="vp-sk-slide" style={{background:bg}}>
+        <div style={{position:'absolute',inset:0,background:'linear-gradient(180deg,transparent 42%,rgba(0,0,0,0.9) 100%)'}}/>
+        <div style={{position:'absolute',bottom:80,left:16,right:72}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+            <div className="vp-sk-dot" style={{width:40,height:40,animationDelay:`${i*0.13}s`}}/>
             <div>
-              <div className="vp-sk-bar" style={{ width:88, marginBottom:6, animationDelay:`${i*0.13+0.07}s` }} />
-              <div className="vp-sk-bar" style={{ width:58, height:8, animationDelay:`${i*0.13+0.14}s` }} />
+              <div className="vp-sk-bar" style={{width:88,marginBottom:6,animationDelay:`${i*0.13+0.07}s`}}/>
+              <div className="vp-sk-bar" style={{width:58,height:8,animationDelay:`${i*0.13+0.14}s`}}/>
             </div>
           </div>
-          <div className="vp-sk-bar" style={{ width:'85%', maxWidth:210, marginBottom:7, animationDelay:`${i*0.1}s` }} />
-          <div className="vp-sk-bar" style={{ width:'60%', maxWidth:150, height:8, animationDelay:`${i*0.1+0.07}s` }} />
+          <div className="vp-sk-bar" style={{width:'85%',maxWidth:210,marginBottom:7,animationDelay:`${i*0.1}s`}}/>
+          <div className="vp-sk-bar" style={{width:'60%',maxWidth:150,height:8,animationDelay:`${i*0.1+0.07}s`}}/>
         </div>
-        <div style={{ position:'absolute', right:10, bottom:80, display:'flex', flexDirection:'column', gap:18 }}>
-          {[0,1,2].map(j => <div key={j} className="vp-sk-dot" style={{ width:40, height:40, animationDelay:`${i*0.13+j*0.1}s` }} />)}
+        <div style={{position:'absolute',right:10,bottom:80,display:'flex',flexDirection:'column',gap:18}}>
+          {[0,1,2].map(j=><div key={j} className="vp-sk-dot" style={{width:40,height:40,animationDelay:`${i*0.13+j*0.1}s`}}/>)}
         </div>
-        {i === 0 && (
-          <div style={{ position:'absolute', top:'42%', left:'50%', transform:'translate(-50%,-50%)', background:'rgba(255,255,255,0.04)', backdropFilter:'blur(14px)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:9999, padding:'9px 20px', display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{ width:13, height:13, borderRadius:'50%', border:'2px solid rgba(255,255,255,0.08)', borderTopColor:'rgba(255,255,255,0.45)', animation:'vp-spin 0.85s linear infinite' }} />
-            <span style={{ color:'rgba(255,255,255,0.3)', fontSize:11, fontWeight:500, letterSpacing:'0.02em' }}>Chargement des vidéos…</span>
+        {i===0&&(
+          <div style={{position:'absolute',top:'42%',left:'50%',transform:'translate(-50%,-50%)',background:'rgba(255,255,255,0.04)',backdropFilter:'blur(14px)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:9999,padding:'9px 20px',display:'flex',alignItems:'center',gap:10}}>
+            <div style={{width:13,height:13,borderRadius:'50%',border:'2px solid rgba(255,255,255,0.08)',borderTopColor:'rgba(255,255,255,0.45)',animation:'vp-spin 0.85s linear infinite'}}/>
+            <span style={{color:'rgba(255,255,255,0.3)',fontSize:11,fontWeight:500,letterSpacing:'0.02em'}}>Chargement des vidéos…</span>
           </div>
         )}
       </div>
     ))}
   </div>
 ));
-SkeletonLayer.displayName = 'SkeletonLayer';
+SkeletonLayer.displayName='SkeletonLayer';
 
-const ActionBar = memo(({ onBack, activeTab, setActiveTab, showSearch, setShowSearch, searchQuery, setSearchQuery, onAddVideo, hasNewContent, currentIndex, totalItems }) => {
-  const progress = totalItems > 1 ? currentIndex / (totalItems - 1) : 0;
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTION BAR — tabs supprimés
+// ─────────────────────────────────────────────────────────────────────────────
+const ActionBar = memo(({ onBack, showSearch, setShowSearch, searchQuery, setSearchQuery, onAddVideo, currentIndex, totalItems }) => {
+  const progress = totalItems>1 ? currentIndex/(totalItems-1) : 0;
   return (
     <div className="absolute top-0 left-0 right-0 z-50 pointer-events-none">
-      <div className="pointer-events-auto" style={{ background:'linear-gradient(180deg,rgba(0,0,0,0.9) 0%,rgba(0,0,0,0.45) 72%,transparent 100%)', paddingBottom:20 }}>
-        <div className="flex items-center justify-between px-3" style={{ paddingTop:'max(12px, env(safe-area-inset-top))' }}>
-          <button onClick={onBack} className="relative flex items-center justify-center active:scale-90 transition-transform" style={{ WebkitTapHighlightColor:'transparent' }}>
-            <ProgressRing progress={progress} size={38} stroke={2.2} />
-            <FaArrowLeft size={12} className="text-white absolute" />
+      <div className="pointer-events-auto" style={{background:'linear-gradient(180deg,rgba(0,0,0,0.9) 0%,rgba(0,0,0,0.45) 72%,transparent 100%)',paddingBottom:20}}>
+        <div className="flex items-center justify-between px-3" style={{paddingTop:'max(12px, env(safe-area-inset-top))'}}>
+
+          {/* Bouton retour avec progress ring */}
+          <button onClick={onBack} className="relative flex items-center justify-center active:scale-90 transition-transform" style={{WebkitTapHighlightColor:'transparent'}}>
+            <ProgressRing progress={progress} size={38} stroke={2.2}/>
+            <FaArrowLeft size={12} className="text-white absolute"/>
           </button>
-          <div className="flex gap-0.5 rounded-full p-0.5" style={{ background:'rgba(0,0,0,0.52)', backdropFilter:'blur(20px)', border:'1px solid rgba(255,255,255,0.07)' }}>
-            {[{ id:'foryou', label:'Pour toi', icon:<FaFire size={9}/> }, { id:'following', label:'Suivis', icon:null }, { id:'discover', label:'Découvrir', icon:<FaCompass size={9}/> }].map(({ id, label, icon }) => (
-              <button key={id} onClick={() => setActiveTab(id)}
-                className="relative px-3 py-1.5 rounded-full text-[11px] font-bold transition-all flex items-center gap-1"
-                style={activeTab === id ? { background:'white', color:'#000', boxShadow:'0 1px 5px rgba(0,0,0,0.3)' } : { color:'rgba(255,255,255,0.45)' }}>
-                {icon}{label}
-                {id === 'foryou' && hasNewContent && activeTab !== 'foryou' && <span className="vp-tab-dot ml-0.5" />}
-              </button>
-            ))}
-          </div>
+
+          {/* Zone centrale vide — plus de tabs */}
+          <div style={{flex:1}}/>
+
+          {/* Recherche + upload */}
           <div className="flex items-center gap-1.5">
             <div className="relative flex items-center">
               <AnimatePresence>
-                {showSearch && (
-                  <motion.input initial={{ width:0, opacity:0 }} animate={{ width:118, opacity:1 }} exit={{ width:0, opacity:0 }} transition={{ duration:0.16 }}
-                    value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Rechercher…"
+                {showSearch&&(
+                  <motion.input initial={{width:0,opacity:0}} animate={{width:140,opacity:1}} exit={{width:0,opacity:0}} transition={{duration:0.16}}
+                    value={searchQuery} onChange={e=>setSearchQuery(e.target.value)} placeholder="Rechercher…"
                     className="text-white text-xs px-3 py-1.5 rounded-full outline-none"
-                    style={{ background:'rgba(255,255,255,0.12)', backdropFilter:'blur(12px)', border:'1px solid rgba(255,255,255,0.14)', position:'absolute', right:40 }} autoFocus />
+                    style={{background:'rgba(255,255,255,0.12)',backdropFilter:'blur(12px)',border:'1px solid rgba(255,255,255,0.14)',position:'absolute',right:40}} autoFocus/>
                 )}
               </AnimatePresence>
-              <button onClick={() => setShowSearch(s => !s)} className="w-9 h-9 rounded-full flex items-center justify-center text-white active:scale-90 transition-transform"
-                style={{ background:'rgba(255,255,255,0.1)', backdropFilter:'blur(12px)', border:'1px solid rgba(255,255,255,0.09)', WebkitTapHighlightColor:'transparent' }}>
-                {showSearch ? <FaTimes size={11}/> : <FaSearch size={11}/>}
+              <button onClick={()=>setShowSearch(s=>!s)} className="w-9 h-9 rounded-full flex items-center justify-center text-white active:scale-90 transition-transform"
+                style={{background:'rgba(255,255,255,0.1)',backdropFilter:'blur(12px)',border:'1px solid rgba(255,255,255,0.09)',WebkitTapHighlightColor:'transparent'}}>
+                {showSearch?<FaTimes size={11}/>:<FaSearch size={11}/>}
               </button>
             </div>
             <button onClick={onAddVideo} className="w-9 h-9 rounded-full flex items-center justify-center text-white active:scale-90 transition-transform"
-              style={{ background:'linear-gradient(135deg,#ff6b35,#e91e8c)', boxShadow:'0 3px 12px rgba(233,30,140,0.4)', WebkitTapHighlightColor:'transparent' }}>
+              style={{background:'linear-gradient(135deg,#ff6b35,#e91e8c)',boxShadow:'0 3px 12px rgba(233,30,140,0.4)',WebkitTapHighlightColor:'transparent'}}>
               <FaPlus size={13}/>
             </button>
           </div>
+
         </div>
       </div>
     </div>
   );
 });
-ActionBar.displayName = 'ActionBar';
+ActionBar.displayName='ActionBar';
 
 const SwipeHint = memo(({ visible }) => (
-  <AnimatePresence>{visible && (
-    <motion.div initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }} transition={{ delay:2.5, duration:0.5 }}
+  <AnimatePresence>{visible&&(
+    <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} transition={{delay:2.5,duration:0.5}}
       className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-2 pointer-events-none">
       <div className="vp-swipe-arrow flex flex-col items-center gap-1.5">
-        <span style={{ color:'rgba(255,255,255,0.28)', fontSize:9, fontWeight:700, letterSpacing:'0.18em', textTransform:'uppercase' }}>Swipe</span>
-        <div style={{ width:1, height:18, background:'linear-gradient(180deg,transparent,rgba(255,255,255,0.35))' }} />
-        <div style={{ width:16, height:16, borderRadius:'50%', border:'1.5px solid rgba(255,255,255,0.28)', display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <div style={{ width:4, height:4, borderRadius:'50%', background:'rgba(255,255,255,0.45)' }} />
+        <span style={{color:'rgba(255,255,255,0.28)',fontSize:9,fontWeight:700,letterSpacing:'0.18em',textTransform:'uppercase'}}>Swipe</span>
+        <div style={{width:1,height:18,background:'linear-gradient(180deg,transparent,rgba(255,255,255,0.35))'}}/>
+        <div style={{width:16,height:16,borderRadius:'50%',border:'1.5px solid rgba(255,255,255,0.28)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <div style={{width:4,height:4,borderRadius:'50%',background:'rgba(255,255,255,0.45)'}}/>
         </div>
       </div>
     </motion.div>
   )}</AnimatePresence>
 ));
-SwipeHint.displayName = 'SwipeHint';
+SwipeHint.displayName='SwipeHint';
 
-const SlidePlaceholder = memo(() => <div className="w-full snap-start snap-always vp-ph" aria-hidden="true" />);
-SlidePlaceholder.displayName = 'SlidePlaceholder';
+const SlidePlaceholder = memo(()=><div className="w-full snap-start snap-always vp-ph" aria-hidden="true"/>);
+SlidePlaceholder.displayName='SlidePlaceholder';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SLIDE ITEM — avec reporting comportemental
+// SLIDE ITEM
 // ─────────────────────────────────────────────────────────────────────────────
 const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError }) => {
-  const ctx = useContext(ActiveIndexContext), modalOpen = useContext(ModalOpenContext);
-  const ref = useRef(null);
-  const [isActive, setIsActive] = useState(() => ctx?.getActiveIndex() === index);
-  const uid      = item.id;
-  const itemData = item.data;
+  const ctx=useContext(ActiveIndexContext), modalOpen=useContext(ModalOpenContext);
+  const ref=useRef(null);
+  const [isActive,setIsActive]=useState(()=>ctx?.getActiveIndex()===index);
+  const uid=item.id, itemData=item.data;
 
-  useEffect(() => {
+  useEffect(()=>{
     if (!ctx) return;
-    const unsub = ctx.subscribe(index, (active) => {
+    const unsub=ctx.subscribe(index,(active)=>{
       setIsActive(active);
-      if (active) {
-        watchScore.enter(uid);
-        behaviorEngine.enter(uid, itemData);
-      } else {
-        watchScore.leave(uid);
-        behaviorEngine.leave(uid); // signal skip si court
-      }
+      if (active) { watchScore.enter(uid); behaviorEngine.enter(uid,itemData); }
+      else { watchScore.leave(uid); behaviorEngine.leave(uid); }
     });
-    if (ctx.getActiveIndex() === index) {
-      setIsActive(true);
-      watchScore.enter(uid);
-      behaviorEngine.enter(uid, itemData);
-    }
-    return () => {
-      unsub();
-      watchScore.leave(uid);
-      behaviorEngine.leave(uid);
-    };
-  }, [ctx, index, uid, itemData]);
+    if (ctx.getActiveIndex()===index) { setIsActive(true); watchScore.enter(uid); behaviorEngine.enter(uid,itemData); }
+    return ()=>{ unsub(); watchScore.leave(uid); behaviorEngine.leave(uid); };
+  },[ctx,index,uid,itemData]);
 
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || modalOpen) return;
-    const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting && e.intersectionRatio >= 0.6) onVisible(index);
-    }, { threshold: 0.6 });
+  useEffect(()=>{
+    const el=ref.current;
+    if (!el||modalOpen) return;
+    const obs=new IntersectionObserver(([e])=>{ if(e.isIntersecting&&e.intersectionRatio>=0.6) onVisible(index); },{threshold:0.6});
     obs.observe(el);
-    return () => obs.disconnect();
-  }, [index, onVisible, modalOpen]);
+    return ()=>obs.disconnect();
+  },[index,onVisible,modalOpen]);
 
   return (
     <div ref={ref} className="w-full snap-start snap-always" style={SLIDE_STYLE}>
-      {item.type === 'ad'
-        ? <VideoAd isActive={isActive} />
-        : item.isAggregated
-          ? <AggregatedCard content={itemData} isActive={isActive} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
-          : <VideoCard video={itemData} isActive={isActive} isAutoPost={false} onModalChange={onModalChange} onVideoError={onVideoError ? () => onVideoError(item.id) : undefined} />
+      {item.type==='ad'
+        ?<VideoAd isActive={isActive}/>
+        :item.isAggregated
+          ?<AggregatedCard content={itemData} isActive={isActive} onModalChange={onModalChange} onVideoError={onVideoError?()=>onVideoError(item.id):undefined}/>
+          :<VideoCard video={itemData} isActive={isActive} isAutoPost={false} onModalChange={onModalChange} onVideoError={onVideoError?()=>onVideoError(item.id):undefined}/>
       }
     </div>
   );
-}, (prev, next) =>
-  prev.item.id === next.item.id &&
-  prev.index === next.index &&
-  prev.onVisible === next.onVisible &&
-  prev.onModalChange === next.onModalChange &&
-  prev.onVideoError === next.onVideoError
+},
+(prev,next)=>
+  prev.item.id===next.item.id&&
+  prev.index===next.index&&
+  prev.onVisible===next.onVisible&&
+  prev.onModalChange===next.onModalChange&&
+  prev.onVideoError===next.onVideoError
 );
-SlideItem.displayName = 'SlideItem';
+SlideItem.displayName='SlideItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEOS PAGE — v12
+// VIDEOS PAGE v13
 // ─────────────────────────────────────────────────────────────────────────────
 const VideosPage = () => {
   ensureCSS();
-  const navigate = useNavigate(), { getToken } = useAuth(), isOnline = useOnline();
-  const { videos: userVideos, loading: userLoading, hasMore: userHasMore, fetchVideos: fetchUserVideos } = useVideos();
+  const navigate=useNavigate(), {getToken}=useAuth(), isOnline=useOnline();
+  const {videos:userVideos,loading:userLoading,hasMore:userHasMore,fetchVideos:fetchUserVideos}=useVideos();
   useVhFix();
 
   const [feedItems,          setFeedItems]          = useState([]);
@@ -1070,524 +814,375 @@ const VideosPage = () => {
   const [activeDisplayIndex, setActiveDisplayIndex] = useState(0);
   const [anyModalOpen,       setAnyModalOpen]       = useState(false);
   const [showModal,          setShowModal]          = useState(false);
-  const [activeTab,          setActiveTab]          = useState('foryou');
   const [showSearch,         setShowSearch]         = useState(false);
   const [searchQuery,        setSearchQuery]        = useState('');
   const [showScrollHint,     setShowScrollHint]     = useState(false);
   const [watchStreak,        setWatchStreak]        = useState(0);
-  const [hasNewContent,      setHasNewContent]      = useState(false);
   const [slideFlash,         setSlideFlash]         = useState(false);
   const [ptrProgress,        setPtrProgress]        = useState(0);
   const [ptrRefreshing,      setPtrRefreshing]      = useState(false);
-  const [intentToast,        setIntentToast]        = useState(null); // intent détecté → toast
+  const [intentToast,        setIntentToast]        = useState(null);
   const [netType,            setNetType]            = useState(networkMgr.effectiveType);
 
-  const containerRef    = useRef(null), activeIndexRef = useRef(0), slideListeners = useRef({});
-  const feedItemsRef    = useRef([]);
-  const seenSet         = useRef(loadPersistedSet(CONFIG.seen.storageKey));
-  const invalidSet      = useRef(loadPersistedSet(CONFIG.seen.invalidKey));
-  const aggPool         = useRef([]), fetchTriggered = useRef(false);
-  const lastScrollTime  = useRef(0), momentumLockRef = useRef(0), anyModalRef = useRef(false);
-  const aggPageRef      = useRef(1), aggHasMoreRef = useRef(true), aggLoadingRef = useRef(false);
-  const userHasMoreRef  = useRef(userHasMore), userLoadingRef = useRef(userLoading);
-  const loadingMoreRef  = useRef(false), watchStreakRef = useRef(0);
-  const ptrStartRef     = useRef(null), ptrActiveRef = useRef(false);
-  const activeItemRef   = useRef(null);
-  const lastIntentRef   = useRef(null); // pour détecter les changements d'intention
+  const containerRef=useRef(null), activeIndexRef=useRef(0), slideListeners=useRef({});
+  const feedItemsRef=useRef([]);
+  const seenSet=useRef(loadPersistedSet(CONFIG.seen.storageKey));
+  const invalidSet=useRef(loadPersistedSet(CONFIG.seen.invalidKey));
+  const aggPool=useRef([]), fetchTriggered=useRef(false);
+  const lastScrollTime=useRef(0), momentumLockRef=useRef(0), anyModalRef=useRef(false);
+  const aggPageRef=useRef(1), aggHasMoreRef=useRef(true), aggLoadingRef=useRef(false);
+  const userHasMoreRef=useRef(userHasMore), userLoadingRef=useRef(userLoading);
+  const loadingMoreRef=useRef(false), watchStreakRef=useRef(0);
+  const ptrStartRef=useRef(null), ptrActiveRef=useRef(false);
+  const activeItemRef=useRef(null), lastIntentRef=useRef(null);
 
-  useEffect(() => { userHasMoreRef.current = userHasMore; }, [userHasMore]);
-  useEffect(() => { userLoadingRef.current = userLoading; }, [userLoading]);
-  useEffect(() => { anyModalRef.current    = anyModalOpen; }, [anyModalOpen]);
+  useEffect(()=>{ userHasMoreRef.current=userHasMore; },[userHasMore]);
+  useEffect(()=>{ userLoadingRef.current=userLoading; },[userLoading]);
+  useEffect(()=>{ anyModalRef.current=anyModalOpen; },[anyModalOpen]);
 
-  // Surveille les changements de réseau
-  useEffect(() => {
+  useEffect(()=>{
     if (!('connection' in navigator)) return;
-    const update = () => setNetType(networkMgr.effectiveType);
-    navigator.connection.addEventListener('change', update);
-    return () => navigator.connection.removeEventListener('change', update);
-  }, []);
+    const update=()=>setNetType(networkMgr.effectiveType);
+    navigator.connection.addEventListener('change',update);
+    return ()=>navigator.connection.removeEventListener('change',update);
+  },[]);
 
-  const activeCtx = useMemo(() => ({
-    getActiveIndex: () => activeIndexRef.current,
-    subscribe: (idx, cb) => {
-      slideListeners.current[idx] = cb;
-      return () => { delete slideListeners.current[idx]; };
-    },
-  }), []);
+  const activeCtx=useMemo(()=>({
+    getActiveIndex:()=>activeIndexRef.current,
+    subscribe:(idx,cb)=>{ slideListeners.current[idx]=cb; return ()=>{ delete slideListeners.current[idx]; }; },
+  }),[]);
 
-  // ── Live reorder — réclasse les prochains items après signal comportemental
-  const liveReorderAhead = useCallback(() => {
-    const idx     = activeIndexRef.current;
-    const items   = feedItemsRef.current;
-    const start   = idx + 1;
-    const end     = Math.min(start + CONFIG.behavior.liveReorderDepth, items.length);
-    if (end <= start) return;
+  const liveReorderAhead=useCallback(()=>{
+    const idx=activeIndexRef.current, items=feedItemsRef.current;
+    const start=idx+1, end=Math.min(start+CONFIG.behavior.liveReorderDepth,items.length);
+    if (end<=start) return;
+    const slice=items.slice(start,end), dataOnly=slice.map(i=>i.data).filter(Boolean);
+    if (dataOnly.length<2) return;
+    const reordered=intelligentReorder(dataOnly,{jitter:0.2}), uidMap=new Map(slice.map(i=>[i.data,i]));
+    const newSlice=reordered.map(d=>uidMap.get(d)).filter(Boolean);
+    const newFeed=[...items.slice(0,start),...newSlice,...items.slice(end)];
+    feedItemsRef.current=newFeed;
+    startTransition(()=>setFeedItems([...newFeed]));
+  },[]);
 
-    const slice    = items.slice(start, end);
-    const dataOnly = slice.map(i => i.data).filter(Boolean);
-    if (dataOnly.length < 2) return;
-
-    const reordered = intelligentReorder(dataOnly, { jitter: 0.2 });
-    const uidMap    = new Map(slice.map(i => [i.data, i]));
-
-    const newSlice  = reordered.map(d => uidMap.get(d)).filter(Boolean);
-
-    const newFeed   = [
-      ...items.slice(0, start),
-      ...newSlice,
-      ...items.slice(end),
-    ];
-
-    feedItemsRef.current = newFeed;
-    startTransition(() => setFeedItems([...newFeed]));
-  }, []);
-
-  // ── Écoute les signaux comportementaux
-  useEffect(() => {
-    const unsub = behaviorEngine.onSignal((signal, item) => {
-      if (signal === 'skip' || signal === 'replay' || signal === 'longWatch') {
-        liveReorderAhead();
-      }
-
-      // Détecter changement d'intention dominant
-      const newIntent = userProfile.dominantIntent;
-      if (newIntent && newIntent !== lastIntentRef.current) {
-        lastIntentRef.current = newIntent;
+  useEffect(()=>{
+    const unsub=behaviorEngine.onSignal((signal,item)=>{
+      if (signal==='skip'||signal==='replay'||signal==='longWatch') liveReorderAhead();
+      const newIntent=userProfile.dominantIntent;
+      if (newIntent&&newIntent!==lastIntentRef.current) {
+        lastIntentRef.current=newIntent;
         setIntentToast(newIntent);
-        setTimeout(() => setIntentToast(null), 3500);
+        setTimeout(()=>setIntentToast(null),3500);
       }
     });
     return unsub;
-  }, [liveReorderAhead]);
+  },[liveReorderAhead]);
 
-  // ─── Watch score + profil ──────────────────────────────────────────────────
-  const sendWatchScore = useCallback(async (itemData, score) => {
-    if (!itemData?._id || score < CONFIG.watchScoreMin) return;
-    userProfile.recordView(itemData, score);
+  const sendWatchScore=useCallback(async(itemData,score)=>{
+    if (!itemData?._id||score<CONFIG.watchScoreMin) return;
+    userProfile.recordView(itemData,score);
     if (!itemData._isAggregated) return;
-    const watchPct = Math.round(score * 100);
+    const watchPct=Math.round(score*100);
     try {
-      const token = await getToken();
-      fetch(`${API_BASE}/api/aggregated/${itemData._id}/view`, {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json', ...(token ? { Authorization:`Bearer ${token}` } : {}) },
-        body: JSON.stringify({ watchPct }),
-      }).catch(() => {});
+      const token=await getToken();
+      fetch(`${API_BASE}/api/aggregated/${itemData._id}/view`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},
+        body:JSON.stringify({watchPct}),
+      }).catch(()=>{});
     } catch {}
-  }, [getToken]);
+  },[getToken]);
 
-  const notifyActive = useCallback((newIdx) => {
-    const old = activeIndexRef.current;
-    if (old === newIdx) return;
-    const now = Date.now();
-    if (now - momentumLockRef.current < CONFIG.momentumLock) return;
-    momentumLockRef.current = now;
-
-    const previousItem = activeItemRef.current;
-    if (previousItem) {
-      const uid   = `agg-${previousItem._id || previousItem.externalId}`;
-      const score = watchScore.getScore(uid);
-      sendWatchScore(previousItem, score);
-    }
-
-    const items   = feedItemsRef.current;
-    const newItem = items[newIdx];
-    activeItemRef.current = (newItem?.type === 'content' && newItem.isAggregated) ? newItem.data : null;
-    activeIndexRef.current = newIdx;
-
-    if (newIdx > 0) setShowScrollHint(false);
+  const notifyActive=useCallback((newIdx)=>{
+    const old=activeIndexRef.current;
+    if (old===newIdx) return;
+    const now=Date.now();
+    if (now-momentumLockRef.current<CONFIG.momentumLock) return;
+    momentumLockRef.current=now;
+    const previousItem=activeItemRef.current;
+    if (previousItem) { const uid=`agg-${previousItem._id||previousItem.externalId}`; sendWatchScore(previousItem,watchScore.getScore(uid)); }
+    const items=feedItemsRef.current, newItem=items[newIdx];
+    activeItemRef.current=(newItem?.type==='content'&&newItem.isAggregated)?newItem.data:null;
+    activeIndexRef.current=newIdx;
+    if (newIdx>0) setShowScrollHint(false);
     if ('vibrate' in navigator) navigator.vibrate(7);
-
     watchStreakRef.current++;
-    if (watchStreakRef.current % 3 === 0 || watchStreakRef.current === 5) {
-      startTransition(() => setWatchStreak(watchStreakRef.current));
-      setTimeout(() => setWatchStreak(0), 2200);
+    if (watchStreakRef.current%3===0||watchStreakRef.current===5) {
+      startTransition(()=>setWatchStreak(watchStreakRef.current));
+      setTimeout(()=>setWatchStreak(0),2200);
     }
-
-    setSlideFlash(f => !f);
+    setSlideFlash(f=>!f);
     adaptiveBuf.record(now);
-
-    // Préchargement adapté au réseau
     cancelPreloadsAfter(networkMgr.preloadAhead);
-    for (let i = 1; i <= networkMgr.preloadAhead; i++) injectPreload(items[newIdx + i]);
-
-    const nextYtIds = extractYoutubeIds(items, newIdx + 1, CONFIG.ytWarmupAhead);
-    if (nextYtIds.length > 0) YouTubePool.warmup(nextYtIds);
-
-    startTransition(() => {
+    for (let i=1;i<=networkMgr.preloadAhead;i++) injectPreload(items[newIdx+i]);
+    const nextYtIds=extractYoutubeIds(items,newIdx+1,CONFIG.ytWarmupAhead);
+    if (nextYtIds.length>0) YouTubePool.warmup(nextYtIds);
+    startTransition(()=>{
       slideListeners.current[old]?.(false);
       slideListeners.current[newIdx]?.(true);
       setActiveDisplayIndex(newIdx);
     });
-  }, [sendWatchScore]);
+  },[sendWatchScore]);
 
-  const invalidateItem = useCallback((uid) => {
+  const invalidateItem=useCallback((uid)=>{
     if (invalidSet.current.has(uid)) return;
     invalidSet.current.add(uid);
-    persistSet(CONFIG.seen.invalidKey, invalidSet.current);
-    feedItemsRef.current = feedItemsRef.current.filter(i => i.id !== uid);
-    startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== uid)));
-  }, []);
+    persistSet(CONFIG.seen.invalidKey,invalidSet.current);
+    feedItemsRef.current=feedItemsRef.current.filter(i=>i.id!==uid);
+    startTransition(()=>setFeedItems(prev=>prev.filter(i=>i.id!==uid)));
+  },[]);
 
-  // ─── appendItems v12 ──────────────────────────────────────────────────────
-  const appendItems = useCallback((rawItems, { coldStart = false } = {}) => {
-    if (!rawItems || rawItems.length === 0) return;
-
-    const boosted   = applyViralBoost(rawItems);
-    const reordered = intelligentReorder(boosted, {
-      jitter:       coldStart ? 0.1 : 0.3,
-      forColdStart: coldStart,
+  const appendItems=useCallback((rawItems,{coldStart=false}={})=>{
+    if (!rawItems||rawItems.length===0) return;
+    const boosted=applyViralBoost(rawItems);
+    const reordered=intelligentReorder(boosted,{jitter:coldStart?0.1:0.3,forColdStart:coldStart});
+    const allSeen=reordered.every(item=>{
+      const uid=item._uid||`${item._isAggregated?'agg':'user'}-${item._id||item.externalId}`;
+      return seenSet.current.has(uid)||invalidSet.current.has(uid);
     });
-
-    // Si TOUS les items sont déjà dans le seenSet → le vider pour débloquer le feed
-    // (se produit quand l'API a peu de contenu total et que le seenSet est saturé)
-    const allSeen = reordered.every(item => {
-      const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
-      return seenSet.current.has(uid) || invalidSet.current.has(uid);
-    });
-    if (allSeen && reordered.length > 0) {
-      if (import.meta.env.DEV)
-        console.warn(`[Feed v12] ⚠️ Tous les ${reordered.length} items déjà vus → reset seenSet`);
-      seenSet.current.clear();
-      try { localStorage.removeItem(CONFIG.seen.storageKey); } catch {}
-    }
-
-    const toAdd = []; let len = feedItemsRef.current.length;
+    if (allSeen&&reordered.length>0) { seenSet.current.clear(); try{localStorage.removeItem(CONFIG.seen.storageKey);}catch{} }
+    const toAdd=[]; let len=feedItemsRef.current.length;
     for (const item of reordered) {
-      const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
-      if (seenSet.current.has(uid) || invalidSet.current.has(uid)) continue;
+      const uid=item._uid||`${item._isAggregated?'agg':'user'}-${item._id||item.externalId}`;
+      if (seenSet.current.has(uid)||invalidSet.current.has(uid)) continue;
       seenSet.current.add(uid);
-
-      if (!item.isEmbed) {
-        // R2 : pas de probe (CDN public, CORS bloque les HEAD)
-        // Cloudinary legacy → invalider directement (401 garanti)
-        probeItemBackground(item, () => invalidateItem(uid));
-      }
-
-      toAdd.push({ type:'content', id:uid, data:{ ...item, _uid:uid }, isAggregated:!!item._isAggregated });
+      if (!item.isEmbed) probeItemBackground(item,()=>invalidateItem(uid));
+      toAdd.push({type:'content',id:uid,data:{...item,_uid:uid},isAggregated:!!item._isAggregated});
       len++;
-      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0)
-        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
+      if (CONFIG.ads.enabled&&len%CONFIG.ads.frequency===0) toAdd.push({type:'ad',id:`ad-${++_adCounter}`});
     }
-
-    if (import.meta.env.DEV)
-      console.log(`[Feed v12] appendItems: ${rawItems.length} reçus → ${toAdd.filter(i=>i.type==='content').length} ajoutés au feed`);
-
-    // Même si 0 items ajoutés, débloquer le skeleton si le feed est encore vide
-    if (toAdd.length === 0) {
-      if (feedItemsRef.current.length === 0)
-        startTransition(() => setFeedReady(true));
-      return;
-    }
-
-    persistSet(CONFIG.seen.storageKey, seenSet.current);
-
-    const wasEmpty = feedItemsRef.current.length === 0;
-    feedItemsRef.current = [...feedItemsRef.current, ...toAdd];
-
-    startTransition(() => {
-      setFeedItems(prev => [...prev, ...toAdd]);
-      if (wasEmpty) {
-        setFeedReady(true);
-        setTimeout(() => setShowScrollHint(true), 3200);
-      } else if (feedItemsRef.current.length > 10) {
-        setHasNewContent(true);
-        setTimeout(() => setHasNewContent(false), 8000);
-      }
+    if (toAdd.length===0) { if(feedItemsRef.current.length===0) startTransition(()=>setFeedReady(true)); return; }
+    persistSet(CONFIG.seen.storageKey,seenSet.current);
+    const wasEmpty=feedItemsRef.current.length===0;
+    feedItemsRef.current=[...feedItemsRef.current,...toAdd];
+    startTransition(()=>{
+      setFeedItems(prev=>[...prev,...toAdd]);
+      if (wasEmpty) { setFeedReady(true); setTimeout(()=>setShowScrollHint(true),3200); }
     });
+    const preloadSlice=toAdd.slice(0,networkMgr.preloadAhead);
+    if ('requestIdleCallback' in window) requestIdleCallback(()=>preloadSlice.forEach(injectPreload),{timeout:2000});
+    else setTimeout(()=>preloadSlice.forEach(injectPreload),400);
+    if (wasEmpty) { const firstYtIds=extractYoutubeIds(toAdd,0,CONFIG.ytWarmupAhead); if(firstYtIds.length>0) YouTubePool.warmup(firstYtIds); }
+  },[invalidateItem]);
 
-    const preloadSlice = toAdd.slice(0, networkMgr.preloadAhead);
-    if ('requestIdleCallback' in window)
-      requestIdleCallback(() => preloadSlice.forEach(injectPreload), { timeout: 2000 });
-    else
-      setTimeout(() => preloadSlice.forEach(injectPreload), 400);
-
-    if (wasEmpty) {
-      const firstYtIds = extractYoutubeIds(toAdd, 0, CONFIG.ytWarmupAhead);
-      if (firstYtIds.length > 0) YouTubePool.warmup(firstYtIds);
-    }
-  }, [invalidateItem]);
-
-  const recycle = useCallback(() => {
-    if (aggPool.current.length < CONFIG.recycleMin) return;
-    const recycled = smartRecycle(aggPool.current);
-    const toAdd = []; let len = feedItemsRef.current.length;
+  const recycle=useCallback(()=>{
+    if (aggPool.current.length<CONFIG.recycleMin) return;
+    const recycled=smartRecycle(aggPool.current);
+    const toAdd=[]; let len=feedItemsRef.current.length;
     for (const item of recycled) {
-      toAdd.push({ type:'content', id:item._uid, data:item, isAggregated:true }); len++;
-      if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0)
-        toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
+      toAdd.push({type:'content',id:item._uid,data:item,isAggregated:true}); len++;
+      if (CONFIG.ads.enabled&&len%CONFIG.ads.frequency===0) toAdd.push({type:'ad',id:`ad-${++_adCounter}`});
     }
-    feedItemsRef.current = [...feedItemsRef.current, ...toAdd];
-    startTransition(() => setFeedItems(prev => [...prev, ...toAdd]));
-  }, []);
+    feedItemsRef.current=[...feedItemsRef.current,...toAdd];
+    startTransition(()=>setFeedItems(prev=>[...prev,...toAdd]));
+  },[]);
 
-  // ─── fetchAggregated v12 — avec hints d'intention ─────────────────────────
-  const fetchAggregated = useCallback(async (page = 1, limit = 40) => {
-    if (!CONFIG.aggregated.enabled || aggLoadingRef.current) return;
+  const fetchAggregated=useCallback(async(page=1,limit=40)=>{
+    if (!CONFIG.aggregated.enabled||aggLoadingRef.current) return;
     try {
-      aggLoadingRef.current = true;
-      const token = await getToken();
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-
-      const btpHint      = userProfile.isBTPUser      ? '&btpBoost=1'       : '';
-      const coldStart    = userProfile.isNewUser       ? '&coldStart=1'      : '';
-      const intentHint   = userProfile.dominantIntent  ? `&intent=${userProfile.dominantIntent}` : '';
-      const netHint      = networkMgr.effectiveType !== 'default' ? `&quality=${networkMgr.effectiveType}` : '';
-
-      const res = await fetch(
-        `${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all${btpHint}${coldStart}${intentHint}${netHint}`,
-        { headers }
-      );
+      aggLoadingRef.current=true;
+      const token=await getToken();
+      const headers=token?{Authorization:`Bearer ${token}`}:{};
+      const btpHint=userProfile.isBTPUser?'&btpBoost=1':'';
+      const coldStart=userProfile.isNewUser?'&coldStart=1':'';
+      const intentHint=userProfile.dominantIntent?`&intent=${userProfile.dominantIntent}`:'';
+      const netHint=networkMgr.effectiveType!=='default'?`&quality=${networkMgr.effectiveType}`:'';
+      const res=await fetch(`${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all${btpHint}${coldStart}${intentHint}${netHint}`,{headers});
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json=await res.json();
+      const finalItems=(json.data||[]).filter(isPlayableCandidate).map(c=>({...c,_isAggregated:true}));
+      aggPool.current=[...aggPool.current,...finalItems];
+      aggPageRef.current=page;
+      aggHasMoreRef.current=json.pagination?.hasMore||false;
+      appendItems(finalItems,{coldStart:page===1&&userProfile.isNewUser});
+      if (feedItemsRef.current.length<CONFIG.minFeedSize&&aggHasMoreRef.current)
+        setTimeout(()=>fetchAggregated(page+1,limit),200);
+    } catch(err) {
+      aggHasMoreRef.current=false;
+      if (aggPool.current.length>=CONFIG.recycleMin) recycle();
+    } finally { aggLoadingRef.current=false; }
+  },[getToken,appendItems,recycle]);
 
-      const finalItems = (json.data || [])
-        .filter(isPlayableCandidate)
-        .map(c => ({ ...c, _isAggregated: true }));
-
-      if (import.meta.env.DEV) {
-        console.log(
-          `[Feed v12] p${page} | ${finalItems.length} items | net:${networkMgr.effectiveType} | intent:${userProfile.dominantIntent || 'none'} | BTP:${userProfile.isBTPUser}`
-        );
-      }
-
-      aggPool.current       = [...aggPool.current, ...finalItems];
-      aggPageRef.current    = page;
-      aggHasMoreRef.current = json.pagination?.hasMore || false;
-
-      appendItems(finalItems, { coldStart: page === 1 && userProfile.isNewUser });
-
-      if (feedItemsRef.current.length < CONFIG.minFeedSize && aggHasMoreRef.current)
-        setTimeout(() => fetchAggregated(page + 1, limit), 200);
-
-    } catch (err) {
-      console.error('❌ [Aggregated]', err.message);
-      aggHasMoreRef.current = false;
-      if (aggPool.current.length >= CONFIG.recycleMin) recycle();
-    } finally {
-      aggLoadingRef.current = false;
-    }
-  }, [getToken, appendItems, recycle]);
-
-  // ── Intégrer les vidéos utilisateur ───────────────────────────────────────
-  useEffect(() => {
-    const newOnes = (userVideos || []).filter(v => {
-      const uid = `user-${v._id}`;
-      return !seenSet.current.has(uid) && !invalidSet.current.has(uid);
+  useEffect(()=>{
+    const newOnes=(userVideos||[]).filter(v=>{
+      const uid=`user-${v._id}`;
+      return !seenSet.current.has(uid)&&!invalidSet.current.has(uid);
     });
-    if (newOnes.length > 0) appendItems(newOnes.map(v => ({ ...v, _isUserVideo: true })));
-  }, [userVideos, appendItems]);
+    if (newOnes.length>0) appendItems(newOnes.map(v=>({...v,_isUserVideo:true})));
+  },[userVideos,appendItems]);
 
-  // ── Init ───────────────────────────────────────────────────────────────────
-  useEffect(() => {
+  useEffect(()=>{
     if (!fetchTriggered.current) {
-      fetchTriggered.current = true;
+      fetchTriggered.current=true;
       YouTubePool.init();
       fetchUserVideos(true);
-
-      // ✅ Toujours démarrer à la page 1 pour garantir des résultats.
-      // La variété est assurée par intelligentReorder + jitter côté client,
-      // pas en sautant des pages API qui peuvent être vides.
-      const startPage = 1;
-
-      if (import.meta.env.DEV)
-        console.log(`[Feed v12] Init → p${startPage}, intent: ${userProfile.dominantIntent || 'none'}, seenSet: ${seenSet.current.size}`);
-
-      fetchAggregated(startPage, CONFIG.aggregated.initialLoad);
+      fetchAggregated(1,CONFIG.aggregated.initialLoad);
     }
-  }, []); // eslint-disable-line
+  },[]); // eslint-disable-line
 
-  // ── Mémoire ────────────────────────────────────────────────────────────────
-  useEffect(() => {
+  useEffect(()=>{
     if (!('memory' in performance)) return;
-    const check = setInterval(() => {
-      const mem = performance.memory;
-      if (mem && mem.usedJSHeapSize > mem.jsHeapSizeLimit * 0.75) {
-        aggPool.current = aggPool.current.slice(-CONFIG.recycleMin);
-        _preloadedUrls.clear();
-        cancelPreloadsAfter(0);
+    const check=setInterval(()=>{
+      const mem=performance.memory;
+      if (mem&&mem.usedJSHeapSize>mem.jsHeapSizeLimit*0.75) {
+        aggPool.current=aggPool.current.slice(-CONFIG.recycleMin);
+        _preloadedUrls.clear(); cancelPreloadsAfter(0);
       }
-    }, 15000);
-    return () => clearInterval(check);
-  }, []);
+    },15000);
+    return ()=>clearInterval(check);
+  },[]);
 
-  const handleVisible = useCallback((index) => {
-    if (anyModalRef.current || isFeedLocked()) return;
-    const now = Date.now();
-    if (now - lastScrollTime.current < 80) return;
-    lastScrollTime.current = now;
+  const handleVisible=useCallback((index)=>{
+    if (anyModalRef.current||isFeedLocked()) return;
+    const now=Date.now();
+    if (now-lastScrollTime.current<80) return;
+    lastScrollTime.current=now;
     notifyActive(index);
-
-    const remaining = feedItemsRef.current.length - index;
-    if (remaining <= adaptiveBuf.value && !loadingMoreRef.current) {
-      loadingMoreRef.current = true;
-      (async () => {
+    const remaining=feedItemsRef.current.length-index;
+    if (remaining<=adaptiveBuf.value&&!loadingMoreRef.current) {
+      loadingMoreRef.current=true;
+      (async()=>{
         try {
-          if (userHasMoreRef.current && !userLoadingRef.current) fetchUserVideos();
-          if (aggHasMoreRef.current && !aggLoadingRef.current)
-            await fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
-          if (!userHasMoreRef.current && !aggHasMoreRef.current) recycle();
-        } finally { loadingMoreRef.current = false; }
+          if (userHasMoreRef.current&&!userLoadingRef.current) fetchUserVideos();
+          if (aggHasMoreRef.current&&!aggLoadingRef.current) await fetchAggregated(aggPageRef.current+1,CONFIG.aggregated.loadMore);
+          if (!userHasMoreRef.current&&!aggHasMoreRef.current) recycle();
+        } finally { loadingMoreRef.current=false; }
       })();
     }
-  }, [notifyActive, fetchUserVideos, fetchAggregated, recycle]);
+  },[notifyActive,fetchUserVideos,fetchAggregated,recycle]);
 
-  // ── Scroll + pull-to-refresh ───────────────────────────────────────────────
-  useEffect(() => {
-    const container = containerRef.current;
+  useEffect(()=>{
+    const container=containerRef.current;
     if (!container) return;
-    let ticking = false;
-
-    const onScroll = () => {
-      if (anyModalRef.current || isFeedLocked() || ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        ticking = false;
-        if (anyModalRef.current || isFeedLocked()) return;
-        const idx = Math.round(container.scrollTop / (container.clientHeight || 1));
-        notifyActive(Math.max(0, Math.min(idx, feedItemsRef.current.length - 1)));
+    let ticking=false;
+    const onScroll=()=>{
+      if (anyModalRef.current||isFeedLocked()||ticking) return;
+      ticking=true;
+      requestAnimationFrame(()=>{
+        ticking=false;
+        if (anyModalRef.current||isFeedLocked()) return;
+        const idx=Math.round(container.scrollTop/(container.clientHeight||1));
+        notifyActive(Math.max(0,Math.min(idx,feedItemsRef.current.length-1)));
       });
     };
-
-    const onTouchStart = (e) => {
-      if (container.scrollTop === 0) { ptrStartRef.current = e.touches[0].clientY; ptrActiveRef.current = true; }
+    const onTouchStart=(e)=>{ if(container.scrollTop===0){ptrStartRef.current=e.touches[0].clientY; ptrActiveRef.current=true;} };
+    const onTouchMove=(e)=>{
+      if (!ptrActiveRef.current||!ptrStartRef.current) return;
+      const dy=e.touches[0].clientY-ptrStartRef.current;
+      if (dy>0&&container.scrollTop===0) { setPtrProgress(Math.min(1,dy/90)); if(dy>8) e.preventDefault(); }
     };
-    const onTouchMove = (e) => {
-      if (!ptrActiveRef.current || !ptrStartRef.current) return;
-      const dy = e.touches[0].clientY - ptrStartRef.current;
-      if (dy > 0 && container.scrollTop === 0) { setPtrProgress(Math.min(1, dy / 90)); if (dy > 8) e.preventDefault(); }
-    };
-    const onTouchEnd = async () => {
+    const onTouchEnd=async()=>{
       if (!ptrActiveRef.current) return;
-      ptrActiveRef.current = false;
-      const prog = ptrProgress; setPtrProgress(0);
-      if (prog > 0.8) { setPtrRefreshing(true); await new Promise(r => setTimeout(r, 800)); handleVideoPublished(); setPtrRefreshing(false); }
-      ptrStartRef.current = null;
+      ptrActiveRef.current=false;
+      const prog=ptrProgress; setPtrProgress(0);
+      if (prog>0.8) { setPtrRefreshing(true); await new Promise(r=>setTimeout(r,800)); handleVideoPublished(); setPtrRefreshing(false); }
+      ptrStartRef.current=null;
     };
-
-    container.addEventListener('scroll',     onScroll,     { passive: true });
-    container.addEventListener('touchstart', onTouchStart, { passive: true });
-    container.addEventListener('touchmove',  onTouchMove,  { passive: false });
-    container.addEventListener('touchend',   onTouchEnd,   { passive: true });
-    return () => {
-      container.removeEventListener('scroll',     onScroll);
-      container.removeEventListener('touchstart', onTouchStart);
-      container.removeEventListener('touchmove',  onTouchMove);
-      container.removeEventListener('touchend',   onTouchEnd);
+    container.addEventListener('scroll',onScroll,{passive:true});
+    container.addEventListener('touchstart',onTouchStart,{passive:true});
+    container.addEventListener('touchmove',onTouchMove,{passive:false});
+    container.addEventListener('touchend',onTouchEnd,{passive:true});
+    return ()=>{
+      container.removeEventListener('scroll',onScroll);
+      container.removeEventListener('touchstart',onTouchStart);
+      container.removeEventListener('touchmove',onTouchMove);
+      container.removeEventListener('touchend',onTouchEnd);
     };
-  }, [notifyActive, ptrProgress]); // eslint-disable-line
+  },[notifyActive,ptrProgress]); // eslint-disable-line
 
-  const handleVideoError = useCallback((itemId) => {
+  const handleVideoError=useCallback((itemId)=>{
     invalidateItem(itemId);
-    const remaining = feedItemsRef.current.length - activeIndexRef.current;
-    if (remaining <= adaptiveBuf.value && !aggLoadingRef.current) {
-      if (aggHasMoreRef.current) fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
+    const remaining=feedItemsRef.current.length-activeIndexRef.current;
+    if (remaining<=adaptiveBuf.value&&!aggLoadingRef.current) {
+      if (aggHasMoreRef.current) fetchAggregated(aggPageRef.current+1,CONFIG.aggregated.loadMore);
       else recycle();
     }
-  }, [invalidateItem, fetchAggregated, recycle]);
+  },[invalidateItem,fetchAggregated,recycle]);
 
-  const handleModalChange = useCallback((isOpen) => {
-    anyModalRef.current = isOpen;
-    setAnyModalOpen(isOpen);
-  }, []);
+  const handleModalChange=useCallback((isOpen)=>{ anyModalRef.current=isOpen; setAnyModalOpen(isOpen); },[]);
 
-  const handleVideoPublished = useCallback(() => {
-    feedItemsRef.current = [];
-    seenSet.current.clear();
-    invalidSet.current.clear();
-    try { localStorage.removeItem(CONFIG.seen.storageKey); } catch {}
-    aggPool.current = []; aggPageRef.current = 1; aggHasMoreRef.current = true;
-    watchStreakRef.current = 0; _recycleRound = 0; _adCounter = 0;
-    activeItemRef.current = null;
-    adaptiveBuf.reset(); watchScore.clear();
-    diversityGuard.reset();
+  const handleVideoPublished=useCallback(()=>{
+    feedItemsRef.current=[]; seenSet.current.clear(); invalidSet.current.clear();
+    try{localStorage.removeItem(CONFIG.seen.storageKey);}catch{}
+    aggPool.current=[]; aggPageRef.current=1; aggHasMoreRef.current=true;
+    watchStreakRef.current=0; _recycleRound=0; _adCounter=0;
+    activeItemRef.current=null;
+    adaptiveBuf.reset(); watchScore.clear(); diversityGuard.reset();
     cancelPreloadsAfter(0);
     setFeedItems([]); setFeedReady(false); setActiveDisplayIndex(0);
     setShowScrollHint(false); setWatchStreak(0);
-    containerRef.current?.scrollTo({ top: 0, behavior: 'auto' });
-    activeIndexRef.current = 0;
+    containerRef.current?.scrollTo({top:0,behavior:'auto'});
+    activeIndexRef.current=0;
     fetchUserVideos(true);
-    fetchAggregated(1, CONFIG.aggregated.initialLoad);
-  }, [fetchUserVideos, fetchAggregated]);
+    fetchAggregated(1,CONFIG.aggregated.initialLoad);
+  },[fetchUserVideos,fetchAggregated]);
 
-  useEffect(() => () => {
+  useEffect(()=>()=>{
     document.getElementById('vp-styles')?.remove();
-    _cssInjected = false;
-    watchScore.clear();
-    adaptiveBuf.reset();
-    diversityGuard.reset();
-    cancelPreloadsAfter(0);
-    YouTubePool.destroy();
-  }, []);
+    _cssInjected=false;
+    watchScore.clear(); adaptiveBuf.reset(); diversityGuard.reset();
+    cancelPreloadsAfter(0); YouTubePool.destroy();
+  },[]);
 
-  const displayItems = useMemo(() => {
+  const displayItems=useMemo(()=>{
     if (!searchQuery.trim()) return feedItems;
-    const q = searchQuery.toLowerCase();
-    return feedItems.filter(item => {
-      if (item.type === 'ad') return false;
-      const d = item.data;
-      return ['title','description','channelName','username'].some(k => (d[k]||'').toLowerCase().includes(q));
+    const q=searchQuery.toLowerCase();
+    return feedItems.filter(item=>{
+      if (item.type==='ad') return false;
+      const d=item.data;
+      return ['title','description','channelName','username'].some(k=>(d[k]||'').toLowerCase().includes(q));
     });
-  }, [feedItems, searchQuery]);
+  },[feedItems,searchQuery]);
 
-  const handleBack     = useCallback(() => navigate('/'), [navigate]);
-  const handleAddVideo = useCallback(() => setShowModal(true), []);
+  const handleBack=useCallback(()=>navigate('/'),[navigate]);
+  const handleAddVideo=useCallback(()=>setShowModal(true),[]);
 
   return (
     <ActiveIndexContext.Provider value={activeCtx}>
       <ModalOpenContext.Provider value={anyModalOpen}>
-        <div className={`fixed inset-0 bg-black overflow-hidden${feedReady ? ' vp-feed-ready' : ''}`} style={{ contain:'strict' }}>
-          <SkeletonLayer />
-          <SlideFlash trigger={slideFlash} />
-          <OfflineBanner show={!isOnline} />
-          <PullToRefresh progress={ptrProgress} refreshing={ptrRefreshing} />
-          <WatchStreakBadge count={watchStreak} />
+        <div className={`fixed inset-0 bg-black overflow-hidden${feedReady?' vp-feed-ready':''}`} style={{contain:'strict'}}>
+          <SkeletonLayer/>
+          <SlideFlash trigger={slideFlash}/>
+          <OfflineBanner show={!isOnline}/>
+          <PullToRefresh progress={ptrProgress} refreshing={ptrRefreshing}/>
+          <WatchStreakBadge count={watchStreak}/>
 
-          {/* Toast intention détectée */}
           <AnimatePresence>
-            {intentToast && (
-              <motion.div
-                key={intentToast}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                style={{ position:'absolute', top: 80, left:'50%', transform:'translateX(-50%)', zIndex: 45, pointerEvents:'none' }}>
-                <IntentToast intent={intentToast} />
+            {intentToast&&(
+              <motion.div key={intentToast} initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-6}}
+                style={{position:'absolute',top:80,left:'50%',transform:'translateX(-50%)',zIndex:45,pointerEvents:'none'}}>
+                <IntentToast intent={intentToast}/>
               </motion.div>
             )}
           </AnimatePresence>
 
-          {/* Badge réseau dégradé */}
-          <NetworkBadge type={netType} />
+          <NetworkBadge type={netType}/>
 
           <ActionBar
-            onBack={handleBack} activeTab={activeTab} setActiveTab={setActiveTab}
+            onBack={handleBack}
             showSearch={showSearch} setShowSearch={setShowSearch}
             searchQuery={searchQuery} setSearchQuery={setSearchQuery}
-            onAddVideo={handleAddVideo} hasNewContent={hasNewContent}
+            onAddVideo={handleAddVideo}
             currentIndex={activeDisplayIndex} totalItems={feedItems.length}
           />
-          <SwipeHint visible={showScrollHint && activeDisplayIndex === 0 && feedReady} />
 
-          <div
-            ref={containerRef}
+          <SwipeHint visible={showScrollHint&&activeDisplayIndex===0&&feedReady}/>
+
+          <div ref={containerRef}
             className="vp-scroll absolute inset-0 z-10 overflow-y-scroll snap-y snap-mandatory"
-            style={{ willChange:'transform', WebkitOverflowScrolling:'touch', contain:'layout' }}
-          >
-            {displayItems.map((item, index) => {
-              const dist = Math.abs(index - activeDisplayIndex);
-              return dist > CONFIG.virtual
-                ? <SlidePlaceholder key={item.id} />
-                : <SlideItem
-                    key={item.id} item={item} index={index}
+            style={{willChange:'transform',WebkitOverflowScrolling:'touch',contain:'layout'}}>
+            {displayItems.map((item,index)=>{
+              const dist=Math.abs(index-activeDisplayIndex);
+              return dist>CONFIG.virtual
+                ?<SlidePlaceholder key={item.id}/>
+                :<SlideItem key={item.id} item={item} index={index}
                     onVisible={handleVisible} onModalChange={handleModalChange}
-                    onVideoError={handleVideoError}
-                  />;
+                    onVideoError={handleVideoError}/>;
             })}
           </div>
 
-          {showModal && (
-            <VideoModal showModal={showModal} setShowModal={setShowModal} onVideoPublished={handleVideoPublished} />
+          {showModal&&(
+            <VideoModal showModal={showModal} setShowModal={setShowModal} onVideoPublished={handleVideoPublished}/>
           )}
         </div>
       </ModalOpenContext.Provider>

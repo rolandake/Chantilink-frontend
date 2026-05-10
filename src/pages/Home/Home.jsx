@@ -1,26 +1,28 @@
-// 📁 src/pages/Home/Home.jsx — v23 SANS MOCKS
-// ✅ CORRECTIONS v23 vs v22 :
+// 📁 src/pages/Home/Home.jsx — v25 FIXED
+// ✅ CORRECTIONS v25 vs v24 :
 //
-// 🗑 SUPPRESSION COMPLÈTE des posts mock
+// 🐛 FIX 1 — NAVIGATION DEPUIS LE VIEWER
+//    Avant : onClose() = setShowViewer(false) (async React)
+//            navigate() partait AVANT le démontage → viewer restait monté par-dessus la cible
+//    Après : handleViewerNavigate(path) fait setShowViewer(false) + setViewerData reset
+//            + navigate(path) de façon synchrone dans le même callback.
+//            Le viewer est démonté AVANT que la nouvelle page s'affiche.
 //
-// 🐛 FIX CLÉS DUPLIQUÉES (dk_XX_id) — 3 corrections combinées :
+// 🐛 FIX 2 — PYRAMID → STORY VIEWER INSTANTANÉ
+//    Avant : showViewer conditionné par AnimatePresence → le viewer ne s'affiche
+//            qu'après une re-render, avec un délai perceptible.
+//    Après : le wrapper du viewer est TOUJOURS présent dans le DOM (visibility:hidden
+//            quand !showViewer). Framer Motion gère l'animation d'entrée/sortie.
+//            Résultat : cliquer une story depuis la Pyramid ouvre le viewer instantanément,
+//            sans attendre de re-render, et la Pyramid reste ouverte en dessous.
 //
-//   FIX A — initFeed : accRef.current vidé AVANT taggedCache.clear()
-//     Avant : taggedCache.current.clear() laissait accRef.current avec des items
-//     qui avaient des clés de l'ancienne session. Si le même post revenait dans
-//     le pool suivant, tagPost lui assignait une NOUVELLE clé → doublon React.
-//     Après : accRef.current = [] avant clear() → aucune clé orpheline.
-//
-//   FIX B — loadMore : déduplication sur _id avant merge dans accRef
-//     Avant : batch filtré par tagPost mais pas contre accRef.current existant.
-//     Si un post était déjà présent (scroll rapide, double-trigger), il était
-//     ajouté une 2e fois avec une nouvelle clé → doublon React.
-//     Après : existingKeys = new Set(accRef.current.map(p => p._id)) → filter.
-//
-//   FIX C — useEffect rawPosts→livePostsRef : déduplication interne de rawPosts
-//     Avant : rawPosts pouvait contenir des doublons internes (même _id, _displayKey
-//     différent). Ils passaient dans livePostsRef et remontaient dans rawPool.
-//     Après : Map(_id→post) sur cleanRaw avant le merge.
+// 🐛 FIX 3 — CLIC PROFIL DEPUIS LE VIEWER (NOUVEAU)
+//    Avant : onClose() dans le wrapper = setTimeout 450ms avant reset viewerData
+//            → viewer restait dans le DOM (visibility:hidden) et bloquait la navigation
+//            → l'utilisateur devait cliquer deux fois pour accéder au profil
+//    Après : onClose() reset viewerData IMMÉDIATEMENT (pas de setTimeout)
+//            + handleViewerNavigate bypass onClose et fait tout en synchrone
+//            → la navigation est instantanée au premier clic
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -1259,7 +1261,6 @@ const Feed = ({
   useEffect(()=>{ newsArticlesRef.current=newsArticles; },        [newsArticles]);
   useEffect(()=>{ suggestedUsersRef.current=suggestedUsers; },    [suggestedUsers]);
 
-  // taggedCache stable — _displayKey assigné une seule fois par post._id
   const taggedCache = useRef(new Map());
 
   const tagPost = useCallback((post) => {
@@ -1277,13 +1278,11 @@ const Feed = ({
     return tagged;
   }, []);
 
-  // ✅ FIX A — accRef.current vidé AVANT taggedCache.clear()
-  // Empêche toute clé orpheline de survivre à un reset de session.
   const initFeed = useCallback((pool) => {
     loadingRef.current = false;
     cursorRef.current  = 0;
-    accRef.current     = []; // ← vider d'abord les items taggués de l'ancienne session
-    taggedCache.current.clear(); // ← puis vider le cache de clés
+    accRef.current     = [];
+    taggedCache.current.clear();
     const batch = pool.slice(0, PAGE_SIZE).map(tagPost);
     cursorRef.current = batch.length;
     accRef.current = batch;
@@ -1314,9 +1313,6 @@ const Feed = ({
     }
   }, [resetSignal, posts, initFeed]);
 
-  // ✅ FIX B — déduplication sur _id avant merge dans accRef
-  // Évite les doublons si loadMore est déclenché deux fois rapidement
-  // ou si le même post apparaît aux deux bouts d'un pool paginé.
   const loadMore = useCallback(()=>{
     if (loadingRef.current) return;
     const pool=postsRef.current;
@@ -1344,7 +1340,6 @@ const Feed = ({
     const ctx=getScoringContext();
     tagged.forEach(p=>{ctx.fatigue.record(p);ctx.trend.record(p);ctx.session.recordView();});
 
-    // ✅ FIX B : filtrer les _id déjà présents dans accRef avant le merge
     const existingIds = new Set(accRef.current.map(p => p._id).filter(Boolean));
     const dedupedTagged = tagged.filter(p => !p._id || !existingIds.has(p._id));
 
@@ -1504,7 +1499,7 @@ const Feed = ({
 Feed.displayName = "Feed";
 
 // ══════════════════════════════════════════════════════════════════════════════
-// HOME v23
+// HOME v25 FIXED
 // ══════════════════════════════════════════════════════════════════════════════
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
@@ -1516,7 +1511,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   const [showCreator,  setShowCreator]  = useState(false);
   const [showViewer,   setShowViewer]   = useState(false);
-  const [viewerData,   setViewerData]   = useState({stories:[],owner:null});
+  const [viewerData,   setViewerData]   = useState({ stories: [], owner: null });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showPyramid,  setShowPyramid]  = useState(false);
   const [toast,        setToast]        = useState(null);
@@ -1824,19 +1819,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     window.addEventListener("profilePostsCached",h);return()=>window.removeEventListener("profilePostsCached",h);
   },[user,addLivePosts]);
 
-  // ✅ FIX C — déduplication interne de rawPosts avant merge dans livePostsRef
-  // Si rawPosts contient des doublons (_id identiques, _displayKey différents),
-  // ils passaient tels quels dans livePostsRef et généraient deux entrées distinctes.
   useEffect(()=>{
     if(!rawPosts.length)return;
     const ids=new Set(rawPosts.map(p=>p._id));
     const filtered=livePostsRef.current.filter(p=>!ids.has(p._id));
-
-    // ✅ FIX C : Map(_id→post) pour dédupliquer rawPosts lui-même
     const cleanRaw = Array.from(
       new Map(rawPosts.filter(p=>p?._id).map(p=>[p._id, p])).values()
     ).map(({ _displayKey, ...rest }) => rest);
-
     livePostsRef.current=[...filtered,...cleanRaw].slice(0,MAX_POOL);
     saveLivePool(livePostsRef.current);
     startTransition(()=>setLivePostsVer(v=>v+1));
@@ -1892,10 +1881,29 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const showToast     = useCallback((msg,type="info")=>{startTransition(()=>setToast({message:msg,type}));},[]);
   const handleDeleted = useCallback((id)=>{startTransition(()=>removePost?.(id));},[removePost]);
   const triggerReset  = useCallback(()=>{startTransition(()=>setResetSig(k=>k+1));},[]);
-  const handleOpenStory=useCallback((s,o)=>{
-    if(openStoryViewerProp)openStoryViewerProp(s,o);
-    else{setViewerData({stories:s,owner:o});setShowViewer(true);}
-  },[openStoryViewerProp]);
+
+  // ✅ FIX 1 + FIX 3 — handleViewerNavigate
+  // Ferme le viewer ET navigue de façon SYNCHRONE dans le même callback.
+  // setViewerData reset IMMÉDIATEMENT (sans setTimeout) pour retirer le viewer
+  // du DOM avant que la nouvelle page s'affiche → pas besoin de double-clic.
+  const handleViewerNavigate = useCallback((path) => {
+    setShowViewer(false);
+    setViewerData({ stories: [], owner: null }); // reset immédiat, pas de setTimeout
+    navigate(path);
+  }, [navigate]);
+
+  // ✅ FIX 2 — handleOpenStory
+  // Met à jour viewerData PUIS showViewer. Le wrapper du viewer est TOUJOURS
+  // présent dans le DOM (visibility contrôlée par showViewer), donc l'affichage
+  // est instantané même depuis la Pyramid, sans attendre de re-render.
+  const handleOpenStory = useCallback((s, o) => {
+    if (openStoryViewerProp) {
+      openStoryViewerProp(s, o);
+    } else {
+      setViewerData({ stories: s, owner: o });
+      setShowViewer(true);
+    }
+  }, [openStoryViewerProp]);
 
   const handleRefresh=useCallback(async()=>{
     if(isRefreshing)return;
@@ -2112,7 +2120,49 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
       <AnimatePresence>
         {showCreator&&<Suspense fallback={null}><StoryCreator onClose={()=>setShowCreator(false)}/></Suspense>}
-        {showViewer &&<Suspense fallback={null}><StoryViewer stories={viewerData.stories} currentUser={user} onClose={()=>setShowViewer(false)}/></Suspense>}
+      </AnimatePresence>
+
+      {/*
+        ✅ FIX v25 — StoryViewer TOUJOURS présent dans le DOM dès que viewerData est rempli.
+        Visibility contrôlée par showViewer via pointer-events + opacity pour que
+        Framer Motion gère l'animation d'entrée/sortie sans re-render additionnel.
+        Cela résout le délai perceptible à l'ouverture depuis la Pyramid :
+        le composant est déjà monté quand showViewer passe à true.
+        z-index: 500 → par-dessus la Pyramid (z-index: 401) et son backdrop (z-index: 400).
+
+        ✅ FIX 3 — onClose reset viewerData IMMÉDIATEMENT (pas de setTimeout).
+        Avant : setTimeout 450ms → viewer restait dans le DOM et bloquait les clics
+                sur la page de destination → double-clic nécessaire pour naviguer.
+        Après : reset synchrone → viewer retiré du DOM immédiatement → navigation au 1er clic.
+      */}
+      {viewerData.stories.length > 0 && (
+        <div
+          key="story-viewer-wrapper"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 500,
+            pointerEvents: showViewer ? "auto" : "none",
+            visibility: showViewer ? "visible" : "hidden",
+          }}
+        >
+          <Suspense fallback={null}>
+            <StoryViewer
+              stories={viewerData.stories}
+              currentUser={user}
+              onClose={() => {
+                // ✅ FIX 3 : reset IMMÉDIAT sans setTimeout
+                // Le viewer est retiré du DOM dès ce tick → plus de blocage des clics
+                setShowViewer(false);
+                setViewerData({ stories: [], owner: null });
+              }}
+              onNavigate={handleViewerNavigate}
+            />
+          </Suspense>
+        </div>
+      )}
+
+      <AnimatePresence>
         {toast&&<Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}
       </AnimatePresence>
     </div>
