@@ -23,6 +23,13 @@
 //    Après : onClose() reset viewerData IMMÉDIATEMENT (pas de setTimeout)
 //            + handleViewerNavigate bypass onClose et fait tout en synchrone
 //            → la navigation est instantanée au premier clic
+//
+// 🐛 FIX 4 — COLONNE DROITE STICKY + SCROLLABLE (NOUVEAU)
+//    Avant : la colonne "Suggestions pour vous" était statique et disparaissait
+//            du viewport dès que l'utilisateur scrollait dans le feed.
+//    Après : position sticky + alignSelf flex-start + maxHeight 100vh + overflowY auto
+//            → la colonne reste visible en permanence et scrolle indépendamment
+//            si son contenu dépasse la hauteur de l'écran.
 
 import React, {
   useState, useMemo, useEffect, useRef, useCallback,
@@ -1883,19 +1890,13 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const triggerReset  = useCallback(()=>{startTransition(()=>setResetSig(k=>k+1));},[]);
 
   // ✅ FIX 1 + FIX 3 — handleViewerNavigate
-  // Ferme le viewer ET navigue de façon SYNCHRONE dans le même callback.
-  // setViewerData reset IMMÉDIATEMENT (sans setTimeout) pour retirer le viewer
-  // du DOM avant que la nouvelle page s'affiche → pas besoin de double-clic.
   const handleViewerNavigate = useCallback((path) => {
     setShowViewer(false);
-    setViewerData({ stories: [], owner: null }); // reset immédiat, pas de setTimeout
+    setViewerData({ stories: [], owner: null });
     navigate(path);
   }, [navigate]);
 
   // ✅ FIX 2 — handleOpenStory
-  // Met à jour viewerData PUIS showViewer. Le wrapper du viewer est TOUJOURS
-  // présent dans le DOM (visibility contrôlée par showViewer), donc l'affichage
-  // est instantané même depuis la Pyramid, sans attendre de re-render.
   const handleOpenStory = useCallback((s, o) => {
     if (openStoryViewerProp) {
       openStoryViewerProp(s, o);
@@ -2034,7 +2035,12 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     <div className={`flex flex-col ${bg}`} style={{height:"100%",overflow:"hidden"}}>
       <div ref={scrollRef} data-scroll-container="true" className="flex-1 overflow-y-auto"
         style={{WebkitOverflowScrolling:"touch",scrollbarWidth:"none",msOverflowStyle:"none",willChange:"transform",transform:"translateZ(0)"}}>
-        <style>{`[data-scroll-container]::-webkit-scrollbar{display:none;width:0;height:0;}[data-scroll-container]{scrollbar-width:none;-ms-overflow-style:none;}`}</style>
+        <style>{`
+          [data-scroll-container]::-webkit-scrollbar{display:none;width:0;height:0;}
+          [data-scroll-container]{scrollbar-width:none;-ms-overflow-style:none;}
+          .xl-sidebar::-webkit-scrollbar{display:none;width:0;height:0;}
+          .xl-sidebar{scrollbar-width:none;-ms-overflow-style:none;}
+        `}</style>
 
         <AnimatePresence>
           {(pullDist>8||isRefreshing)&&(
@@ -2081,8 +2087,23 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
             />
           </div>
 
-          {/* Colonne droite xl */}
-          <div className="hidden xl:flex flex-col gap-5 w-[320px] flex-shrink-0 pt-4 pr-2">
+          {/* ✅ FIX 4 — Colonne droite xl : sticky + scrollable indépendamment du feed
+              - position sticky + top:0 → reste visible pendant le scroll du feed
+              - alignSelf flex-start → INDISPENSABLE : sans ça, sticky ne se déclenche
+                jamais car l'enfant flex s'étire à la hauteur totale du parent
+              - maxHeight 100vh + overflowY auto → scroll interne si contenu trop long
+              - scrollbarWidth none + ::-webkit-scrollbar hidden → scrollbar invisible
+          */}
+          <div
+            className="hidden xl:flex flex-col gap-5 w-[320px] flex-shrink-0 pt-4 pr-2 xl-sidebar"
+            style={{
+              position:   "sticky",
+              top:        0,
+              alignSelf:  "flex-start",
+              maxHeight:  "100vh",
+              overflowY:  "auto",
+            }}
+          >
             <div className={`rounded-2xl overflow-hidden border ${isDarkMode?"border-gray-800 bg-gray-900":"border-gray-200 bg-gray-50"}`}>
               <div className={`px-4 pt-3 pb-2 border-b ${isDarkMode?"border-gray-800":"border-gray-100"}`}>
                 <p className={`text-[13px] font-bold ${isDarkMode?"text-gray-200":"text-gray-800"}`}>Suggestions pour vous</p>
@@ -2124,26 +2145,17 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
       {/*
         ✅ FIX v25 — StoryViewer TOUJOURS présent dans le DOM dès que viewerData est rempli.
-        Visibility contrôlée par showViewer via pointer-events + opacity pour que
-        Framer Motion gère l'animation d'entrée/sortie sans re-render additionnel.
-        Cela résout le délai perceptible à l'ouverture depuis la Pyramid :
-        le composant est déjà monté quand showViewer passe à true.
-        z-index: 500 → par-dessus la Pyramid (z-index: 401) et son backdrop (z-index: 400).
-
-        ✅ FIX 3 — onClose reset viewerData IMMÉDIATEMENT (pas de setTimeout).
-        Avant : setTimeout 450ms → viewer restait dans le DOM et bloquait les clics
-                sur la page de destination → double-clic nécessaire pour naviguer.
-        Après : reset synchrone → viewer retiré du DOM immédiatement → navigation au 1er clic.
+        ✅ FIX 3  — onClose reset viewerData IMMÉDIATEMENT (pas de setTimeout).
       */}
       {viewerData.stories.length > 0 && (
         <div
           key="story-viewer-wrapper"
           style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 500,
+            position:     "fixed",
+            inset:        0,
+            zIndex:       500,
             pointerEvents: showViewer ? "auto" : "none",
-            visibility: showViewer ? "visible" : "hidden",
+            visibility:   showViewer ? "visible" : "hidden",
           }}
         >
           <Suspense fallback={null}>
@@ -2151,8 +2163,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
               stories={viewerData.stories}
               currentUser={user}
               onClose={() => {
-                // ✅ FIX 3 : reset IMMÉDIAT sans setTimeout
-                // Le viewer est retiré du DOM dès ce tick → plus de blocage des clics
                 setShowViewer(false);
                 setViewerData({ stories: [], owner: null });
               }}
