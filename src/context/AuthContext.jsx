@@ -1,9 +1,8 @@
-// src/context/AuthContext.jsx - VERSION AVEC SYNC LANGUE ⚡
-// ✅ Toutes les fonctionnalités précédentes conservées
-// ✅ NOUVEAU : après login/register/refresh → applyLanguage(user.language)
-//    → La langue de l'utilisateur est appliquée automatiquement à la connexion
-// ✅ NOUVEAU : AuthContext exporté pour AppBridge
-// ✅ FIX : updateUserProfile persiste maintenant en base via API PUT
+// src/context/AuthContext.jsx
+// ✅ VERSION PERSISTANCE MONDIALE — Session quasi-permanente
+// ✅ FIX CRITIQUE : clearContactsCache(userId) appelé au logout
+//    → vide le localStorage contacts de l'utilisateur déconnecté
+//    → empêche un autre utilisateur de voir ses contacts
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -14,11 +13,12 @@ import { io } from "socket.io-client";
 import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
 import { applyLanguage } from "../i18n";
+// ✅ NOUVEAU : import pour vider le cache contacts au logout
+import { clearContactsCache } from "../Pages/chat/ContactSidebar";
 
-// ✅ Export nommé du contexte (pour AppLanguageBridge dans main.jsx)
 export const AuthContext = createContext({
   user: null, token: null, socket: null, loading: false, ready: false,
-  isAuthenticated: false, notifications: [],
+  isAuthenticated: false, notifications: [], sessionLoading: true,
   login: async () => ({ success: false, message: "Auth not ready" }),
   logout: async () => {},
   register: async () => ({ success: false, message: "Auth not ready" }),
@@ -72,20 +72,27 @@ const summarizeAxiosError = (err) => ({
 });
 
 const CONFIG = {
-  TOKEN_REFRESH_MARGIN_MS:  3 * 60 * 1000,
-  AUTO_REFRESH_INTERVAL_MS: 60 * 1000,
-  MAX_NOTIFICATIONS:        50,
-  MAX_LOGIN_ATTEMPTS:       5,
-  LOCKOUT_DURATION_MS:      15 * 60 * 1000,
-  MAX_REFRESH_RETRIES:      3,
-  REFRESH_COOLDOWN_MS:      5000,
+  TOKEN_REFRESH_MARGIN_MS:   3 * 60 * 1000,
+  AUTO_REFRESH_INTERVAL_MS:  60 * 1000,
+  MAX_NOTIFICATIONS:         50,
+  MAX_LOGIN_ATTEMPTS:        5,
+  LOCKOUT_DURATION_MS:       15 * 60 * 1000,
+  MAX_REFRESH_RETRIES:       3,
+  REFRESH_COOLDOWN_MS:       3000,
+  IDB_SESSION_TTL_MS:        90 * 24 * 60 * 60 * 1000,
+  VISIBILITY_RECHECK_DELAY:  2000,
+  BROADCAST_CHANNEL_NAME:    "chantilink_auth",
 };
 
 const STORAGE_KEYS = {
-  USER_INFO:      "chantilink_user_info_v8",
-  LOGIN_ATTEMPTS: "chantilink_login_attempts_v8",
+  USER_INFO:       "chantilink_user_info_v8",
+  SESSION_META:    "chantilink_session_meta_v8",
+  LOGIN_ATTEMPTS:  "chantilink_login_attempts_v8",
 };
 
+// ============================================
+// STORAGE HELPERS
+// ============================================
 const secureSetItem = (key, value) => {
   try { localStorage.setItem(key, JSON.stringify(value)); }
   catch (err) { debugLog("warn", "Storage", "setItem échec", err); }
@@ -96,6 +103,78 @@ const secureGetItem = (key) => {
 };
 const secureRemoveItem = (key) => { try { localStorage.removeItem(key); } catch {} };
 
+// ============================================
+// IDB PERSISTENCE
+// ============================================
+const IDB_STORE = "session";
+
+const persistSessionToIDB = async (userData, meta = {}) => {
+  if (!userData?._id) return;
+  const payload = {
+    user:    userData,
+    meta:    { ...meta, savedAt: Date.now(), ttl: CONFIG.IDB_SESSION_TTL_MS },
+    version: 8,
+  };
+  try {
+    await Promise.all([
+      idbSet("users", `user_${userData._id}`, userData),
+      idbSet("users", "user_active",           userData),
+      idbSet("users", "session_meta",          payload),
+    ]);
+    secureSetItem(STORAGE_KEYS.USER_INFO,    userData);
+    secureSetItem(STORAGE_KEYS.SESSION_META, payload.meta);
+    debugLog("log", "IDB", `✅ Session persistée: ${userData.email}`);
+  } catch (err) {
+    debugLog("warn", "IDB", "Échec persistSessionToIDB", err.message);
+    secureSetItem(STORAGE_KEYS.USER_INFO, userData);
+  }
+};
+
+const getSessionFromIDB = async () => {
+  try {
+    const session = await idbGet("users", "session_meta").catch(() => null);
+    if (!session?.user) {
+      const user = await idbGet("users", "user_active").catch(() => null);
+      if (user?._id) {
+        const meta = secureGetItem(STORAGE_KEYS.SESSION_META);
+        if (meta?.savedAt && (Date.now() - meta.savedAt < CONFIG.IDB_SESSION_TTL_MS)) {
+          debugLog("log", "IDB", `✅ Session récupérée (fallback user_active): ${user.email}`);
+          return { user, meta };
+        }
+      }
+      return null;
+    }
+    const { user, meta } = session;
+    if (!meta?.savedAt) return { user, meta: {} };
+
+    const age = Date.now() - meta.savedAt;
+    if (age > CONFIG.IDB_SESSION_TTL_MS) {
+      debugLog("warn", "IDB", `⚠️ Session IDB expirée (${Math.round(age / 86400000)}j)`);
+      return null;
+    }
+    debugLog("log", "IDB", `✅ Session récupérée: ${user.email} (${Math.round(age / 3600000)}h)`);
+    return { user, meta };
+  } catch (err) {
+    debugLog("warn", "IDB", "Erreur getSessionFromIDB", err.message);
+    const user = secureGetItem(STORAGE_KEYS.USER_INFO);
+    return user?._id ? { user, meta: {} } : null;
+  }
+};
+
+const clearSessionFromIDB = async () => {
+  try {
+    await Promise.all([
+      idbDelete("users", "user_active").catch(() => {}),
+      idbDelete("users", "session_meta").catch(() => {}),
+    ]);
+  } catch {}
+  secureRemoveItem(STORAGE_KEYS.USER_INFO);
+  secureRemoveItem(STORAGE_KEYS.SESSION_META);
+};
+
+// ============================================
+// AXIOS INSTANCE
+// ============================================
 const authAxios = axios.create({
   baseURL:         BACKEND_URL,
   timeout:         30000,
@@ -103,16 +182,40 @@ const authAxios = axios.create({
   headers:         { "Content-Type": "application/json" },
 });
 
-// ============================================
-// HELPER : applique la langue du user si disponible
-// ============================================
 function applyUserLanguage(user) {
   if (user?.language) {
     applyLanguage(user.language);
-    debugLog("log", "Language", `✅ Langue appliquée depuis user: ${user.language}`);
+    debugLog("log", "Language", `✅ Langue: ${user.language}`);
   }
 }
 
+// ============================================
+// RETRY HELPER
+// ============================================
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const withRetry = async (fn, retries = 3, baseDelay = 1000) => {
+  let lastErr;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const isClientError = err?.response?.status >= 400 && err?.response?.status < 500;
+      if (isClientError) throw err;
+      if (i < retries - 1) {
+        const delay = baseDelay * Math.pow(2, i);
+        debugLog("warn", "Retry", `Tentative ${i + 2}/${retries} dans ${delay}ms`);
+        await sleep(delay);
+      }
+    }
+  }
+  throw lastErr;
+};
+
+// ============================================
+// PROVIDER
+// ============================================
 export function AuthProvider({ children }) {
   const [user, setUser]                     = useState(null);
   const [token, setToken]                   = useState(null);
@@ -129,9 +232,46 @@ export function AuthProvider({ children }) {
   const refreshQueue       = useRef([]);
   const lastRefreshAttempt = useRef(0);
   const socketRef          = useRef(null);
+  const getTokenRef        = useRef(null);
+  const broadcastRef       = useRef(null);
+  const visibilityHandler  = useRef(null);
+  const idbUserRef         = useRef(null);
+  // ✅ Ref pour accéder à l'userId courant dans logout (évite closure stale)
+  const currentUserRef     = useRef(null);
 
-  // Ref pour getToken utilisable dans updateUserProfile sans dépendance circulaire
-  const getTokenRef = useRef(null);
+  // Garder currentUserRef à jour
+  useEffect(() => {
+    currentUserRef.current = user;
+  }, [user]);
+
+  // ============================================
+  // BROADCAST CHANNEL
+  // ============================================
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    try {
+      const bc = new BroadcastChannel(CONFIG.BROADCAST_CHANNEL_NAME);
+      bc.onmessage = (event) => {
+        const { type, data } = event.data || {};
+        if (type === "LOGOUT") {
+          debugLog("log", "BC", "🔄 Logout reçu d'un autre onglet");
+          setUser(null); setToken(null); setTokenExpiresAt(null);
+        }
+        if (type === "SESSION_UPDATE" && data?.user) {
+          debugLog("log", "BC", `🔄 Session MAJ depuis un autre onglet: ${data.user.email}`);
+          setUser(data.user);
+          if (data.token)     setToken(data.token);
+          if (data.expiresAt) setTokenExpiresAt(data.expiresAt);
+        }
+      };
+      broadcastRef.current = bc;
+      return () => bc.close();
+    } catch {}
+  }, []);
+
+  const broadcastSession = useCallback((type, data = {}) => {
+    try { broadcastRef.current?.postMessage({ type, data }); } catch {}
+  }, []);
 
   // ============================================
   // NOTIFICATIONS
@@ -145,7 +285,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ============================================
-  // TENTATIVES DE CONNEXION
+  // LOGIN ATTEMPTS
   // ============================================
   const trackLoginAttempt = useCallback((email) => {
     const key = email.toLowerCase();
@@ -186,21 +326,6 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ============================================
-  // SYNC IDB
-  // ============================================
-  const syncUserToIDB = useCallback(async (userData) => {
-    if (!userData?._id) return;
-    try {
-      await Promise.all([
-        idbSet("users", `user_${userData._id}`, userData),
-        idbSet("users", "user_active", userData),
-      ]);
-    } catch (err) {
-      debugLog("warn", "IDB", "Échec sync", err.message);
-    }
-  }, []);
-
-  // ============================================
   // SOCKET CLEANUP
   // ============================================
   const cleanupSocket = useCallback(() => {
@@ -211,24 +336,53 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ============================================
-  // DÉCONNEXION
+  // ✅ DÉCONNEXION — avec clearContactsCache
   // ============================================
   const logout = useCallback(async (silent = false) => {
     debugLog("log", "Logout", `Déconnexion (silent: ${silent})`);
+
+    // ✅ FIX CRITIQUE : vider le cache contacts de cet utilisateur
+    // AVANT de réinitialiser le state (user encore disponible via ref)
+    const currentUserId = currentUserRef.current?._id || currentUserRef.current?.id;
+    if (currentUserId) {
+      try {
+        clearContactsCache(currentUserId);
+        debugLog("log", "Logout", `🧹 Cache contacts vidé pour: ${currentUserId}`);
+      } catch (err) {
+        debugLog("warn", "Logout", "Erreur clearContactsCache", err.message);
+      }
+    }
+
     try { await authAxios.post("/api/auth/logout").catch(() => {}); } catch {}
     cleanupSocket();
+    broadcastSession("LOGOUT");
     setUser(null); setToken(null); setTokenExpiresAt(null);
-    secureRemoveItem(STORAGE_KEYS.USER_INFO);
-    await idbDelete("users", "user_active").catch(() => {});
+    await clearSessionFromIDB();
     if (!silent) addNotification("info", "Déconnecté");
-  }, [cleanupSocket, addNotification]);
+  }, [cleanupSocket, addNotification, broadcastSession]);
+
+  // ============================================
+  // APPLIQUER UNE SESSION
+  // ============================================
+  const applySession = useCallback(async ({ token: newToken, expiresIn, user: userData }) => {
+    const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
+    setToken(newToken);
+    setTokenExpiresAt(expiresAt);
+    setUser(userData);
+    await persistSessionToIDB(userData, { expiresAt, lastRefresh: Date.now() });
+    applyUserLanguage(userData);
+    broadcastSession("SESSION_UPDATE", { user: userData, token: newToken, expiresAt });
+  }, [broadcastSession]);
 
   // ============================================
   // REFRESH TOKEN
   // ============================================
-  const refreshAccessToken = useCallback(async (retryCount = 0) => {
+  const refreshAccessToken = useCallback(async () => {
     const now = Date.now();
-    if (now - lastRefreshAttempt.current < CONFIG.REFRESH_COOLDOWN_MS) return false;
+    if (now - lastRefreshAttempt.current < CONFIG.REFRESH_COOLDOWN_MS) {
+      debugLog("log", "Refresh", "⏳ Cooldown actif, skip");
+      return false;
+    }
     lastRefreshAttempt.current = now;
 
     if (isRefreshing.current) {
@@ -236,37 +390,32 @@ export function AuthProvider({ children }) {
     }
 
     isRefreshing.current = true;
+    debugLog("log", "Refresh", "🔄 Tentative refresh...");
 
     try {
-      const res = await authAxios.post("/api/auth/refresh-token");
+      const res = await withRetry(
+        () => authAxios.post("/api/auth/refresh-token"),
+        CONFIG.MAX_REFRESH_RETRIES,
+        1000
+      );
+
       if (!res.data.success || !res.data.token)
         throw new Error(res.data?.message || "Réponse invalide");
 
-      const { token: newToken, expiresIn, user: updatedUser } = res.data;
-      const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
-
-      setToken(newToken); setTokenExpiresAt(expiresAt);
-      if (updatedUser) {
-        setUser(updatedUser);
-        secureSetItem(STORAGE_KEYS.USER_INFO, updatedUser);
-        await syncUserToIDB(updatedUser);
-        applyUserLanguage(updatedUser);
-      }
+      await applySession(res.data);
+      debugLog("log", "Refresh", `✅ Token rafraîchi: ${res.data.user?.email}`);
 
       const queue = [...refreshQueue.current]; refreshQueue.current = [];
       queue.forEach((resolve) => resolve(true));
       return true;
     } catch (err) {
       const summary = summarizeAxiosError(err);
-      debugLog("error", "Refresh", "❌ Échec refresh", summary);
+      debugLog("warn", "Refresh", "⚠️ Refresh échoué", summary);
 
-      const isClientError = err.response?.status >= 400 && err.response?.status < 500;
-      if (!isClientError && retryCount < CONFIG.MAX_REFRESH_RETRIES - 1) {
-        isRefreshing.current = false;
-        await new Promise((r) => setTimeout(r, 2000));
-        return refreshAccessToken(retryCount + 1);
+      if (err.response?.status === 401) {
+        debugLog("warn", "Refresh", "🚫 401 → logout silencieux");
+        await logout(true);
       }
-      if (err.response?.status === 401) await logout(true);
 
       const queue = [...refreshQueue.current]; refreshQueue.current = [];
       queue.forEach((resolve) => resolve(false));
@@ -274,7 +423,7 @@ export function AuthProvider({ children }) {
     } finally {
       isRefreshing.current = false;
     }
-  }, [logout, syncUserToIDB]);
+  }, [applySession, logout]);
 
   // ============================================
   // GET TOKEN
@@ -289,48 +438,112 @@ export function AuthProvider({ children }) {
     return token;
   }, [token, tokenExpiresAt, refreshAccessToken]);
 
-  // Maintenir la ref à jour pour updateUserProfile
-  useEffect(() => {
-    getTokenRef.current = getToken;
-  }, [getToken]);
+  useEffect(() => { getTokenRef.current = getToken; }, [getToken]);
 
   // ============================================
-  // AUTO-LOGIN
+  // CHARGEMENT INITIAL — IDB FIRST
   // ============================================
   const loadSession = useCallback(async () => {
     const storedAttempts = secureGetItem(STORAGE_KEYS.LOGIN_ATTEMPTS) || {};
     setLoginAttempts(storedAttempts);
     setReady(true);
 
+    // ─── PHASE 1 : IDB first (instantané) ───
     try {
-      const res = await authAxios.post("/api/auth/refresh-token");
-
-      if (res.data.success && res.data.token) {
-        const { token: newToken, expiresIn, user: userData } = res.data;
-        const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
-        setToken(newToken); setTokenExpiresAt(expiresAt); setUser(userData);
-        secureSetItem(STORAGE_KEYS.USER_INFO, userData);
-        await syncUserToIDB(userData);
-        applyUserLanguage(userData);
-        debugLog("log", "AutoLogin", `✅ Reconnecté: ${userData?.email} (lang: ${userData?.language})`);
+      const cached = await getSessionFromIDB();
+      if (cached?.user?._id) {
+        idbUserRef.current = cached.user;
+        setUser(cached.user);
+        applyUserLanguage(cached.user);
+        debugLog("log", "AutoLogin", `⚡ IDB restauré: ${cached.user.email}`);
+        setSessionLoading(false);
       }
     } catch (err) {
-      const summary = summarizeAxiosError(err);
-      if (err.response?.status !== 401) {
-        debugLog("error", "AutoLogin", "❌ Erreur inattendue", summary);
-      }
-
-      if (!navigator.onLine) {
-        const idbUser = await idbGet("users", "user_active").catch(() => null);
-        if (idbUser?._id) {
-          setUser(idbUser);
-          applyUserLanguage(idbUser);
-        }
-      }
-    } finally {
-      setSessionLoading(false);
+      debugLog("warn", "AutoLogin", "IDB phase 1 error", err.message);
     }
-  }, [syncUserToIDB]);
+
+    // ─── PHASE 2 : Refresh en arrière-plan ───
+    const doNetworkRefresh = async () => {
+      try {
+        const res = await withRetry(
+          () => authAxios.post("/api/auth/refresh-token"),
+          CONFIG.MAX_REFRESH_RETRIES,
+          1000
+        );
+
+        if (res.data.success && res.data.token) {
+          await applySession(res.data);
+          debugLog("log", "AutoLogin", `✅ Token rafraîchi en BG: ${res.data.user?.email}`);
+        }
+      } catch (err) {
+        const summary = summarizeAxiosError(err);
+
+        if (err.response?.status === 401) {
+          if (idbUserRef.current) {
+            debugLog("warn", "AutoLogin", "🚫 401 serveur → logout (session révoquée)");
+            await logout(true);
+          }
+        } else if (!navigator.onLine || summary.isNetwork) {
+          debugLog("log", "AutoLogin", "📴 Offline → session IDB conservée");
+        } else {
+          debugLog("warn", "AutoLogin", "⚠️ Erreur serveur → session IDB conservée");
+        }
+      } finally {
+        if (isMounted.current) setSessionLoading(false);
+      }
+    };
+
+    if (!idbUserRef.current) {
+      await doNetworkRefresh();
+    } else {
+      doNetworkRefresh();
+    }
+  }, [applySession, logout]);
+
+  // ============================================
+  // VISIBILITY API
+  // ============================================
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!user?._id) return;
+
+      const meta = secureGetItem(STORAGE_KEYS.SESSION_META);
+      const lastRefresh = meta?.lastRefresh || 0;
+      const timeSinceLast = Date.now() - lastRefresh;
+
+      const needsRefresh = timeSinceLast > 30 * 60 * 1000 ||
+        (tokenExpiresAt && (tokenExpiresAt - Date.now()) < CONFIG.TOKEN_REFRESH_MARGIN_MS);
+
+      if (needsRefresh) {
+        debugLog("log", "Visibility", "👁 Retour onglet → refresh discret");
+        setTimeout(() => {
+          if (isMounted.current) refreshAccessToken();
+        }, CONFIG.VISIBILITY_RECHECK_DELAY);
+      }
+    };
+
+    visibilityHandler.current = handler;
+    document.addEventListener("visibilitychange", handler, { passive: true });
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, [user?._id, tokenExpiresAt, refreshAccessToken]);
+
+  // ============================================
+  // ONLINE RECOVERY
+  // ============================================
+  useEffect(() => {
+    const handleOnline = () => {
+      debugLog("log", "Network", "🌐 Réseau rétabli → refresh");
+      if (user?._id && !token) {
+        refreshAccessToken();
+      } else if (user?._id) {
+        const timeLeft = (tokenExpiresAt || 0) - Date.now();
+        if (timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS) refreshAccessToken();
+      }
+    };
+    window.addEventListener("online", handleOnline, { passive: true });
+    return () => window.removeEventListener("online", handleOnline);
+  }, [user?._id, token, tokenExpiresAt, refreshAccessToken]);
 
   // ============================================
   // CONNEXION
@@ -344,19 +557,14 @@ export function AuthProvider({ children }) {
       });
       if (!res.data.success) throw new Error(res.data?.message || "Erreur login");
 
-      const { token: newToken, expiresIn, user: userData } = res.data;
-      const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
-      setToken(newToken); setTokenExpiresAt(expiresAt); setUser(userData);
-      secureSetItem(STORAGE_KEYS.USER_INFO, userData);
-      await syncUserToIDB(userData);
+      await applySession(res.data);
+      localStorage.setItem("cl_last_email", safeEmail);
       resetLoginAttempts(safeEmail);
       addNotification("success", "Connecté avec succès");
-      applyUserLanguage(userData);
-      debugLog("log", "Login", `✅ Connecté: ${userData?.email} (lang: ${userData?.language})`);
-      return { success: true, user: userData };
+      debugLog("log", "Login", `✅ Connecté: ${safeEmail}`);
+      return { success: true, user: res.data.user };
     } catch (err) {
-      const summary = summarizeAxiosError(err);
-      debugLog("error", "Login", "❌ Échec connexion", summary);
+      debugLog("error", "Login", "❌ Échec", summarizeAxiosError(err));
       trackLoginAttempt(safeEmail);
       const msg = err.response?.data?.message || err.message || "Erreur connexion";
       addNotification("error", msg);
@@ -364,7 +572,7 @@ export function AuthProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  }, [addNotification, trackLoginAttempt, resetLoginAttempts, syncUserToIDB]);
+  }, [applySession, addNotification, trackLoginAttempt, resetLoginAttempts]);
 
   // ============================================
   // INSCRIPTION
@@ -377,44 +585,41 @@ export function AuthProvider({ children }) {
       });
       if (!res.data.success) throw new Error(res.data?.message || "Erreur inscription");
 
-      const { token: newToken, expiresIn, user: userData } = res.data;
-      const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
-      setToken(newToken); setTokenExpiresAt(expiresAt); setUser(userData);
-      secureSetItem(STORAGE_KEYS.USER_INFO, userData);
-      await syncUserToIDB(userData);
+      await applySession(res.data);
+      localStorage.setItem("cl_last_email", email.trim().toLowerCase());
       addNotification("success", "Compte créé avec succès !");
-      applyUserLanguage(userData);
-      return { success: true, user: userData };
+      return { success: true, user: res.data.user };
     } catch (err) {
-      debugLog("error", "Register", "❌ Échec inscription", summarizeAxiosError(err));
+      debugLog("error", "Register", "❌ Échec", summarizeAxiosError(err));
       const msg = err.response?.data?.message || err.message || "Erreur inscription";
       addNotification("error", msg);
       return { success: false, message: msg };
     } finally {
       setLoading(false);
     }
-  }, [addNotification, syncUserToIDB]);
+  }, [applySession, addNotification]);
 
   // ============================================
-  // ✅ FIX — MISE À JOUR PROFIL AVEC PERSISTANCE API
+  // MISE À JOUR PROFIL
   // ============================================
   const updateUserProfile = useCallback(async (userIdOrUpdates, maybeUpdates) => {
     const userId  = typeof userIdOrUpdates === "string" ? userIdOrUpdates : user?._id;
     const updates = typeof userIdOrUpdates === "string" ? maybeUpdates : userIdOrUpdates;
     if (!updates) return;
 
-    // ✅ Mise à jour optimiste immédiate (UI réactive)
     setUser((prev) => {
       if (!prev) return prev;
       const updated = { ...prev, ...updates };
-      // Persister localement en synchrone
-      secureSetItem(STORAGE_KEYS.USER_INFO, updated);
-      // IDB en asynchrone sans bloquer
-      syncUserToIDB(updated).catch(() => {});
+      persistSessionToIDB(updated, { lastRefresh: Date.now() }).catch(() => {});
       return updated;
     });
 
-    // ✅ Persistance en base si on a un userId
+    const isPhotoUpdate = !!(updates.profilePhoto || updates.coverPhoto);
+    if (isPhotoUpdate) {
+      debugLog("log", "UpdateProfile", "📸 Photo update — skip PUT /:id");
+      return;
+    }
+
     if (userId) {
       try {
         const currentToken = await getTokenRef.current?.();
@@ -428,30 +633,21 @@ export function AuthProvider({ children }) {
               timeout:         15000,
             }
           );
-
-          // Resynchroniser avec la réponse serveur (source de vérité)
           if (res.data?.user) {
             const serverUser = res.data.user;
             setUser((prev) => {
               if (!prev) return prev;
               const synced = { ...prev, ...serverUser };
-              secureSetItem(STORAGE_KEYS.USER_INFO, synced);
-              syncUserToIDB(synced).catch(() => {});
+              persistSessionToIDB(synced, { lastRefresh: Date.now() }).catch(() => {});
               return synced;
             });
-            debugLog("log", "UpdateProfile", `✅ Profil persisté en base pour user: ${userId}`);
           }
-        } else {
-          debugLog("warn", "UpdateProfile", "⚠️ Pas de token — persistance API ignorée");
         }
       } catch (err) {
-        debugLog("warn", "UpdateProfile", "⚠️ Persistance API échouée", summarizeAxiosError(err));
-        // L'état optimiste reste en place — l'utilisateur voit ses changements
-        // mais ils seront perdus au rechargement si la DB n'a pas été mise à jour.
-        // On ne throw pas pour ne pas casser les composants appelants.
+        debugLog("warn", "UpdateProfile", "⚠️ API échouée", summarizeAxiosError(err));
       }
     }
-  }, [user?._id, syncUserToIDB]);
+  }, [user?._id]);
 
   // ============================================
   // VÉRIFICATION ADMIN
@@ -485,27 +681,30 @@ export function AuthProvider({ children }) {
       auth:                 { token },
       transports:           ["websocket", "polling"],
       reconnection:         true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
       reconnectionDelay:    1000,
-      reconnectionDelayMax: 5000,
+      reconnectionDelayMax: 10000,
       timeout:              10000,
     });
 
-    newSocket.on("connect",       ()    => debugLog("log",  "Socket", `✅ Connecté: ${newSocket.id}`));
-    newSocket.on("connect_error", (err) => debugLog("warn", "Socket", `⚠️ Erreur: ${err.message}`));
+    newSocket.on("connect",       () => debugLog("log",  "Socket", `✅ ${newSocket.id}`));
+    newSocket.on("connect_error", (err) => debugLog("warn", "Socket", `⚠️ ${err.message}`));
 
     socketRef.current = newSocket;
     return () => cleanupSocket();
   }, [user?._id, token, cleanupSocket]);
 
   // ============================================
-  // REFRESH AUTOMATIQUE
+  // REFRESH AUTO (heartbeat)
   // ============================================
   useEffect(() => {
     if (!ready || !token) return;
     refreshInterval.current = setInterval(() => {
       const timeLeft = (tokenExpiresAt || 0) - Date.now();
-      if (timeLeft > 0 && timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS) refreshAccessToken();
+      if (timeLeft > 0 && timeLeft < CONFIG.TOKEN_REFRESH_MARGIN_MS) {
+        debugLog("log", "Heartbeat", `⏰ Refresh auto (${Math.round(timeLeft / 1000)}s restants)`);
+        refreshAccessToken();
+      }
     }, CONFIG.AUTO_REFRESH_INTERVAL_MS);
     return () => clearInterval(refreshInterval.current);
   }, [ready, token, tokenExpiresAt, refreshAccessToken]);
@@ -533,7 +732,8 @@ export function AuthProvider({ children }) {
     return {
       user, token, socket: socketRef.current, loading, ready,
       sessionLoading,
-      isAuthenticated: !!user && !!token, notifications,
+      isAuthenticated: !!user,
+      notifications,
       login, logout, register, getToken, updateUserProfile,
       verifyAdminToken, isAdmin: () => isAdmin, addNotification, isLockedOut,
     };

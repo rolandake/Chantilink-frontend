@@ -1,9 +1,9 @@
 // ============================================
 // 📁 src/Pages/chat/ContactSidebar.jsx
-// ✅ PHASE 1 — MODAL-BASED NAVIGATION
-//    Chaque bouton ouvre sa modale avec retour
-//    Conforme Google Play Policy (avril 2026)
-// ✅ FIX : bouton retour à gauche + titre centré
+// ✅ FIX CRITIQUE : localStorage isolé par userId
+//    → chaque utilisateur a sa propre clé "onAppContacts_<userId>"
+//    → plus de fuite de contacts entre utilisateurs
+// ✅ FIX : bouton Ajouter toujours visible (fallback formulaire manuel)
 // ============================================
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
@@ -15,22 +15,43 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '../../context/ToastContext';
 
 // ─────────────────────────────────────────────
-// HELPERS localStorage
+// HELPERS localStorage — ✅ CLÉS PAR USERID
 // ─────────────────────────────────────────────
-const readOnAppContacts = () => {
+
+/** Retourne la clé localStorage propre à cet utilisateur */
+const getStorageKey = (userId) =>
+  userId ? `onAppContacts_${userId}` : null;
+
+/** Lit les contacts depuis le localStorage de CET utilisateur uniquement */
+const readOnAppContacts = (userId) => {
+  const key = getStorageKey(userId);
+  if (!key) return [];
   try {
-    const raw = localStorage.getItem('onAppContacts');
+    const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : [];
   } catch { return []; }
 };
 
-const saveContactToOnApp = (contact) => {
-  if (!contact?.id) return;
+/** Sauvegarde un contact dans le localStorage de CET utilisateur */
+const saveContactToOnApp = (contact, userId) => {
+  const key = getStorageKey(userId);
+  if (!contact?.id || !key) return;
   try {
-    const existing = readOnAppContacts();
+    const existing = readOnAppContacts(userId);
     const updated = [contact, ...existing.filter((c) => c.id !== contact.id)];
-    localStorage.setItem('onAppContacts', JSON.stringify(updated));
+    localStorage.setItem(key, JSON.stringify(updated));
   } catch {}
+};
+
+/**
+ * ✅ À appeler lors du logout pour vider le cache de l'utilisateur
+ * Exporter et appeler dans AuthContext / logout handler
+ */
+export const clearContactsCache = (userId) => {
+  const key = getStorageKey(userId);
+  if (key) {
+    localStorage.removeItem(key);
+  }
 };
 
 // ─────────────────────────────────────────────
@@ -49,8 +70,19 @@ const syncContactsAPI = async (token, contacts) => {
   return data;
 };
 
+const addContactManualAPI = async (token, { phoneNumber, fullName }) => {
+  const res = await fetch(`${BASE_URL}/contacts/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ contacts: [{ phone: phoneNumber, name: fullName }] }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
+  return data;
+};
+
 // ─────────────────────────────────────────────
-// Contact Picker natif
+// Contact Picker natif (mobile uniquement)
 // ─────────────────────────────────────────────
 const openContactPicker = async () => {
   try {
@@ -83,9 +115,7 @@ const ModalOverlay = ({ children, onClose }) => (
     className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
     onClick={onClose}
   >
-    {/* Backdrop */}
     <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-    {/* Sheet */}
     <motion.div
       initial={{ y: 60, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
@@ -100,15 +130,19 @@ const ModalOverlay = ({ children, onClose }) => (
 );
 
 // ─────────────────────────────────────────────
-// MODALE — Ajouter un contact (Contact Picker)
+// MODALE — Ajouter un contact
+// ✅ Affiche le Contact Picker si supporté, sinon un formulaire manuel
 // ─────────────────────────────────────────────
-const AddContactModal = ({ token, onClose, onPickerSync }) => {
+const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
   const [loading, setLoading] = useState(false);
   const [result, setResult]   = useState(null);
   const [step, setStep]       = useState('idle');
+  const [manualForm, setManualForm] = useState({ name: '', phone: '' });
+  const [formError, setFormError]   = useState('');
   const { showToast } = useToast();
   const pickerSupported = isContactPickerSupported();
 
+  // ── Contact Picker (mobile) ──
   const handlePick = async () => {
     setLoading(true);
     setStep('picking');
@@ -121,13 +155,52 @@ const AddContactModal = ({ token, onClose, onPickerSync }) => {
       }
       const data = await syncContactsAPI(token, picked);
       const found = data.onChantilink || [];
-      found.forEach(saveContactToOnApp);
+      found.forEach((c) => saveContactToOnApp(c, userId));
       setResult({ found, total: picked.length });
       setStep('done');
       if (onPickerSync) onPickerSync(found);
     } catch (err) {
       showToast(err.message || 'Erreur lors de la vérification', 'error');
       setStep('idle');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Formulaire manuel (desktop / iOS / Firefox) ──
+  const formatPhone = (value) => {
+    let cleaned = value.replace(/[^\d+]/g, '');
+    if (!cleaned.startsWith('+')) cleaned = '+' + cleaned.replace(/^\+/, '');
+    if (cleaned.length > 16) cleaned = cleaned.slice(0, 16);
+    if (cleaned.length > 4) {
+      const prefix = cleaned.slice(0, 4);
+      const rest   = cleaned.slice(4);
+      const groups = rest.match(/.{1,2}/g);
+      return prefix + (groups ? ' ' + groups.join(' ') : '');
+    }
+    return cleaned;
+  };
+
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    setFormError('');
+    const cleanPhone = manualForm.phone.replace(/\s/g, '');
+    if (!manualForm.name.trim()) return setFormError('Le nom est requis');
+    if (cleanPhone.length < 10)  return setFormError('Numéro trop court (min. 10 chiffres)');
+
+    setLoading(true);
+    try {
+      const data = await addContactManualAPI(token, {
+        phoneNumber: cleanPhone,
+        fullName: manualForm.name.trim(),
+      });
+      const found = data.onChantilink || [];
+      found.forEach((c) => saveContactToOnApp(c, userId));
+      setResult({ found, total: 1 });
+      setStep('done');
+      if (onPickerSync) onPickerSync(found);
+    } catch (err) {
+      setFormError(err.message || "Impossible de trouver ce contact");
     } finally {
       setLoading(false);
     }
@@ -147,7 +220,9 @@ const AddContactModal = ({ token, onClose, onPickerSync }) => {
             {step === 'done' ? 'Résultats' : 'Ajouter des contacts'}
           </h2>
           <p className="text-[11px] text-gray-500">
-            {step === 'done' ? `${result?.total} contact(s) vérifiés` : 'Sélectionnez depuis votre téléphone'}
+            {step === 'done'
+              ? `${result?.total} contact(s) vérifiés`
+              : pickerSupported ? 'Sélectionnez depuis votre téléphone' : 'Entrez un numéro manuellement'}
           </p>
         </div>
         <button onClick={onClose} className="p-1.5 hover:bg-white/5 rounded-xl transition-colors">
@@ -158,48 +233,69 @@ const AddContactModal = ({ token, onClose, onPickerSync }) => {
       <div className="p-5">
         <AnimatePresence mode="wait">
 
-          {/* ÉTAT IDLE */}
-          {step === 'idle' && (
-            <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              {pickerSupported ? (
-                <>
-                  <div className="bg-blue-500/8 border border-blue-500/15 rounded-2xl p-4 mb-5 space-y-2">
-                    {[
-                      'Un sélecteur de contacts s\'ouvre',
-                      'Vous choisissez qui vérifier',
-                      'Numéros hachés SHA-256 en local',
-                      'Comparaison sécurisée avec la base',
-                    ].map((step, i) => (
-                      <div key={i} className="flex items-center gap-2.5 text-xs text-gray-400">
-                        <span className="w-5 h-5 rounded-full bg-blue-600/20 text-blue-400 flex items-center justify-center text-[10px] font-bold flex-shrink-0">
-                          {i + 1}
-                        </span>
-                        {step}
-                      </div>
-                    ))}
+          {/* ÉTAT IDLE — picker disponible */}
+          {step === 'idle' && pickerSupported && (
+            <motion.div key="picker" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <div className="bg-blue-500/8 border border-blue-500/15 rounded-2xl p-4 mb-5 space-y-2">
+                {[
+                  'Un sélecteur de contacts s\'ouvre',
+                  'Vous choisissez qui vérifier',
+                  'Numéros hachés SHA-256 en local',
+                  'Comparaison sécurisée avec la base',
+                ].map((s, i) => (
+                  <div key={i} className="flex items-center gap-2.5 text-xs text-gray-400">
+                    <span className="w-5 h-5 rounded-full bg-blue-600/20 text-blue-400 flex items-center justify-center text-[10px] font-bold flex-shrink-0">{i + 1}</span>
+                    {s}
                   </div>
-                  <button
-                    onClick={handlePick}
-                    disabled={loading}
-                    className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-all text-sm"
-                  >
-                    {loading
-                      ? <><Loader size={16} className="animate-spin" /> Recherche…</>
-                      : <><UserPlus size={16} /> Sélectionner mes contacts</>
-                    }
-                  </button>
-                </>
-              ) : (
-                <div className="text-center py-8">
-                  <div className="w-14 h-14 rounded-2xl bg-yellow-500/10 flex items-center justify-center mx-auto mb-4">
-                    <UserPlus size={28} className="text-yellow-400/60" />
-                  </div>
-                  <p className="text-sm font-bold text-gray-300 mb-2">Disponible sur mobile</p>
-                  <p className="text-xs text-gray-500 leading-relaxed">
-                    La sélection de contacts est disponible sur iOS et Android uniquement.
-                  </p>
-                </div>
-              )}
+                ))}
+              </div>
+              <button
+                onClick={handlePick}
+                disabled={loading}
+                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-all text-sm"
+              >
+                {loading
+                  ? <><Loader size={16} className="animate-spin" /> Recherche…</>
+                  : <><UserPlus size={16} /> Sélectionner mes contacts</>}
+              </button>
+              {/* Option manuel en bas */}
+              <button
+                onClick={() => setStep('manual')}
+                className="w-full mt-3 py-2.5 text-xs text-gray-500 hover:text-gray-300 transition-colors font-medium"
+              >
+                Entrer un numéro manuellement →
+              </button>
+            </motion.div>
+          )}
+
+          {/* ÉTAT IDLE — pas de picker (desktop / iOS / Firefox) → formulaire direct */}
+          {step === 'idle' && !pickerSupported && (
+            <motion.div key="manual-direct" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+              <ManualForm
+                form={manualForm}
+                setForm={setManualForm}
+                formatPhone={formatPhone}
+                error={formError}
+                loading={loading}
+                onSubmit={handleManualSubmit}
+              />
+            </motion.div>
+          )}
+
+          {/* ÉTAT MANUAL — formulaire depuis le picker */}
+          {step === 'manual' && (
+            <motion.div key="manual-from-picker" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
+              <button onClick={() => setStep('idle')} className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 mb-4 transition-colors">
+                <ArrowLeft size={12} /> Retour au sélecteur
+              </button>
+              <ManualForm
+                form={manualForm}
+                setForm={setManualForm}
+                formatPhone={formatPhone}
+                error={formError}
+                loading={loading}
+                onSubmit={handleManualSubmit}
+              />
             </motion.div>
           )}
 
@@ -236,7 +332,7 @@ const AddContactModal = ({ token, onClose, onPickerSync }) => {
                   <XCircle size={36} className="text-gray-600 mx-auto mb-3" />
                   <p className="text-sm font-bold text-gray-300 mb-1">Aucun ami trouvé</p>
                   <p className="text-xs text-gray-500">
-                    Aucun de vos {result.total} contacts n'utilise encore Chantilink.
+                    Aucun de vos {result.total} contact(s) n'utilise encore Chantilink.
                   </p>
                 </div>
               )}
@@ -255,6 +351,45 @@ const AddContactModal = ({ token, onClose, onPickerSync }) => {
   );
 };
 
+// Sous-composant formulaire manuel réutilisable
+const ManualForm = ({ form, setForm, formatPhone, error, loading, onSubmit }) => (
+  <form onSubmit={onSubmit} className="space-y-4">
+    <div>
+      <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Nom</label>
+      <input
+        type="text"
+        value={form.name}
+        onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+        placeholder="Ex: Marc Koffi"
+        className="w-full px-4 py-3.5 bg-[#0f1115] text-white rounded-2xl border border-white/5 focus:border-blue-500 outline-none transition-all placeholder:text-gray-700 font-bold text-sm"
+        autoFocus
+      />
+    </div>
+    <div>
+      <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Numéro de téléphone</label>
+      <input
+        type="tel"
+        value={form.phone}
+        onChange={(e) => setForm((p) => ({ ...p, phone: formatPhone(e.target.value) }))}
+        placeholder="+225 00 00 00 00 00"
+        className="w-full px-4 py-3.5 bg-[#0f1115] text-white rounded-2xl border border-white/5 focus:border-blue-500 outline-none transition-all placeholder:text-gray-700 font-mono text-sm"
+      />
+    </div>
+    {error && (
+      <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">
+        {error}
+      </p>
+    )}
+    <button
+      type="submit"
+      disabled={loading || !form.name.trim() || !form.phone.trim()}
+      className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-all text-sm"
+    >
+      {loading ? <><Loader size={16} className="animate-spin" /> Recherche…</> : <><UserPlus size={16} /> Vérifier sur Chantilink</>}
+    </button>
+  </form>
+);
+
 // ─────────────────────────────────────────────
 // MODALE — Liste des contacts (recherche)
 // ─────────────────────────────────────────────
@@ -268,7 +403,6 @@ const ContactsModal = ({ contacts, unreadCounts, onContactSelect, onClose, onAdd
 
   return (
     <ModalOverlay onClose={onClose}>
-      {/* Header */}
       <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-white/5">
         <ShieldCheck size={18} className="text-blue-500 flex-shrink-0" />
         <div className="flex-1">
@@ -279,15 +413,13 @@ const ContactsModal = ({ contacts, unreadCounts, onContactSelect, onClose, onAdd
           onClick={onAddContact}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-xl text-xs font-bold border border-blue-500/20 transition-all"
         >
-          <UserPlus size={12} />
-          Ajouter
+          <UserPlus size={12} /> Ajouter
         </button>
         <button onClick={onClose} className="p-1.5 hover:bg-white/5 rounded-xl transition-colors ml-1">
           <X size={18} className="text-gray-400" />
         </button>
       </div>
 
-      {/* Recherche */}
       <div className="px-5 pt-4 pb-2">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={14} />
@@ -302,7 +434,6 @@ const ContactsModal = ({ contacts, unreadCounts, onContactSelect, onClose, onAdd
         </div>
       </div>
 
-      {/* Liste */}
       <div className="overflow-y-auto max-h-[50vh] custom-scrollbar px-2 pb-5">
         {filtered.length > 0 ? (
           filtered.map((u) => (
@@ -354,48 +485,54 @@ export const ContactSidebar = ({
   onContactSelect,
   contacts = [],
   unreadCounts = {},
-  user,
+  user,          // ✅ REQUIS pour isoler le localStorage
   onPickerSync,
   onShowPending,
   conversations = [],
   onShowConversations,
   totalUnread = 0,
-  onBack, // ← prop optionnelle pour le bouton retour
+  onBack,
 }) => {
+  const userId = user?.id || user?._id;
+
   const [onAppContacts, setOnAppContacts] = useState([]);
   const [searchQuery,   setSearchQuery]   = useState('');
   const [modal, setModal] = useState(null);
-  const [pickerSupported] = useState(isContactPickerSupported());
   const { showToast } = useToast();
 
+  // ✅ Toujours lire depuis la clé de CET utilisateur
   const reloadOnAppContacts = useCallback(() => {
-    setOnAppContacts(readOnAppContacts());
-  }, []);
+    setOnAppContacts(readOnAppContacts(userId));
+  }, [userId]);
 
-  useEffect(() => { reloadOnAppContacts(); }, [reloadOnAppContacts]);
+  // ✅ Reset complet si userId change (changement de compte)
+  useEffect(() => {
+    setOnAppContacts([]);
+    if (userId) reloadOnAppContacts();
+  }, [userId, reloadOnAppContacts]);
 
   useEffect(() => {
     window.addEventListener('focus', reloadOnAppContacts);
     return () => window.removeEventListener('focus', reloadOnAppContacts);
   }, [reloadOnAppContacts]);
 
+  // ✅ Sync les contacts reçus via prop dans le localStorage de CET utilisateur
   useEffect(() => {
-    if (contacts.length > 0) {
-      contacts.forEach((c) => {
-        if (c.id || c._id) {
-          saveContactToOnApp({
-            id: c.id || c._id,
-            fullName: c.fullName,
-            username: c.username,
-            profilePhoto: c.profilePhoto,
-            isOnline: c.isOnline,
-            lastSeen: c.lastSeen,
-          });
-        }
-      });
-      reloadOnAppContacts();
-    }
-  }, [contacts, reloadOnAppContacts]);
+    if (!userId || contacts.length === 0) return;
+    contacts.forEach((c) => {
+      if (c.id || c._id) {
+        saveContactToOnApp({
+          id:           c.id || c._id,
+          fullName:     c.fullName,
+          username:     c.username,
+          profilePhoto: c.profilePhoto,
+          isOnline:     c.isOnline,
+          lastSeen:     c.lastSeen,
+        }, userId);
+      }
+    });
+    reloadOnAppContacts();
+  }, [contacts, userId, reloadOnAppContacts]);
 
   const filteredContacts = useMemo(() =>
     onAppContacts.filter((c) =>
@@ -403,13 +540,12 @@ export const ContactSidebar = ({
     ), [onAppContacts, searchQuery]);
 
   const handlePickerSync = useCallback((newContacts) => {
-    newContacts.forEach(saveContactToOnApp);
+    newContacts.forEach((c) => saveContactToOnApp(c, userId));
     reloadOnAppContacts();
     if (onPickerSync) onPickerSync(newContacts);
     setModal(null);
-  }, [onPickerSync, reloadOnAppContacts]);
+  }, [userId, onPickerSync, reloadOnAppContacts]);
 
-  // Gestion du bouton retour : prop onBack en priorité, sinon history.back()
   const handleBack = useCallback(() => {
     if (onBack) onBack();
     else window.history.back();
@@ -419,11 +555,9 @@ export const ContactSidebar = ({
     <>
       <div className="flex flex-col h-full bg-[#0b0d10] border-r border-white/5">
 
-        {/* ══ HEADER COMPACT ══ */}
+        {/* ══ HEADER ══ */}
         <div className="px-4 py-3 bg-[#12151a]/80 backdrop-blur-xl border-b border-white/5">
           <div className="flex items-center gap-2">
-
-            {/* ← BOUTON RETOUR */}
             <motion.button
               whileTap={{ scale: 0.9 }}
               onClick={handleBack}
@@ -433,18 +567,15 @@ export const ContactSidebar = ({
               <ArrowLeft size={15} strokeWidth={2.5} className="text-white/60" />
             </motion.button>
 
-            {/* TITRE CENTRÉ */}
             <span className="text-sm font-black tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent flex-1 text-center">
               Mes Contacts
             </span>
 
-            {/* Bouton Conversations */}
             {onShowConversations && (
               <motion.button
                 whileTap={{ scale: 0.9 }}
                 onClick={onShowConversations}
                 className="relative flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-600/15 hover:bg-purple-600/25 text-purple-400 rounded-lg transition-all text-[11px] font-bold border border-purple-500/20"
-                title="Conversations"
               >
                 <MessageSquare size={12} />
                 Conv.
@@ -456,21 +587,18 @@ export const ContactSidebar = ({
               </motion.button>
             )}
 
-            {/* Bouton Ajouter */}
-            {pickerSupported && (
-              <motion.button
-                whileTap={{ scale: 0.9 }}
-                onClick={() => setModal('add')}
-                className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 rounded-lg transition-all text-[11px] font-bold border border-blue-500/20"
-                title="Ajouter des contacts"
-              >
-                <UserPlus size={12} />
-                Ajouter
-              </motion.button>
-            )}
+            {/* ✅ Bouton Ajouter TOUJOURS visible */}
+            <motion.button
+              whileTap={{ scale: 0.9 }}
+              onClick={() => setModal('add')}
+              className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 rounded-lg transition-all text-[11px] font-bold border border-blue-500/20"
+              title="Ajouter des contacts"
+            >
+              <UserPlus size={12} />
+              Ajouter
+            </motion.button>
           </div>
 
-          {/* RECHERCHE */}
           <div className="relative mt-3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600" size={13} />
             <input
@@ -485,8 +613,6 @@ export const ContactSidebar = ({
 
         {/* LISTE */}
         <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
-
-          {/* Label cliquable → ouvre modale contacts */}
           <button
             onClick={() => setModal('contacts')}
             className="w-full flex items-center justify-between px-3 mb-2 group"
@@ -511,26 +637,20 @@ export const ContactSidebar = ({
                       user={u}
                       unread={unreadCounts[u.id || u._id]}
                       onClick={() => onContactSelect({
-                        id: u.id || u._id,
-                        fullName: u.fullName,
-                        username: u.username,
+                        id:           u.id || u._id,
+                        fullName:     u.fullName,
+                        username:     u.username,
                         profilePhoto: u.profilePhoto,
-                        isOnline: u.isOnline,
-                        lastSeen: u.lastSeen,
+                        isOnline:     u.isOnline,
+                        lastSeen:     u.lastSeen,
                       })}
                     />
                   </motion.div>
                 ))
-              : (
-                  <EmptyState
-                    pickerSupported={pickerSupported}
-                    onAdd={() => setModal('add')}
-                  />
-                )
+              : <EmptyState onAdd={() => setModal('add')} />
             }
           </AnimatePresence>
 
-          {/* Voir tous si > 8 */}
           {filteredContacts.length > 8 && (
             <button
               onClick={() => setModal('contacts')}
@@ -541,7 +661,6 @@ export const ContactSidebar = ({
           )}
         </div>
 
-        {/* FOOTER — Demandes uniquement */}
         {onShowPending && (
           <div className="px-3 pb-3 pt-2 border-t border-white/5">
             <button
@@ -564,6 +683,7 @@ export const ContactSidebar = ({
           <AddContactModal
             key="modal-add"
             token={token}
+            userId={userId}
             onClose={() => setModal(null)}
             onPickerSync={handlePickerSync}
           />
@@ -615,21 +735,19 @@ const ContactItem = ({ user, unread, onClick }) => (
   </button>
 );
 
-const EmptyState = ({ pickerSupported, onAdd }) => (
+const EmptyState = ({ onAdd }) => (
   <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
     <div className="w-12 h-12 rounded-2xl bg-blue-600/8 flex items-center justify-center mb-3">
       <Users size={24} className="text-blue-500/30" />
     </div>
     <p className="text-xs font-bold text-gray-500 mb-1">Aucun contact</p>
-    {pickerSupported && (
-      <button
-        onClick={onAdd}
-        className="mt-3 flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-all"
-      >
-        <UserPlus size={13} />
-        Ajouter des contacts
-      </button>
-    )}
+    <button
+      onClick={onAdd}
+      className="mt-3 flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-all"
+    >
+      <UserPlus size={13} />
+      Ajouter des contacts
+    </button>
   </div>
 );
 

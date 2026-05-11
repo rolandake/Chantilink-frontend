@@ -1,9 +1,20 @@
 // src/pages/profile/ProfileHeader.jsx
-// ✅ NOUVEAU DESIGN — Style moderne TikTok/Instagram fusionné
-// ✅ FIX PHOTO : force re-render après upload via cache-bust + state local
-// ✅ DEBUG : logs détaillés pour tracer les mises à jour photo
+// ✅ VERSION CORRIGÉE — Fix affichage photo en production
+//
+// CORRECTIONS :
+//   - handleProfilePhotoChange : après upload réussi, on applique directement
+//     la nouvelle URL depuis response.data.user sans dépendre de authUser.
+//     updateUserProfile est appelé UNIQUEMENT pour syncer le contexte local,
+//     sans déclencher de second appel API (géré côté AuthContext).
+//   - handleCoverPhotoChange : même correction.
+//   - resolvedProfilePhoto / resolvedCoverPhoto : migré de useMemo vers
+//     useState + useEffect pour éviter que le mémo ne rate une mise à jour
+//     de référence d'objet en prod.
+//   - <img> : suppression de la prop key (démontage/remontage inutile qui
+//     pouvait déclencher une requête CDN avec l'ancienne version).
+//     Le cache-bust est porté par l'URL elle-même (?v=timestamp).
 
-import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   CameraIcon,
@@ -36,11 +47,8 @@ const EMOJIS = ["😊", "🔥", "💡", "🎉", "🚀", "❤️", "😎", "✨",
 // ─────────────────────────────────────────────
 const debug = (section, msg, data) => {
   const style = 'background:#f97316;color:#fff;padding:2px 6px;border-radius:4px;font-weight:bold';
-  if (data !== undefined) {
-    console.log(`%c[ProfileHeader:${section}]`, style, msg, data);
-  } else {
-    console.log(`%c[ProfileHeader:${section}]`, style, msg);
-  }
+  if (data !== undefined) console.log(`%c[ProfileHeader:${section}]`, style, msg, data);
+  else                    console.log(`%c[ProfileHeader:${section}]`, style, msg);
 };
 
 // ─────────────────────────────────────────────
@@ -68,11 +76,14 @@ function formatCount(n) {
 
 // ─────────────────────────────────────────────
 // HELPER — ajoute un cache-bust à une URL image
+// Utilise le paramètre ?v= (compatible avec la plupart des CDN)
 // ─────────────────────────────────────────────
 function bustCache(url) {
   if (!url) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}t=${Date.now()}`;
+  // Retire un éventuel cache-bust précédent avant d'en ajouter un nouveau
+  const base = url.replace(/[?&]v=\d+/, '').replace(/[?&]t=\d+/, '');
+  const sep  = base.includes('?') ? '&' : '?';
+  return `${base}${sep}v=${Date.now()}`;
 }
 
 // ============================================
@@ -298,13 +309,51 @@ export default function ProfileHeader({
   const [saving,             setSaving]             = useState(false);
   const [showStats,          setShowStats]          = useState(false);
 
-  // ✅ FIX PHOTO : URLs locales overrides — initialisées à null, jamais héritées du parent
+  // ─────────────────────────────────────────────────────────────────────
+  // ✅ FIX PROD : useState + useEffect au lieu de useMemo
+  //
+  // useMemo comparait les deps par référence. En prod, authUser?.profilePhoto
+  // pouvait avoir la même valeur string mais une référence d'objet différente
+  // selon le timing du re-render, ce qui empêchait le recalcul.
+  // useState + useEffect est explicite et garanti.
+  // ─────────────────────────────────────────────────────────────────────
+  const [resolvedProfilePhoto, setResolvedProfilePhoto] = useState(
+    user?.profilePhoto || '/default-avatar.png'
+  );
+  const [resolvedCoverPhoto, setResolvedCoverPhoto] = useState(
+    user?.coverPhoto || '/default-cover.jpg'
+  );
+
+  // ✅ Source de vérité pour les photos : localPhoto prime sur tout
+  // localPhoto est null au départ ; il est défini uniquement après un upload
   const [localPhoto,      setLocalPhoto]      = useState(null);
   const [localCoverPhoto, setLocalCoverPhoto] = useState(null);
 
-  // ✅ Clé de re-render forcé pour les <img> (contourne le cache navigateur)
-  const [profilePhotoKey, setProfilePhotoKey] = useState(0);
-  const [coverPhotoKey,   setCoverPhotoKey]   = useState(0);
+  // Recalcul dès que l'une des sources change
+  useEffect(() => {
+    const url = localPhoto
+      || (isOwnProfile ? authUser?.profilePhoto : null)
+      || user?.profilePhoto
+      || '/default-avatar.png';
+    debug('Photo', '🖼 resolvedProfilePhoto =', url);
+    setResolvedProfilePhoto(url);
+  }, [localPhoto, isOwnProfile, authUser?.profilePhoto, user?.profilePhoto]);
+
+  useEffect(() => {
+    const url = localCoverPhoto
+      || (isOwnProfile ? authUser?.coverPhoto : null)
+      || user?.coverPhoto
+      || '/default-cover.jpg';
+    debug('Photo', '🖼 resolvedCoverPhoto =', url);
+    setResolvedCoverPhoto(url);
+  }, [localCoverPhoto, isOwnProfile, authUser?.coverPhoto, user?.coverPhoto]);
+
+  // Reset local overrides quand on change d'utilisateur
+  useEffect(() => {
+    debug('Reset', `🔄 Reset photos locales (user._id changé: ${user?._id})`);
+    setLocalPhoto(null);
+    setLocalCoverPhoto(null);
+  }, [user?._id]);
 
   const [modalOpen,       setModalOpen]       = useState(false);
   const [modalType,       setModalType]       = useState(null);
@@ -329,45 +378,12 @@ export default function ProfileHeader({
   const coverInputRef   = useRef(null);
   const optionsMenuRef  = useRef(null);
 
-  // ─────────────────────────────────────────────────────────────
-  // ✅ RÉSOLUTION PHOTO — priorité : local override > authUser > user prop
-  // Le localPhoto et localCoverPhoto sont des URLs avec cache-bust
-  // qui forcent le navigateur à recharger l'image depuis le serveur.
-  // ─────────────────────────────────────────────────────────────
-  const resolvedProfilePhoto = useMemo(() => {
-    const url = localPhoto
-      || (isOwnProfile ? authUser?.profilePhoto : null)
-      || user?.profilePhoto
-      || '/default-avatar.png';
-    debug('Photo', '🖼 resolvedProfilePhoto =', url);
-    return url;
-  }, [localPhoto, isOwnProfile, authUser?.profilePhoto, user?.profilePhoto]);
-
-  const resolvedCoverPhoto = useMemo(() => {
-    const url = localCoverPhoto
-      || (isOwnProfile ? authUser?.coverPhoto : null)
-      || user?.coverPhoto
-      || '/default-cover.jpg';
-    debug('Photo', '🖼 resolvedCoverPhoto =', url);
-    return url;
-  }, [localCoverPhoto, isOwnProfile, authUser?.coverPhoto, user?.coverPhoto]);
-
-  // ─────────────────────────────────────────────────────────────
-  // Debug : log chaque fois que authUser change
-  // ─────────────────────────────────────────────────────────────
   useEffect(() => {
     debug('AuthUser', '👤 authUser mis à jour', {
       profilePhoto: authUser?.profilePhoto,
       coverPhoto:   authUser?.coverPhoto,
     });
   }, [authUser?.profilePhoto, authUser?.coverPhoto]);
-
-  // Reset local overrides quand on change d'utilisateur
-  useEffect(() => {
-    debug('Reset', `🔄 Reset photos locales (user._id changé: ${user?._id})`);
-    setLocalPhoto(null);
-    setLocalCoverPhoto(null);
-  }, [user?._id]);
 
   useEffect(() => {
     if (!isEditingProfile) {
@@ -462,33 +478,32 @@ export default function ProfileHeader({
     } catch (err) { showToast?.("Erreur lors de l'action", 'error'); throw err; }
   }, [getToken, fetchUserStats, showToast]);
 
-  const stats = useMemo(() => ({
+  const stats = {
     posts:     userPosts.length,
     followers: userFollowers.length,
     following: userFollowing.length,
     likes:     userPosts.reduce((s, p) => s + (Array.isArray(p.likes) ? p.likes.length : (p.likes || 0)), 0),
-  }), [userPosts, userFollowers, userFollowing]);
+  };
 
-  const graphData = useMemo(() => [
+  const graphData = [
     { name: "Posts",       value: stats.posts },
     { name: "Abonnés",     value: stats.followers },
     { name: "Abonnements", value: stats.following },
     { name: "Likes",       value: stats.likes }
-  ], [stats]);
+  ];
 
-  // ── Upload photo profil ───────────────────────────────────────────────────
+  // ── Upload photo profil ────────────────────────────────────────────────────
   const handleProfilePhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith('image/')) { showToast?.('Fichier non valide. Image requise.', 'error'); return; }
     if (file.size > 5 * 1024 * 1024) { showToast?.('Fichier trop volumineux (5 Mo max)', 'error'); return; }
 
-    debug('Upload', '📤 Début upload photo profil', { name: file.name, size: file.size, type: file.type });
+    debug('Upload', '📤 Début upload photo profil', { name: file.name, size: file.size });
 
-    // Aperçu immédiat blob
+    // Aperçu immédiat blob (local uniquement, sera remplacé par l'URL serveur)
     const blobUrl = URL.createObjectURL(file);
     setLocalPhoto(blobUrl);
-    setProfilePhotoKey(k => k + 1);
     setIsUploadingProfile(true);
 
     try {
@@ -506,8 +521,8 @@ export default function ProfileHeader({
       );
 
       debug('Upload', '✅ Réponse serveur reçue', {
-        status: response.status,
-        hasUser: !!response.data?.user,
+        status:       response.status,
+        hasUser:      !!response.data?.user,
         profilePhoto: response.data?.user?.profilePhoto,
       });
 
@@ -517,16 +532,21 @@ export default function ProfileHeader({
         const serverUrl = response.data.user.profilePhoto;
         debug('Upload', '🔗 URL serveur profilePhoto =', serverUrl);
 
-        // ✅ Sync authUser via context
-        await updateUserProfile(user._id, response.data.user);
-        debug('Upload', '✅ updateUserProfile appelé');
-
-        // ✅ Cache-bust forcé → le navigateur recharge réellement l'image
+        // ✅ FIX PROD : on applique directement l'URL serveur avec cache-bust.
+        // On ne dépend plus de authUser qui peut être désynchronisé en prod.
         const freshUrl = serverUrl ? bustCache(serverUrl) : null;
         debug('Upload', '🔄 freshUrl avec cache-bust =', freshUrl);
-
         setLocalPhoto(freshUrl);
-        setProfilePhotoKey(k => k + 1); // force re-render de l'<img>
+
+        // ✅ Sync le contexte Auth en arrière-plan.
+        // updateUserProfile détecte que c'est une photo update et SKIP l'appel
+        // PUT /:id (déjà persisté par PUT /:id/images). Pas de double appel API.
+        updateUserProfile(user._id, {
+          profilePhoto:          serverUrl,
+          profilePhotoPublicId:  response.data.user.profilePhotoPublicId,
+        });
+
+        debug('Upload', '✅ Contexte Auth mis à jour');
       } else {
         debug('Upload', '⚠️ Réponse sans user — on garde le blob');
       }
@@ -535,12 +555,11 @@ export default function ProfileHeader({
     } catch (err) {
       debug('Upload', '❌ Erreur upload profilePhoto', {
         message: err.message,
-        status: err.response?.status,
-        data: err.response?.data,
+        status:  err.response?.status,
+        data:    err.response?.data,
       });
       URL.revokeObjectURL(blobUrl);
       setLocalPhoto(null);
-      setProfilePhotoKey(k => k + 1);
       showToast?.(getUploadErrorMessage(err), 'error');
     } finally {
       setIsUploadingProfile(false);
@@ -548,7 +567,7 @@ export default function ProfileHeader({
     }
   };
 
-  // ── Upload couverture ─────────────────────────────────────────────────────
+  // ── Upload couverture ──────────────────────────────────────────────────────
   const handleCoverPhotoChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -559,7 +578,6 @@ export default function ProfileHeader({
 
     const blobUrl = URL.createObjectURL(file);
     setLocalCoverPhoto(blobUrl);
-    setCoverPhotoKey(k => k + 1);
     setIsUploadingCover(true);
 
     try {
@@ -577,8 +595,8 @@ export default function ProfileHeader({
       );
 
       debug('Upload', '✅ Réponse serveur reçue (cover)', {
-        status: response.status,
-        hasUser: !!response.data?.user,
+        status:     response.status,
+        hasUser:    !!response.data?.user,
         coverPhoto: response.data?.user?.coverPhoto,
       });
 
@@ -588,14 +606,18 @@ export default function ProfileHeader({
         const serverUrl = response.data.user.coverPhoto;
         debug('Upload', '🔗 URL serveur coverPhoto =', serverUrl);
 
-        await updateUserProfile(user._id, response.data.user);
-        debug('Upload', '✅ updateUserProfile appelé (cover)');
-
+        // ✅ FIX PROD : même logique que profilePhoto
         const freshUrl = serverUrl ? bustCache(serverUrl) : null;
         debug('Upload', '🔄 freshUrl cover avec cache-bust =', freshUrl);
-
         setLocalCoverPhoto(freshUrl);
-        setCoverPhotoKey(k => k + 1);
+
+        // Sync contexte Auth — skip PUT /:id automatiquement (photo update)
+        updateUserProfile(user._id, {
+          coverPhoto:        serverUrl,
+          coverPhotoPublicId: response.data.user.coverPhotoPublicId,
+        });
+
+        debug('Upload', '✅ Contexte Auth mis à jour (cover)');
       } else {
         debug('Upload', '⚠️ Réponse sans user (cover) — on garde le blob');
       }
@@ -604,12 +626,11 @@ export default function ProfileHeader({
     } catch (err) {
       debug('Upload', '❌ Erreur upload coverPhoto', {
         message: err.message,
-        status: err.response?.status,
-        data: err.response?.data,
+        status:  err.response?.status,
+        data:    err.response?.data,
       });
       URL.revokeObjectURL(blobUrl);
       setLocalCoverPhoto(null);
-      setCoverPhotoKey(k => k + 1);
       showToast?.(getUploadErrorMessage(err), 'error');
     } finally {
       setIsUploadingCover(false);
@@ -617,7 +638,7 @@ export default function ProfileHeader({
     }
   };
 
-  // ── Sauvegarde profil ─────────────────────────────────────────────────────
+  // ── Sauvegarde profil texte ────────────────────────────────────────────────
   const handleSaveProfile = async () => {
     if (!user?._id) { showToast?.('Utilisateur introuvable', 'error'); return; }
     setSaving(true);
@@ -676,9 +697,13 @@ export default function ProfileHeader({
 
         {/* ── COUVERTURE ── */}
         <div style={{ position: 'relative', height: 220, overflow: 'hidden' }}>
-          {/* ✅ key={coverPhotoKey} force React à recréer l'élément → vide le cache navigateur */}
+          {/*
+            ✅ FIX PROD : plus de key={coverPhotoKey} sur l'img.
+            La key démontait/remontait le DOM, déclenchant une requête CDN
+            qui pouvait revenir avec la version cachée en prod.
+            Le cache-bust est porté par l'URL elle-même (?v=timestamp).
+          */}
           <motion.img
-            key={`cover-${coverPhotoKey}`}
             src={resolvedCoverPhoto}
             alt="Couverture"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -706,7 +731,6 @@ export default function ProfileHeader({
 
           {/* Boutons sur la couverture */}
           <div style={{ position: 'absolute', top: 16, right: 16, display: 'flex', gap: 8 }}>
-            {/* BOUTON MESSAGE */}
             {!isOwnProfile && (
               <motion.button
                 onClick={handleSendMessage}
@@ -725,7 +749,6 @@ export default function ProfileHeader({
               </motion.button>
             )}
 
-            {/* MENU OPTIONS */}
             {!isOwnProfile && (
               <div style={{ position: 'relative' }} ref={optionsMenuRef}>
                 <motion.button
@@ -776,7 +799,6 @@ export default function ProfileHeader({
               </div>
             )}
 
-            {/* UPLOAD COUVERTURE */}
             {isOwnProfile && (
               <>
                 <input ref={coverInputRef} type="file" accept="image/*" onChange={handleCoverPhotoChange} style={{ display: 'none' }} />
@@ -821,9 +843,13 @@ export default function ProfileHeader({
                   boxShadow: '0 0 0 0 rgba(249,115,22,0.55)',
                 }}
               >
-                {/* ✅ key={profilePhotoKey} force la recréation de l'img → vide le cache */}
+                {/*
+                  ✅ FIX PROD : pas de key sur l'img — le src change suffit
+                  à déclencher un rechargement par le navigateur.
+                  Le ?v=timestamp dans l'URL garantit que le CDN ne sert pas
+                  l'ancienne version.
+                */}
                 <img
-                  key={`profile-${profilePhotoKey}`}
                   src={resolvedProfilePhoto}
                   alt={user?.fullName}
                   style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -836,7 +862,6 @@ export default function ProfileHeader({
                 />
               </div>
 
-              {/* Badge vérifié/premium */}
               {(user?.isPremium || user?.isVerified) && (
                 <motion.div
                   initial={{ scale: 0 }}
@@ -857,7 +882,6 @@ export default function ProfileHeader({
                 </motion.div>
               )}
 
-              {/* Bouton upload photo profil */}
               {isOwnProfile && (
                 <>
                   <input ref={profileInputRef} type="file" accept="image/*" onChange={handleProfilePhotoChange} style={{ display: 'none' }} />
@@ -997,7 +1021,6 @@ export default function ProfileHeader({
             ) : (
               <motion.div key="view" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                 <div style={{ marginBottom: 6 }}>
-                  {/* Nom + badges */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
                     <h1 style={{
                       fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em',
@@ -1019,7 +1042,6 @@ export default function ProfileHeader({
                     )}
                   </div>
 
-                  {/* Handle + website */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
                     <span style={{ fontSize: 13, color: sub }}>@{user?.username || user?.email?.split('@')[0] || 'user'}</span>
                     {user?.website && (
@@ -1031,7 +1053,6 @@ export default function ProfileHeader({
                     )}
                   </div>
 
-                  {/* Stats style TikTok */}
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
                     {[
                       { val: stats.followers, label: 'Abonnés',     clickType: 'followers' },
@@ -1050,14 +1071,12 @@ export default function ProfileHeader({
                     ))}
                   </div>
 
-                  {/* Bio */}
                   {user?.bio && (
                     <p style={{ fontSize: 14, color: isDarkMode ? '#d1d5db' : '#374151', lineHeight: 1.7, marginBottom: 12 }}>
                       {user.bio}
                     </p>
                   )}
 
-                  {/* Infos supplémentaires */}
                   <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 4 }}>
                     {user?.location && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>

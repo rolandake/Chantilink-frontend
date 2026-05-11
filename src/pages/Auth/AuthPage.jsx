@@ -1,4 +1,11 @@
 // src/pages/Auth/AuthPage.jsx
+// ✅ VERSION PERSISTANCE MONDIALE
+//
+// AMÉLIORATIONS vs ancienne version :
+//   - Shimmer loader tant que sessionLoading = true (jamais de flash login)
+//   - Redirect immédiat si isAuthenticated (via IDB ou token)
+//   - Le formulaire login n'est JAMAIS rendu pour un user déjà connu
+
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams, Navigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -6,6 +13,9 @@ import { useAuth } from "../../context/AuthContext";
 import { useLanguage } from "../../context/LanguageContext";
 import { SUPPORTED_LANGUAGES } from "../../i18n";
 
+// ─────────────────────────────────────────────
+// ICONS
+// ─────────────────────────────────────────────
 const EyeIcon = ({ open }) => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     {open
@@ -44,6 +54,9 @@ const GlobeIcon = () => (
   </svg>
 );
 
+// ─────────────────────────────────────────────
+// UTILS
+// ─────────────────────────────────────────────
 const pwStrength = (pw) => {
   if (!pw) return 0;
   let s = 0;
@@ -55,7 +68,9 @@ const pwStrength = (pw) => {
 };
 const S_COLORS = ["","#f87171","#fb923c","#facc15","#34d399"];
 
-/* ── SLIDES du carrousel hero ── */
+// ─────────────────────────────────────────────
+// HERO SLIDES
+// ─────────────────────────────────────────────
 const SLIDES = [
   {
     img: "https://images.unsplash.com/photo-1504307651254-35680f356dfd?w=1400&q=80&fit=crop",
@@ -89,6 +104,9 @@ const STATS = [
   { value: "3×",    label: "Gain de productivité" },
 ];
 
+// ─────────────────────────────────────────────
+// CSS
+// ─────────────────────────────────────────────
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap');
 
@@ -97,22 +115,72 @@ const CSS = `
 @keyframes cl-fade     { from{opacity:0;transform:translateY(-5px)} to{opacity:1;transform:none} }
 @keyframes cl-slide-up { from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:none} }
 @keyframes cl-hero-in  { from{opacity:0;transform:translateX(-24px)} to{opacity:1;transform:none} }
-@keyframes cl-float    {
-  0%,100%{transform:translateY(0) rotate(-1deg)}
-  50%    {transform:translateY(-10px) rotate(1deg)}
+
+/* ── Shimmer skeleton ── */
+@keyframes cl-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
 }
-@keyframes cl-float2   {
-  0%,100%{transform:translateY(0) rotate(2deg)}
-  50%    {transform:translateY(-14px) rotate(-1deg)}
+.cl-shimmer {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,.04) 25%,
+    rgba(255,255,255,.08) 50%,
+    rgba(255,255,255,.04) 75%
+  );
+  background-size: 400px 100%;
+  animation: cl-shimmer 1.4s ease-in-out infinite;
+  border-radius: 12px;
 }
-@keyframes cl-float3   {
-  0%,100%{transform:translateY(-4px) rotate(-2deg)}
-  50%    {transform:translateY(8px) rotate(1.5deg)}
+
+/* ── Loader plein écran ── */
+.cl-session-loader {
+  position: fixed;
+  inset: 0;
+  background: #09090b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  flex-direction: column;
+  gap: 20px;
 }
-@keyframes cl-pulse-ring {
-  0%  {transform:scale(.9);opacity:.6}
-  70% {transform:scale(1.4);opacity:0}
-  100%{transform:scale(1.4);opacity:0}
+.cl-loader-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  animation: cl-in .4s cubic-bezier(.22,1,.36,1) both;
+}
+.cl-loader-logo-box {
+  width: 48px; height: 48px; border-radius: 14px;
+  background: linear-gradient(135deg, #f97316, #ec4899);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 8px 24px rgba(249,115,22,.4);
+}
+.cl-loader-logo-text {
+  font-family: 'Syne', sans-serif;
+  font-size: 24px; font-weight: 800; letter-spacing: -.04em; color: #fff;
+}
+.cl-loader-logo-text b { color: #f97316; }
+.cl-loader-bar-wrap {
+  width: 180px; height: 3px; background: rgba(255,255,255,.08);
+  border-radius: 2px; overflow: hidden;
+}
+.cl-loader-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #f97316, #ec4899);
+  border-radius: 2px;
+  animation: cl-bar-fill 1.8s cubic-bezier(.4,0,.2,1) forwards;
+}
+@keyframes cl-bar-fill {
+  0%   { width: 0%; opacity: 1; }
+  80%  { width: 85%; opacity: 1; }
+  100% { width: 85%; opacity: .7; }
+}
+.cl-loader-hint {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px; color: rgba(255,255,255,.25);
+  letter-spacing: .04em;
 }
 
 /* ── ROOT ── */
@@ -127,9 +195,7 @@ const CSS = `
   align-items:stretch;
 }
 
-/* ════════════════════════════
-   COLONNE GAUCHE  (hero carrousel)
-════════════════════════════ */
+/* ── HERO ── */
 .cla-hero {
   display:none;
   flex:1;
@@ -137,8 +203,6 @@ const CSS = `
   overflow:hidden;
   background:#0a0806;
 }
-
-/* Slides images */
 .cla-slide {
   position:absolute;inset:0;
   background-size:cover;background-position:center;
@@ -146,20 +210,13 @@ const CSS = `
   transition:opacity 1.2s cubic-bezier(.4,0,.2,1),transform 8s linear;
   transform:scale(1.05);
 }
-.cla-slide.active {
-  opacity:1;
-  transform:scale(1);
-}
-
-/* Overlays */
+.cla-slide.active { opacity:1; transform:scale(1); }
 .cla-slide-overlay {
   position:absolute;inset:0;
   background:
     linear-gradient(to right,rgba(0,0,0,.72) 0%,rgba(0,0,0,.4) 60%,rgba(0,0,0,.15) 100%),
     linear-gradient(to top,rgba(0,0,0,.85) 0%,transparent 50%);
 }
-
-/* Contenu hero */
 .cla-hero-inner {
   position:relative;z-index:2;
   height:100%;
@@ -167,8 +224,6 @@ const CSS = `
   justify-content:space-between;
   padding:44px 52px 40px;
 }
-
-/* Logo hero */
 .cla-hero-logo {
   display:flex;align-items:center;gap:12px;
   animation:cl-hero-in .6s cubic-bezier(.22,1,.36,1) both;
@@ -184,8 +239,6 @@ const CSS = `
   letter-spacing:-.03em;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.5);
 }
 .cla-hero-logo-text b { color:#f97316; }
-
-/* Headline block */
 .cla-hero-body {
   flex:1;display:flex;flex-direction:column;justify-content:flex-end;
   padding-bottom:16px;
@@ -196,7 +249,6 @@ const CSS = `
   color:#f97316;margin-bottom:16px;
 }
 .cla-hero-tag-line { width:24px;height:1.5px;background:#f97316;display:block; }
-
 .cla-hero-h1 {
   font-family:'Syne',sans-serif;
   font-size:clamp(34px,3.6vw,54px);
@@ -213,29 +265,16 @@ const CSS = `
   font-size:14.5px;font-weight:300;color:rgba(255,255,255,.65);
   line-height:1.65;max-width:400px;margin-bottom:32px;
 }
-
-/* Stats */
-.cla-stats {
-  display:flex;gap:0;
-  border-top:1px solid rgba(255,255,255,.1);
-  padding-top:24px;
-}
-.cla-stat {
-  flex:1;border-right:1px solid rgba(255,255,255,.08);
-}
+.cla-stats { display:flex;gap:0;border-top:1px solid rgba(255,255,255,.1);padding-top:24px; }
+.cla-stat { flex:1;border-right:1px solid rgba(255,255,255,.08); }
 .cla-stat:last-child { border-right:none; }
 .cla-stat:not(:first-child) { padding-left:26px; }
 .cla-stat-val {
   font-family:'Syne',sans-serif;font-size:24px;font-weight:800;
   color:#fff;letter-spacing:-.04em;margin-bottom:2px;
-  text-shadow:0 2px 10px rgba(0,0,0,.3);
 }
 .cla-stat-lbl { font-size:11px;font-weight:400;color:rgba(255,255,255,.4); }
-
-/* Pagination dots */
-.cla-dots {
-  display:flex;gap:7px;align-items:center;margin-bottom:28px;
-}
+.cla-dots { display:flex;gap:7px;align-items:center;margin-bottom:28px; }
 .cla-dot {
   height:3px;border-radius:2px;background:rgba(255,255,255,.3);
   cursor:pointer;transition:all .4s cubic-bezier(.4,0,.2,1);
@@ -243,8 +282,6 @@ const CSS = `
 }
 .cla-dot.active { background:#f97316;width:28px; }
 .cla-dot:not(.active) { width:8px; }
-
-/* Progress bar sous le slide actif */
 .cla-progress {
   position:absolute;bottom:0;left:0;height:2px;
   background:linear-gradient(90deg,#f97316,#ec4899);
@@ -252,9 +289,7 @@ const CSS = `
 }
 @keyframes cl-progress { from{width:0%} to{width:100%} }
 
-/* ════════════════════════════
-   COLONNE DROITE  (form panel)
-════════════════════════════ */
+/* ── PANEL ── */
 .cla-panel {
   width:100%;
   min-height:100dvh;
@@ -275,8 +310,6 @@ const CSS = `
   background:radial-gradient(circle,rgba(236,72,153,.05) 0%,transparent 65%);
   pointer-events:none;
 }
-
-/* ── Card ── */
 .cla-card {
   width:100%;max-width:416px;
   background:var(--surf);
@@ -291,8 +324,6 @@ const CSS = `
   background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.03'/%3E%3C/svg%3E");
   pointer-events:none;opacity:.4;
 }
-
-/* Logo dans la card (mobile uniquement) */
 .cla-card-logo { display:flex;align-items:center;gap:11px;margin-bottom:26px; }
 .cla-card-logo-box {
   width:40px;height:40px;border-radius:12px;flex-shrink:0;
@@ -306,14 +337,12 @@ const CSS = `
 }
 .cla-card-logo-text b { color:var(--ora);font-weight:800; }
 
-/* ── Form elements ── */
+/* ── FORM ── */
 .cla-title  { font-family:'Syne',sans-serif;font-size:26px;font-weight:700;letter-spacing:-.03em;color:var(--txt);margin-bottom:3px;line-height:1.18; }
 .cla-sub    { font-size:13.5px;color:var(--mut);margin-bottom:24px;font-weight:300; }
-
 .cla-tabs   { display:flex;gap:0;background:rgba(255,255,255,.04);border-radius:13px;padding:4px;margin-bottom:24px; }
 .cla-tab    { flex:1;padding:9px;border:none;background:none;cursor:pointer;font-family:'DM Sans',sans-serif;font-size:13.5px;font-weight:500;color:var(--mut);border-radius:10px;transition:all .2s; }
 .cla-tab.on { background:rgba(249,115,22,.14);color:var(--ora);font-weight:600; }
-
 .cla-f    { margin-bottom:13px; }
 .cla-lbl  { display:block;font-size:11.5px;font-weight:500;color:var(--mut);letter-spacing:.07em;text-transform:uppercase;margin-bottom:6px; }
 .cla-iw   { position:relative; }
@@ -330,11 +359,9 @@ const CSS = `
 .cla-i.pr  { padding-right:46px; }
 .cla-i.ok  { border-color:rgba(52,211,153,.35); }
 .cla-i.er  { border-color:rgba(248,113,113,.45); }
-
 .cla-eye { position:absolute;right:13px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--mut);display:flex;align-items:center;padding:0;transition:color .15s; }
 .cla-eye:hover { color:var(--txt); }
 .cla-ok-badge { position:absolute;right:13px;top:50%;transform:translateY(-50%);color:var(--ok);display:flex;align-items:center; }
-
 .cla-lang-select {
   width:100%;padding:11px 16px;
   background:rgba(255,255,255,.04);border:1px solid var(--brd);
@@ -350,7 +377,6 @@ const CSS = `
 .cla-lang-iw   { position:relative;display:flex;align-items:center; }
 .cla-lang-icon { position:absolute;left:12px;color:var(--mut);pointer-events:none;display:flex; }
 .cla-lang-select.with-icon { padding-left:36px; }
-
 .cla-lang-pills { display:flex;gap:6px;margin-bottom:20px; }
 .cla-lang-pill  {
   flex:1;padding:7px 6px;border:1px solid var(--brd);border-radius:9px;
@@ -361,18 +387,15 @@ const CSS = `
 }
 .cla-lang-pill.on { border-color:rgba(249,115,22,.4);background:rgba(249,115,22,.1);color:var(--ora); }
 .cla-lang-pill:hover:not(.on) { border-color:rgba(255,255,255,.13);background:rgba(255,255,255,.05);color:var(--txt); }
-
 .cla-bars { display:flex;gap:4px;margin-top:7px; }
 .cla-bar  { flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.07);transition:background .3s; }
 .cla-hint { font-size:11.5px;margin-top:4px;font-weight:300; }
-
 .cla-row    { display:flex;align-items:center;justify-content:space-between;margin-bottom:20px; }
 .cla-rem    { display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--mut);user-select:none; }
 .cla-box    { width:16px;height:16px;border:1.5px solid rgba(255,255,255,.13);border-radius:5px;display:flex;align-items:center;justify-content:center;background:transparent;transition:all .15s;flex-shrink:0; }
 .cla-box.on { background:var(--ora);border-color:var(--ora);color:#fff; }
 .cla-forgot { font-size:13px;color:var(--ora);background:none;border:none;cursor:pointer;padding:0;font-family:'DM Sans',sans-serif;opacity:.82;transition:opacity .15s; }
 .cla-forgot:hover { opacity:1;text-decoration:underline; }
-
 .cla-btn {
   width:100%;padding:14px;border:none;border-radius:14px;
   font-family:'Syne',sans-serif;font-size:15px;font-weight:700;letter-spacing:.01em;
@@ -387,7 +410,6 @@ const CSS = `
 .cla-btn:disabled               { opacity:.5;cursor:not-allowed; }
 .cla-btn::after { content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.13),transparent);opacity:0;transition:opacity .2s; }
 .cla-btn:hover::after { opacity:1; }
-
 .cla-btn-ghost {
   width:100%;padding:12px;border:1px solid var(--brd);border-radius:14px;
   font-family:'DM Sans',sans-serif;font-size:14px;font-weight:500;
@@ -396,16 +418,13 @@ const CSS = `
   transition:all .2s;margin-top:10px;
 }
 .cla-btn-ghost:hover { border-color:rgba(255,255,255,.13);background:rgba(255,255,255,.06);color:var(--txt); }
-
 .cla-alert { padding:11px 14px;border-radius:10px;font-size:13.5px;margin-bottom:14px;display:flex;align-items:flex-start;gap:8px;animation:cl-fade .22s ease; }
 .cla-alert.err { background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.18);color:#fca5a5; }
 .cla-alert.suc { background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.18);color:#6ee7b7; }
 .cla-alert.inf { background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.18);color:#fdba74; }
-
 .cla-sep  { display:flex;align-items:center;gap:12px;margin:20px 0; }
 .cla-sepl { flex:1;height:1px;background:var(--brd); }
 .cla-sept { font-size:12px;color:var(--mut);font-weight:300;white-space:nowrap; }
-
 .cla-google-btn {
   width:100%;padding:13px 16px;
   border:1px solid var(--brd);border-radius:12px;
@@ -416,23 +435,19 @@ const CSS = `
 }
 .cla-google-btn:hover    { border-color:rgba(255,255,255,.18);background:rgba(255,255,255,.07);transform:translateY(-1px); }
 .cla-google-btn:disabled { opacity:.5;cursor:not-allowed; }
-
 .cla-foot { text-align:center;margin-top:22px;font-size:12px;color:var(--mut);line-height:1.7; }
 .cla-foot a { color:var(--ora);text-decoration:none; }
 .cla-foot a:hover { text-decoration:underline; }
-
 .cla-success-screen { text-align:center;padding:12px 0;animation:cl-slide-up .4s cubic-bezier(.22,1,.36,1) both; }
 .cla-success-icon   { width:72px;height:72px;border-radius:20px;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.2);display:flex;align-items:center;justify-content:center;margin:0 auto 22px; }
 .cla-success-title  { font-family:'Syne',sans-serif;font-size:22px;font-weight:700;color:var(--txt);margin-bottom:8px;letter-spacing:-.02em; }
 .cla-success-body   { font-size:14px;color:var(--mut);line-height:1.7;margin-bottom:24px; }
 .cla-success-email  { display:inline-block;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.2);color:#fdba74;border-radius:8px;padding:4px 12px;font-size:13px;font-weight:500;margin:2px 0 0; }
-
 .cla-countdown { font-size:12px;color:var(--mut);margin-top:12px;text-align:center; }
 .cla-countdown span { color:var(--ora);font-weight:600; }
 .cla-resend-btn { background:none;border:none;cursor:pointer;color:var(--ora);font-size:13px;font-family:'DM Sans',sans-serif;padding:0;text-decoration:underline;opacity:.85;transition:opacity .15s; }
 .cla-resend-btn:hover    { opacity:1; }
 .cla-resend-btn:disabled { cursor:not-allowed;opacity:.4;text-decoration:none; }
-
 .cla-back { display:flex;align-items:center;gap:6px;background:none;border:none;cursor:pointer;color:var(--mut);font-family:'DM Sans',sans-serif;font-size:13px;padding:0 0 20px;transition:color .15s; }
 .cla-back:hover { color:var(--txt); }
 
@@ -440,7 +455,7 @@ const CSS = `
 @media(min-width:900px){
   .cla-hero  { display:flex; }
   .cla-panel { width:480px;flex-shrink:0;min-height:100dvh; }
-  .cla-card-logo { display:none; } /* logo déjà dans hero */
+  .cla-card-logo { display:none; }
 }
 @media(max-width:899px){
   .cla-panel { padding:20px; }
@@ -454,6 +469,35 @@ const CSS = `
 }
 `;
 
+// ─────────────────────────────────────────────
+// ✅ SHIMMER LOADER — affiché pendant la vérification de session
+// Remplace l'ancien spinner basique. Donne une impression de vitesse.
+// ─────────────────────────────────────────────
+const SessionLoader = () => (
+  <>
+    <style>{CSS}</style>
+    <div className="cl-session-loader">
+      <div className="cl-loader-logo">
+        <div className="cl-loader-logo-box">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="7" width="9" height="15"/>
+            <path d="M16 3h5v19h-5"/>
+            <path d="M5 10h3M5 14h3M5 18h3M16 8h2M16 12h2M16 16h2"/>
+          </svg>
+        </div>
+        <div className="cl-loader-logo-text">CHANTI<b>LINK</b></div>
+      </div>
+      <div className="cl-loader-bar-wrap">
+        <div className="cl-loader-bar" />
+      </div>
+      <div className="cl-loader-hint">Chargement de votre session…</div>
+    </div>
+  </>
+);
+
+// ─────────────────────────────────────────────
+// PAGE PRINCIPALE
+// ─────────────────────────────────────────────
 export default function AuthPage() {
   const { t, i18n }                = useTranslation();
   const { login, register, loading: authLoading, isAuthenticated, sessionLoading } = useAuth();
@@ -481,7 +525,7 @@ export default function AuthPage() {
   const [sentTo, setSentTo]     = useState("");
   const [cooldown, setCooldown] = useState(0);
 
-  const [slide, setSlide] = useState(0);
+  const [slide, setSlide]       = useState(0);
   const [slideKey, setSlideKey] = useState(0);
 
   useEffect(() => {
@@ -518,18 +562,12 @@ export default function AuthPage() {
     return () => clearTimeout(id);
   }, [cooldown]);
 
-  if (!sessionLoading && isAuthenticated) return <Navigate to="/" replace />;
-
-  if (sessionLoading) {
-    return (
-      <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center", background: "#09090b" }}>
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2" strokeLinecap="round" style={{ animation: "spin .75s linear infinite", opacity: 0.6 }}>
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-        </svg>
-      </div>
-    );
-  }
+  // ✅ GARDE PRINCIPALE — jamais de flash de formulaire
+  // Phase 1 : sessionLoading = true → shimmer loader
+  // Phase 2 : isAuthenticated = true → redirect immédiate
+  // Phase 3 : sessionLoading = false && !isAuthenticated → formulaire
+  if (sessionLoading) return <SessionLoader />;
+  if (isAuthenticated) return <Navigate to="/" replace />;
 
   const clear = () => setAlert(null);
 
@@ -552,7 +590,6 @@ export default function AuthPage() {
     try {
       const res = await login(email.trim().toLowerCase(), pw, remember);
       if (res.success) {
-        localStorage.setItem("cl_last_email", email.trim().toLowerCase());
         navigate("/", { replace: true });
       } else {
         setAlert({ t: "err", msg: res.message || t("auth.login.error_default") });
@@ -568,7 +605,6 @@ export default function AuthPage() {
     try {
       const res = await register(name.trim(), rEmail.trim().toLowerCase(), rPw, true, regLang);
       if (res.success) {
-        localStorage.setItem("cl_last_email", rEmail.trim().toLowerCase());
         navigate("/", { replace: true });
       } else {
         setAlert({ t: "err", msg: res.message || t("auth.register.error_default") });
@@ -621,39 +657,25 @@ export default function AuthPage() {
       <style>{CSS}</style>
       <div className="cla">
 
-        {/* ══ COLONNE HERO — Carrousel images ══ */}
+        {/* HERO CARROUSEL */}
         <div className="cla-hero">
-
-          {/* Slides images */}
           {SLIDES.map((s, i) => (
-            <div
-              key={i}
-              className={`cla-slide${i === slide ? " active" : ""}`}
-              style={{ backgroundImage: `url(${s.img})` }}
-            >
+            <div key={i} className={`cla-slide${i === slide ? " active" : ""}`}
+              style={{ backgroundImage: `url(${s.img})` }}>
               <div className="cla-slide-overlay"/>
             </div>
           ))}
-
-          {/* Barre de progression */}
           <div key={slideKey} className="cla-progress"/>
-
-          {/* Contenu texte par-dessus */}
           <div className="cla-hero-inner">
-
-            {/* Logo */}
             <div className="cla-hero-logo">
               <div className="cla-hero-logo-box">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="7" width="9" height="15"/>
-                  <path d="M16 3h5v19h-5"/>
+                  <rect x="2" y="7" width="9" height="15"/><path d="M16 3h5v19h-5"/>
                   <path d="M5 10h3M5 14h3M5 18h3M16 8h2M16 12h2M16 16h2"/>
                 </svg>
               </div>
               <div className="cla-hero-logo-text">CHANTI<b>LINK</b></div>
             </div>
-
-            {/* Headline dynamique */}
             <div className="cla-hero-body">
               <div className="cla-hero-tag">
                 <span className="cla-hero-tag-line"/>
@@ -667,19 +689,11 @@ export default function AuthPage() {
                 )}
               </h1>
               <p className="cla-hero-sub">{current.sub}</p>
-
-              {/* Dots */}
               <div className="cla-dots">
                 {SLIDES.map((_, i) => (
-                  <button
-                    key={i}
-                    className={`cla-dot${i === slide ? " active" : ""}`}
-                    onClick={() => goSlide(i)}
-                  />
+                  <button key={i} className={`cla-dot${i === slide ? " active" : ""}`} onClick={() => goSlide(i)} />
                 ))}
               </div>
-
-              {/* Stats */}
               <div className="cla-stats">
                 {STATS.map((s, i) => (
                   <div className="cla-stat" key={i}>
@@ -692,38 +706,31 @@ export default function AuthPage() {
           </div>
         </div>
 
-        {/* ══ COLONNE FORMULAIRE ══ */}
+        {/* FORMULAIRE */}
         <div className="cla-panel">
           <div className="cla-card">
 
-            {/* Logo visible seulement mobile */}
             <div className="cla-card-logo">
               <div className="cla-card-logo-box">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="7" width="9" height="15"/>
-                  <path d="M16 3h5v19h-5"/>
+                  <rect x="2" y="7" width="9" height="15"/><path d="M16 3h5v19h-5"/>
                   <path d="M5 10h3M5 14h3M5 18h3M16 8h2M16 12h2M16 16h2"/>
                 </svg>
               </div>
               <div className="cla-card-logo-text">CHANTI<b>LINK</b></div>
             </div>
 
-            {/* Lang pills */}
             <div className="cla-lang-pills">
               {SUPPORTED_LANGUAGES.map((lang) => (
-                <button
-                  key={lang.code}
-                  type="button"
+                <button key={lang.code} type="button"
                   className={`cla-lang-pill${i18n.language === lang.code ? " on" : ""}`}
-                  onClick={() => handleLangChange(lang.code)}
-                >
-                  <span>{lang.flag}</span>
-                  <span>{lang.label}</span>
+                  onClick={() => handleLangChange(lang.code)}>
+                  <span>{lang.flag}</span><span>{lang.label}</span>
                 </button>
               ))}
             </div>
 
-            {/* ── forgot-sent ── */}
+            {/* FORGOT SENT */}
             {mode === "forgot-sent" && (
               <div className="cla-success-screen">
                 <div className="cla-success-icon"><MailIcon /></div>
@@ -732,8 +739,7 @@ export default function AuthPage() {
                   {t("auth.forgot_sent.body_1")}{" "}
                   <strong style={{color:"#f97316"}}>{t("auth.forgot_sent.body_duration")}</strong>{" "}
                   {t("auth.forgot_sent.body_2")}
-                  <br/>
-                  <span className="cla-success-email">{sentTo}</span>
+                  <br/><span className="cla-success-email">{sentTo}</span>
                   <br/><br/>
                   {t("auth.forgot_sent.spam_hint")} <strong>{t("auth.forgot_sent.spam_word")}</strong>.
                 </div>
@@ -794,32 +800,25 @@ export default function AuthPage() {
                   </div>
                 )}
 
-                {/* ── LOGIN ── */}
+                {/* LOGIN */}
                 {mode === "login" && (
                   <form onSubmit={handleLogin} noValidate>
                     <div className="cla-f">
                       <label className="cla-lbl">{t("auth.login.email")}</label>
                       <div className="cla-iw">
-                        <input
-                          ref={emailRef}
-                          type="email" inputMode="email" autoComplete="email"
+                        <input ref={emailRef} type="email" inputMode="email" autoComplete="email"
                           className={`cla-i${emailOk?" ok pr":email.length>3&&!emailOk?" er":""}`}
                           placeholder="prenom@entreprise.com"
-                          value={email}
-                          onChange={e=>{setEmail(e.target.value);clear();}}
-                          disabled={isLoading}
-                        />
+                          value={email} onChange={e=>{setEmail(e.target.value);clear();}} disabled={isLoading}/>
                         {emailOk && <span className="cla-ok-badge"><CheckIcon/></span>}
                       </div>
                     </div>
                     <div className="cla-f">
                       <label className="cla-lbl">{t("auth.login.password")}</label>
                       <div className="cla-iw">
-                        <input
-                          type={showPw?"text":"password"} autoComplete="current-password"
+                        <input type={showPw?"text":"password"} autoComplete="current-password"
                           className="cla-i pr" placeholder="••••••••"
-                          value={pw} onChange={e=>{setPw(e.target.value);clear();}} disabled={isLoading}
-                        />
+                          value={pw} onChange={e=>{setPw(e.target.value);clear();}} disabled={isLoading}/>
                         <button type="button" className="cla-eye" onClick={()=>setShowPw(v=>!v)} tabIndex={-1}><EyeIcon open={showPw}/></button>
                       </div>
                     </div>
@@ -836,41 +835,35 @@ export default function AuthPage() {
                   </form>
                 )}
 
-                {/* ── REGISTER ── */}
+                {/* REGISTER */}
                 {mode === "register" && (
                   <form onSubmit={handleReg} noValidate>
                     <div className="cla-f">
                       <label className="cla-lbl">{t("auth.register.fullname")}</label>
                       <div className="cla-iw">
-                        <input
-                          ref={nameRef} type="text" autoComplete="name"
+                        <input ref={nameRef} type="text" autoComplete="name"
                           className={`cla-i${name.trim().length>=2?" ok":""}`}
                           placeholder={t("auth.register.fullname_placeholder")}
-                          value={name} onChange={e=>{setName(e.target.value);clear();}} disabled={isLoading}
-                        />
+                          value={name} onChange={e=>{setName(e.target.value);clear();}} disabled={isLoading}/>
                         {name.trim().length>=2 && <span className="cla-ok-badge"><CheckIcon/></span>}
                       </div>
                     </div>
                     <div className="cla-f">
                       <label className="cla-lbl">{t("auth.register.email")}</label>
                       <div className="cla-iw">
-                        <input
-                          type="email" inputMode="email" autoComplete="email"
+                        <input type="email" inputMode="email" autoComplete="email"
                           className={`cla-i${rEmailOk?" ok pr":rEmail.length>3&&!rEmailOk?" er":""}`}
                           placeholder={t("auth.register.email_placeholder")}
-                          value={rEmail} onChange={e=>{setREmail(e.target.value);clear();}} disabled={isLoading}
-                        />
+                          value={rEmail} onChange={e=>{setREmail(e.target.value);clear();}} disabled={isLoading}/>
                         {rEmailOk && <span className="cla-ok-badge"><CheckIcon/></span>}
                       </div>
                     </div>
                     <div className="cla-f">
                       <label className="cla-lbl">{t("auth.register.password")}</label>
                       <div className="cla-iw">
-                        <input
-                          type={showRPw?"text":"password"} autoComplete="new-password"
+                        <input type={showRPw?"text":"password"} autoComplete="new-password"
                           className="cla-i pr" placeholder={t("auth.register.password_placeholder")}
-                          value={rPw} onChange={e=>{setRPw(e.target.value);clear();}} disabled={isLoading}
-                        />
+                          value={rPw} onChange={e=>{setRPw(e.target.value);clear();}} disabled={isLoading}/>
                         <button type="button" className="cla-eye" onClick={()=>setShowRPw(v=>!v)} tabIndex={-1}><EyeIcon open={showRPw}/></button>
                       </div>
                       {rPw.length > 0 && (
@@ -893,12 +886,10 @@ export default function AuthPage() {
                       </label>
                       <div className="cla-lang-iw">
                         <span className="cla-lang-icon"><GlobeIcon/></span>
-                        <select
-                          className="cla-lang-select with-icon"
+                        <select className="cla-lang-select with-icon"
                           value={regLang}
                           onChange={e => { setRegLang(e.target.value); handleLangChange(e.target.value); }}
-                          disabled={isLoading}
-                        >
+                          disabled={isLoading}>
                           {SUPPORTED_LANGUAGES.map((lang) => (
                             <option key={lang.code} value={lang.code}>{lang.flag} {lang.label}</option>
                           ))}
@@ -911,18 +902,16 @@ export default function AuthPage() {
                   </form>
                 )}
 
-                {/* ── FORGOT ── */}
+                {/* FORGOT */}
                 {mode === "forgot" && (
                   <form onSubmit={handleForgot} noValidate>
                     <div className="cla-f">
                       <label className="cla-lbl">{t("auth.forgot.email")}</label>
                       <div className="cla-iw">
-                        <input
-                          ref={fEmailRef} type="email" inputMode="email" autoComplete="email"
+                        <input ref={fEmailRef} type="email" inputMode="email" autoComplete="email"
                           className={`cla-i${fEmailOk?" ok pr":fEmail.length>3&&!fEmailOk?" er":""}`}
                           placeholder={t("auth.register.email_placeholder")}
-                          value={fEmail} onChange={e=>{setFEmail(e.target.value);clear();}} disabled={isLoading}
-                        />
+                          value={fEmail} onChange={e=>{setFEmail(e.target.value);clear();}} disabled={isLoading}/>
                         {fEmailOk && <span className="cla-ok-badge"><CheckIcon/></span>}
                       </div>
                     </div>
