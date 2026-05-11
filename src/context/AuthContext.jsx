@@ -14,7 +14,7 @@ import { injectAuthHandlers } from "../api/axiosClientGlobal";
 import { idbSet, idbGet, idbDelete } from "../utils/idbMigration";
 import { applyLanguage } from "../i18n";
 // ✅ NOUVEAU : import pour vider le cache contacts au logout
-import { clearContactsCache } from "../Pages/chat/ContactSidebar";
+import { clearContactsCache } from "../utils/contactsCache";
 
 export const AuthContext = createContext({
   user: null, token: null, socket: null, loading: false, ready: false,
