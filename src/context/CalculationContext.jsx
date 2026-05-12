@@ -13,45 +13,45 @@ import { useDebouncedCallback } from "use-debounce";
 // -------------------------
 // CONSTANTES
 // -------------------------
-const DEBOUNCE_DELAY = 200;
-const MESSAGE_AUTO_CLEAR_DELAY = 5000;
-const ERROR_AUTO_CLEAR_DELAY = 8000;
-const MAX_RETRY_ATTEMPTS = 3;
-const RETRY_DELAY = 1000;
-const REQUEST_TIMEOUT = 30000;
+const DEBOUNCE_DELAY            = 200;
+const MESSAGE_AUTO_CLEAR_DELAY  = 5000;
+const ERROR_AUTO_CLEAR_DELAY    = 8000;
+const MAX_RETRY_ATTEMPTS        = 3;
+const RETRY_DELAY               = 1000;
+const REQUEST_TIMEOUT           = 30000;
 
 export const PROJECT_TYPES = {
-  BATIMENT: "batiment",
-  TP: "tp",
+  BATIMENT:    "batiment",
+  TP:          "tp",
   FERROVIAIRE: "ferroviaire",
-  ENERGIE: "energie",
-  ECO: "eco",
+  ENERGIE:     "energie",
+  ECO:         "eco",
 };
 
 export const ERROR_CODES = {
-  AUTH_MISSING: "AUTH_MISSING",
-  AUTH_INVALID: "AUTH_INVALID",
-  NETWORK_ERROR: "NETWORK_ERROR",
-  SERVER_ERROR: "SERVER_ERROR",
-  VALIDATION_ERROR: "VALIDATION_ERROR",
-  NOT_FOUND: "NOT_FOUND",
-  TIMEOUT: "TIMEOUT",
-  DUPLICATE: "DUPLICATE",
-  RATE_LIMIT: "RATE_LIMIT",
-  UNKNOWN: "UNKNOWN",
+  AUTH_MISSING:      "AUTH_MISSING",
+  AUTH_INVALID:      "AUTH_INVALID",
+  NETWORK_ERROR:     "NETWORK_ERROR",
+  SERVER_ERROR:      "SERVER_ERROR",
+  VALIDATION_ERROR:  "VALIDATION_ERROR",
+  NOT_FOUND:         "NOT_FOUND",
+  TIMEOUT:           "TIMEOUT",
+  DUPLICATE:         "DUPLICATE",
+  RATE_LIMIT:        "RATE_LIMIT",
+  UNKNOWN:           "UNKNOWN",
 };
 
 const ERROR_MESSAGES = {
-  [ERROR_CODES.AUTH_MISSING]: "Token manquant. Reconnectez-vous.",
-  [ERROR_CODES.AUTH_INVALID]: "Session expirée. Reconnectez-vous.",
-  [ERROR_CODES.NETWORK_ERROR]: "Connexion perdue. Vérifiez votre réseau.",
-  [ERROR_CODES.SERVER_ERROR]: "Erreur serveur. Réessayez plus tard.",
+  [ERROR_CODES.AUTH_MISSING]:     "Token manquant. Reconnectez-vous.",
+  [ERROR_CODES.AUTH_INVALID]:     "Session expirée. Reconnectez-vous.",
+  [ERROR_CODES.NETWORK_ERROR]:    "Connexion perdue. Vérifiez votre réseau.",
+  [ERROR_CODES.SERVER_ERROR]:     "Erreur serveur. Réessayez plus tard.",
   [ERROR_CODES.VALIDATION_ERROR]: "Données invalides.",
-  [ERROR_CODES.NOT_FOUND]: "Ressource introuvable.",
-  [ERROR_CODES.TIMEOUT]: "Requête expirée.",
-  [ERROR_CODES.DUPLICATE]: "Calcul déjà existant.",
-  [ERROR_CODES.RATE_LIMIT]: "Trop de requêtes. Patientez.",
-  [ERROR_CODES.UNKNOWN]: "Erreur inconnue.",
+  [ERROR_CODES.NOT_FOUND]:        "Ressource introuvable.",
+  [ERROR_CODES.TIMEOUT]:          "Requête expirée.",
+  [ERROR_CODES.DUPLICATE]:        "Calcul déjà existant.",
+  [ERROR_CODES.RATE_LIMIT]:       "Trop de requêtes. Patientez.",
+  [ERROR_CODES.UNKNOWN]:          "Erreur inconnue.",
 };
 
 // -------------------------
@@ -70,9 +70,9 @@ export const useCalculation = () => {
 class CalculationError extends Error {
   constructor(message, code = ERROR_CODES.UNKNOWN, details = null) {
     super(message);
-    this.name = "CalculationError";
-    this.code = code;
-    this.details = details;
+    this.name      = "CalculationError";
+    this.code      = code;
+    this.details   = details;
     this.timestamp = Date.now();
   }
 }
@@ -82,58 +82,74 @@ class CalculationError extends Error {
 // -------------------------
 class HttpClient {
   constructor(baseURL, getAuthToken) {
-    this.baseURL = baseURL;
-    this.getAuthToken = getAuthToken;
+    this.baseURL         = baseURL;
+    this.getAuthToken    = getAuthToken;
     this.abortControllers = new Map();
   }
 
   async request(endpoint, options = {}, retryCount = 0) {
-    const requestId = `${endpoint}-${Date.now()}`;
+    const requestId  = `${endpoint}-${Date.now()}`;
     const controller = new AbortController();
     this.abortControllers.set(requestId, controller);
 
     try {
       const token = this.getAuthToken();
-      if (!token) throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.AUTH_MISSING], ERROR_CODES.AUTH_MISSING);
+      if (!token) throw new CalculationError(
+        ERROR_MESSAGES[ERROR_CODES.AUTH_MISSING],
+        ERROR_CODES.AUTH_MISSING
+      );
 
-      const timeout = setTimeout(() => controller.abort(), options.timeout || REQUEST_TIMEOUT);
+      const timeout = setTimeout(
+        () => controller.abort(),
+        options.timeout || REQUEST_TIMEOUT
+      );
 
       const response = await fetch(`${this.baseURL}${endpoint}`, {
         ...options,
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization:  `Bearer ${token}`,
           ...options.headers,
         },
         credentials: "include",
-        signal: controller.signal,
+        signal:      controller.signal,
       });
 
       clearTimeout(timeout);
       this.abortControllers.delete(requestId);
 
       if (!response.ok) {
-        if ([401, 403].includes(response.status)) {
+        if ([401, 403].includes(response.status))
           throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.AUTH_INVALID], ERROR_CODES.AUTH_INVALID);
-        }
-        if (response.status === 404) throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.NOT_FOUND], ERROR_CODES.NOT_FOUND);
-        if (response.status === 429) throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.RATE_LIMIT], ERROR_CODES.RATE_LIMIT);
-        if (response.status >= 500) throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.SERVER_ERROR], ERROR_CODES.SERVER_ERROR);
+        if (response.status === 404)
+          throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.NOT_FOUND], ERROR_CODES.NOT_FOUND);
+        if (response.status === 429)
+          throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.RATE_LIMIT], ERROR_CODES.RATE_LIMIT);
+        if (response.status >= 500)
+          throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.SERVER_ERROR], ERROR_CODES.SERVER_ERROR);
 
         const errorData = await response.json().catch(() => ({}));
-        throw new CalculationError(errorData.message || `HTTP ${response.status}`, ERROR_CODES.UNKNOWN, { status: response.status });
+        throw new CalculationError(
+          errorData.message || `HTTP ${response.status}`,
+          ERROR_CODES.UNKNOWN,
+          { status: response.status }
+        );
       }
 
       return await response.json();
     } catch (err) {
       this.abortControllers.delete(requestId);
 
-      if ((err.name === "AbortError" || err.code === ERROR_CODES.NETWORK_ERROR) && retryCount < MAX_RETRY_ATTEMPTS) {
+      if (
+        (err.name === "AbortError" || err.code === ERROR_CODES.NETWORK_ERROR) &&
+        retryCount < MAX_RETRY_ATTEMPTS
+      ) {
         await new Promise(r => setTimeout(r, RETRY_DELAY * (retryCount + 1)));
         return this.request(endpoint, options, retryCount + 1);
       }
 
-      if (err.name === "AbortError") throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.TIMEOUT], ERROR_CODES.TIMEOUT);
+      if (err.name === "AbortError")
+        throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.TIMEOUT], ERROR_CODES.TIMEOUT);
       if (err instanceof CalculationError) throw err;
       throw new CalculationError(ERROR_MESSAGES[ERROR_CODES.NETWORK_ERROR], ERROR_CODES.NETWORK_ERROR);
     }
@@ -149,22 +165,28 @@ class HttpClient {
 // PROVIDER
 // -------------------------
 export function CalculationProvider({ children }) {
-  const [localInputs, setLocalInputs] = useState({});
-  const [localResults, setLocalResults] = useState({});
-  const [savedCalculations, setSavedCalculations] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [success, setSuccess] = useState(null);
-  const [currentProjectType, setCurrentProjectType] = useState(null);
-  const [currentCalculationType, setCurrentCalculationType] = useState(null);
-  const [operationInProgress, setOperationInProgress] = useState(null);
+  const [localInputs,           setLocalInputs]           = useState({});
+  const [localResults,          setLocalResults]          = useState({});
+  const [savedCalculations,     setSavedCalculations]     = useState([]);
+  const [loading,               setLoading]               = useState(false);
+  const [error,                 setError]                 = useState(null);
+  const [success,               setSuccess]               = useState(null);
+  const [currentProjectType,    setCurrentProjectType]    = useState(null);
+  const [currentCalculationType,setCurrentCalculationType]= useState(null);
+  const [operationInProgress,   setOperationInProgress]   = useState(null);
 
-  const API_URL = useMemo(() => import.meta.env.VITE_API_URL || "http://localhost:5000", []);
+  const API_URL = useMemo(
+    () => import.meta.env.VITE_API_URL || "http://localhost:5000",
+    []
+  );
   const messageTimerRef = useRef(null);
-  const isMountedRef = useRef(true);
+  const isMountedRef    = useRef(true);
 
   const getAuthToken = useCallback(() => localStorage.getItem("token"), []);
-  const httpClient = useMemo(() => new HttpClient(API_URL, getAuthToken), [API_URL, getAuthToken]);
+  const httpClient   = useMemo(
+    () => new HttpClient(API_URL, getAuthToken),
+    [API_URL, getAuthToken]
+  );
 
   // === NETTOYAGE ===
   useEffect(() => {
@@ -181,7 +203,10 @@ export function CalculationProvider({ children }) {
     if (!isMountedRef.current) return;
     setter(message);
     if (messageTimerRef.current) clearTimeout(messageTimerRef.current);
-    messageTimerRef.current = setTimeout(() => isMountedRef.current && setter(null), delay);
+    messageTimerRef.current = setTimeout(
+      () => isMountedRef.current && setter(null),
+      delay
+    );
   }, []);
 
   const clearMessages = useCallback(() => {
@@ -191,7 +216,10 @@ export function CalculationProvider({ children }) {
   }, []);
 
   // === CALCUL LOCAL ===
-  const computeResults = useCallback(inputs => ({ computed: true, ...inputs }), []);
+  const computeResults = useCallback(
+    inputs => ({ computed: true, ...inputs }),
+    []
+  );
   const debouncedComputeResults = useDebouncedCallback(
     inputs => isMountedRef.current && setLocalResults(computeResults(inputs)),
     DEBOUNCE_DELAY
@@ -206,7 +234,11 @@ export function CalculationProvider({ children }) {
   }, [debouncedComputeResults]);
 
   // === SAUVEGARDE ===
-  const saveCalculation = useCallback(async (customData = null, projectType = null, calcType = null) => {
+  const saveCalculation = useCallback(async (
+    customData   = null,
+    projectType  = null,
+    calcType     = null
+  ) => {
     if (operationInProgress === "save") return { ok: false, error: "En cours" };
 
     try {
@@ -215,20 +247,21 @@ export function CalculationProvider({ children }) {
       clearMessages();
 
       const dataToSave = customData || { inputs: localInputs, results: localResults };
-      const finalData = {
-        projectType: projectType || currentProjectType,
-        calculationType: calcType || currentCalculationType,
+      const finalData  = {
+        projectType:       projectType || currentProjectType,
+        calculationType:   calcType    || currentCalculationType,
         ...dataToSave,
         savedAt: new Date().toISOString(),
       };
 
       const saved = await httpClient.request("/api/calculs", {
         method: "POST",
-        body: JSON.stringify(finalData),
+        body:   JSON.stringify(finalData),
       });
 
       if (isMountedRef.current) {
-        setSavedCalculations(prev => [saved, ...prev]);
+        // ✅ FIX — filtre les null avant d'ajouter le nouveau calcul
+        setSavedCalculations(prev => [saved, ...prev].filter(Boolean));
         setTimedMessage(setSuccess, "Calcul sauvegardé", MESSAGE_AUTO_CLEAR_DELAY);
       }
 
@@ -246,8 +279,8 @@ export function CalculationProvider({ children }) {
     }
   }, [
     operationInProgress, localInputs, localResults,
-    currentProjectType, currentCalculationType,
-    httpClient, setTimedMessage, clearMessages
+    currentProjectType,  currentCalculationType,
+    httpClient, setTimedMessage, clearMessages,
   ]);
 
   // === CHARGEMENT ===
@@ -259,13 +292,17 @@ export function CalculationProvider({ children }) {
       setOperationInProgress("fetch");
       clearMessages();
 
-      const query = new URLSearchParams(filters).toString();
+      const query    = new URLSearchParams(filters).toString();
       const endpoint = `/api/calculs${query ? `?${query}` : ""}`;
-      const data = await httpClient.request(endpoint, { method: "GET" });
+      const data     = await httpClient.request(endpoint, { method: "GET" });
 
       if (isMountedRef.current) {
         setSavedCalculations(prev => {
-          const newData = Array.isArray(data) ? data : data.calculs || [];
+          // ✅ FIX — normalise la réponse (tableau direct OU { calculs: [] })
+          //          puis filtre les éléments null/undefined/sans _id
+          const raw     = Array.isArray(data) ? data : data?.calculs ?? [];
+          const newData = raw.filter(Boolean).filter(c => c?._id);
+
           return filters.offset > 0 ? [...prev, ...newData] : newData;
         });
       }
@@ -285,7 +322,7 @@ export function CalculationProvider({ children }) {
   }, [operationInProgress, httpClient, setTimedMessage, clearMessages]);
 
   // === SETTERS EXTERNES ===
-  const setProjectType = useCallback(type => setCurrentProjectType(type), []);
+  const setProjectType     = useCallback(type => setCurrentProjectType(type),    []);
   const setCalculationType = useCallback(type => setCurrentCalculationType(type), []);
 
   // === VALEUR MÉMOISÉE ===
@@ -306,6 +343,8 @@ export function CalculationProvider({ children }) {
     clearMessages,
     setProjectType,
     setCalculationType,
+    // ✅ exposé pour que les formulaires puissent l'utiliser sans import direct
+    PROJECT_TYPES,
   }), [
     localInputs, localResults, savedCalculations,
     loading, error, success,
@@ -313,8 +352,12 @@ export function CalculationProvider({ children }) {
     operationInProgress,
     updateInput, computeResults,
     saveCalculation, fetchSavedCalculations,
-    clearMessages
+    clearMessages, setProjectType, setCalculationType,
   ]);
 
-  return <CalculationContext.Provider value={contextValue}>{children}</CalculationContext.Provider>;
+  return (
+    <CalculationContext.Provider value={contextValue}>
+      {children}
+    </CalculationContext.Provider>
+  );
 }
