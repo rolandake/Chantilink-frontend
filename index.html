@@ -74,8 +74,6 @@
       #app-splash {
         position: fixed;
         inset: 0;
-        /* ✅ Gradient riche — beau visuellement, mais PAS un candidat LCP
-           car c'est un background CSS sur un div, pas une image ni du texte */
         background: radial-gradient(ellipse at 50% 40%, #1a0e05 0%, #0f0f0f 70%);
         z-index: 9999;
         display: flex;
@@ -91,13 +89,10 @@
         pointer-events: none;
       }
 
-      /* ✅ Canvas centré — le logo et le texte sont dessinés en canvas,
-         pas des nœuds DOM texte → Chrome ne peut pas les mesurer comme LCP */
       #splash-canvas {
         display: block;
       }
 
-      /* Barre de progression sous le canvas */
       #splash-bar {
         margin-top: 40px;
         width: 140px;
@@ -121,7 +116,6 @@
         100% { width: 95%; }
       }
 
-      /* Pulsation douce sur le canvas — CSS transform, pas de repaint */
       @keyframes pulse-scale {
         0%, 100% { transform: scale(1); }
         50%       { transform: scale(1.03); }
@@ -136,23 +130,25 @@
       (function () {
         var splash = null;
 
-        /*
-          ✅ LCP STRATEGY :
-          - Le splash est injecté après double-rAF → jamais dans le HTML statique
-          - Le logo + texte "ChantiLink" sont dessinés sur un <canvas>
-            → ce sont des pixels, pas des nœuds texte/image mesurables par Chrome LCP
-          - Chrome mesure le LCP sur le premier vrai élément React rendu
-        */
+        // ✅ CHUNK ERROR HANDLER — rechargement automatique après redéploiement Vercel.
+        // Quand Vite déploie une nouvelle version, les anciens hash de chunks
+        // (ex: Home-C93V4j8a.js) n'existent plus. Le navigateur qui a l'ancien
+        // index.html en cache tente de charger ces URLs → 404 → erreur blanche.
+        // Ce handler intercepte l'événement Vite et recharge silencieusement la page.
+        window.addEventListener('vite:preloadError', function (event) {
+          event.preventDefault();
+          window.location.reload();
+        });
+
         function createSplash() {
           splash = document.createElement('div');
           splash.id = 'app-splash';
           splash.setAttribute('aria-hidden', 'true');
           splash.setAttribute('role', 'presentation');
 
-          /* Canvas pour le logo + texte */
           var dpr    = Math.min(window.devicePixelRatio || 1, 2);
-          var W      = 280;  /* largeur logique */
-          var H      = 180;  /* hauteur logique */
+          var W      = 280;
+          var H      = 180;
           var canvas = document.createElement('canvas');
           canvas.id     = 'splash-canvas';
           canvas.width  = W * dpr;
@@ -163,7 +159,6 @@
           var ctx = canvas.getContext('2d');
           ctx.scale(dpr, dpr);
 
-          /* ── Icône carrée arrondie ── */
           var bx = W / 2 - 36, by = 0, bw = 72, bh = 72, br = 18;
           ctx.beginPath();
           ctx.moveTo(bx + br, by);
@@ -177,40 +172,32 @@
           ctx.quadraticCurveTo(bx, by, bx + br, by);
           ctx.closePath();
 
-          /* Fond dégradé de l'icône */
           var gIcon = ctx.createLinearGradient(bx, by, bx + bw, by + bh);
           gIcon.addColorStop(0, '#f97316');
           gIcon.addColorStop(1, '#ec4899');
           ctx.fillStyle = gIcon;
           ctx.fill();
 
-          /* Lettre "C" blanche dans l'icône */
           ctx.fillStyle = 'rgba(255,255,255,0.95)';
           ctx.font = 'bold 38px -apple-system, BlinkMacSystemFont, Arial, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText('C', W / 2, by + bh / 2 + 1);
 
-          /* ── Texte "ChantiLink" ── */
           ctx.textAlign    = 'center';
           ctx.textBaseline = 'alphabetic';
-          /* "Chanti" en blanc */
           ctx.fillStyle = 'rgba(255,255,255,0.92)';
           ctx.font      = 'bold 26px -apple-system, BlinkMacSystemFont, Arial, sans-serif';
           ctx.fillText('Chanti', W / 2 - 32, by + bh + 46);
-          /* "Link" en orange */
           var gText = ctx.createLinearGradient(W / 2, 0, W / 2 + 60, 0);
           gText.addColorStop(0, '#f97316');
           gText.addColorStop(1, '#ec4899');
           ctx.fillStyle = gText;
           ctx.fillText('Link', W / 2 + 42, by + bh + 46);
 
-          /* ── Tagline ── */
           ctx.fillStyle = 'rgba(255,255,255,0.35)';
           ctx.font      = '13px -apple-system, BlinkMacSystemFont, Arial, sans-serif';
-          
 
-          /* Barre de progression */
           var bar     = document.createElement('div');
           bar.id      = 'splash-bar';
           var barFill = document.createElement('div');
@@ -226,7 +213,7 @@
           requestAnimationFrame(createSplash);
         });
 
-        /* ✅ __hideSplash appelé par AppContent immédiatement au mount */
+        // ✅ __hideSplash appelé par AppContent immédiatement au mount
         window.__hideSplash = function () {
           if (!splash) splash = document.getElementById('app-splash');
           if (!splash) return;
@@ -239,7 +226,7 @@
           }, 260);
         };
 
-        /* Fallback sécurité : 5s max */
+        // Fallback sécurité : 5s max
         setTimeout(function () {
           if (typeof window.__hideSplash === 'function') window.__hideSplash();
         }, 5000);

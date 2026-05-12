@@ -1,11 +1,13 @@
 // 📁 src/App.jsx
-// ✨ DIFF vs version précédente :
+// ✅ DIFF vs version précédente :
 //
 //   1. Header TOUJOURS visible — ne se cache plus jamais (transform retiré)
 //   2. mainStyle.top = toujours 72 quand showHeader (header fixe)
 //   3. Navbar mobile garde le scroll intelligent via navbarVisible
 //   4. goProfile utilise user._id (AuthContext) au lieu de location.state?.userId
 //      → corrige "profil introuvable" sur desktop quand state est absent
+//   5. ChunkErrorBoundary ajouté — rechargement auto si un chunk Vite est introuvable
+//      après redéploiement (ex: Home-C93V4j8a.js → 404)
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -32,8 +34,6 @@ import { setupIndexedDB }    from "./utils/idbMigration";
 import { initializeStorage } from "./utils/idbCleanup";
 import { BACKEND_URL }       from "./api/axiosClientGlobal";
 
-// ✅ Hook dédié avec vélocité + idle timer + états séparés
-// On ne s'en sert plus que pour navbarVisible (header est désormais fixe)
 import { useSmartScroll } from "./hooks/useSmartScroll";
 
 import {
@@ -63,6 +63,42 @@ const preloadPages = () => {
   ];
   pages.forEach((load) => { try { load(); } catch (_) {} });
 };
+
+// ============================================
+// ✅ CHUNK ERROR BOUNDARY
+// Intercepte les erreurs "Failed to fetch dynamically imported module"
+// causées par les anciens hash de chunks après un redéploiement Vercel.
+// Déclenche un rechargement silencieux pour récupérer la nouvelle version.
+// ============================================
+class ChunkErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error) {
+    if (
+      error?.name === "TypeError" &&
+      error?.message?.includes("Failed to fetch dynamically imported module")
+    ) {
+      return { hasError: true };
+    }
+    return { hasError: false };
+  }
+
+  componentDidCatch(error) {
+    if (error?.message?.includes("Failed to fetch dynamically imported module")) {
+      // Recharge la page pour récupérer le nouvel index.html et les nouveaux chunks
+      window.location.reload();
+    }
+  }
+
+  render() {
+    // hasError = true → reload en cours, on rend null pour éviter un flash d'erreur
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
 
 // ============================================
 // ICÔNES 3D SVG
@@ -414,9 +450,7 @@ function AppContent() {
     else navigate("/");
   }, [navigate]);
 
-  // ✅ FIX — Header toujours fixe à 72px quand showHeader=true.
-  // On ne le cache plus jamais : seul le contenu principal s'ajuste.
-  // La navbar mobile garde le comportement intelligent (glisse vers le bas).
+  // ✅ Header toujours fixe à 72px quand showHeader=true.
   const mainStyle = useMemo(() => ({
     top: showHeader ? 72 : 0,
     bottom: showNav
@@ -444,8 +478,7 @@ function AppContent() {
         ))}
       </AnimatePresence>
 
-      {/* ✅ HEADER — toujours visible, pas de transform/hide.
-          On garde juste le positionnement fixe standard. */}
+      {/* ✅ HEADER — toujours visible, pas de transform/hide */}
       {showHeader && (
         <div
           className="fixed top-0 right-0 z-40 lg:left-[260px] left-0"
@@ -480,37 +513,43 @@ function AppContent() {
       {/* CONTENU PRINCIPAL */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
         <div className={`lg:ml-[260px] ${isHome ? "h-full" : ""}`}>
-          <Suspense fallback={<LoadingSpinner />}>
-            <Routes location={location}>
-              <Route path="/auth" element={
-                <AuthRoute redirectIfAuthenticated authReady={authReady} isDarkMode={isDarkMode}>
-                  <AuthPage />
-                </AuthRoute>
-              } />
-              <Route path="/" element={
-                <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
-                  <HomePage
-                    openStoryViewer={(s, o) => {
-                      setStoryViewerData({ stories: s, owner: o });
-                      setStoryViewerOpen(true);
-                    }}
-                  />
-                </AuthRoute>
-              } />
-              <Route path="/chat"            element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><ChatPage /></AuthRoute>} />
-              <Route path="/videos"          element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><VideosPage /></AuthRoute>} />
-              <Route path="/calculs"         element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><CalculsPage /></AuthRoute>} />
-              <Route path="/messages"        element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><Messages /></AuthRoute>} />
-              <Route path="/profile/:userId" element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><Profile /></AuthRoute>} />
-              <Route path="/admin/*"         element={
-                <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
-                  <ProtectedAdminRoute><AdminDashboard /></ProtectedAdminRoute>
-                </AuthRoute>
-              } />
-              <Route path="/about" element={<About />} />
-              <Route path="*"      element={<Navigate to={user ? "/" : "/auth"} replace />} />
-            </Routes>
-          </Suspense>
+          {/* ✅ ChunkErrorBoundary — attrape les erreurs "Failed to fetch dynamically
+              imported module" et recharge la page pour récupérer les nouveaux chunks
+              après un redéploiement Vercel. Double protection avec le handler
+              vite:preloadError dans index.html. */}
+          <ChunkErrorBoundary>
+            <Suspense fallback={<LoadingSpinner />}>
+              <Routes location={location}>
+                <Route path="/auth" element={
+                  <AuthRoute redirectIfAuthenticated authReady={authReady} isDarkMode={isDarkMode}>
+                    <AuthPage />
+                  </AuthRoute>
+                } />
+                <Route path="/" element={
+                  <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
+                    <HomePage
+                      openStoryViewer={(s, o) => {
+                        setStoryViewerData({ stories: s, owner: o });
+                        setStoryViewerOpen(true);
+                      }}
+                    />
+                  </AuthRoute>
+                } />
+                <Route path="/chat"            element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><ChatPage /></AuthRoute>} />
+                <Route path="/videos"          element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><VideosPage /></AuthRoute>} />
+                <Route path="/calculs"         element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><CalculsPage /></AuthRoute>} />
+                <Route path="/messages"        element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><Messages /></AuthRoute>} />
+                <Route path="/profile/:userId" element={<AuthRoute authReady={authReady} isDarkMode={isDarkMode}><Profile /></AuthRoute>} />
+                <Route path="/admin/*"         element={
+                  <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
+                    <ProtectedAdminRoute><AdminDashboard /></ProtectedAdminRoute>
+                  </AuthRoute>
+                } />
+                <Route path="/about" element={<About />} />
+                <Route path="*"      element={<Navigate to={user ? "/" : "/auth"} replace />} />
+              </Routes>
+            </Suspense>
+          </ChunkErrorBoundary>
         </div>
       </main>
 
@@ -680,8 +719,6 @@ NavItemDesktop.displayName = "NavItemDesktop";
 // ============================================
 // SIDEBAR DESKTOP
 // ✅ FIX — goProfile utilise currentUser._id (passé en prop depuis AppContent)
-//    au lieu de location.state?.userId qui est undefined quand on navigue
-//    directement depuis la sidebar sans passer par un lien de post.
 // ============================================
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick, currentUser }) => {
   const { t }    = useTranslation();

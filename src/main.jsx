@@ -3,21 +3,22 @@
 //    → Garantit que les traductions sont disponibles dès le premier render
 // ✅ LanguageProvider ajouté — enveloppe l'app entière
 // ✅ Stripe retiré du provider global (chargé uniquement dans PremiumCheckout)
+// ✅ vite:preloadError handler ajouté — rechargement auto après redéploiement
 
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 // ⚠️ IMPORTANT : i18n DOIT être importé avant App et les contextes
-// C'est lui qui charge les traductions et configure i18next
-import "./i18n"; // ← src/i18n/index.js
+import "./i18n";
 
 import App from "./App";
 import "./index.css";
 
 import { DarkModeProvider }    from "./context/DarkModeContext";
 import { AuthProvider }        from "./context/AuthContext";
-import { LanguageProvider }    from "./context/LanguageContext"; // ← NOUVEAU
+import { useAuth }             from "./context/AuthContext";
+import { LanguageProvider }    from "./context/LanguageContext";
 import { SocketProvider }      from "./context/SocketContext";
 import { PremiumProvider }     from "./context/PremiumContext";
 import { StoryProvider }       from "./context/StoryContext";
@@ -34,6 +35,15 @@ if (import.meta.env.DEV) {
   console.log("✅ API URL:", import.meta.env.VITE_API_URL || "http://localhost:5000/api");
   console.groupEnd();
 }
+
+// ✅ CHUNK ERROR HANDLER — Fallback explicite en plus du handler dans index.html.
+// Vite émet "vite:preloadError" quand un import() dynamique échoue (chunk 404
+// après redéploiement). On recharge la page pour que l'utilisateur récupère
+// le nouvel index.html et les nouveaux hash de chunks.
+window.addEventListener("vite:preloadError", (event) => {
+  event.preventDefault();
+  window.location.reload();
+});
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
@@ -56,43 +66,17 @@ if (import.meta.env.DEV && window.__REACT_ROOT__) {
 //   BrowserRouter
 //   └─ DarkModeProvider
 //      └─ AuthProvider        ← gère user + token
-//         └─ LanguageProvider ← reçoit getToken de AuthProvider (via AppShell)
+//         └─ LanguageBridge   ← pont Auth → LanguageProvider
 //            └─ ToastProvider
 //               └─ SocketProvider
 //                  └─ ... reste des providers
-//
-// NOTE : LanguageProvider a besoin de getToken pour syncer la langue
-// avec le backend. On passe getToken via un composant intermédiaire
-// AppLanguageBridge (voir ci-dessous).
 // ============================================================
-
-/**
- * AppLanguageBridge
- * Pont entre AuthContext et LanguageProvider.
- * Permet à LanguageProvider d'accéder à getToken sans
- * créer de dépendance circulaire entre les contextes.
- */
-function AppLanguageBridge({ children }) {
-  // On importe useAuth ici pour éviter l'import circulaire au top-level
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  const { getToken } = React.useContext(
-    // Accès direct au contexte Auth pour éviter les imports circulaires
-    require("./context/AuthContext").AuthContext || {}
-  );
-
-  return <LanguageProvider getToken={getToken}>{children}</LanguageProvider>;
-}
-
-// ── Solution plus propre : passer getToken via props ─────────
-// On utilise un pattern de "bridge" via useRef partagé
 
 /**
  * LanguageBridge
  * Récupère getToken depuis AuthContext et le passe à LanguageProvider.
  * Évite les imports circulaires.
  */
-import { useAuth } from "./context/AuthContext";
-
 function LanguageBridge({ children }) {
   const { getToken } = useAuth();
   return <LanguageProvider getToken={getToken}>{children}</LanguageProvider>;
