@@ -1,5 +1,10 @@
+// 📁 src/pages/Calculs/CalculsPage.jsx
+// Ce composant gère sa propre navigation interne via FormHeader (bouton Retour).
+// Le FloatingBackButton de App.jsx est masqué sur /calculs grâce à !isCalculs
+// dans showBackButton — aucun conflit de superposition.
+
 import { useState, useCallback, useMemo, memo } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useCalculation } from "../../context/CalculationContext";
 import { motion, AnimatePresence } from "framer-motion";
@@ -91,7 +96,7 @@ ProjectCard.displayName = "ProjectCard";
 // ─────────────────────────────────────────────
 // SELECTION PAGE
 // ─────────────────────────────────────────────
-const SelectionPage = memo(({ currency, onCurrencyChange, onModeSelect }) => {
+const SelectionPage = memo(({ currency, onCurrencyChange, onModeSelect, onGoHome }) => {
   const { t } = useTranslation();
 
   return (
@@ -110,15 +115,40 @@ const SelectionPage = memo(({ currency, onCurrencyChange, onModeSelect }) => {
           backgroundSize: "48px 48px",
         }}
       />
-      <div className="absolute top-16 left-8 w-64 h-64 rounded-full blur-[100px] pointer-events-none" style={{ background: "rgba(249,115,22,0.18)" }} />
-      <div className="absolute bottom-16 right-8 w-64 h-64 rounded-full blur-[100px] pointer-events-none" style={{ background: "rgba(59,130,246,0.15)" }} />
+      <div className="absolute top-16 left-8 w-64 h-64 rounded-full blur-[100px] pointer-events-none"
+        style={{ background: "rgba(249,115,22,0.18)" }} />
+      <div className="absolute bottom-16 right-8 w-64 h-64 rounded-full blur-[100px] pointer-events-none"
+        style={{ background: "rgba(59,130,246,0.15)" }} />
 
-      <div className="relative z-10 px-4 py-8 pb-10">
+      {/* ── Barre sticky avec flèche retour ── */}
+      <div
+        className="sticky top-0 z-20 px-4 pt-3 pb-2"
+        style={{
+          background: "rgba(17,24,39,0.85)",
+          backdropFilter: "blur(12px)",
+          WebkitBackdropFilter: "blur(12px)",
+          borderBottom: "0.5px solid rgba(75,85,99,0.3)",
+        }}
+      >
+        <button
+          onClick={onGoHome}
+          className="p-2 rounded-xl text-gray-200 transition-all duration-200 active:scale-95 hover:bg-white/10"
+          style={{ background: "rgba(55,65,81,0.8)", border: "0.5px solid rgba(75,85,99,0.6)" }}
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+      </div>
+
+      <div className="relative z-10 px-4 py-6 pb-10">
         <div className="flex items-start justify-between mb-8 gap-3">
           <motion.div initial={{ opacity: 0, y: -12 }} animate={{ opacity: 1, y: 0 }} transition={fastTransition}>
             <h1
               className="text-3xl font-black tracking-tight"
-              style={{ background: "linear-gradient(90deg, #fb923c, #fbbf24)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}
+              style={{
+                background: "linear-gradient(90deg, #fb923c, #fbbf24)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}
             >
               {t("calculs.title")}
             </h1>
@@ -130,7 +160,11 @@ const SelectionPage = memo(({ currency, onCurrencyChange, onModeSelect }) => {
             animate={{ opacity: 1, x: 0 }}
             transition={fastTransition}
             className="flex items-center gap-2 rounded-xl px-3 py-2 border flex-shrink-0"
-            style={{ background: "rgba(55,65,81,0.6)", borderColor: "rgba(75,85,99,0.5)", backdropFilter: "blur(8px)" }}
+            style={{
+              background: "rgba(55,65,81,0.6)",
+              borderColor: "rgba(75,85,99,0.5)",
+              backdropFilter: "blur(8px)",
+            }}
           >
             <Coins className="w-4 h-4 text-orange-400" />
             <select
@@ -166,6 +200,8 @@ SelectionPage.displayName = "SelectionPage";
 
 // ─────────────────────────────────────────────
 // FORM HEADER
+// Bouton Retour intégré — revient à la SelectionPage via handleBack.
+// Le FloatingBackButton de App.jsx est masqué sur /calculs (voir App.jsx !isCalculs).
 // ─────────────────────────────────────────────
 const FormHeader = memo(({ projectKey, currency, onBack }) => {
   const { t } = useTranslation();
@@ -217,6 +253,7 @@ FormHeader.displayName = "FormHeader";
 // ─────────────────────────────────────────────
 export default function Calculs() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const mode     = searchParams.get("mode");
   const [currency, setCurrency] = useState("XOF");
@@ -233,6 +270,10 @@ export default function Calculs() {
     if (typeof clearMessages === "function") clearMessages();
   }, [setSearchParams, clearMessages]);
 
+  const handleGoHome = useCallback(() => {
+    navigate("/");
+  }, [navigate]);
+
   const handleCurrencyChange = useCallback((v) => setCurrency(v), []);
 
   const currentForm = useMemo(() => {
@@ -248,6 +289,7 @@ export default function Calculs() {
 
   const currentMeta = PROJECT_META[mode];
 
+  // ── Page de sélection (pas de mode actif) ──────────────────
   if (!mode) {
     return (
       <div className="h-full overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
@@ -255,11 +297,13 @@ export default function Calculs() {
           currency={currency}
           onCurrencyChange={handleCurrencyChange}
           onModeSelect={handleModeChange}
+          onGoHome={handleGoHome}
         />
       </div>
     );
   }
 
+  // ── Page formulaire (mode actif) ───────────────────────────
   return (
     <div
       className="h-full flex flex-col overflow-y-auto"
@@ -278,6 +322,7 @@ export default function Calculs() {
       />
 
       <div className="relative z-10 flex flex-col min-h-full">
+        {/* FormHeader contient le seul bouton Retour de cette page */}
         <FormHeader projectKey={mode} currency={currency} onBack={handleBack} />
 
         <main className="flex-1 px-2 sm:px-4 py-4 pb-6">

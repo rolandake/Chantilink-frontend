@@ -8,6 +8,9 @@
 //      → corrige "profil introuvable" sur desktop quand state est absent
 //   5. ChunkErrorBoundary ajouté — rechargement auto si un chunk Vite est introuvable
 //      après redéploiement (ex: Home-C93V4j8a.js → 404)
+//   6. lightboxOpen state — masque FloatingBackButton quand lightbox ProfileMediaGrid ouverte
+//   7. showBackButton refactorisé — exclut toutes les pages ayant leur propre bouton retour :
+//      /calculs (FormHeader), /chat, /profile/*, /admin/*, /about, lightbox, /videos, /messages
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -331,6 +334,21 @@ function AppContent() {
   const [storyViewerData, setStoryViewerData] = useState({ stories: [], owner: null });
   const [liveNotifications, setLiveNotifications] = useState([]);
 
+  // ✅ FIX 6 — masque le FloatingBackButton quand la lightbox ProfileMediaGrid est ouverte.
+  // Sans ça, le bouton "Retour" de App.jsx (z-[60]) se superpose au bouton "Retour" de
+  // la lightbox (z-30). ProfileMediaGrid émet "lightbox:open" / "lightbox:close".
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  useEffect(() => {
+    const onOpen  = () => setLightboxOpen(true);
+    const onClose = () => setLightboxOpen(false);
+    window.addEventListener("lightbox:open",  onOpen);
+    window.addEventListener("lightbox:close", onClose);
+    return () => {
+      window.removeEventListener("lightbox:open",  onOpen);
+      window.removeEventListener("lightbox:close", onClose);
+    };
+  }, []);
+
   // ✅ On ne récupère que navbarVisible — le header n'utilise plus headerVisible
   const { navbarVisible } = useSmartScroll();
 
@@ -439,11 +457,39 @@ function AppContent() {
   const isAuth     = location.pathname === "/auth";
   const isVideos   = location.pathname === "/videos";
   const isMessages = location.pathname === "/messages";
+  const isCalculs  = location.pathname === "/calculs";
+  const isChat     = location.pathname === "/chat";
+  const isProfile  = location.pathname.startsWith("/profile");
+  const isAdminPage= location.pathname.startsWith("/admin");
+  const isAbout    = location.pathname === "/about";
   const isAdmin    = user?.role === "admin" || user?.role === "superadmin";
 
   const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
   const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
-  const showBackButton = !!user && !isAuth && !isHome && !isVideos && !isMessages && !storyViewerOpen;
+
+  // ✅ Le FloatingBackButton de App.jsx n'est affiché QUE sur les pages
+  //    qui n'ont PAS leur propre bouton retour intégré.
+  //    Pages exclues (ont leur propre retour) :
+  //      - /videos    → header natif
+  //      - /messages  → header natif
+  //      - /calculs   → FormHeader avec ChevronLeft
+  //      - /chat      → header ChatPage avec retour
+  //      - /profile/* → ProfileMediaGrid lightbox + header profil
+  //      - /admin/*   → AdminDashboard header
+  //      - /about     → page avec retour intégré
+  //      - lightbox   → PostLightbox header (event lightbox:open/close)
+  const showBackButton = !!user
+    && !isAuth
+    && !isHome
+    && !isVideos
+    && !isMessages
+    && !isCalculs
+    && !isChat
+    && !isProfile
+    && !isAdminPage
+    && !isAbout
+    && !storyViewerOpen
+    && !lightboxOpen;
 
   const handleBack = useCallback(() => {
     if (window.history.length > 1) navigate(-1);
@@ -512,7 +558,7 @@ function AppContent() {
 
       {/* CONTENU PRINCIPAL */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
-        <div className={`lg:ml-[260px] ${isHome ? "h-full" : ""}`}>
+        <div className={`${isHome ? "lg:ml-[260px] h-full" : ""}`}>
           {/* ✅ ChunkErrorBoundary — attrape les erreurs "Failed to fetch dynamically
               imported module" et recharge la page pour récupérer les nouveaux chunks
               après un redéploiement Vercel. Double protection avec le handler

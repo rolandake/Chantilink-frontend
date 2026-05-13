@@ -1,175 +1,285 @@
-import React from 'react';
-import { useEffect, useState } from 'react';
+import React, { useState, useEffect, useMemo } from "react";
+import { Doughnut } from "react-chartjs-2";
+import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
+import {
+  Pickaxe, Ruler, Save, Trash2, History, Truck, Info, Mountain, Banknote
+} from "lucide-react";
 
-const STORAGE_KEY = "terrassement-history";
+ChartJS.register(ArcElement, Tooltip, Legend);
+
+const STORAGE_KEY = "terrassement-eco-history";
 const DENSITY_TERRE = 1.7; // t/m³
 
-export default function Terrassement({
+const NATURE_SOL = {
+  SABLE:  { label: "Sable / Gravier",        coeff: 1.15, icon: "🟡" },
+  TERRE:  { label: "Terre Ordinaire",         coeff: 1.25, icon: "🟤" },
+  ARGILE: { label: "Argile / Limon",          coeff: 1.35, icon: "🔴" },
+  ROCHE:  { label: "Roche / Remblai compact", coeff: 1.50, icon: "⚫" },
+};
+
+export default function TerrassementEco({
   currency = "XOF",
-  costValue = 0,
-  onCostChange = () => {},
-  onSave = () => {},
-  onDelete = () => {},
+  onTotalChange = () => {},
+  onCostChange  = () => {},
+  onMateriauxChange = () => {},
+  onMaterialsChange = () => {},
 }) {
-  const [longueur, setLongueur] = useState("");
-  const [largeur, setLargeur] = useState("");
-  const [profondeur, setProfondeur] = useState("");
-  const [prixUnitaire, setPrixUnitaire] = useState("");
-  const [coutMainOeuvre, setCoutMainOeuvre] = useState("");
+  const [inputs, setInputs] = useState({
+    typeSol:        "TERRE",
+    longueur:       "",
+    largeur:        "",
+    profondeur:     "",
+    prixExcavation: "",
+    prixEvacuation: "",
+    capaciteCamion: "16",
+  });
   const [historique, setHistorique] = useState([]);
+  const [message,    setMessage]    = useState(null);
 
-  const volume =
-    parseFloat(longueur) > 0 &&
-    parseFloat(largeur) > 0 &&
-    parseFloat(profondeur) > 0
-      ? parseFloat(longueur) * parseFloat(largeur) * parseFloat(profondeur)
-      : 0;
+  // ── CALCUL ──────────────────────────────────────────────────
+  const results = useMemo(() => {
+    const L     = parseFloat(inputs.longueur)   || 0;
+    const l     = parseFloat(inputs.largeur)    || 0;
+    const p     = parseFloat(inputs.profondeur) || 0;
+    const coeff = NATURE_SOL[inputs.typeSol].coeff;
 
-  const poidsTonnes = volume * DENSITY_TERRE;
+    const volEnPlace  = L * l * p;
+    const volFoisonne = volEnPlace * coeff;
+    const poidsTonnes = volEnPlace * DENSITY_TERRE;
 
-  const total =
-    volume * (parseFloat(prixUnitaire) || 0) + (parseFloat(coutMainOeuvre) || 0);
+    const puExcav = parseFloat(inputs.prixExcavation) || 0;
+    const puEvac  = parseFloat(inputs.prixEvacuation) || 0;
 
+    const coutExcavation = volEnPlace  * puExcav;
+    const coutEvacuation = volFoisonne * puEvac;
+    const total          = coutExcavation + coutEvacuation;
+
+    const capCamion = parseFloat(inputs.capaciteCamion) || 16;
+    const nbCamions = Math.ceil(volFoisonne / capCamion);
+
+    return { volEnPlace, volFoisonne, poidsTonnes, coeff, coutExcavation, coutEvacuation, total, nbCamions };
+  }, [inputs]);
+
+  // ── SYNC PARENT ─────────────────────────────────────────────
   useEffect(() => {
-    onCostChange(total);
-  }, [total]);
+    onTotalChange(results.total);
+    onCostChange(results.total);
+    const mats = { volume: results.volEnPlace, poids: results.poidsTonnes };
+    onMateriauxChange(mats);
+    onMaterialsChange(mats);
+  }, [results.total]);
 
+  // ── HISTORIQUE ──────────────────────────────────────────────
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        setHistorique(JSON.parse(saved));
-      } catch {}
-    }
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setHistorique(JSON.parse(saved));
+    } catch {}
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(historique));
-  }, [historique]);
+  const showToast = (msg, type = "success") => {
+    setMessage({ text: msg, type });
+    setTimeout(() => setMessage(null), 3000);
+  };
 
   const handleSave = () => {
-    if (volume === 0) {
-      alert("⚠️ Veuillez entrer des dimensions valides.");
-      return;
-    }
-
+    if (results.volEnPlace <= 0) return showToast("⚠️ Dimensions invalides", "error");
     const entry = {
-      id: Date.now(),
-      date: new Date().toLocaleString(),
-      longueur,
-      largeur,
-      profondeur,
-      volume: volume.toFixed(3),
-      poidsTonnes: poidsTonnes.toFixed(2),
-      prixUnitaire,
-      coutMainOeuvre,
-      total: total.toFixed(2),
+      id:     Date.now(),
+      date:   new Date().toLocaleString("fr-FR"),
+      sol:    NATURE_SOL[inputs.typeSol].label,
+      volume: results.volEnPlace,
+      total:  results.total,
     };
-
-    setHistorique([entry, ...historique]);
-    onSave();
+    const next = [entry, ...historique];
+    setHistorique(next);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
+    showToast("✅ Terrassement enregistré !");
   };
 
-  const handleDelete = (id) => {
-    if (confirm("🗑️ Supprimer cette entrée ?")) {
-      const updated = historique.filter((item) => item.id !== id);
-      setHistorique(updated);
-    }
-  };
-
-  const clearHistorique = () => {
-    if (confirm("🧹 Vider tout l'historique ?")) {
-      setHistorique([]);
-    }
+  const chartData = {
+    labels: ["Excavation", "Évacuation"],
+    datasets: [{
+      data: [results.coutExcavation, results.coutEvacuation],
+      backgroundColor: ["#f59e0b", "#78716c"],
+      borderColor: "#111827",
+      borderWidth: 2,
+    }],
   };
 
   return (
-    <div className="max-w-3xl mx-auto p-4 bg-gray-900 rounded-lg shadow-lg text-gray-100 font-sans">
-      <h2 className="text-2xl font-bold text-orange-400 mb-6 text-center">📏 Terrassement</h2>
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
 
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        {[ 
-          { label: "Longueur (m)", value: longueur, setter: setLongueur },
-          { label: "Largeur (m)", value: largeur, setter: setLargeur },
-          { label: "Profondeur (m)", value: profondeur, setter: setProfondeur },
-          { label: `Prix unitaire (${currency}/m³)`, value: prixUnitaire, setter: setPrixUnitaire },
-          { label: `Coût main d'œuvre (${currency})`, value: coutMainOeuvre, setter: setCoutMainOeuvre, full: true },
-        ].map(({ label, value, setter, full }, idx) => (
-          <div className={full ? "col-span-2" : ""} key={idx}>
-            <label className="block mb-1 font-semibold text-orange-400">{label}</label>
-            <input
-              type="number"
-              min="0"
-              step="any"
-              value={value}
-              onInput={(e) => setter(e.target.value)}
-              className="w-full rounded-md px-3 py-2 bg-gray-800 border border-gray-700 focus:ring-2 focus:ring-orange-400"
-              placeholder="0"
-            />
+      {message && (
+        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-bounce ${
+          message.type === "error" ? "bg-red-600" : "bg-amber-600"
+        }`}>{message.text}</div>
+      )}
+
+      {/* Header */}
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-amber-500/20 rounded-lg text-amber-500">
+            <Pickaxe className="w-6 h-6"/>
           </div>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 bg-gray-800 rounded-md p-4 mb-6 shadow-inner">
-        <div>
-          <p>📦 Volume : <span className="text-orange-400 font-semibold">{volume.toFixed(3)} m³</span></p>
-          <p>⚖️ Poids estimé : <span className="text-green-400 font-semibold">{poidsTonnes.toFixed(2)} t</span></p>
+          <div>
+            <h2 className="text-xl font-bold text-white">Terrassement Éco</h2>
+            <p className="text-xs text-gray-400">Préparation du terrain</p>
+          </div>
         </div>
         <div className="text-right">
-          <p className="text-lg font-bold text-orange-400">
-            💰 Total : {total.toLocaleString()} {currency}
-          </p>
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Budget Estimé</span>
+          <span className="text-2xl font-black text-amber-400 tracking-tighter">
+            {results.total.toLocaleString()} <span className="text-sm text-gray-500 font-normal">{currency}</span>
+          </span>
         </div>
       </div>
 
-      <div className="flex gap-3 justify-center mb-6 flex-wrap">
-        <button
-          onClick={handleSave}
-          className="px-5 py-2 bg-blue-600 hover:bg-blue-700 rounded-md font-semibold shadow"
-        >
-          💾 Enregistrer
-        </button>
-        <button
-          onClick={onDelete}
-          className="px-5 py-2 bg-red-600 hover:bg-red-700 rounded-md font-semibold shadow"
-        >
-          ❌ Réinitialiser
-        </button>
-        <button
-          onClick={clearHistorique}
-          className="px-5 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-md font-semibold shadow"
-        >
-          🧹 Historique
-        </button>
-      </div>
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
-      {historique.length > 0 && (
-        <section className="max-h-80 overflow-y-auto bg-gray-800 rounded-md p-4 shadow-inner scrollbar-thin scrollbar-thumb-orange-500 scrollbar-track-gray-700">
-          <h3 className="text-lg font-bold text-orange-400 mb-3 text-center">🕓 Historique</h3>
-          {historique.map((item) => (
-            <div
-              key={item.id}
-              className="bg-gray-700 rounded-md p-3 mb-3 flex justify-between items-center text-sm"
-            >
-              <div className="space-y-1">
-                <time className="block text-xs text-gray-400">{item.date}</time>
-                <p>Volume : {item.volume} m³</p>
-                <p>Poids : {item.poidsTonnes} t</p>
-                <p className="font-bold text-orange-300">Total : {item.total} {currency}</p>
+          {/* GAUCHE */}
+          <div className="lg:col-span-5 flex flex-col gap-5">
+
+            {/* Nature sol */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-amber-500 uppercase tracking-widest mb-4">
+                <Mountain className="w-4 h-4"/> Nature du Terrain
+              </h3>
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(NATURE_SOL).map(([key, sol]) => (
+                  <button key={key}
+                    onClick={() => setInputs(p => ({...p, typeSol: key}))}
+                    className={`p-3 rounded-xl border transition-all text-left flex flex-col gap-1 ${
+                      inputs.typeSol === key
+                        ? "border-amber-500 bg-amber-500/10"
+                        : "border-gray-700 bg-gray-800 hover:border-gray-500"
+                    }`}>
+                    <span className="text-lg">{sol.icon}</span>
+                    <span className={`text-xs font-bold ${inputs.typeSol === key ? "text-amber-400" : "text-gray-400"}`}>
+                      {sol.label}
+                    </span>
+                  </button>
+                ))}
               </div>
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="ml-4 px-2 py-1 bg-red-600 hover:bg-red-700 rounded-md text-white font-semibold"
-              >
-                ✖
+            </div>
+
+            {/* Dimensions */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
+                <Ruler className="w-4 h-4"/> Volume à creuser
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label="Longueur (m)"  value={inputs.longueur}   onChange={v => setInputs(p => ({...p, longueur: v}))}   />
+                <InputGroup label="Largeur (m)"   value={inputs.largeur}    onChange={v => setInputs(p => ({...p, largeur: v}))}    />
+                <InputGroup label="Profondeur (m)" value={inputs.profondeur} onChange={v => setInputs(p => ({...p, profondeur: v}))} full />
+              </div>
+            </div>
+
+            {/* Financier */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
+                <Banknote className="w-4 h-4 text-green-400"/> Paramètres Financiers
+              </h3>
+              <div className="grid grid-cols-2 gap-4">
+                <InputGroup label={`Excavation (${currency}/m³)`} value={inputs.prixExcavation} onChange={v => setInputs(p => ({...p, prixExcavation: v}))} />
+                <InputGroup label={`Évacuation (${currency}/m³)`} value={inputs.prixEvacuation} onChange={v => setInputs(p => ({...p, prixEvacuation: v}))} />
+                <InputGroup label="Capacité camion (m³)" value={inputs.capaciteCamion} onChange={v => setInputs(p => ({...p, capaciteCamion: v}))} full />
+              </div>
+              <button onClick={handleSave}
+                className="w-full mt-4 bg-amber-600 hover:bg-amber-500 text-white py-3.5 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 active:scale-95">
+                <Save className="w-5 h-5"/> Enregistrer
               </button>
             </div>
-          ))}
-        </section>
-      )}
+          </div>
+
+          {/* DROITE */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+
+            <div className="grid grid-cols-3 gap-4">
+              <ResultCard label="Vol. en place"  value={results.volEnPlace.toFixed(1)}  unit="m³"     icon="🧊"                              color="text-amber-400"  bg="bg-amber-500/10"  />
+              <ResultCard label="Vol. foisonné"  value={results.volFoisonne.toFixed(1)} unit="m³"     icon="🌋"                              color="text-orange-400" bg="bg-orange-500/10" border />
+              <ResultCard label="Camions"         value={results.nbCamions}              unit="voyages" icon={<Truck className="w-4 h-4"/>}   color="text-stone-300"  bg="bg-stone-500/10"  />
+            </div>
+
+            <div className="bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center">
+              <div className="w-40 h-40 flex-shrink-0 relative">
+                <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }}/>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-[10px] text-gray-500 uppercase">Total</span>
+                  <span className="text-sm font-bold text-white">{Math.round(results.total).toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="flex-1 w-full space-y-3">
+                <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2">Analyse</h4>
+                <MaterialRow label="Poids estimé" val={`${results.poidsTonnes.toFixed(2)} t`} color="bg-amber-600" />
+                <MaterialRow label="Excavation (vol. en place)" val={`${results.coutExcavation.toLocaleString()} ${currency}`} color="bg-amber-500" />
+                <MaterialRow label="Évacuation (vol. foisonné)" val={`${results.coutEvacuation.toLocaleString()} ${currency}`} color="bg-stone-500" />
+
+                <div className="flex items-start gap-2 p-3 bg-blue-500/5 rounded-lg border border-blue-500/20">
+                  <Info className="w-4 h-4 text-blue-400 mt-0.5"/>
+                  <p className="text-[11px] text-blue-200/70 leading-relaxed">
+                    Sol <strong>{NATURE_SOL[inputs.typeSol].label}</strong> : foisonnement de <strong>{Math.round((results.coeff - 1) * 100)}%</strong>.
+                    Le transport est facturé sur le volume gonflé.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {historique.length > 0 && (
+              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
+                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
+                  <h4 className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-2">
+                    <History className="w-3 h-3"/> Historique
+                  </h4>
+                  <button onClick={() => { setHistorique([]); localStorage.removeItem(STORAGE_KEY); }}
+                    className="text-[10px] text-red-400 hover:underline flex items-center gap-1">
+                    <Trash2 className="w-3 h-3"/> Vider
+                  </button>
+                </div>
+                <div className="max-h-[140px] overflow-y-auto">
+                  {historique.slice(0, 5).map(item => (
+                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30 hover:bg-gray-700/40 transition-colors">
+                      <div className="text-xs">
+                        <span className="text-gray-500 text-[9px] block">{item.date}</span>
+                        <span className="font-medium">{item.sol} — {item.volume.toFixed(1)} m³</span>
+                      </div>
+                      <span className="text-sm font-bold text-amber-400">{item.total.toLocaleString()} {currency}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
+const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
+  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase">{label}</label>
+    <input type="number" value={value} onChange={e => onChange(e.target.value)}
+      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all font-mono text-sm outline-none"
+      placeholder={placeholder || "0"}/>
+  </div>
+);
 
+const ResultCard = ({ label, value, unit, icon, color, bg, border }) => (
+  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? "border border-gray-700" : ""}`}>
+    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center gap-1">{icon} {label}</span>
+    <span className={`text-xl font-black ${color}`}>{value} <span className="text-xs font-normal text-gray-500">{unit}</span></span>
+  </div>
+);
 
+const MaterialRow = ({ label, val, color }) => (
+  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
+    <div className="flex items-center gap-2">
+      <div className={`w-1.5 h-1.5 rounded-full ${color}`}/>
+      <span className="text-gray-300 text-xs font-medium">{label}</span>
+    </div>
+    <span className="text-xs font-bold text-white font-mono">{val}</span>
+  </div>
+);

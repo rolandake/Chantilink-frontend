@@ -153,7 +153,6 @@ const ExportPanel = ({ costs, quantites, totalGeneral, currency, onClose }) => {
   const exportExcel = useCallback(async () => {
     setExporting("excel");
     try {
-      // Chargement SheetJS depuis CDN
       if (!window.XLSX) {
         await new Promise((res, rej) => {
           const s = document.createElement("script");
@@ -166,7 +165,6 @@ const ExportPanel = ({ costs, quantites, totalGeneral, currency, onClose }) => {
 
       const wb = XLSX.utils.book_new();
 
-      // Feuille 1 — Récap
       const ws1Data = [
         ["DEVIS BÂTIMENT — CHANTILINK", "", "", "", ""],
         [`Date : ${today()}`, "", "", "", ""],
@@ -180,7 +178,6 @@ const ExportPanel = ({ costs, quantites, totalGeneral, currency, onClose }) => {
       ws1["!cols"] = [{ wch: 25 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 20 }];
       XLSX.utils.book_append_sheet(wb, ws1, "Récapitulatif");
 
-      // Feuille 2 — Détail par poste
       const ws2Data = [
         ["Détail par poste", ""],
         ...rows.flatMap(r => [
@@ -228,7 +225,6 @@ const ExportPanel = ({ costs, quantites, totalGeneral, currency, onClose }) => {
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
-      // En-tête
       doc.setFillColor(17, 24, 39);
       doc.rect(0, 0, 210, 297, "F");
 
@@ -246,7 +242,6 @@ const ExportPanel = ({ costs, quantites, totalGeneral, currency, onClose }) => {
       doc.text("CHANTILINK — Construction & Rénovation", 14, 22);
       doc.text(`Généré le ${today()}`, 14, 28);
 
-      // Tableau
       doc.autoTable({
         startY: 40,
         head: [["Poste", "Volume m³", "Ciment t", "Acier t", `Coût ${currency}`]],
@@ -277,7 +272,6 @@ const ExportPanel = ({ costs, quantites, totalGeneral, currency, onClose }) => {
         },
         alternateRowStyles: { fillColor: [17, 24, 39] },
         footStyles: { fillColor: [30, 58, 138], fontStyle: "bold" },
-        // Dernière ligne en gras (total)
         didParseCell: (data) => {
           if (data.row.index === rows.length) {
             data.cell.styles.fillColor = [30, 58, 138];
@@ -288,7 +282,6 @@ const ExportPanel = ({ costs, quantites, totalGeneral, currency, onClose }) => {
         margin: { left: 14, right: 14 },
       });
 
-      // Footer
       const pageH = doc.internal.pageSize.height;
       doc.setTextColor(75, 85, 99);
       doc.setFontSize(7);
@@ -447,11 +440,9 @@ const ExportBtn = ({ icon, label, sublabel, color, glowColor, disabled, loading,
     style={{
       background: disabled
         ? "rgba(55,65,81,0.4)"
-        : `linear-gradient(135deg, ${color.split(" ")[1].replace("from-","").replace(/-\d+/,"")}, ${color.split(" ")[3]?.replace("to-","").replace(/-\d+/,"")})`,
-      backgroundImage: disabled ? undefined : `linear-gradient(135deg, var(--tw-gradient-stops))`,
+        : `linear-gradient(135deg, var(--tw-gradient-stops))`,
       boxShadow: disabled ? "none" : `0 4px 20px ${glowColor}`,
       border: `0.5px solid ${disabled ? "rgba(75,85,99,0.3)" : glowColor}`,
-      // Tailwind gradient via className
     }}
   >
     <span className={`p-2 rounded-lg ${disabled ? "bg-gray-700" : `bg-gradient-to-br ${color}`} text-white`}>
@@ -480,10 +471,9 @@ export default function BatimentForm({ currency = "XOF" }) {
   const [showDevis,    setShowDevis]    = useState(false);
   const [showExport,   setShowExport]   = useState(false);
 
-  const [costs,   setCosts]   = useState(() => Object.fromEntries(stepsConfig.map(s => [s.id, 0])));
+  const [costs,     setCosts]     = useState(() => Object.fromEntries(stepsConfig.map(s => [s.id, 0])));
   const [quantites, setQuantites] = useState(() => Object.fromEntries(stepsConfig.map(s => [s.id, {}])));
 
-  // Ref auto-scroll vers le tableau
   const tableRef = useRef(null);
 
   useEffect(() => {
@@ -509,10 +499,18 @@ export default function BatimentForm({ currency = "XOF" }) {
     });
   }, []);
 
-  const totalGeneral   = useMemo(() => Object.values(costs).reduce((a, v) => a + v, 0), [costs]);
-  const activeSteps    = useMemo(() => stepsConfig.filter(({ id }) => costs[id] > 0).length, [costs]);
+  const totalGeneral    = useMemo(() => Object.values(costs).reduce((a, v) => a + v, 0), [costs]);
+  const activeSteps     = useMemo(() => stepsConfig.filter(({ id }) => costs[id] > 0).length, [costs]);
   const progressPercent = (activeSteps / stepsConfig.length) * 100;
 
+  // ✅ FIX PRINCIPAL — on passe les deux noms de props simultanément
+  // Terrassement  attend : onCostChange
+  // Fondation     attend : onCostChange  + onMateriauxChange
+  // Elevations    attend : onCostChange  + onMateriauxChange
+  // Planchers     attend : onTotalChange + onMateriauxChange
+  // Toiture       attend : onTotalChange + onMateriauxChange
+  // Finitions     attend : onTotalChange + onMateriauxChange
+  // → en envoyant les deux alias, chaque composant trouve sa prop
   const renderCurrentStep = () => {
     const step = stepsConfig.find(s => s.id === selectedStep);
     if (!step) return null;
@@ -521,6 +519,7 @@ export default function BatimentForm({ currency = "XOF" }) {
       <StepComponent
         currency={currency}
         onTotalChange={val  => handleCostChange(step.id, val)}
+        onCostChange={val   => handleCostChange(step.id, val)}   // ← alias pour Terrassement / Fondation / Elevations
         onMateriauxChange={mats => handleQuantitesChange(step.id, mats)}
       />
     );
@@ -602,7 +601,6 @@ export default function BatimentForm({ currency = "XOF" }) {
             <FileText className="w-3.5 h-3.5" /> Voir le Devis
           </button>
 
-          {/* ✅ Bouton Export Sidebar */}
           <button
             onClick={() => setShowExport(true)}
             disabled={totalGeneral === 0}
@@ -638,7 +636,6 @@ export default function BatimentForm({ currency = "XOF" }) {
             {renderCurrentStep()}
           </div>
         ) : (
-          /* ✅ Vue grille + tableau récap + export */
           <div className="flex-1 overflow-y-auto custom-scrollbar">
 
             {/* Grille mobile */}
@@ -670,7 +667,7 @@ export default function BatimentForm({ currency = "XOF" }) {
               <p className="text-gray-400 text-sm font-medium">Sélectionnez une étape dans la barre latérale</p>
             </div>
 
-            {/* ✅ TABLEAU RÉCAP — temps réel, toujours visible */}
+            {/* TABLEAU RÉCAP */}
             <div className="px-4 pb-4" ref={tableRef}>
               <RecapTable
                 costs={costs}
@@ -681,7 +678,7 @@ export default function BatimentForm({ currency = "XOF" }) {
               />
             </div>
 
-            {/* ✅ PANNEAU EXPORT intégré au bas de la page */}
+            {/* PANNEAU EXPORT */}
             <div className="px-4 pb-6">
               <ExportPanel
                 costs={costs}
@@ -693,7 +690,7 @@ export default function BatimentForm({ currency = "XOF" }) {
           </div>
         )}
 
-        {/* ✅ Mobile floating buttons */}
+        {/* Mobile floating buttons */}
         <div className="lg:hidden fixed bottom-20 right-4 left-4 z-40 flex flex-col gap-2 pointer-events-none">
           {totalGeneral > 0 && !selectedStep && (
             <>
@@ -749,7 +746,6 @@ export default function BatimentForm({ currency = "XOF" }) {
               </button>
             </div>
 
-            {/* Aperçu mini dans la modal */}
             <div className="px-4 pt-3 max-h-48 overflow-y-auto">
               <RecapTable costs={costs} quantites={quantites} totalGeneral={totalGeneral} currency={currency} />
             </div>
