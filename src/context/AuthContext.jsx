@@ -20,6 +20,7 @@ export const AuthContext = createContext({
   login:             async () => ({ success: false }),
   logout:            async () => {},
   register:          async () => ({ success: false }),
+  setAuthData:       async () => {},
   getToken:          async () => null,
   updateUserProfile: async () => {},
   verifyAdminToken:  async () => null,
@@ -39,7 +40,7 @@ const isProd = import.meta.env.PROD;
 
 const API_URL = isProd
   ? (import.meta.env.VITE_API_URL_PROD     || "https://chantilink-backend.onrender.com/api")
-  : (import.meta.env.VITE_API_URL_LOCAL    || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+  : (import.meta.env.VITE_API_URL_LOCAL    || import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api"));
 
 const BACKEND_URL = API_URL.replace("/api", "");
 
@@ -315,6 +316,14 @@ export function AuthProvider({ children }) {
     }
   }, [applySession, addNotification]);
 
+  // ─── SET AUTH DATA (OAuth/reset password handoff) ────────────────────────────
+  const setAuthData = useCallback(async (data) => {
+    if (!data?.token || !data?.user) return { success: false };
+    await applySession(data);
+    addNotification("success", "Session restaurée");
+    return { success: true, user: data.user };
+  }, [applySession, addNotification]);
+
   // ─── UPDATE PROFIL ───────────────────────────────────────────────────────────
   const updateUserProfile = useCallback(async (userIdOrUpdates, maybeUpdates) => {
     const userId  = typeof userIdOrUpdates === "string" ? userIdOrUpdates : user?._id;
@@ -371,12 +380,12 @@ export function AuthProvider({ children }) {
     loading, ready, sessionLoading,
     isAuthenticated: !!user,
     notifications,
-    login, logout, register, getToken, updateUserProfile,
+    login, logout, register, setAuthData, getToken, updateUserProfile,
     verifyAdminToken, isAdmin: () => ["admin","superadmin"].includes(user?.role),
     addNotification, isLockedOut,
   }), [
     user, token, loading, ready, sessionLoading, notifications,
-    login, logout, register, getToken, updateUserProfile,
+    login, logout, register, setAuthData, getToken, updateUserProfile,
     verifyAdminToken, addNotification, isLockedOut,
   ]);
 

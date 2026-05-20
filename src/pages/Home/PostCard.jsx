@@ -33,7 +33,7 @@ import axiosClient from "../../api/axiosClientGlobal";
 const PostCommentsModal = lazy(() => import("./PostComments"));
 const PostShareModal    = lazy(() => import("./PostShareSection"));
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection appareil

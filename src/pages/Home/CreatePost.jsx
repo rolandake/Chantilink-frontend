@@ -212,7 +212,7 @@ const SimpleAvatar = ({ username, profilePhoto, size = 38 }) => {
   const getPhotoUrl = (photo) => {
     if (!photo) return null;
     if (photo.startsWith("http")) return photo;
-    const base = import.meta.env.VITE_API_URL || "http://localhost:5000";
+    const base = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
     return `${base}${photo.startsWith("/") ? photo : `/${photo}`}`;
   };
 

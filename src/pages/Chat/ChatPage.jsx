@@ -61,6 +61,11 @@ const PROVIDER_STYLES = {
   Gemini:    { from: "#3b82f6", to: "#06b6d4", label: "Gemini"    },
 };
 
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
+const SOCKET_URL = API_URL.replace(/\/api\/?$/, "");
+
 // ─────────────────────────────────────────────────────────────────
 // AVATAR
 // ─────────────────────────────────────────────────────────────────
@@ -335,11 +340,6 @@ export default function ChatPage() {
     const connectSocket = async () => {
       const token = await getToken();
       if (!token || !mounted) return;
-
-      const SOCKET_URL =
-        window.location.hostname === "localhost"
-          ? "http://localhost:5000"
-          : "https://chantilink-backend.onrender.com";
 
       socketRef.current = io(`${SOCKET_URL}/gpt`, {
         transports: ["websocket"],

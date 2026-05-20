@@ -19,7 +19,7 @@ import {
 import axios from "axios";
 import { useAuth } from "../context/AuthContext";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
 const SERVER_URL = API_URL.replace("/api", "");
 const MEDIA_URL = (path) =>
   path?.startsWith("http") ? path : `${SERVER_URL}/${path?.replace(/^\/+/, "")}`;

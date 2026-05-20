@@ -3,6 +3,10 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 
+const API_URL =
+  import.meta.env.VITE_API_URL?.replace(/\/api\/?$/, "") ||
+  (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
+
 export default function PhoneModal({ onSuccess, onClose }) {
   const { token, user, getToken } = useAuth(); // Récupérer depuis le contexte
   const [phone, setPhone] = useState('');
@@ -117,7 +121,7 @@ export default function PhoneModal({ onSuccess, onClose }) {
       tokenSource: getToken ? 'getToken()' : 'props',
       userId: user?._id || user?.id,
       userEmail: user?.email,
-      apiUrl: import.meta.env.VITE_API_URL,
+      apiUrl: API_URL,
       endpoint: '/api/users/update-phone',
     };
 
@@ -133,7 +137,7 @@ export default function PhoneModal({ onSuccess, onClose }) {
     setIsLoading(true);
 
     try {
-      const url = `${import.meta.env.VITE_API_URL}/api/users/update-phone`;
+      const url = `${API_URL}/api/users/update-phone`;
       const headers = {
         'Authorization': `Bearer ${currentToken}`,
         'Content-Type': 'application/json',
@@ -217,7 +221,7 @@ export default function PhoneModal({ onSuccess, onClose }) {
           console.log('📤 [PhoneModal] Appel seen-phone-modal...');
           
           const response = await fetch(
-            `${import.meta.env.VITE_API_URL}/api/users/seen-phone-modal`,
+            `${API_URL}/api/users/seen-phone-modal`,
             {
               method: 'POST',
               headers: {

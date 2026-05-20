@@ -27,7 +27,7 @@ import {
 import axiosClient from "../../api/axiosClientGlobal";
 import { useStories } from "../../context/StoryContext";
 
-const SERVER_URL = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace('/api', '');
+const SERVER_URL = (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api")).replace('/api', '');
 const MEDIA_URL  = (path) => path?.startsWith("http") ? path : `${SERVER_URL}/${path?.replace(/^\/+/, "")}`;
 
 // ─────────────────────────────────────────────────────────────────

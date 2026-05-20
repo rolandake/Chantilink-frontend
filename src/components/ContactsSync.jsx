@@ -125,7 +125,7 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // ========================================
 class ContactsAPI {
   static getBaseURL() {
-    return import.meta.env.VITE_API_URL || "http://localhost:5000";
+    return import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
   }
 
   static async makeRequest(endpoint, data, token, onProgress = null, attempt = 1) {

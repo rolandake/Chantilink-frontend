@@ -2,6 +2,12 @@
 
 apply plugin: 'com.android.application'
 
+def releaseStoreFile = project.findProperty("CHANTILINK_RELEASE_STORE_FILE") ?: System.getenv("CHANTILINK_RELEASE_STORE_FILE")
+def releaseStorePassword = project.findProperty("CHANTILINK_RELEASE_STORE_PASSWORD") ?: System.getenv("CHANTILINK_RELEASE_STORE_PASSWORD")
+def releaseKeyAlias = project.findProperty("CHANTILINK_RELEASE_KEY_ALIAS") ?: System.getenv("CHANTILINK_RELEASE_KEY_ALIAS")
+def releaseKeyPassword = project.findProperty("CHANTILINK_RELEASE_KEY_PASSWORD") ?: System.getenv("CHANTILINK_RELEASE_KEY_PASSWORD")
+def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     namespace = "com.chantilink.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -19,19 +25,22 @@ android {
         }
     }
 
-    // ← SIGNING CONFIGURATION
     signingConfigs {
         release {
-            keyAlias 'chantilink-key'                                     // ← remplace par ton alias exact
-            keyPassword 'Abate201925'                                    // ← remplace par ton mot de passe alias
-            storeFile file('C:/Users/HP/keystore/chantilink.keystore')     // ← chemin complet vers ton keystore
-            storePassword 'Abate201925'                                // ← remplace par le mot de passe du keystore
+            if (hasReleaseSigning) {
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

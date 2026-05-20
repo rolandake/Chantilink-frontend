@@ -22,7 +22,7 @@ import { useAuth }     from "./AuthContext";
 import { idbGetPosts, idbSetPosts } from "../utils/idbMigration";
 import { syncNewPost, syncDeletePost, syncUpdatePost } from "../utils/cacheSync";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
 
 // Clé sessionStorage pour éviter le double-fetch au remount (React Strict Mode, navigation)
 const SESSION_LOAD_KEY = "posts_session_loaded_v1";

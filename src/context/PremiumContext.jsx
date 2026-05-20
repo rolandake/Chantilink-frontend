@@ -4,6 +4,10 @@ import { useAuth } from "./AuthContext";
 const PremiumContext = createContext();
 export const usePremium = () => useContext(PremiumContext);
 
+const API_URL =
+  import.meta.env.VITE_API_URL?.replace(/\/api\/?$/, "") ||
+  (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
+
 export function PremiumProvider({ children }) {
   // 🛡️ SÉCURITÉ CRITIQUE : On récupère le contexte entier d'abord
   const authContext = useAuth();
@@ -69,7 +73,7 @@ export function PremiumProvider({ children }) {
       const token = await getToken();
       if (!token) throw new Error("No token");
 
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/premium/status`, {
+      const response = await fetch(`${API_URL}/api/premium/status`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',

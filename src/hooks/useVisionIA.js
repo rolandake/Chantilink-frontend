@@ -32,7 +32,7 @@ export function useVisionIA(userId, projectType, engineerMode) {
         }
 
         const BACKEND_URL =
-          (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace('/api', '');
+          (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api")).replace('/api', '');
 
         console.log("[VisionIA] 🔌 Connexion au namespace /vision...");
         const socket = io(`${BACKEND_URL}/vision`, {

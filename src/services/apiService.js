@@ -17,7 +17,7 @@ const isProd = import.meta.env.PROD;
 
 const BASE_URL = isProd
   ? (import.meta.env.VITE_API_URL_PROD  || "https://chantilink-backend.onrender.com/api")
-  : (import.meta.env.VITE_API_URL_LOCAL || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+  : (import.meta.env.VITE_API_URL_LOCAL || import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api"));
 
 console.log(`🔧 [apiService] ${isProd ? "PRODUCTION" : "DÉVELOPPEMENT"} — ${BASE_URL}`);
 

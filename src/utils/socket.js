@@ -4,7 +4,7 @@ let socket;
 
 export function initSocket(token) {
   if (!socket) {
-    socket = socketIOClient(process.env.REACT_APP_API_URL || "http://localhost:5000", {
+    socket = socketIOClient(import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000"), {
       auth: { token },
       transports: ["websocket"],
     });

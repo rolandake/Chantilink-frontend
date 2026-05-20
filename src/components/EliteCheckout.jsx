@@ -10,7 +10,7 @@ import { Elements, CardElement, useStripe, useElements } from "@stripe/react-str
 const STRIPE_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY;
 const stripePromise = STRIPE_KEY ? loadStripe(STRIPE_KEY) : null;
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
 
 // === SOUS-COMPOSANT : Formulaire Carte Bancaire ===
 const StripeCardForm = ({ amount, currency, user, onSuccess, onError, isProcessing, setIsProcessing }) => {

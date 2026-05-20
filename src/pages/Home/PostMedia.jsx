@@ -53,7 +53,7 @@ const DEBUG   = () => typeof window !== "undefined" && window.localStorage?.getI
 const dbg     = (...args) => { if (DEBUG()) console.log("[PostMedia]",  ...args); };
 const dbgWarn = (...args) => { if (DEBUG()) console.warn("[PostMedia]", ...args); };
 
-const API_BASE      = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace(/\/api$/, "");
+const API_BASE      = (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000")).replace(/\/api$/, "");
 const R2_PUBLIC_URL = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
 
 // ─────────────────────────────────────────────────────────────────────────────

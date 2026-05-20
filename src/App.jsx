@@ -40,7 +40,8 @@ import { BACKEND_URL }       from "./api/axiosClientGlobal";
 import { useSmartScroll } from "./hooks/useSmartScroll";
 
 import {
-  Home as HomePage, Profile, ChatPage, VideosPage, CalculsPage, Messages, AuthPage
+  Home as HomePage, Profile, ChatPage, VideosPage, CalculsPage, Messages, AuthPage,
+  ResetPasswordPage, AuthCallbackPage
 } from "./imports/importsPages.js";
 
 import About          from "./pages/About";
@@ -571,6 +572,13 @@ function AppContent() {
                     <AuthPage />
                   </AuthRoute>
                 } />
+                <Route path="/login" element={
+                  <AuthRoute redirectIfAuthenticated authReady={authReady} isDarkMode={isDarkMode}>
+                    <AuthPage />
+                  </AuthRoute>
+                } />
+                <Route path="/reset-password" element={<ResetPasswordPage />} />
+                <Route path="/auth/callback" element={<AuthCallbackPage />} />
                 <Route path="/" element={
                   <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
                     <HomePage

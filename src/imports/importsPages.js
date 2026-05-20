@@ -8,4 +8,6 @@ export const VideosPage = lazy(() => import("../pages/Videos/VideosPage.jsx"));
 export const CalculsPage = lazy(() => import("../pages/Calculs/CalculsPage.jsx"));
 export const Messages = lazy(() => import("../pages/Chat/Messages.jsx")); 
 export const AuthPage = lazy(() => import("../pages/Auth/AuthPage.jsx"));
+export const ResetPasswordPage = lazy(() => import("../pages/Auth/ResetPasswordPage.jsx"));
+export const AuthCallbackPage = lazy(() => import("../pages/Auth/AuthCallbackPage.jsx"));
 export const AdminDashboard = lazy(() => import("../pages/Admin/AdminDashboard.jsx"));

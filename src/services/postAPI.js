@@ -1,5 +1,5 @@
 // frontend/src/services/postAPI.js
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api/posts";
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api/posts" : "http://localhost:5000/api/posts");
 
 // Récupérer tous les posts
 export async function fetchPosts() {

@@ -29,7 +29,7 @@ import { useDarkMode } from "../../context/DarkModeContext";
 // Les endpoints ci-dessous utilisent "/api/posts/..."
 // Sans ce fix → "http://localhost:5000/api" + "/api/posts/..." = "/api/api/posts/" → 404
 const BASE_URL = (() => {
-  const url = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+  const url = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
   return url.replace(/\/api\/?$/, "");  // → "http://localhost:5000"
 })();
 

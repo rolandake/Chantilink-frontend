@@ -23,7 +23,7 @@ import VideoAd from './Publicite/VideoAd.jsx';
 import YouTubePool from './YouTubePool';
 import { FaPlus, FaSearch, FaArrowLeft, FaTimes } from 'react-icons/fa';
 
-const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
+const API_BASE = (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api')).replace(/\/api$/, '');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG v13

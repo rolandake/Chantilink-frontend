@@ -147,7 +147,7 @@ const ContactsTab = memo(({ postId, isDarkMode, showToast, onClose }) => {
   const [shareMessage,   setShareMessage]   = useState("");
   const [loadingUsers,   setLoadingUsers]   = useState(false);
   const [loadingShare,   setLoadingShare]   = useState(false);
-  const base = import.meta.env.VITE_API_URL || "http://localhost:5000";
+  const base = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
 
   useEffect(() => {
     if (!currentUser) return;

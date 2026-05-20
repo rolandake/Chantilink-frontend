@@ -24,7 +24,7 @@ import {
 import { HiDotsVertical } from "react-icons/hi";
 import { IoSend } from "react-icons/io5";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
 
 // ── Lock/unlock du scroll du feed pendant qu'une modale est ouverte ──
 let scrollLockCount = 0;

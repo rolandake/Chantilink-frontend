@@ -32,7 +32,7 @@ if (import.meta.env.DEV) {
   console.group("%c[App Bootstrap]", "color:#00aaff;font-weight:bold;");
   console.log("✅ React version:", React.version);
   console.log("✅ Environment:", import.meta.env.MODE);
-  console.log("✅ API URL:", import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+  console.log("✅ API URL:", import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api"));
   console.groupEnd();
 }
 

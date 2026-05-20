@@ -39,7 +39,7 @@ import {
 // VITE_API_URL peut valoir "http://localhost:5000" ou "http://localhost:5000/api"
 // BASE_URL supprime le /api trailing -> on construit les paths manuellement
 // ─────────────────────────────────────────────────────────────────────────────
-const API_URL  = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API_URL  = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
 const BASE_URL = API_URL.replace(/\/api\/?$/, "");
 
 // ─────────────────────────────────────────────────────────────────────────────

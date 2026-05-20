@@ -12,7 +12,7 @@ import { HiSparkles } from "react-icons/hi2";
 // --- CONSTANTES ---
 const MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
 const ACCEPT_TYPES = "video/mp4,video/webm,video/quicktime,video/x-msvideo";
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com' : 'http://localhost:5000');
 
 const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
   // --- REFS & CONTEXTS ---

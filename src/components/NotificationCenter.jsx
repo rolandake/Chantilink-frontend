@@ -15,7 +15,7 @@ import { useAuth } from "../context/AuthContext";
 import { io } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
 
 // ========================================
 // ICÔNE PAR TYPE DE NOTIFICATION

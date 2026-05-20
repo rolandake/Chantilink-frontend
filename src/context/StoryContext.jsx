@@ -13,7 +13,7 @@ import { useAuth } from './AuthContext';
 // ❌ SUPPRIMÉ : import { useSocket } from './SocketContext';
 
 const StoryContext = createContext(null);
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com' : 'http://localhost:5000');
 
 export function StoryProvider({ children }) {
   // ✅ CORRECTION : Récupérer socket directement depuis AuthContext

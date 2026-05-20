@@ -29,7 +29,7 @@ import { useRef, useState, useCallback, useEffect, useLayoutEffect, useMemo } fr
 // ─── Config ───────────────────────────────────────────────────────────────────
 const API_BASE = (
   (typeof import.meta !== 'undefined' ? import.meta.env?.VITE_API_URL : undefined)
-  || 'http://localhost:5000/api'
+  || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api')
 ).replace(/\/api$/, '');
 
 export const USER_INTERACTED_KEY = 'vp_user_interacted';

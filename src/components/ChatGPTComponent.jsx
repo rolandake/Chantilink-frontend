@@ -2,7 +2,11 @@ import React from 'react';
 import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
 
-const socket = io("http://localhost:5000");
+const SOCKET_URL =
+  import.meta.env.VITE_API_URL?.replace(/\/api\/?$/, "") ||
+  (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
+
+const socket = io(SOCKET_URL);
 
 export default function ChatGPTComponent({ userId }) {
   const [input, setInput] = useState("");

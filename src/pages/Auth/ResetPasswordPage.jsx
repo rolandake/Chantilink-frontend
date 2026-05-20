@@ -9,6 +9,11 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 
+const AUTH_API_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
+const AUTH_BACKEND_URL = AUTH_API_URL.replace(/\/api\/?$/, "");
+
 // ── Icons
 const EyeIcon = ({ open }) => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -142,7 +147,10 @@ export default function ResetPasswordPage() {
 
     const validate = async () => {
       try {
-        const res = await fetch(`/api/auth/reset-password/validate?token=${encodeURIComponent(token)}`);
+        const res = await fetch(
+          `${AUTH_BACKEND_URL}/api/auth/reset-password/validate?token=${encodeURIComponent(token)}`,
+          { credentials: "include" }
+        );
         const data = await res.json();
 
         if (data.valid) {
@@ -174,9 +182,10 @@ export default function ResetPasswordPage() {
     setBusy(true); setAlert(null);
 
     try {
-      const res = await fetch("/api/auth/reset-password", {
+      const res = await fetch(`${AUTH_BACKEND_URL}/api/auth/reset-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ token, newPassword: pw }),
       });
       const data = await res.json();

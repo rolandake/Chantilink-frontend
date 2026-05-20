@@ -57,7 +57,7 @@ export const clearContactsCache = (userId) => {
 // ─────────────────────────────────────────────
 // API
 // ─────────────────────────────────────────────
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api');
 
 const syncContactsAPI = async (token, contacts) => {
   const res = await fetch(`${BASE_URL}/contacts/sync`, {

@@ -498,6 +498,11 @@ const SessionLoader = () => (
 // ─────────────────────────────────────────────
 // PAGE PRINCIPALE
 // ─────────────────────────────────────────────
+const AUTH_API_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
+const AUTH_BACKEND_URL = AUTH_API_URL.replace(/\/api\/?$/, "");
+
 export default function AuthPage() {
   const { t, i18n }                = useTranslation();
   const { login, register, loading: authLoading, isAuthenticated, sessionLoading } = useAuth();
@@ -548,7 +553,8 @@ export default function AuthPage() {
   useEffect(() => {
     const msg = searchParams.get("msg");
     if (msg) setAlert({ t: "err", msg: decodeURIComponent(msg) });
-  }, []);
+    if (searchParams.get("forgot") === "1") setMode("forgot");
+  }, [searchParams]);
 
   useEffect(() => {
     const map = { login: emailRef, register: nameRef, forgot: fEmailRef };
@@ -618,7 +624,12 @@ export default function AuthPage() {
     if (!fEmailOk || isLoading || cooldown > 0) return;
     setBusy(true); setAlert(null);
     try {
-      const res  = await fetch("/api/auth/forgot-password", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ email: fEmail.trim().toLowerCase() }) });
+      const res  = await fetch(`${AUTH_BACKEND_URL}/api/auth/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: fEmail.trim().toLowerCase() }),
+      });
       const data = await res.json();
       if (res.status === 429) { setAlert({ t:"err", msg: data.message || t("auth.forgot.error_spam") }); return; }
       setSentTo(fEmail.trim().toLowerCase());
@@ -632,7 +643,12 @@ export default function AuthPage() {
     if (cooldown > 0 || busy) return;
     setBusy(true);
     try {
-      await fetch("/api/auth/forgot-password", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ email: sentTo }) });
+      await fetch(`${AUTH_BACKEND_URL}/api/auth/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ email: sentTo }),
+      });
       setCooldown(120);
       setAlert({ t:"suc", msg: t("auth.forgot_sent.resend_success") });
     } catch { setAlert({ t:"err", msg: t("auth.forgot_sent.resend_error") }); }
@@ -642,7 +658,7 @@ export default function AuthPage() {
   const handleGoogleLogin = () => {
     if (googleBusy) return;
     setGoogleBusy(true);
-    window.location.href = "/api/auth/google";
+    window.location.href = `${AUTH_BACKEND_URL}/api/auth/google`;
   };
 
   const handleLangChange = (langCode) => {

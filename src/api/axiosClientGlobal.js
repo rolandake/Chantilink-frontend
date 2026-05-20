@@ -7,7 +7,7 @@
 import axios from "axios";
 
 // ✅ UNE SEULE VARIABLE — définie dans Vercel pour la prod, dans .env pour le local
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
 
 // ✅ Backend URL (sans /api) — dérivé automatiquement
 const BACKEND_URL = API_BASE_URL.replace("/api", "");

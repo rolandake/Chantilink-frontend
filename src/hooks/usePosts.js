@@ -4,6 +4,11 @@ import { io } from "socket.io-client";
 let socket;
 let queue = [];
 
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
+const SOCKET_URL = API_URL.replace(/\/api\/?$/, "");
+
 const initialState = {
   userPosts: [],
   feedPosts: [],
@@ -60,7 +65,7 @@ export default function usePosts(userId, token) {
     if (!userId || !token) return;
 
     if (!socket) {
-      socket = io("http://localhost:5000", {
+      socket = io(SOCKET_URL, {
         auth: { token },
         reconnection: true,
         reconnectionAttempts: Infinity,
@@ -72,8 +77,8 @@ export default function usePosts(userId, token) {
       dispatch({ type: "SET_LOADING", payload: true });
       try {
         const [resUser, resFeed] = await Promise.all([
-          fetch(`/api/posts/user/${userId}`, { headers: { Authorization: `Bearer ${token}` } }),
-          fetch(`/api/posts/feed`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API_URL}/posts/user/${userId}`, { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(`${API_URL}/posts/feed`, { headers: { Authorization: `Bearer ${token}` } }),
         ]);
 
         if (!resUser.ok || !resFeed.ok) throw new Error("Erreur chargement posts");

@@ -5,7 +5,7 @@
 // ✅ Logs DEV conservés pour débogage
 
 const R2_PUBLIC_URL = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
-const API_BASE      = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace(/\/api$/, "");
+const API_BASE      = (import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000")).replace(/\/api$/, "");
 
 if (import.meta.env.DEV && !R2_PUBLIC_URL) {
   console.error("❌ [mediaUtils] VITE_R2_PUBLIC_URL est vide ! Vérifiez votre .env frontend.");

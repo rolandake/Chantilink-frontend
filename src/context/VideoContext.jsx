@@ -19,7 +19,7 @@ const SOCKET_NAMESPACE = '/videos';
 // On n'utilise PAS axiosClient ici pour éviter :
 //   - withCredentials: true → CORS strict (origin explicite requise)
 //   - retry 3x avec 2s/4s/6s → maintient des connexions qui bloquent le chargement vidéo
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api');
 
 export const VideosProvider = ({ children }) => {
   const { user: currentUser, getToken } = useAuth();

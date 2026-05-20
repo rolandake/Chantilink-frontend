@@ -25,7 +25,7 @@ import {
 } from 'react-icons/fa';
 import { IoSend } from 'react-icons/io5';
 
-const API_URL  = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL  = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api');
 const API_BASE = API_URL.replace(/\/api$/, '');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
