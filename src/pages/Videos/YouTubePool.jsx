@@ -146,6 +146,7 @@ class Slot {
     this._wantPlay    = true;
     this._isWarmup    = false; // monté hors-viewport pour préchauffage
     this._warmupEl    = null;  // div hors-viewport à nettoyer lors de l'acquire
+    this._onReadyCb   = null;  // callback optionnel fourni par acquire(opts.onReady)
   }
 
   get _isDestroyed() { return this.state === 'released'; }
@@ -177,6 +178,7 @@ class Slot {
         fs:             0,
         cc_load_policy: 0,
         disablekb:      1,
+        enablejsapi:    1,
         origin: typeof window !== 'undefined' ? window.location.origin : '',
       },
       events: {
@@ -189,28 +191,54 @@ class Slot {
 
   _onReady(event) {
     if (this.state === 'released') return;
-    this.state = 'active';
 
-    // Qualité HD dès le départ
-    try { event.target.setPlaybackQuality('hd720'); } catch {}
+    // Parfois l'event onReady arrive avant que l'iframe soit réellement
+    // attachée au DOM (dev / hotswap). On vérifie et on réessaie tant que
+    // l'iframe n'est pas connecté pour éviter les erreurs postMessage.
+    const safeApply = (attempt = 0) => {
+      try {
+        const iframe = event.target && typeof event.target.getIframe === 'function'
+          ? event.target.getIframe()
+          : null;
 
-    // Retirer le poster
-    if (this.poster) {
-      const p = this.poster; this.poster = null;
-      p.style.opacity = '0';
-      setTimeout(() => { try { p.remove(); } catch {} }, 380);
-    }
+        if (iframe && !iframe.isConnected) {
+          if (attempt < 8) {
+            setTimeout(() => safeApply(attempt + 1), 60);
+            return;
+          }
+          // Si après plusieurs essais l'iframe n'est toujours pas connectée,
+          // on continue quand même mais on protège les appels.
+        }
 
-    this._applyMute(event.target);
+        this.state = 'active';
 
-    if (this._isWarmup) {
-      // En warmup : pauser immédiatement (on veut juste le buffer)
-      try { event.target.pauseVideo(); } catch {}
-    } else if (this._wantPlay) {
-      event.target.playVideo();
-    } else {
-      event.target.pauseVideo();
-    }
+        // Qualité HD dès le départ (protégé)
+        try { event.target.setPlaybackQuality('hd720'); } catch {}
+
+        // Retirer le poster
+        if (this.poster) {
+          const p = this.poster; this.poster = null;
+          p.style.opacity = '0';
+          setTimeout(() => { try { p.remove(); } catch {} }, 380);
+        }
+
+        this._applyMute(event.target);
+
+        try { if (typeof this._onReadyCb === 'function') this._onReadyCb(); } catch {}
+
+        if (this._isWarmup) {
+          try { event.target.pauseVideo(); } catch {}
+        } else if (this._wantPlay) {
+          try { event.target.playVideo(); } catch {}
+        } else {
+          try { event.target.pauseVideo(); } catch {}
+        }
+      } catch (err) {
+        if (attempt < 8) setTimeout(() => safeApply(attempt + 1), 60);
+      }
+    };
+
+    safeApply();
   }
 
   _onStateChange(event) {
@@ -403,6 +431,7 @@ const YouTubePool = {
       if (existing._isWarmup) {
         existing._wantMuted = opts.muted !== undefined ? !!opts.muted : _globalMuted;
         existing._wantPlay  = opts.autoplay !== false;
+        existing._onReadyCb = typeof opts.onReady === 'function' ? opts.onReady : existing._onReadyCb;
 
         // Si le player est déjà prêt, transfert immédiat
         if (existing.playerDiv) {
@@ -455,6 +484,7 @@ const YouTubePool = {
     const slot = new Slot(videoId, container);
     slot._wantMuted = opts.muted !== undefined ? !!opts.muted : _globalMuted;
     slot._wantPlay  = opts.autoplay !== false;
+    slot._onReadyCb = typeof opts.onReady === 'function' ? opts.onReady : null;
     _slots.set(videoId, slot);
 
     // Poster immédiat

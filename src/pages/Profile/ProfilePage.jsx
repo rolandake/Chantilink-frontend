@@ -953,6 +953,11 @@ export default function ProfilePage({
 
   const pageBg = isDarkMode ? "#080808" : "#f5f5f7";
 
+  const handleProfileBack = useCallback(() => {
+    if (window.history.length > 1) navigate(-1);
+    else navigate("/");
+  }, [navigate]);
+
   // ── Écrans d'état ──────────────────────────────────────────────────────────
   if (authLoading || (isLoadingUser && !profileUser)) {
     return (
@@ -997,6 +1002,27 @@ export default function ProfilePage({
       transition: "background 0.3s",
     }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+      <motion.button
+        onClick={handleProfileBack}
+        whileHover={{ scale: 1.02 }}
+        whileTap={{ scale: 0.96 }}
+        className="fixed z-[90] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full shadow-xl"
+        style={{
+          top: "max(16px, env(safe-area-inset-top, 16px))",
+          left: 16,
+          background: isDarkMode ? "rgba(15,23,42,0.92)" : "rgba(255,255,255,0.92)",
+          border: "1px solid rgba(148,163,184,0.18)",
+          color: isDarkMode ? "#f8fafc" : "#111827",
+          backdropFilter: "blur(14px)",
+          WebkitBackdropFilter: "blur(14px)",
+        }}
+      >
+        <span style={{ width: 28, height: 28, display: "grid", placeItems: "center", borderRadius: 999, background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.04)" }}>
+          <span style={{ display: "inline-block", width: 12, height: 12, borderLeft: "2px solid currentColor", borderBottom: "2px solid currentColor", transform: "rotate(45deg)" }} />
+        </span>
+        <span style={{ fontSize: 14, fontWeight: 700 }}>Retour</span>
+      </motion.button>
 
       {isMockProfile && (
         <div style={{ maxWidth: 820, margin: "0 auto", padding: "12px 16px 0" }}>

@@ -370,10 +370,10 @@ export const API = {
       body:    JSON.stringify(messageData),
     }),
 
-  // ✅ FIX 3 — timeout 30 s
+  // ✅ Upload média messages — timeout long pour vidéos/docs lourds
   uploadMessageFile: async (token, file) => {
     console.log(`📤 [API.uploadMessageFile] ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
-    return uploadWithTimeout(`${BASE_URL}/messages/upload`, token, file, "file", 30_000);
+    return uploadWithTimeout(`${BASE_URL}/messages/upload`, token, file, "file", 120_000);
   },
 
   markMessagesAsRead: async (token, senderId) =>

@@ -192,6 +192,16 @@ const NAV_ICON_CONFIGS = {
       </svg>
     ),
   },
+  about: {
+    gradient: "linear-gradient(145deg, #8b5cf6 0%, #6366f1 100%)",
+    shadow: "#7c3aed",
+    icon: (size) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="10" fill="rgba(255,255,255,0.95)" />
+        <path d="M12 8.5a1 1 0 100 2 1 1 0 000-2zM12 11.5v4" stroke="rgba(99,102,241,0.9)" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    ),
+  },
   admin: {
     gradient: "linear-gradient(145deg, #f43f5e 0%, #dc2626 100%)",
     shadow: "#f43f5e",
@@ -228,7 +238,7 @@ const FloatingBackButton = memo(({ isDarkMode, onBack }) => {
       initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -12 }} transition={{ duration: 0.18, ease: "easeOut" }}
       onClick={onBack}
-      className="fixed z-[60] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full transition-all active:scale-95"
+      className="fixed z-[90] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full transition-all active:scale-95"
       style={{
         top:    "max(16px, env(safe-area-inset-top, 16px))",
         left:   16,
@@ -467,17 +477,8 @@ function AppContent() {
   const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
   const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
 
-  // ✅ Le FloatingBackButton de App.jsx n'est affiché QUE sur les pages
-  //    qui n'ont PAS leur propre bouton retour intégré.
-  //    Pages exclues (ont leur propre retour) :
-  //      - /videos    → header natif
-  //      - /messages  → header natif
-  //      - /calculs   → FormHeader avec ChevronLeft
-  //      - /chat      → header ChatPage avec retour
-  //      - /profile/* → ProfileMediaGrid lightbox + header profil
-  //      - /admin/*   → AdminDashboard header
-  //      - /about     → page avec retour intégré
-  //      - lightbox   → PostLightbox header (event lightbox:open/close)
+  // ✅ Pages secondaires sont immersives : on masque les barres de navigation et on garde
+  //    un seul bouton de retour global pour revenir vers l'écran d'accueil.
   const showBackButton = !!user
     && !isAuth
     && !isHome
@@ -492,8 +493,7 @@ function AppContent() {
     && !lightboxOpen;
 
   const handleBack = useCallback(() => {
-    if (window.history.length > 1) navigate(-1);
-    else navigate("/");
+    navigate("/", { replace: true });
   }, [navigate]);
 
   // ✅ Header toujours fixe à 72px quand showHeader=true.
@@ -558,7 +558,7 @@ function AppContent() {
 
       {/* CONTENU PRINCIPAL */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
-        <div className={`${isHome ? "lg:ml-[260px] h-full" : ""}`}>
+        <div className={`${showNav ? "lg:ml-[260px]" : ""} ${isHome ? "h-full" : ""}`}>
           {/* ✅ ChunkErrorBoundary — attrape les erreurs "Failed to fetch dynamically
               imported module" et recharge la page pour récupérer les nouveaux chunks
               après un redéploiement Vercel. Double protection avec le handler
@@ -783,14 +783,17 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
     if (currentUser?._id) navigate(`/profile/${currentUser._id}`);
   }, [navigate, currentUser?._id]);
 
+  const goAbout = useCallback(() => navigate("/about"), [navigate]);
+
   const NAV_ITEMS = useMemo(() => [
     { key: "home",     label: t("navbar.home"),     onClick: onHomeClick, path: "/" },
     { key: "chat",     label: t("navbar.chat"),     onClick: goChat,      path: "/chat" },
     { key: "videos",   label: t("videos.title"),    onClick: goVideos,    path: "/videos" },
     { key: "calculs",  label: t("navbar.calculs"),  onClick: goCalculs,   path: "/calculs" },
     { key: "messages", label: t("navbar.messages"), onClick: goMessages,  path: "/messages", badge: unreadCount },
+    { key: "about",    label: "À propos",           onClick: goAbout,     path: "/about" },
     { key: "profile",  label: t("navbar.profile"),  onClick: goProfile,   path: "/profile" },
-  ], [t, onHomeClick, goChat, goVideos, goCalculs, goMessages, goProfile, unreadCount]);
+  ], [t, onHomeClick, goChat, goVideos, goCalculs, goMessages, goProfile, goAbout, unreadCount]);
 
   return (
     <aside
@@ -841,6 +844,7 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
   const items = useMemo(() => {
     const base = [
       { label: t("navbar.profile"),  iconKey: "profile",  path: `/profile/${user?._id}` },
+      { label: "À propos",          iconKey: "about",    path: "/about" },
       { label: t("navbar.calculs"),  iconKey: "calculs",  path: "/calculs" },
       { label: t("navbar.messages"), iconKey: "messages", path: "/messages", badge: unreadCount },
     ];

@@ -327,7 +327,7 @@ const intelligentReorder = (items, { jitter=0.3, forColdStart=false }={}) => {
 const R2_HOSTS    = ['r2.dev','pub-'];
 const VALID_HOSTS = ['cdn.pixabay.com/video','player.pixabay.com','vimeocdn.com','player.vimeo.com','youtube.com/embed'];
 const PLAYABLE_EXT= /\.(mp4|webm|mov)(\?|$)/i;
-const BLOCKED_URL = ['youtu.be','dailymotion.','pexels.com'];
+const BLOCKED_URL = ['youtu.be','dailymotion.'];
 
 const isPlayableCandidate = (item) => {
   if (!item) return false;
@@ -340,7 +340,7 @@ const isPlayableCandidate = (item) => {
   if (!url) return false;
   if (url.includes('.m3u8')) return false;
   if (BLOCKED_URL.some(p=>url.includes(p))) return false;
-  if (url.includes('pexels.com')) return false;
+  if (url.includes('pexels.com') && !url.includes('videos.pexels.com')) return false;
   if (url.includes('vimeo.com')&&!url.includes('vimeocdn.com')&&!url.includes('player.vimeo.com')) return false;
   if (R2_HOSTS.some(h=>url.includes(h))) return true;
   if (VALID_HOSTS.some(h=>url.includes(h))) return true;

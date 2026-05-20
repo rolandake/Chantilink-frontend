@@ -39,7 +39,7 @@ const getSlidePreview = (slide) => {
 //   • vue      → taille réduite (50px), anneau gris tireté, nom grisé, opacité 0.55
 //   • currentUser → taille normale, anneau jaune→bleu
 // ─────────────────────────────────────────────────────────────────
-const StoryItem = memo(({ owner, unviewed, latest, isDarkMode, onClick, isCurrentUser = false }) => {
+const StoryItem = memo(({ owner, unviewed, latest, slideCount = 0, isDarkMode, onClick, isCurrentUser = false }) => {
   const ownerName = owner?.username || owner?.fullName || 'User';
   const lastSlide = latest?.slides?.at(-1);
   const preview = useMemo(() => getSlidePreview(lastSlide), [lastSlide]);
@@ -172,6 +172,19 @@ const StoryItem = memo(({ owner, unviewed, latest, isDarkMode, onClick, isCurren
       >
         {isCurrentUser ? 'Votre story' : ownerName}
       </p>
+      {slideCount > 0 && (
+        <p
+          className='truncate text-center mt-0.5 font-semibold uppercase'
+          style={{
+            width: buttonWidth - 6,
+            fontSize: 8,
+            color: isDarkMode ? '#9ca3af' : '#6b7280',
+            opacity: 0.85,
+          }}
+        >
+          {slideCount} {slideCount === 1 ? 'slide' : 'slides'}
+        </p>
+      )}
     </motion.button>
   );
 });
@@ -202,8 +215,6 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
   const { stories = [], loading = false } = useStories();
   const { user } = useAuth();
   const uid = user?._id || user?.id;
-  const onOpenStoryRef = useRef(onOpenStory);
-  onOpenStoryRef.current = onOpenStory;
 
   const scrollContainerRef = useRef(null);
 
@@ -229,7 +240,15 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
         data.stories[0]
       );
       const isCurrentUser = data.owner._id === uid;
-      return { id: data.owner._id, owner: data.owner, stories: data.stories, unviewed, latest, isCurrentUser };
+      return {
+        id: data.owner._id,
+        owner: data.owner,
+        stories: data.stories,
+        unviewed,
+        latest,
+        isCurrentUser,
+        slideCount: slides.length,
+      };
     }).sort((a, b) => {
       // Tri WhatsApp : currentUser → non vues (récentes d'abord) → vues (récentes d'abord)
       if (a.isCurrentUser) return -1;
@@ -254,8 +273,8 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
   }, [allGroupedStories.length]);
 
   const handleOpenStory = useCallback((group) => {
-    onOpenStoryRef.current(group.stories, group.owner);
-  }, []);
+    onOpenStory(group.stories, group.owner);
+  }, [onOpenStory]);
 
   if (loading && stories.length === 0) {
     return (
@@ -325,6 +344,7 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
               owner={group.owner}
               latest={group.latest}
               unviewed={group.unviewed}
+              slideCount={group.slideCount}
               isDarkMode={isDarkMode}
               onClick={() => handleOpenStory(group)}
               isCurrentUser={group.isCurrentUser}

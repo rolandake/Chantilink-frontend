@@ -30,9 +30,19 @@ export function useAudioRecording(token, showToast) {
 
       console.log('✅ [Audio] Permission accordée');
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
+      const preferredTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/ogg;codecs=opus'
+      ];
+      const supportedType = preferredTypes.find((type) =>
+        typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)
+      );
+      const mediaRecorder = new MediaRecorder(
+        stream,
+        supportedType ? { mimeType: supportedType } : undefined
+      );
 
       audioChunksRef.current = [];
 
@@ -46,7 +56,8 @@ export function useAudioRecording(token, showToast) {
       mediaRecorder.onstop = () => {
         console.log('⏹️ [Audio] Enregistrement terminé');
         
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const blobType = mediaRecorder.mimeType || supportedType || 'audio/webm';
+        const blob = new Blob(audioChunksRef.current, { type: blobType });
         const url = URL.createObjectURL(blob);
         
         console.log(`✅ [Audio] Blob créé: ${(blob.size / 1024).toFixed(2)} KB`);

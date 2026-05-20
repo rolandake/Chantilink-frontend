@@ -1,22 +1,35 @@
 // src/context/SocketContext.jsx
-import React, { createContext, useContext, useEffect, useRef, useMemo } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { useAuth } from "./AuthContext.jsx";
 
 const SocketContext = createContext();
 
 export const useSocket = (namespace = "/") => {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const socketRef = useRef(null);
+  const [socket, setSocket] = useState(null);
+  const [connected, setConnected] = useState(false);
 
-  const socket = useMemo(() => {
-    if (!user?._id || !user?.token) return null;
+  useEffect(() => {
+    if (!user?._id || !token) {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+      setSocket(null);
+      setConnected(false);
+      return;
+    }
 
-    const url = (import.meta.env.VITE_API_URL || "http://localhost:5000/api").replace('/api', '');
+    const apiUrl = import.meta.env.PROD
+      ? (import.meta.env.VITE_API_URL_PROD || "https://chantilink-backend.onrender.com/api")
+      : (import.meta.env.VITE_API_URL_LOCAL || import.meta.env.VITE_API_URL || "http://localhost:5000/api");
+    const url = apiUrl.replace(/\/api$/, "");
     const fullPath = namespace.startsWith("/") ? namespace : `/${namespace}`;
 
     const newSocket = io(`${url}${fullPath}`, {
-      auth: { token: user.token },
+      auth: { token },
       transports: ["websocket"],
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
@@ -26,26 +39,28 @@ export const useSocket = (namespace = "/") => {
     newSocket.on("connect", () => {
       console.log(`[SOCKET] CONNECTÉ À ${fullPath}`);
       if (fullPath === "/") newSocket.emit("joinRoom", user._id);
+      setConnected(true);
     });
 
     newSocket.on("disconnect", () => {
       console.log(`[SOCKET] DÉCONNECTÉ DE ${fullPath}`);
+      setConnected(false);
     });
 
     socketRef.current = newSocket;
-    return newSocket;
-  }, [user?._id, user?.token, namespace]);
+    setSocket(newSocket);
 
-  useEffect(() => {
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
       }
+      setSocket(null);
+      setConnected(false);
     };
-  }, [namespace]);
+  }, [user?._id, token, namespace]);
 
-  return { socket };
+  return { socket, connected };
 };
 
 export function SocketProvider({ children }) {

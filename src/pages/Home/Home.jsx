@@ -35,6 +35,7 @@ import React, {
   useState, useMemo, useEffect, useRef, useCallback,
   memo, lazy, Suspense, startTransition, useTransition,
 } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowUpIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
@@ -88,6 +89,8 @@ const POLL_INTERVAL  = 30_000;
 const API_PREFETCH   = 3;
 const MIX_BLOCK      = 5;
 const MIX_MAX_BOTS   = 2;
+
+// feed tabs removed (icons/texts hidden by user request)
 
 const FALLBACK_THRESHOLD   = 5;
 const MAX_FALLBACK_USERS   = 8;
@@ -1238,7 +1241,7 @@ PostCardWrapper.displayName = "PostCardWrapper";
 // ══════════════════════════════════════════════════════════════════════════════
 const Feed = ({
   posts,
-  isDarkMode, onDeleted, showToast, apiLoadMoreRef, hasMoreFromAPI,
+  isDarkMode, onDeleted, showToast, apiLoadMoreRef, apiLoadMoreCallback, hasMoreFromAPI,
   isLoading, newPostsCount, onShowNewPosts, resetSignal, topOffset,
   suggestedUsers, newsArticles=[], onScrollProgress, onNeedMorePosts,
   scrollContainerRef, followingIds, onPostsSeen,
@@ -1489,7 +1492,16 @@ const Feed = ({
         )}
       </div>
 
-      {hasMoreFromAPI && <div ref={apiLoadMoreRef} className="h-1" aria-hidden="true"/>}
+      {hasMoreFromAPI && (
+        <div
+          ref={(el) => {
+            if (apiLoadMoreRef) apiLoadMoreRef.current = el;
+            if (apiLoadMoreCallback) apiLoadMoreCallback(el);
+          }}
+          className="h-1"
+          aria-hidden="true"
+        />
+      )}
 
       {selectedArticle && (
         <Suspense fallback={null}>
@@ -1527,6 +1539,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const [resetSig,     setResetSig]     = useState(0);
   const [apiPages,     setApiPages]     = useState(1);
   const [suggestedUsers, setSuggestedUsers] = useState([]);
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   const followingIdsRef = useRef(new Set());
   const [followingVer,  setFollowingVer] = useState(0);
@@ -1601,6 +1614,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   const scrollRef    = useRef(null);
   const apiObsRef    = useRef(null);
+  const [apiObserverNode, setApiObserverNode] = useState(null);
   const loadingRef   = useRef(false);
   const touchStartY  = useRef(0);
   const isPulling    = useRef(false);
@@ -1726,8 +1740,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   },[user,addLivePosts]);
 
   useEffect(()=>{
-    const scrollEl=scrollRef.current;if(!scrollEl)return;
-    const onScroll=()=>{isScrollingRef.current=true;clearTimeout(scrollIdleTimerRef.current);scrollIdleTimerRef.current=setTimeout(()=>{isScrollingRef.current=false;},SCROLL_IDLE_MS);};
+    const scrollEl = scrollRef.current;
+    if (!scrollEl) return;
+    const onScroll = () => {
+      isScrollingRef.current = true;
+      clearTimeout(scrollIdleTimerRef.current);
+      scrollIdleTimerRef.current = setTimeout(() => { isScrollingRef.current = false; }, SCROLL_IDLE_MS);
+      setShowScrollTop(scrollEl.scrollTop > 360);
+    };
     scrollEl.addEventListener("scroll",onScroll,{passive:true});
     return()=>{scrollEl.removeEventListener("scroll",onScroll);clearTimeout(scrollIdleTimerRef.current);};
   },[]);
@@ -1898,13 +1918,19 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   // ✅ FIX 2 — handleOpenStory
   const handleOpenStory = useCallback((s, o) => {
+    if (showPyramid) {
+      setViewerData({ stories: s, owner: o });
+      setShowViewer(true);
+      return;
+    }
+
     if (openStoryViewerProp) {
       openStoryViewerProp(s, o);
     } else {
       setViewerData({ stories: s, owner: o });
       setShowViewer(true);
     }
-  }, [openStoryViewerProp]);
+  }, [openStoryViewerProp, showPyramid]);
 
   const handleRefresh=useCallback(async()=>{
     if(isRefreshing)return;
@@ -2002,10 +2028,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   },[isRefreshing]);
   useEffect(()=>{apiObsFnRef.current=apiObsFn;},[apiObsFn]);
   useEffect(()=>{
-    const node=apiObsRef.current;if(!node)return;
-    const obs=new IntersectionObserver(e=>apiObsFnRef.current?.(e),{rootMargin:"500px"});
-    obs.observe(node);return()=>obs.disconnect();
-  },[]); // eslint-disable-line
+    if (!apiObserverNode) return;
+    const obs = new IntersectionObserver(e => apiObsFnRef.current?.(e), { rootMargin: "500px" });
+    obs.observe(apiObserverNode);
+    return () => obs.disconnect();
+  }, [apiObserverNode]);
 
   useEffect(()=>{
     const _ctx=getScoringContext();
@@ -2065,12 +2092,15 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
               />
             </div>
 
+            {/* feed tabs hidden per user request */}
+
             <Feed
               posts={filtered}
               isDarkMode={isDarkMode}
               onDeleted={handleDeleted}
               showToast={showToast}
               apiLoadMoreRef={apiObsRef}
+              apiLoadMoreCallback={setApiObserverNode}
               hasMoreFromAPI={hasMore}
               isLoading={isLoading}
               newPostsCount={newPosts}
@@ -2127,6 +2157,23 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
       <GlobalModalManager />
 
+      <AnimatePresence>
+        {showScrollTop && (
+          <motion.button
+            type="button"
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 18 }}
+            transition={{ duration: 0.18 }}
+            onClick={() => scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" })}
+            className="fixed right-4 bottom-16 z-50 rounded-full p-3 shadow-2xl bg-orange-500 text-white ring-1 ring-black/10 hover:bg-orange-400"
+            style={{ pointerEvents: "auto" }}
+          >
+            <ArrowUpIcon className="w-5 h-5" />
+          </motion.button>
+        )}
+      </AnimatePresence>
+
       <Suspense fallback={null}>
         <ImmersivePyramidUniverse
           isOpen={showPyramid}
@@ -2147,7 +2194,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
         ✅ FIX v25 — StoryViewer TOUJOURS présent dans le DOM dès que viewerData est rempli.
         ✅ FIX 3  — onClose reset viewerData IMMÉDIATEMENT (pas de setTimeout).
       */}
-      {viewerData.stories.length > 0 && (
+      {viewerData.stories.length > 0 && typeof document !== "undefined" && document.body ? createPortal(
         <div
           key="story-viewer-wrapper"
           style={{
@@ -2169,8 +2216,9 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
               onNavigate={handleViewerNavigate}
             />
           </Suspense>
-        </div>
-      )}
+        </div>,
+        document.body
+      ) : null}
 
       <AnimatePresence>
         {toast&&<Toast message={toast.message} type={toast.type} onClose={()=>setToast(null)}/>}

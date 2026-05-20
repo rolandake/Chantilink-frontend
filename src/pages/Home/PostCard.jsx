@@ -129,8 +129,6 @@ const R2_PUBLIC_URL = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/,
 const resolveMediaUrl = (raw) => {
   if (!raw || typeof raw !== "string") return null;
   if (raw.startsWith("data:image")) return raw;
-  if (raw.includes("videos.pexels.com")) return null;
-  if (raw.includes("cdn.pixabay.com/video")) return null;
   if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
   if (raw.startsWith("blob:")) return raw;
   if (raw.startsWith("/uploads/") || raw.startsWith("uploads/"))
@@ -817,8 +815,6 @@ const PostCardInner = forwardRef(({
     const addUrl = (raw) => {
       if (!raw || typeof raw !== "string") return;
       if (raw.startsWith("blob:")) { if (!seen.has(raw)) { seen.add(raw); result.push(raw); } return; }
-      if (raw.includes("videos.pexels.com")) return;
-      if (raw.includes("cdn.pixabay.com/video")) return;
       const url = resolveMediaUrl(raw);
       if (url && !seen.has(url) && isStructurallyValid(url)) { seen.add(url); result.push(url); }
     };

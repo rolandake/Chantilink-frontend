@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { useAuth } from "../../context/AuthContext";
+import { useSocket } from "../../context/SocketContext";
 import { useToast } from "../../context/ToastContext";
 import { API } from "../../services/apiService";
 import messageCache from "../../utils/messageCache";
@@ -99,7 +100,7 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
     try {
       const resp = await API.updatePhone(token, formatted);
       if (!resp.success) throw new Error(resp.message || "Erreur serveur");
-      if (updateUserProfile) updateUserProfile(user.id, resp.user);
+      if (updateUserProfile) updateUserProfile(user.id || user._id, resp.user);
       setSyncing(false);
       setStep("picker");
     } catch (err) {
@@ -466,7 +467,8 @@ const ConversationsModal = ({ conversations, loading, onSelect, onClose, unreadC
 // COMPOSANT PRINCIPAL : Messages
 // ─────────────────────────────────────────────────────────────────────────────
 export default function Messages() {
-  const { user, token, socket, updateUserProfile } = useAuth();
+  const { user, token, updateUserProfile } = useAuth();
+  const { socket, connected: socketConnected } = useSocket("/messages");
   const { showToast } = useToast();
   const navigate  = useNavigate();
   const location  = useLocation();
@@ -491,11 +493,13 @@ export default function Messages() {
 
   const [input, setInput]         = useState("");
   const [loading, setLoading]     = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
   const [typingUsers, setTypingUsers] = useState([]);
 
   // ── ONBOARDING ──
-  const onboardingKey     = user?.id ? `chantilink_onboarding_done_${user.id}` : null;
+  const currentUserId     = user?.id || user?._id;
+  const onboardingKey     = currentUserId ? `chantilink_onboarding_done_${currentUserId}` : null;
   const hasSeenOnboarding = onboardingKey ? !!localStorage.getItem(onboardingKey) : true;
   const needsOnboarding   = !hasSeenOnboarding && !user?.phone;
   const [showOnboarding, setShowOnboarding] = useState(needsOnboarding);
@@ -513,16 +517,16 @@ export default function Messages() {
     playPreview, pausePreview,
   } = useAudioRecording(token, showToast);
 
-  const connected = socket?.connected || false;
+  const connected = socketConnected;
 
   const initiateCall = useCallback((recipientId, callType) => {
     if (!socket?.connected) { showToast("Connexion socket requise", "error"); return false; }
-    socket.emit("startCall", { recipientId, type: callType, callerId: user?.id });
+    socket.emit("initiate-call", { receiverId: recipientId, type: callType });
     return true;
-  }, [socket, user, showToast]);
+  }, [socket, showToast]);
 
   const socketEndCall = useCallback((callId) => {
-    if (socket?.connected && callId) socket.emit("endCall", { callId });
+    if (socket?.connected && callId) socket.emit("end-call", { callId });
   }, [socket]);
 
   const sendMessageSocket = useCallback((data) => {
@@ -582,11 +586,26 @@ export default function Messages() {
     }
   }, [token, showToast]);
 
+  const sendMediaMessage = useCallback(async (messageData) => {
+    if (!selectedContact || !currentUserId) return null;
+
+    if (socket?.connected) {
+      socket.emit("sendMessage", messageData);
+      return null;
+    }
+
+    const saved = await API.sendMessage(token, messageData);
+    await messageCache.addMessage(currentUserId, selectedContact.id, saved).catch(() => {});
+    setMessages((prev) => [...prev, saved].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)));
+    loadConversations();
+    return saved;
+  }, [socket, token, selectedContact, currentUserId, loadConversations]);
+
   const loadMessages = useCallback(async (contactId) => {
-    if (!contactId || !token || !user?.id) return;
+    if (!contactId || !token || !currentUserId) return;
     setLoading(true);
     try {
-      const cached = await messageCache.getMessages(user.id, contactId);
+      const cached = await messageCache.getMessages(currentUserId, contactId);
       if (cached.length > 0) {
         setMessages(cached);
         setLoading(false);
@@ -594,8 +613,9 @@ export default function Messages() {
       }
       const result = await API.getMessages(token, contactId);
       const list   = Array.isArray(result) ? result : (result.messages || []);
-      if (list.length > 0) { await messageCache.saveMessages(user.id, contactId, list); setMessages(list); }
-      if (socket?.connected) socket.emit("markMessagesAsRead", { senderId: contactId });
+      if (list.length > 0) { await messageCache.saveMessages(currentUserId, contactId, list); setMessages(list); }
+      if (socket?.connected) socket.emit("markAsRead", { senderId: contactId });
+      await API.markMessagesAsRead(token, contactId).catch(() => {});
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
     } catch (err) {
       console.error("❌ loadMessages:", err);
@@ -603,7 +623,7 @@ export default function Messages() {
     } finally {
       setLoading(false);
     }
-  }, [token, socket, showToast, user]);
+  }, [token, socket, showToast, currentUserId]);
 
   const handlePickerSync = useCallback((newContacts) => {
     loadContacts();
@@ -632,15 +652,15 @@ export default function Messages() {
   const handleInputChange = useCallback((e) => {
     setInput(e.target.value);
     if (socket?.connected && selectedContact) {
-      socket.emit("typing", { recipientId: selectedContact.id, isTyping: e.target.value.length > 0 });
+      socket.emit(e.target.value.length > 0 ? "typing" : "stopTyping", { recipientId: selectedContact.id });
     }
   }, [socket, selectedContact]);
 
   const handleSendMessage = useCallback(async () => {
-    if (!selectedContact || !input.trim() || !socket?.connected || !user?.id) return;
+    if (!selectedContact || !input.trim() || !socket?.connected || !currentUserId) return;
     const temp = {
       _id:       `temp-${Date.now()}`,
-      sender:    user.id,
+      sender:    currentUserId,
       recipient: selectedContact.id,
       content:   input.trim(),
       type:      "text",
@@ -649,45 +669,74 @@ export default function Messages() {
     };
     setMessages((prev) => [...prev, temp]);
     try { playSendSound(); } catch {}
-    try { await messageCache.addMessage(user.id, selectedContact.id, temp); } catch {}
+    try { await messageCache.addMessage(currentUserId, selectedContact.id, temp); } catch {}
     socket.emit("sendMessage", { recipientId: selectedContact.id, content: input.trim(), type: "text" });
     setInput("");
-    socket.emit("typing", { recipientId: selectedContact.id, isTyping: false });
-  }, [selectedContact, input, socket, user]);
+    socket.emit("stopTyping", { recipientId: selectedContact.id });
+  }, [selectedContact, input, socket, currentUserId]);
 
   const handleFileUpload = useCallback(async (e) => {
     const file = e.target.files?.[0];
     if (!file || !selectedContact) return;
+    if (!token) {
+      showToast("Session expirée. Reconnectez-vous.", "error");
+      return;
+    }
     showToast("📤 Upload en cours…", "info");
+    setUploading(true);
     try {
       const up = await API.uploadMessageFile(token, file);
       if (up.success && up.url) {
-        socket.emit("sendMessage", {
+        const messageData = {
           recipientId: selectedContact.id, content: file.name,
           type: up.type || "file", file: up.url, fileUrl: up.url,
-          fileName: file.name, fileSize: file.size,
-        });
+          url: up.url, secure_url: up.url, attachmentUrl: up.url,
+          fileName: file.name, fileSize: file.size, mimeType: file.type,
+        };
+        await sendMediaMessage(messageData);
         showToast("✅ Fichier envoyé !", "success");
+      } else {
+        throw new Error(up?.message || "Upload incomplet");
       }
-    } catch { showToast("❌ Erreur d'envoi", "error"); }
+    } catch (error) {
+      console.error("❌ handleFileUpload:", error);
+      showToast(error.message || "❌ Erreur d'envoi", "error");
+    } finally {
+      setUploading(false);
+    }
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, [selectedContact, token, socket, showToast]);
+  }, [selectedContact, token, sendMediaMessage, showToast]);
 
   const handleSendAudio = useCallback(async () => {
     if (!audioBlob || !selectedContact) return;
+    if (!token) {
+      showToast("Session expirée. Reconnectez-vous.", "error");
+      return;
+    }
     try {
       showToast("📤 Envoi du message vocal…", "info");
-      const up = await API.uploadMessageFile(token, new File([audioBlob], "audio.webm", { type: "audio/webm" }));
+      setUploading(true);
+      const extension = audioBlob.type?.includes("mp4") ? "m4a" : audioBlob.type?.includes("ogg") ? "ogg" : "webm";
+      const up = await API.uploadMessageFile(token, new File([audioBlob], `audio.${extension}`, { type: audioBlob.type || "audio/webm" }));
       if (up.success && up.url) {
-        socket.emit("sendMessage", {
+        await sendMediaMessage({
           recipientId: selectedContact.id, content: "Message vocal",
-          type: "audio", file: up.url, fileUrl: up.url,
+          type: "audio", file: up.url, fileUrl: up.url, url: up.url,
+          secure_url: up.url, attachmentUrl: up.url,
+          fileName: `audio.${extension}`, fileSize: audioBlob.size, mimeType: audioBlob.type || "audio/webm",
         });
         showToast("✅ Message vocal envoyé !", "success");
+      } else {
+        throw new Error(up?.message || "Upload audio incomplet");
       }
       cancelRecording();
-    } catch { showToast("❌ Erreur lors de l'envoi", "error"); }
-  }, [audioBlob, selectedContact, token, socket, cancelRecording, showToast]);
+    } catch (error) {
+      console.error("❌ handleSendAudio:", error);
+      showToast(error.message || "❌ Erreur lors de l'envoi", "error");
+    } finally {
+      setUploading(false);
+    }
+  }, [audioBlob, selectedContact, token, sendMediaMessage, cancelRecording, showToast]);
 
   const handleEmojiSelect = useCallback((emoji) => {
     setInput((prev) => prev + emoji.emoji);
@@ -697,11 +746,11 @@ export default function Messages() {
   const handlePhoneSubmit = useCallback(async (phoneNumber) => {
     const resp = await API.updatePhone(token, phoneNumber);
     if (resp.success) {
-      if (updateUserProfile) updateUserProfile(user.id, resp.user);
+      if (updateUserProfile) updateUserProfile(currentUserId, resp.user);
       showToast("Numéro enregistré ! 🎉", "success");
       setShowPhoneModal(false);
     }
-  }, [token, updateUserProfile, user, showToast]);
+  }, [token, updateUserProfile, currentUserId, showToast]);
 
   const handleAcceptPendingRequest = useCallback(async (request) => {
     try {
@@ -730,7 +779,7 @@ export default function Messages() {
       if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
       stopVibration();
       try { playCallConnectedSound(); } catch {}
-      socket.emit("acceptCall", { callId: incomingCall.callId });
+      socket.emit("accept-call", { callId: incomingCall.callId });
       setCall({ on: true, type: incomingCall.type, friend: incomingCall.caller, mute: false, video: incomingCall.type === "video", isIncoming: true, callId: incomingCall.callId });
       setIncomingCall(null);
       cleanupCallRingtone();
@@ -742,7 +791,7 @@ export default function Messages() {
       if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
       stopVibration();
       try { playCallRejectedSound(); } catch {}
-      socket.emit("rejectCall", { callId: incomingCall.callId });
+      socket.emit("reject-call", { callId: incomingCall.callId });
       sendMissedCallMessage(incomingCall.caller, incomingCall.type);
       setIncomingCall(null);
       cleanupCallRingtone();
@@ -757,14 +806,15 @@ export default function Messages() {
 
 
   const handleDeleteMessage = useCallback(async (messageId) => {
-    if (!selectedContact || !user?.id) return;
+    if (!selectedContact || !currentUserId) return;
     try {
       setMessages((prev) => prev.filter((m) => m._id !== messageId));
-      await messageCache.deleteMessage(user.id, selectedContact.id, messageId);
-      if (socket?.connected) socket.emit("deleteMessage", { messageId, conversationId: selectedContact.id });
+      await messageCache.deleteMessage(currentUserId, selectedContact.id, messageId);
+      await API.deleteMessage(token, messageId).catch(() => {});
+      if (socket?.connected) socket.emit("deleteMessage", { messageId, forEveryone: false });
       showToast("Message supprimé", "success");
     } catch { showToast("Erreur lors de la suppression", "error"); }
-  }, [selectedContact, user, socket, showToast]);
+  }, [selectedContact, currentUserId, token, socket, showToast]);
 
   // ── EFFECTS ──
   useEffect(() => {
@@ -785,23 +835,27 @@ export default function Messages() {
   }, [location.state, navigate, loadMessages]);
 
   useEffect(() => {
-    if (!socket?.connected) return;
-    const h = (users) => setOnlineUsers(users || []);
+    if (!connected) return;
+    const h = (payload) => setOnlineUsers(Array.isArray(payload) ? payload : (payload?.users || []));
     socket.on("onlineUsers", h);
     return () => socket.off("onlineUsers", h);
-  }, [socket]);
+  }, [socket, connected]);
 
   useEffect(() => {
-    if (!socket?.connected || !user?.id) return;
+    if (!connected || !socket || !currentUserId) return;
 
     const handleReceiveMessage = async (message) => {
       const senderId = typeof message.sender === "object" ? message.sender._id : message.sender;
       const recipientId = typeof message.recipient === "object" ? message.recipient._id : message.recipient;
       const isCurrentChat = selectedContact && (senderId === selectedContact.id || recipientId === selectedContact.id);
       if (isCurrentChat) {
-        try { playReceiveSound(); } catch {}
-        try { await messageCache.addMessage(user.id, selectedContact.id, message); } catch {}
-        setMessages((prev) => [...prev, message].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)));
+        if (senderId !== currentUserId) { try { playReceiveSound(); } catch {} }
+        try { await messageCache.addMessage(currentUserId, selectedContact.id, message); } catch {}
+        setMessages((prev) => {
+          const exists = prev.some((m) => m._id === message._id);
+          const filtered = prev.filter((m) => m.status !== "sending" || m.content !== message.content);
+          return (exists ? prev : [...filtered, message]).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        });
         setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
       } else {
         setUnreadCounts((prev) => ({ ...prev, [senderId]: (prev[senderId] || 0) + 1 }));
@@ -810,31 +864,32 @@ export default function Messages() {
     };
 
     const handleMessageSent = async (message) => {
-      try { if (selectedContact?.id && user?.id) await messageCache.addMessage(user.id, selectedContact.id, message); } catch {}
+      try { if (selectedContact?.id) await messageCache.addMessage(currentUserId, selectedContact.id, message); } catch {}
       setMessages((prev) => {
+        if (prev.some((m) => m._id === message._id)) return prev;
         const filtered = prev.filter((m) => m.status !== "sending" || m.content !== message.content);
         return [...filtered, message].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
       });
       loadConversations();
     };
 
-    const handleTyping = ({ userId, isTyping }) => {
-      if (isTyping) setTypingUsers((prev) => [...new Set([...prev, userId])]);
-      else setTypingUsers((prev) => prev.filter((id) => id !== userId));
-    };
+    const handleTyping = ({ userId }) => setTypingUsers((prev) => [...new Set([...prev, userId])]);
+    const handleStoppedTyping = ({ userId }) => setTypingUsers((prev) => prev.filter((id) => id !== userId));
 
     socket.on("receiveMessage", handleReceiveMessage);
     socket.on("messageSent",    handleMessageSent);
-    socket.on("typing",         handleTyping);
+    socket.on("userTyping",     handleTyping);
+    socket.on("userStoppedTyping", handleStoppedTyping);
     return () => {
       socket.off("receiveMessage", handleReceiveMessage);
       socket.off("messageSent",    handleMessageSent);
-      socket.off("typing",         handleTyping);
+      socket.off("userTyping",     handleTyping);
+      socket.off("userStoppedTyping", handleStoppedTyping);
     };
-  }, [socket, selectedContact, loadConversations, user]);
+  }, [socket, connected, selectedContact, loadConversations, currentUserId]);
 
   useEffect(() => {
-    if (!socket?.connected) return;
+    if (!connected || !socket) return;
 
     const handleIncomingCall = ({ callId, from, caller, type }) => {
       const friend = contacts.find((c) => c.id === from) || { id: from, fullName: caller?.fullName || "Anonyme" };
@@ -850,6 +905,15 @@ export default function Messages() {
       setCall({ on: false, type: null, friend: null, mute: false, video: true, isIncoming: false, callId: null });
     };
 
+    const handleCallInitiated = ({ callId }) => {
+      setCall((prev) => ({ ...prev, callId }));
+    };
+
+    const handleCallAccepted = ({ callId }) => {
+      try { playCallConnectedSound(); } catch {}
+      setCall((prev) => ({ ...prev, on: true, callId: callId || prev.callId }));
+    };
+
     const handleCallEnded = () => {
       try { playCallEndedSound(); } catch {}
       if (ringtoneRef.current) { ringtoneRef.current.stop(); ringtoneRef.current = null; }
@@ -859,14 +923,18 @@ export default function Messages() {
     };
 
     socket.on("incoming-call",  handleIncomingCall);
+    socket.on("call-initiated", handleCallInitiated);
+    socket.on("call-accepted",  handleCallAccepted);
     socket.on("call-rejected",  handleCallRejected);
     socket.on("call-ended",     handleCallEnded);
     return () => {
       socket.off("incoming-call",  handleIncomingCall);
+      socket.off("call-initiated", handleCallInitiated);
+      socket.off("call-accepted",  handleCallAccepted);
       socket.off("call-rejected",  handleCallRejected);
       socket.off("call-ended",     handleCallEnded);
     };
-  }, [socket, contacts, cleanupCallRingtone, showToast, endCall, setCall, setIncomingCall]);
+  }, [socket, connected, contacts, cleanupCallRingtone, showToast, endCall, setCall, setIncomingCall]);
 
   useEffect(() => () => {
     cleanupCallRingtone();
@@ -926,7 +994,7 @@ export default function Messages() {
               connected={connected} onVideoCall={handleVideoCall} onAudioCall={handleAudioCall} onBack={handleBack}
             />
             <MessagesList
-              messages={messages} currentUserId={user?.id} loading={loading}
+              messages={messages} currentUserId={currentUserId} loading={loading}
               endRef={messagesEndRef} conversationId={selectedContact?.id} onDeleteMessage={handleDeleteMessage}
             />
             <ChatInput
@@ -935,7 +1003,7 @@ export default function Messages() {
               onCancelAudio={cancelRecording} onSendAudio={handleSendAudio}
               audioUrl={audioUrl} isPlaying={isPlaying} onPlayPreview={playPreview} onPausePreview={pausePreview}
               showEmoji={showEmoji} onToggleEmoji={() => setShowEmoji(!showEmoji)} onEmojiSelect={handleEmojiSelect}
-              uploading={false} onUpload={handleFileUpload} connected={connected}
+              uploading={uploading} onUpload={handleFileUpload} connected={connected}
               txtRef={textareaRef} fileRef={fileInputRef}
             />
           </motion.div>
