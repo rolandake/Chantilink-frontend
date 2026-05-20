@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
+import { getAuthToken, monetisationFetch } from './monetisationApi';
 
 const STATUS_CONFIG = {
   completed: { label:'Complété',  color:'#22c55e', bg:'rgba(34,197,94,0.1)'  },
@@ -11,7 +12,7 @@ const STATUS_CONFIG = {
 };
 
 export default function TransactionsSection() {
-  const { user }       = useAuth();
+  const { user, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
 
   const [transactions, setTransactions] = useState([]);
@@ -29,14 +30,15 @@ export default function TransactionsSection() {
     (async () => {
       setLoading(true); setError('');
       try {
-        const res  = await fetch('/api/monetisation/transactions', { headers:{ Authorization:`Bearer ${user.token}` } });
+        const token = await getAuthToken(getToken);
+        const res  = await monetisationFetch('transactions', { token });
         if (!res.ok) throw new Error('Erreur chargement transactions');
         const data = await res.json();
-        setTransactions(data.transactions);
+        setTransactions(data.transactions || []);
       } catch (e) { setError(e.message); }
       finally { setLoading(false); }
     })();
-  }, [user]);
+  }, [user, getToken]);
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, fontFamily:font }}>

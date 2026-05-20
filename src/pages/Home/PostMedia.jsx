@@ -691,12 +691,6 @@ const VideoItem = React.memo(({ url, posterUrl, isLCP, onRegisterVideoEl, slotIn
           loading={isLCP ? "eager" : "lazy"} decoding={isLCP ? "sync" : "async"} draggable="false" />
       )}
       {showBadge && <VideoSourceBadge url={url} />}
-      {onOpenLightbox && (
-        <button onClick={(e) => { e.stopPropagation(); onOpenLightbox(); }}
-          style={{ position: "absolute", top: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="white"><path d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 4h-4v2h6v-6h-2v4z"/></svg>
-        </button>
-      )}
       <button ref={muteButtonRef} onClick={handleMuteClick}
         style={{ position: "absolute", bottom: 8, right: 8, zIndex: 20, width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
         dangerouslySetInnerHTML={{ __html: ICON_MUTED }} />

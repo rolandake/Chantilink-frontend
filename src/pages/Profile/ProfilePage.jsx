@@ -25,6 +25,7 @@ import { useDarkMode } from "../../context/DarkModeContext";
 import { registerServiceWorker, prefetchImagesViaSW } from "../../utils/swRegister";
 import { syncNewPost, syncDeletePost, getCachedPosts } from "../../utils/cacheSync";
 import axios from "axios";
+import { PROFILE_BACKEND_BASE } from "./profileApi";
 import {
   setupIndexedDB,
   idbGetProfilePosts as idbGet,
@@ -39,8 +40,7 @@ import {
 // VITE_API_URL peut valoir "http://localhost:5000" ou "http://localhost:5000/api"
 // BASE_URL supprime le /api trailing -> on construit les paths manuellement
 // ─────────────────────────────────────────────────────────────────────────────
-const API_URL  = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
-const BASE_URL = API_URL.replace(/\/api\/?$/, "");
+const BASE_URL = PROFILE_BACKEND_BASE;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GUARDS ID

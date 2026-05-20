@@ -3,9 +3,10 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
+import { getAuthToken, monetisationFetch } from './monetisationApi';
 
 export default function MyClients() {
-  const { user }       = useAuth();
+  const { user, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
   const [clients, setClients]   = useState([]);
   const [loading, setLoading]   = useState(true);
@@ -22,14 +23,15 @@ export default function MyClients() {
     (async () => {
       setLoading(true);
       try {
-        const res  = await fetch('/api/monetisation/clients', { headers:{ Authorization:`Bearer ${user.token}` } });
+        const token = await getAuthToken(getToken);
+        const res  = await monetisationFetch('clients', { token });
         if (!res.ok) return;
         const data = await res.json();
         setClients(data.clients || []);
       } catch {}
       finally { setLoading(false); }
     })();
-  }, [user]);
+  }, [user, getToken]);
 
   // Données de démonstration si vide
   const DEMO = [

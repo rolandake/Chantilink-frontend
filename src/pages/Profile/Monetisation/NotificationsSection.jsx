@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
+import { getAuthToken, monetisationFetch } from './monetisationApi';
 
 const TYPE_CONFIG = {
   sale:       { icon:'💰', color:'#22c55e', bg:'rgba(34,197,94,0.1)'   },
@@ -12,7 +13,7 @@ const TYPE_CONFIG = {
 };
 
 export default function NotificationsSection() {
-  const { user }       = useAuth();
+  const { user, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
   const [notifs, setNotifs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -28,14 +29,15 @@ export default function NotificationsSection() {
     (async () => {
       setLoading(true);
       try {
-        const res  = await fetch('/api/monetisation/notifications', { headers:{ Authorization:`Bearer ${user.token}` } });
+        const token = await getAuthToken(getToken);
+        const res  = await monetisationFetch('notifications', { token });
         if (!res.ok) return;
         const data = await res.json();
         setNotifs(data.notifications || []);
       } catch {}
       finally { setLoading(false); }
     })();
-  }, [user]);
+  }, [user, getToken]);
 
   // Placeholder si pas de données réelles
   const DEMO = [

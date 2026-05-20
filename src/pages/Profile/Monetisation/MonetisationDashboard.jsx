@@ -9,9 +9,12 @@ import NotificationsSection from "./NotificationsSection";
 import RevenueStats from "./RevenueStats";
 import MyClients from "./MyClients";
 import { useDarkMode } from '../../../context/DarkModeContext';
+import { useAuth } from '../../../context/AuthContext';
+import { getAuthToken, monetisationFetch } from './monetisationApi';
 
 export default function MonetisationDashboard() {
   const { isDarkMode } = useDarkMode();
+  const { getToken } = useAuth();
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
@@ -20,14 +23,15 @@ export default function MonetisationDashboard() {
     async function fetchDashboardData() {
       setLoading(true); setError(null);
       try {
-        const res  = await fetch("/api/monetisation/dashboard");
+        const token = await getAuthToken(getToken);
+        const res  = await monetisationFetch("dashboard", { token });
         if (!res.ok) throw new Error("Erreur API " + res.status);
         setData(await res.json());
       } catch (e) { setError(e.message); }
       finally { setLoading(false); }
     }
     fetchDashboardData();
-  }, []);
+  }, [getToken]);
 
   const bdr  = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
   const font = "'Sora','DM Sans',sans-serif";

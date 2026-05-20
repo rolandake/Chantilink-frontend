@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
+import { getAuthToken, monetisationFetch } from './monetisationApi';
 
 const TrashIcon = () => (
   <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -16,7 +17,7 @@ const PlusIcon = () => (
 );
 
 export default function OffersSection() {
-  const { user }       = useAuth();
+  const { user, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
 
   const [offers, setOffers]   = useState([]);
@@ -38,7 +39,8 @@ export default function OffersSection() {
   const fetchOffers = async () => {
     setLoading(true); setError('');
     try {
-      const res  = await fetch('/api/monetisation/offers', { headers:{ Authorization:`Bearer ${user.token}` } });
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('offers', { token });
       if (!res.ok) throw new Error('Erreur récupération offres');
       const data = await res.json();
       setOffers(data.offers);
@@ -46,7 +48,7 @@ export default function OffersSection() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { if (user) fetchOffers(); }, [user]);
+  useEffect(() => { if (user) fetchOffers(); }, [user, getToken]);
 
   const handleCreate = async () => {
     setError('');
@@ -55,9 +57,10 @@ export default function OffersSection() {
     if (isNaN(priceNumber) || priceNumber <= 0) { setError('Prix invalide'); return; }
     setSubmitting(true);
     try {
-      const res  = await fetch('/api/monetisation/offers', {
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('offers', {
         method:'POST',
-        headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${user.token}` },
+        token,
         body: JSON.stringify({ title, description, price:priceNumber }),
       });
       const data = await res.json();
@@ -71,7 +74,8 @@ export default function OffersSection() {
   const handleDelete = async (id) => {
     if (!confirm('Supprimer cette offre ?')) return;
     try {
-      const res  = await fetch(`/api/monetisation/offers/${id}`, { method:'DELETE', headers:{ Authorization:`Bearer ${user.token}` } });
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch(`offers/${id}`, { method:'DELETE', token });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Erreur suppression');
       fetchOffers();

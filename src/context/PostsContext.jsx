@@ -127,6 +127,7 @@ export const PostsProvider = ({ children }) => {
   const sessionLoadDone = useRef(
     typeof sessionStorage !== "undefined" && !!sessionStorage.getItem(SESSION_LOAD_KEY)
   );
+  const didInitialFetchRef = useRef(false);
 
   // Nettoyer la clé sessionStorage quand le token change (nouveau login)
   const prevTokenRef = useRef(token);
@@ -134,6 +135,7 @@ export const PostsProvider = ({ children }) => {
     if (token && token !== prevTokenRef.current) {
       try { sessionStorage.removeItem(SESSION_LOAD_KEY); } catch {}
       sessionLoadDone.current = false;
+      didInitialFetchRef.current = false;
     }
     prevTokenRef.current = token;
   }, [token]);
@@ -472,8 +474,7 @@ export const PostsProvider = ({ children }) => {
   // une seule fois par session, même avec React Strict Mode (double-mount)
   // ============================================
   useEffect(() => {
-    if (!token) return;
-
+    if (!user) return;
     if (sessionLoadDone.current) return;
     sessionLoadDone.current = true;
 
@@ -492,11 +493,16 @@ export const PostsProvider = ({ children }) => {
           setLoading(true);
         }
 
-        if (navigator.onLine) {
+        if (navigator.onLine && tokenRef.current) {
+          didInitialFetchRef.current = true;
           await fetchPosts(1, false);
         } else {
-          setLoading(false);
-          console.log("📴 [PostsContext] Offline — cache uniquement");
+          if (!tokenRef.current) {
+            console.log("⚡ [PostsContext] Token non disponible — affichage du cache en attendant la reconnexion");
+          } else {
+            console.log("📴 [PostsContext] Offline — cache uniquement");
+          }
+          if (!cached?.length) setLoading(false);
         }
       } catch (err) {
         console.error("❌ [PostsContext] Erreur initialisation:", err.message);
@@ -505,7 +511,15 @@ export const PostsProvider = ({ children }) => {
     };
 
     init();
-  }, [token, fetchPosts]);
+  }, [user, fetchPosts]);
+
+  useEffect(() => {
+    if (!user || !token || !sessionLoadDone.current) return;
+    if (didInitialFetchRef.current) return;
+    if (isLoadingRef.current) return;
+    didInitialFetchRef.current = true;
+    fetchPosts(1, false);
+  }, [user, token, fetchPosts]);
 
   // ============================================
   // CLEANUP

@@ -16,8 +16,7 @@ import {
   ArrowPathIcon,
 } from "@heroicons/react/24/outline";
 import { CheckBadgeIcon } from "@heroicons/react/24/solid";
-
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com" : "http://localhost:5000");
+import { PROFILE_BACKEND_BASE, profileApiPath } from "./profileApi";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DESIGN TOKENS
@@ -453,9 +452,9 @@ export default function ProfileSuggestions({
     setLoading(true); setError(null); setUsingFallback(false);
 
     const ENDPOINTS = [
-      `${API_URL}/api/users/suggestions`,
-      `${API_URL}/api/users`,
-      `${API_URL}/users`,
+      profileApiPath("users/suggestions"),
+      profileApiPath("users"),
+      `${PROFILE_BACKEND_BASE}/users`,
     ];
 
     let data = null;
@@ -537,7 +536,7 @@ export default function ProfileSuggestions({
     setLocalFollowedIds(prev => new Set([...prev, userId]));
     setSuggestions(prev => prev.filter(s => (s._id || s.id) !== userId));
     try {
-      const res = await fetch(`${API_URL}/api/users/${userId}/follow`, {
+      const res = await fetch(profileApiPath(`users/${userId}/follow`), {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         credentials: "include",

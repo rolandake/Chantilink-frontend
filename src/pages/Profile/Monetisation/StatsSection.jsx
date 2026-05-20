@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
+import { getAuthToken, monetisationFetch } from './monetisationApi';
 
 const StatCard = ({ label, value, icon, color, delay, isDarkMode }) => {
   const bdr = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
@@ -43,7 +44,7 @@ const StatCard = ({ label, value, icon, color, delay, isDarkMode }) => {
 };
 
 export default function StatsSection() {
-  const { user }      = useAuth();
+  const { user, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
 
   const [stats, setStats]     = useState({ totalRevenue:0, monthlyRevenue:0, salesCount:0, activeSubscribers:0 });
@@ -55,13 +56,14 @@ export default function StatsSection() {
     (async () => {
       setLoading(true); setError('');
       try {
-        const res  = await fetch('/api/monetisation/stats', { headers:{ Authorization:`Bearer ${user.token}` } });
+        const token = await getAuthToken(getToken);
+        const res  = await monetisationFetch('stats', { token });
         if (!res.ok) throw new Error('Erreur chargement statistiques');
         setStats(await res.json());
       } catch (e) { setError(e.message); }
       finally { setLoading(false); }
     })();
-  }, [user]);
+  }, [user, getToken]);
 
   const font = "'Sora','DM Sans',sans-serif";
 

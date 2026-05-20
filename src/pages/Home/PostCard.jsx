@@ -18,6 +18,8 @@ import React, {
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import { loadStripe } from "@stripe/stripe-js";
+import { Elements, CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import {
   TrashIcon, HeartIcon, ChatBubbleLeftIcon, ShareIcon, BookmarkIcon,
 } from "@heroicons/react/24/outline";
@@ -34,6 +36,14 @@ const PostCommentsModal = lazy(() => import("./PostComments"));
 const PostShareModal    = lazy(() => import("./PostShareSection"));
 
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
+const STRIPE_PUBLIC_KEY = import.meta.env.VITE_STRIPE_PUBLIC_KEY || import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || "";
+const stripePromise = STRIPE_PUBLIC_KEY ? loadStripe(STRIPE_PUBLIC_KEY) : null;
+
+const BOOST_PLANS = [
+  { duration: 24,  amount: 1500, label: "24h",     detail: "Coup de pouce rapide" },
+  { duration: 72,  amount: 3500, label: "3 jours", detail: "Visibilite equilibree" },
+  { duration: 168, amount: 7000, label: "7 jours", detail: "Campagne prolongee" },
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection appareil
@@ -403,7 +413,101 @@ DeleteModal.displayName = "DeleteModal";
 // ─────────────────────────────────────────────────────────────────────────────
 // BoostModal
 // ─────────────────────────────────────────────────────────────────────────────
-const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
+const BoostPaymentForm = memo(({ isDarkMode, postId, onClose, onBoosted, showToast }) => {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [plan, setPlan] = useState(BOOST_PLANS[1]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const pay = async () => {
+    if (!stripe || !elements || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const { data } = await axiosClient.post("/boost/create", {
+        contentType: "Post",
+        contentId: postId,
+        duration: plan.duration,
+      });
+
+      const card = elements.getElement(CardElement);
+      const result = await stripe.confirmCardPayment(data.clientSecret, {
+        payment_method: { card },
+      });
+
+      if (result.error) throw new Error(result.error.message || "Paiement refuse");
+      if (result.paymentIntent?.status !== "succeeded") throw new Error("Paiement non confirme");
+
+      await axiosClient.post(`/boost/${data.boostId}/confirm`);
+      onBoosted?.();
+      showToast?.("Boost active avec succes", "success");
+      onClose();
+    } catch (err) {
+      const msg = err.response?.data?.error || err.response?.data?.message || err.message || "Erreur paiement";
+      setError(msg);
+      showToast?.(msg, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+        {BOOST_PLANS.map(p => {
+          const active = p.duration === plan.duration;
+          return (
+            <button key={p.duration} type="button" onClick={() => setPlan(p)}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                gap: 12, padding: "12px 14px", borderRadius: 12,
+                border: active ? "2px solid #a855f7" : `1px solid ${isDarkMode ? "#374151" : "#e5e7eb"}`,
+                background: active ? "rgba(168,85,247,0.12)" : (isDarkMode ? "#1f2937" : "#f9fafb"),
+                color: isDarkMode ? "#fff" : "#111827", cursor: "pointer", textAlign: "left",
+              }}>
+              <span>
+                <strong style={{ display: "block", fontSize: 14 }}>{p.label}</strong>
+                <span style={{ display: "block", fontSize: 12, color: "#6b7280" }}>{p.detail}</span>
+              </span>
+              <strong style={{ whiteSpace: "nowrap" }}>{p.amount.toLocaleString("fr-FR")} FCFA</strong>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{
+        padding: 12, borderRadius: 12, marginBottom: 12,
+        background: isDarkMode ? "#0f172a" : "#f9fafb",
+        border: `1px solid ${isDarkMode ? "#334155" : "#e5e7eb"}`,
+      }}>
+        <CardElement options={{
+          hidePostalCode: true,
+          style: {
+            base: { fontSize: "15px", color: isDarkMode ? "#ffffff" : "#111827", "::placeholder": { color: "#9ca3af" } },
+            invalid: { color: "#ef4444" },
+          },
+        }} />
+      </div>
+
+      {error && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 12px" }}>{error}</p>}
+
+      <button type="button" onClick={pay} disabled={!stripe || loading}
+        style={{
+          width: "100%", padding: "12px 0", borderRadius: 12, fontWeight: 700,
+          fontSize: 15, border: "none", cursor: (!stripe || loading) ? "not-allowed" : "pointer",
+          opacity: (!stripe || loading) ? 0.65 : 1,
+          background: "linear-gradient(135deg, #9333ea, #ec4899)", color: "#ffffff",
+          pointerEvents: "auto",
+        }}>
+        {loading ? "Paiement..." : `Payer ${plan.amount.toLocaleString("fr-FR")} FCFA`}
+      </button>
+    </>
+  );
+});
+BoostPaymentForm.displayName = "BoostPaymentForm";
+
+const BoostModal = memo(({ isDarkMode, postId, onClose, onBoosted, showToast }) => {
   const isClosingRef = useRef(false);
 
   const safeClose = (e) => {
@@ -454,14 +558,30 @@ const BoostModal = memo(({ isDarkMode, postId, onClose }) => {
             Augmentez la visibilite de votre publication.
           </p>
         </div>
+        {!stripePromise ? (
+          <p style={{ color: "#ef4444", fontSize: 14, margin: 0 }}>
+            Paiement indisponible: cle publique Stripe manquante.
+          </p>
+        ) : (
+          <Elements stripe={stripePromise}>
+            <BoostPaymentForm
+              isDarkMode={isDarkMode}
+              postId={postId}
+              onClose={safeClose}
+              onBoosted={onBoosted}
+              showToast={showToast}
+            />
+          </Elements>
+        )}
         <button type="button" onClick={safeClose}
           style={{
-            width: "100%", padding: "12px 0", borderRadius: 12, fontWeight: 700,
-            fontSize: 15, border: "none", cursor: "pointer",
-            background: "linear-gradient(135deg, #9333ea, #ec4899)", color: "#ffffff",
+            width: "100%", padding: "10px 0", borderRadius: 12, fontWeight: 700,
+            fontSize: 14, border: "none", cursor: "pointer", marginTop: 10,
+            background: isDarkMode ? "#1f2937" : "#f3f4f6",
+            color: isDarkMode ? "#ffffff" : "#111827",
             pointerEvents: "auto",
           }}>
-          Fermer
+          Annuler
         </button>
       </motion.div>
     </div>
@@ -479,10 +599,10 @@ const GlobalModalManagerBase = () => {
 
   useEffect(() => {
     const handler = (e) => {
-      const { action, post, onDeleted, showToast, mockPost } = e.detail || {};
+      const { action, post, onDeleted, onBoosted, showToast, mockPost } = e.detail || {};
       if (!action || !post) return;
       setIsDeleting(false);
-      setModalState({ action, post, onDeleted, showToast, mockPost });
+      setModalState({ action, post, onDeleted, onBoosted, showToast, mockPost });
     };
     window.addEventListener(MODAL_EVENT, handler);
     return () => window.removeEventListener(MODAL_EVENT, handler);
@@ -519,7 +639,14 @@ const GlobalModalManagerBase = () => {
           onConfirm={handleDeletePost} onCancel={close} />
       )}
       {modalState.action === "boost" && (
-        <BoostModal key="boost" isDarkMode={isDarkMode} postId={modalState.post?._id} onClose={close} />
+        <BoostModal
+          key="boost"
+          isDarkMode={isDarkMode}
+          postId={modalState.post?._id}
+          onClose={close}
+          onBoosted={modalState.onBoosted}
+          showToast={modalState.showToast}
+        />
       )}
     </AnimatePresence>,
     getModalRoot()
@@ -612,6 +739,7 @@ const PostCardInner = forwardRef(({
   const [saved,         setSaved]         = useState(false);
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [showShareModal,    setShowShareModal]    = useState(false);
+  const [boostedLocal, setBoostedLocal] = useState(() => !!post.isBoosted);
   const [isFollowing,   setIsFollowing]   = useState(() => {
     if (!currentUser || !postUser._id || postUser._id === "unknown") return false;
     if (currentUser._id === postUser._id) return false;
@@ -640,6 +768,7 @@ const PostCardInner = forwardRef(({
   }, []);
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
+  useEffect(() => { if (post.isBoosted) setBoostedLocal(true); }, [post.isBoosted]);
 
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
@@ -786,7 +915,10 @@ const PostCardInner = forwardRef(({
     if (openingRef.current) return;
     openingRef.current = true;
     setTimeout(() => { openingRef.current = false; }, 300);
-    emitModalEvent("boost", postRef.current.post);
+    emitModalEvent("boost", postRef.current.post, {
+      showToast: postRef.current.showToast,
+      onBoosted: () => setBoostedLocal(true),
+    });
   }, []);
 
   const handleCommentsCountChange = useCallback((count) => {
@@ -801,7 +933,7 @@ const PostCardInner = forwardRef(({
   const content        = post.content || post.contenu || "";
   const shouldTruncate = content.length > 280;
   const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
-  const isBoosted      = !!post.isBoosted;
+  const isBoosted      = boostedLocal || !!post.isBoosted;
 
   const embedUrl      = post.embedUrl  || null;
   const videoUrl      = post.videoUrl  || null;

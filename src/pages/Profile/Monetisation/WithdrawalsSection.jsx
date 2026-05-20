@@ -3,9 +3,10 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
+import { getAuthToken, monetisationFetch } from './monetisationApi';
 
 export default function WithdrawalsSection() {
-  const { user }       = useAuth();
+  const { user, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
 
   const [withdrawals, setWithdrawals] = useState([]);
@@ -26,7 +27,8 @@ export default function WithdrawalsSection() {
     if (!user) return;
     setLoading(true);
     try {
-      const res  = await fetch('/api/monetisation/withdrawals', { headers:{ Authorization:`Bearer ${user.token}` } });
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('withdrawals', { token });
       if (!res.ok) throw new Error('Erreur chargement retraits');
       const data = await res.json();
       setWithdrawals(data.withdrawals || []);
@@ -34,7 +36,7 @@ export default function WithdrawalsSection() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchWithdrawals(); }, [user]);
+  useEffect(() => { fetchWithdrawals(); }, [user, getToken]);
 
   const handleWithdraw = async () => {
     setError(''); setSuccess('');
@@ -42,9 +44,10 @@ export default function WithdrawalsSection() {
     if (!num || num <= 0) { setError('Montant invalide'); return; }
     setSubmitting(true);
     try {
-      const res  = await fetch('/api/monetisation/withdrawals', {
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('withdrawals', {
         method:'POST',
-        headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${user.token}` },
+        token,
         body: JSON.stringify({ amount:num, method }),
       });
       const data = await res.json();
