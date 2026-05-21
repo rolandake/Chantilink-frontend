@@ -21,7 +21,9 @@ import { useNavigate } from "react-router-dom";
 import { loadStripe } from "@stripe/stripe-js";
 import { Elements, CardElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import {
-  TrashIcon, HeartIcon, ChatBubbleLeftIcon, ShareIcon, BookmarkIcon,
+  TrashIcon, HeartIcon, ChatBubbleLeftIcon, ShareIcon, BookmarkIcon, EllipsisHorizontalIcon,
+  XMarkIcon, EyeSlashIcon, ExclamationTriangleIcon, PlusCircleIcon, MinusCircleIcon,
+  BellIcon, InformationCircleIcon, CodeBracketIcon, LinkIcon, NoSymbolIcon, ArrowLeftIcon,
 } from "@heroicons/react/24/outline";
 import {
   HeartIcon as HeartSolid, CheckBadgeIcon, RocketLaunchIcon, BookmarkIcon as BookmarkSolid
@@ -31,6 +33,13 @@ import { useDarkMode } from "../../context/DarkModeContext";
 import PostMedia from "./PostMedia";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import axiosClient from "../../api/axiosClientGlobal";
+import {
+  getPostAuthor,
+  hidePostPreference,
+  isPostHidden,
+  isAuthorNotificationEnabled,
+  setAuthorNotificationEnabled,
+} from "../../utils/postNotificationPreferences";
 
 const PostCommentsModal = lazy(() => import("./PostComments"));
 const PostShareModal    = lazy(() => import("./PostShareSection"));
@@ -44,6 +53,25 @@ const BOOST_PLANS = [
   { duration: 72,  amount: 3500, label: "3 jours", detail: "Visibilite equilibree" },
   { duration: 168, amount: 7000, label: "7 jours", detail: "Campagne prolongee" },
 ];
+
+const SAVED_POSTS_KEY = "chantilink_saved_posts_v1";
+
+const getSavedPostIds = () => {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const parsed = JSON.parse(window.localStorage?.getItem(SAVED_POSTS_KEY) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.map(String) : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const setSavedPostPreference = (postId, enabled) => {
+  if (!postId || typeof window === "undefined") return;
+  const ids = getSavedPostIds();
+  enabled ? ids.add(String(postId)) : ids.delete(String(postId));
+  try { window.localStorage?.setItem(SAVED_POSTS_KEY, JSON.stringify([...ids].slice(-1000))); } catch {}
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection appareil
@@ -662,34 +690,448 @@ GlobalModalManager.displayName = "GlobalModalManager";
 const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, isDarkMode, onLike, onOpenComments, onOpenShare, onSave }) => (
   <div className="flex items-center justify-between px-3 py-2">
     <div className="flex items-center gap-4">
-      <button onClick={onLike} className="flex items-center gap-1.5 group">
+      <button onClick={onLike} className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-orange-500 transition-colors">
         {liked
-          ? <HeartSolid className="w-6 h-6 text-red-500" />
-          : <HeartIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"} group-active:scale-90 transition-transform`} />
+          ? <HeartSolid className="w-5 h-5 text-red-500" />
+          : <HeartIcon className={`w-5 h-5 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
         }
-        {likesCount > 0 && (
-          <span className={`text-sm font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>{likesCount}</span>
-        )}
+        <span>{likesCount || 0}</span>
       </button>
-      <button onClick={onOpenComments} className="flex items-center gap-1.5 group">
-        <ChatBubbleLeftIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
-        {commentsCount > 0 && (
-          <span className={`text-sm font-medium ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>{commentsCount}</span>
-        )}
+      <button onClick={onOpenComments} className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-orange-500 transition-colors">
+        <ChatBubbleLeftIcon className={`w-5 h-5 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
+        <span>{commentsCount || 0}</span>
       </button>
-      <button onClick={onOpenShare}>
-        <ShareIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
+      <button onClick={onOpenShare} className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-orange-500 transition-colors">
+        <ShareIcon className={`w-5 h-5 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
+        <span>Partager</span>
       </button>
     </div>
-    <button onClick={onSave}>
+    <button onClick={onSave} className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-orange-500 transition-colors">
       {saved
-        ? <BookmarkSolid className="w-6 h-6 text-orange-500" />
-        : <BookmarkIcon className={`w-6 h-6 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
+        ? <BookmarkSolid className="w-5 h-5 text-orange-500" />
+        : <BookmarkIcon className={`w-5 h-5 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
       }
     </button>
   </div>
 ));
 ActionsBar.displayName = "ActionsBar";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FeedbackBar — petit composant d'interaction "Ce contenu vous plaît ?"
+// ─────────────────────────────────────────────────────────────────────────────
+const FeedbackBar = memo(({ postId, isDarkMode, showToast }) => {
+  const [given, setGiven] = useState(() => !!(typeof window !== 'undefined' && window.localStorage?.getItem(`feedback_given_${postId}`)));
+  const [loading, setLoading] = useState(false);
+
+  const sendFeedback = async (liked) => {
+    if (given || loading) return;
+    setLoading(true);
+    try {
+      await axiosClient.post(`/posts/${postId}/feedback`, { liked });
+      setGiven(true);
+      try { window.localStorage?.setItem(`feedback_given_${postId}`, '1'); } catch {}
+      showToast?.(liked ? "Merci — contenu apprécié" : "Merci pour votre retour", "success");
+    } catch (err) {
+      const msg = err?.response?.data?.message || err.message || "Erreur";
+      showToast?.(msg, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="px-3 py-2 border-t flex items-center justify-between">
+      <div className={`text-sm ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>Ce contenu vous plaît ?</div>
+      <div className="flex items-center gap-2">
+        {!given ? (
+          <>
+            <button onClick={() => sendFeedback(true)} disabled={loading}
+              className="px-3 py-1 rounded-md bg-green-500 text-white text-sm font-medium">Oui</button>
+            <button onClick={() => sendFeedback(false)} disabled={loading}
+              className="px-3 py-1 rounded-md bg-gray-200 text-sm font-medium">Non</button>
+          </>
+        ) : (
+          <div className="text-xs text-gray-400">Retour enregistré</div>
+        )}
+      </div>
+    </div>
+  );
+});
+FeedbackBar.displayName = "FeedbackBar";
+
+// ────────────────────────────────────────────────────────────────────────────
+// FeedbackModal — menu d'actions de publication
+// ────────────────────────────────────────────────────────────────────────────
+const FeedbackModal = memo(({
+  postId,
+  isDarkMode,
+  showToast,
+  onClose,
+  onOpenShare,
+  onOpenDelete,
+  onOpenBoost,
+  onToggleSave,
+  onHideLocal,
+  isOwner = false,
+  isBoosted = false,
+  isTempPost = false,
+  saved = false,
+  post = null,
+}) => {
+  const [loading, setLoading] = useState(false);
+  const [selectedAction, setSelectedAction] = useState(null);
+  const author = useMemo(() => getPostAuthor(post), [post]);
+  const [notificationsOn, setNotificationsOn] = useState(() => isAuthorNotificationEnabled(author.id));
+
+  useEffect(() => {
+    setNotificationsOn(isAuthorNotificationEnabled(author.id));
+  }, [author.id]);
+
+  const emitInteraction = (action) => {
+    window.dispatchEvent(new CustomEvent("feed:interaction", {
+      detail: { action, post, position: post?._displayPosition ?? 0 },
+    }));
+  };
+
+  const sendFeedback = async (liked, reason, { hide = false } = {}) => {
+    if (loading) return;
+    setLoading(true);
+    try {
+      await axiosClient.post(`/posts/${postId}/feedback`, { liked, reason });
+      try { window.localStorage?.setItem(`feedback_given_${postId}`, '1'); } catch {}
+      showToast?.("Retour enregistré", "success");
+    } catch (err) {
+      const msg = err?.response?.data?.message || err.message || "Erreur";
+      showToast?.(msg, "error");
+    } finally {
+      setLoading(false);
+      emitInteraction(reason);
+      if (hide) {
+        hidePostPreference(postId);
+        onHideLocal?.();
+        window.dispatchEvent(new CustomEvent("post:hidden", { detail: { postId, post, passive: true } }));
+      }
+      setTimeout(() => onClose?.(), hide ? 120 : 500);
+    }
+  };
+
+  const closeThen = (fn) => {
+    onClose?.();
+    setTimeout(() => fn?.(), 0);
+  };
+
+  const copyText = async (text, successMessage) => {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+      showToast?.(successMessage, "success");
+    } catch {
+      showToast?.(text, "info");
+    }
+    onClose?.();
+  };
+
+  const copyPostLink = () => {
+    copyText(`${window.location.origin}/posts/${postId}`, "Lien de la publication copié");
+  };
+
+  const toggleNotifications = () => {
+    if (!author.id) {
+      showToast?.("Auteur introuvable pour cette publication", "error");
+      onClose?.();
+      return;
+    }
+    const next = !notificationsOn;
+    setNotificationsOn(next);
+    setAuthorNotificationEnabled(author.id, next);
+    if (next && "Notification" in window && Notification.permission === "default") {
+      try {
+        const request = Notification.requestPermission();
+        request?.catch?.(() => {});
+      } catch {}
+    }
+    showToast?.(
+      next
+        ? `Notifications activées pour les publications de ${author.name}`
+        : `Notifications désactivées pour ${author.name}`,
+      "success"
+    );
+    onClose?.();
+  };
+
+  const actionGroups = [
+    [
+      {
+        label: "Masquer cette publication",
+        description: "Vous verrez moins de publications comme celle-ci.",
+        detail: "Cette publication sera retirée de votre fil immédiatement. Chantilink utilisera aussi ce retour pour vous montrer moins de contenus similaires.",
+        confirmLabel: "Masquer la publication",
+        icon: EyeSlashIcon,
+        onConfirm: () => sendFeedback(false, "hide", { hide: true }),
+      },
+      {
+        label: "Signaler cette publication",
+        description: "Signalez un problème avec cette publication.",
+        detail: "Utilisez cette action si le contenu semble abusif, trompeur, dangereux ou contraire aux règles. La publication sera retirée de votre fil et votre signalement sera transmis.",
+        confirmLabel: "Signaler et masquer",
+        icon: ExclamationTriangleIcon,
+        danger: true,
+        onConfirm: () => sendFeedback(false, "report", { hide: true }),
+      },
+    ],
+    [
+      {
+        label: "Ça m'intéresse",
+        description: "Vous verrez plus de publications de ce type.",
+        detail: "Cette action aide le fil à comprendre que ce sujet, cet auteur ou ce format vous plaît. Elle augmente les chances de voir des contenus proches.",
+        confirmLabel: "Voir plus comme ça",
+        icon: PlusCircleIcon,
+        onConfirm: () => sendFeedback(true, "interested"),
+      },
+      {
+        label: "Ça ne m'intéresse pas",
+        description: "Vous verrez moins de publications de ce type.",
+        detail: "Cette publication sera masquée et le fil réduira les contenus similaires dans vos prochaines recommandations.",
+        confirmLabel: "Voir moins comme ça",
+        icon: MinusCircleIcon,
+        onConfirm: () => sendFeedback(false, "not_interested", { hide: true }),
+      },
+    ],
+    [
+      {
+        label: notificationsOn ? "Désactiver les notifications" : "Activer les notifications",
+        description: notificationsOn ? "Ne plus recevoir d'alertes pour ce post." : "Recevoir les nouveautés de cette publication.",
+        detail: notificationsOn
+          ? `Vous ne recevrez plus d'alertes spécifiques lorsque ${author.name} publie du nouveau contenu.`
+          : `Vous serez notifié lorsque ${author.name} publie du nouveau contenu. L'app peut aussi vous proposer des publications similaires qui pourraient vous intéresser.`,
+        confirmLabel: notificationsOn ? "Désactiver" : "Activer",
+        icon: BellIcon,
+        onConfirm: toggleNotifications,
+      },
+      {
+        label: saved ? "Retirer des favoris" : "Enregistrer la publication",
+        description: saved ? "Retirer cette publication de vos éléments enregistrés." : "Retrouver cette publication plus tard.",
+        icon: BookmarkIcon,
+        onClick: () => closeThen(onToggleSave),
+      },
+      {
+        label: "Partager la publication",
+        description: "Envoyer cette publication à d'autres personnes.",
+        icon: ShareIcon,
+        onClick: () => {
+          emitInteraction("share");
+          closeThen(onOpenShare);
+        },
+      },
+      {
+        label: "Copier le lien",
+        description: "Copier l'adresse directe de cette publication.",
+        icon: LinkIcon,
+        onClick: copyPostLink,
+      },
+      {
+        label: "Pourquoi je vois cette publication",
+        description: "Voir les signaux utilisés pour vous la proposer.",
+        icon: InformationCircleIcon,
+        detail: "Cette publication peut apparaître selon vos interactions, vos abonnements, les contenus consultés récemment, les sujets du post et parfois des contenus exploratoires pour élargir votre fil.",
+        confirmLabel: "Ça m'intéresse",
+        onConfirm: () => sendFeedback(true, "interested"),
+        secondaryLabel: "Voir moins",
+        onSecondary: () => sendFeedback(false, "not_interested", { hide: true }),
+      },
+      {
+        label: "À propos de cette publication",
+        description: "Afficher les informations disponibles sur ce post.",
+        icon: InformationCircleIcon,
+        detail: `Publication créée sur Chantilink${author.name ? ` par ${author.name}` : ""}. Vous pouvez l'enregistrer, la partager, la masquer ou signaler un problème selon ce que vous souhaitez faire.`,
+        confirmLabel: saved ? "Retirer des favoris" : "Enregistrer",
+        onConfirm: () => closeThen(onToggleSave),
+      },
+      {
+        label: "Intégrer à un site",
+        description: "Copier le code d'intégration de cette publication.",
+        icon: CodeBracketIcon,
+        detail: "Cette action copie un code iframe que vous pourrez coller sur un site compatible pour afficher cette publication.",
+        confirmLabel: "Copier le code",
+        onConfirm: () => copyText(
+          `<iframe src="${window.location.origin}/embed/posts/${postId}"></iframe>`,
+          "Code d'intégration copié"
+        ),
+      },
+    ],
+    [
+      ...(isOwner && !isBoosted && !isTempPost ? [{
+        label: "Booster cette publication",
+        description: "Augmenter la visibilité de votre post.",
+        icon: RocketLaunchIcon,
+        detail: "Le boost lance une mise en avant payante pour donner plus de visibilité à cette publication pendant une durée choisie.",
+        confirmLabel: "Choisir un boost",
+        onConfirm: () => closeThen(onOpenBoost),
+      }] : []),
+      ...(isOwner && !isTempPost ? [{
+        label: "Supprimer cette publication",
+        description: "Retirer définitivement cette publication.",
+        icon: TrashIcon,
+        danger: true,
+        detail: "Cette action ouvre une confirmation de suppression. Si vous confirmez ensuite, la publication sera supprimée définitivement.",
+        confirmLabel: "Continuer",
+        onConfirm: () => closeThen(onOpenDelete),
+      }] : []),
+      ...(!isOwner ? [{
+        label: "Ne plus voir l'auteur",
+        description: "Limiter les publications de ce compte dans votre fil.",
+        icon: NoSymbolIcon,
+        detail: `Cette publication sera masquée et le fil réduira les contenus de ${author.name}.`,
+        confirmLabel: "Limiter cet auteur",
+        onConfirm: () => sendFeedback(false, "mute_author", { hide: true }),
+      }] : []),
+    ].filter(Boolean),
+  ].filter(group => group.length > 0);
+
+  const handleActionClick = (action) => {
+    if (action.detail) {
+      setSelectedAction(action);
+      return;
+    }
+    action.onClick?.();
+  };
+
+  if (selectedAction) {
+    const Icon = selectedAction.icon;
+    return (
+      <div
+        className={`absolute right-2 top-12 z-[80] w-[calc(100%-16px)] max-w-[420px] overflow-hidden rounded-2xl border text-left shadow-2xl ${
+          isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
+        }`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className={`flex items-center gap-2 border-b px-3 py-2.5 ${isDarkMode ? "border-white/10" : "border-gray-100"}`}>
+          <button
+            type="button"
+            onClick={() => setSelectedAction(null)}
+            className={`rounded-full p-2 ${isDarkMode ? "text-gray-200 hover:bg-white/10" : "text-gray-700 hover:bg-gray-100"}`}
+            aria-label="Retour aux actions"
+          >
+            <ArrowLeftIcon className="h-5 w-5" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className={`truncate text-sm font-bold ${isDarkMode ? "text-white" : "text-gray-950"}`}>{selectedAction.label}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className={`rounded-full p-2 ${isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"}`}
+            aria-label="Fermer"
+          >
+            <XMarkIcon className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="p-4">
+          <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-full ${
+            selectedAction.danger ? "bg-red-500/10 text-red-600" : "bg-orange-500/10 text-orange-600"
+          }`}>
+            <Icon className="h-5 w-5" />
+          </div>
+          <p className={`text-sm leading-6 ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
+            {selectedAction.detail}
+          </p>
+          <div className="mt-4 flex gap-2">
+            {selectedAction.secondaryLabel && (
+              <button
+                type="button"
+                onClick={selectedAction.onSecondary}
+                disabled={loading}
+                className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold ${
+                  isDarkMode ? "bg-white/10 text-white hover:bg-white/15" : "bg-gray-100 text-gray-900 hover:bg-gray-200"
+                }`}
+              >
+                {selectedAction.secondaryLabel}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={selectedAction.onConfirm}
+              disabled={loading}
+              className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold text-white disabled:opacity-60 ${
+                selectedAction.danger ? "bg-red-600 hover:bg-red-700" : "bg-orange-500 hover:bg-orange-600"
+              }`}
+            >
+              {loading ? "Traitement..." : selectedAction.confirmLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`absolute right-2 top-12 z-[80] w-[calc(100%-16px)] max-w-[420px] overflow-hidden rounded-2xl border text-left shadow-2xl ${
+        isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
+      }`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <motion.div
+        initial={{ y: -6, opacity: 0, scale: 0.98 }}
+        animate={{ y: 0, opacity: 1, scale: 1 }}
+        exit={{ y: -6, opacity: 0, scale: 0.98 }}
+        transition={{ duration: 0.16 }}
+        style={{ width: "100%" }}
+      >
+        <button type="button" onClick={onClose}
+          className={`absolute top-2.5 right-2.5 rounded-full p-2 transition-colors ${
+            isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"
+          }`}
+          aria-label="Fermer les actions">
+          <XMarkIcon className="w-5 h-5" />
+        </button>
+
+        <div className={`px-4 pt-4 pb-3 ${isDarkMode ? "border-white/10" : "border-gray-100"} border-b`}>
+          <h3 className={`text-base font-bold pr-10 ${isDarkMode ? "text-white" : "text-gray-950"}`}>
+            Actions sur la publication
+          </h3>
+        </div>
+
+        <div className="max-h-[78vh] overflow-y-auto">
+          {actionGroups.map((group, groupIndex) => (
+            <div
+              key={groupIndex}
+              className={`${groupIndex > 0 ? (isDarkMode ? "border-t border-white/10" : "border-t border-gray-200") : ""} py-1`}
+            >
+              {group.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <button
+                    key={action.label}
+                    type="button"
+                    onClick={() => handleActionClick(action)}
+                    disabled={loading}
+                    className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors disabled:opacity-60 ${
+                      isDarkMode ? "hover:bg-white/[0.08]" : "hover:bg-gray-50"
+                    } ${action.danger ? "text-red-600" : (isDarkMode ? "text-gray-100" : "text-gray-950")}`}
+                  >
+                    <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center ${
+                      action.danger ? "text-red-600" : (isDarkMode ? "text-gray-200" : "text-gray-900")
+                    }`}>
+                      <Icon className="h-5 w-5" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold leading-5">{action.label}</span>
+                      <span className={`block text-xs leading-4 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+                        {action.description}
+                      </span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </motion.div>
+    </div>
+  );
+});
+FeedbackModal.displayName = "FeedbackModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PostCardInner
@@ -736,10 +1178,12 @@ const PostCardInner = forwardRef(({
   const [likesCount,    setLikesCount]    = useState(() => Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0));
   const [commentsCount, setCommentsCount] = useState(() => Array.isArray(post.comments) ? post.comments.length : (post.commentsCount || 0));
   const [comments,      setComments]      = useState(() => Array.isArray(post.comments) ? post.comments : []);
-  const [saved,         setSaved]         = useState(false);
+  const [saved,         setSaved]         = useState(() => getSavedPostIds().has(String(post._id)));
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [showShareModal,    setShowShareModal]    = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [boostedLocal, setBoostedLocal] = useState(() => !!post.isBoosted);
+  const [hiddenLocal, setHiddenLocal] = useState(() => isPostHidden(post));
   const [isFollowing,   setIsFollowing]   = useState(() => {
     if (!currentUser || !postUser._id || postUser._id === "unknown") return false;
     if (currentUser._id === postUser._id) return false;
@@ -769,6 +1213,18 @@ const PostCardInner = forwardRef(({
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
   useEffect(() => { if (post.isBoosted) setBoostedLocal(true); }, [post.isBoosted]);
+  useEffect(() => {
+    setHiddenLocal(isPostHidden(post));
+  }, [post._id]);
+  useEffect(() => {
+    if (!showFeedbackModal) return;
+    const closeOnOutsideClick = (e) => {
+      if (!cardRef.current || cardRef.current.contains(e.target)) return;
+      setShowFeedbackModal(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [showFeedbackModal]);
 
   const isOwner = useMemo(() => {
     if (!currentUser) return false;
@@ -896,8 +1352,19 @@ const PostCardInner = forwardRef(({
 
   const handleOpenComments = useCallback((e) => { e?.stopPropagation(); setShowCommentsModal(true); }, []);
   const handleOpenShare    = useCallback((e) => { e?.stopPropagation(); setShowShareModal(true);    }, []);
-  const handleSave         = useCallback(() => setSaved(v => !v), []);
+  const handleSave         = useCallback(() => {
+    setSaved(v => {
+      const next = !v;
+      setSavedPostPreference(postRef.current.post?._id, next);
+      postRef.current.showToast?.(next ? "Publication enregistrée" : "Publication retirée des favoris", "success");
+      window.dispatchEvent(new CustomEvent("feed:interaction", {
+        detail: { action: "save", post: postRef.current.post, position: postRef.current.post?._displayPosition ?? 0 },
+      }));
+      return next;
+    });
+  }, []);
   const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
+  const handleOpenActions  = useCallback((e) => { e?.preventDefault(); e?.stopPropagation(); setShowFeedbackModal(true); }, []);
 
   const openingRef = useRef(false);
 
@@ -980,12 +1447,18 @@ const PostCardInner = forwardRef(({
     return null;
   })();
 
+  const postForMedia = useMemo(() => (
+    effectiveMediaType !== postMediaType ? { ...post, mediaType: effectiveMediaType } : post
+  ), [post, effectiveMediaType, postMediaType]);
+
   const hasMedia = effectiveMediaType === "text-card" || mediaUrls.length > 0
     || effectiveMediaType === "youtube"
     || (effectiveMediaType === "video" && mediaLen > 0)
     || !!(post.thumbnail && (videoUrl || embedUrl));
 
   const formattedDate = useRelativeTime(post.createdAt || null);
+
+  if (hiddenLocal) return null;
 
   if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
 
@@ -1057,18 +1530,11 @@ const PostCardInner = forwardRef(({
               </button>
             )}
 
-            {isOwner && !isTempPost && (
-              <button type="button" onClick={handleOpenDelete} aria-label="Supprimer ce post"
-                style={{
-                  padding: 8, borderRadius: "50%", border: "none", background: "transparent",
-                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                  position: "relative", zIndex: 51,
-                  WebkitTapHighlightColor: "transparent", touchAction: "manipulation",
-                  pointerEvents: "auto", minWidth: 44, minHeight: 44,
-                }}>
-                <TrashIcon style={{ width: 20, height: 20, color: "#9ca3af" }} />
-              </button>
-            )}
+            <button type="button" onClick={handleOpenActions} aria-label="Ouvrir les actions de la publication"
+              className="rounded-full border border-gray-200 bg-white/90 p-2 text-gray-700 hover:bg-gray-100 transition-colors"
+              style={{ minWidth: 38, minHeight: 38 }}>
+              <EllipsisHorizontalIcon className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
@@ -1090,7 +1556,7 @@ const PostCardInner = forwardRef(({
             <PostMedia
               mediaUrls={mediaUrls}
               isFirstPost={priority}
-              post={effectiveMediaType !== postMediaType ? { ...post, mediaType: effectiveMediaType } : post}
+              post={postForMedia}
             />
           </div>
         )}
@@ -1100,6 +1566,28 @@ const PostCardInner = forwardRef(({
           isDarkMode={isDarkMode} onLike={handleLike}
           onOpenComments={handleOpenComments} onOpenShare={handleOpenShare} onSave={handleSave}
         />
+
+        {showFeedbackModal && (
+          <ErrorBoundary>
+            <FeedbackModal
+              postId={post._id}
+              isDarkMode={isDarkMode}
+              showToast={showToast}
+              onClose={() => setShowFeedbackModal(false)}
+              onOpenShare={handleOpenShare}
+              onOpenDelete={handleOpenDelete}
+              onOpenBoost={handleOpenBoost}
+              onToggleSave={handleSave}
+              onHideLocal={() => setHiddenLocal(true)}
+              isOwner={isOwner}
+              isBoosted={isBoosted}
+              isTempPost={isTempPost}
+              saved={saved}
+              post={post}
+            />
+          </ErrorBoundary>
+        )}
+
       </div>
 
       {showCommentsModal && (
@@ -1130,6 +1618,7 @@ const PostCardInner = forwardRef(({
           </Suspense>
         </ErrorBoundary>
       )}
+
     </>
   );
 });
@@ -1164,6 +1653,20 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mock
 });
 PostCard.displayName = "PostCard";
 
+const getPostMediaSignature = (post) => {
+  const media = Array.isArray(post?.media) ? post.media : (post?.media ? [post.media] : []);
+  const images = Array.isArray(post?.images) ? post.images : (post?.images ? [post.images] : []);
+  const toUrl = (m) => typeof m === "string" ? m : (m?.url || "");
+  return [
+    post?.mediaType || "",
+    post?.videoUrl || "",
+    post?.embedUrl || "",
+    post?.thumbnail || "",
+    ...media.map(toUrl),
+    ...images.map(toUrl),
+  ].join("|");
+};
+
 export default memo(PostCard, (prev, next) =>
   prev.post?._id              === next.post?._id              &&
   prev.post?.likes?.length    === next.post?.likes?.length    &&
@@ -1172,14 +1675,8 @@ export default memo(PostCard, (prev, next) =>
   prev.post?.contenu          === next.post?.contenu          &&
   prev.post?.isBoosted        === next.post?.isBoosted        &&
   prev.post?.isOptimistic     === next.post?.isOptimistic     &&
-  prev.post?.mediaType        === next.post?.mediaType        &&
   prev.post?.textCardPalette  === next.post?.textCardPalette  &&
-  (Array.isArray(prev.post?.media)  ? prev.post.media.length  : 0) ===
-  (Array.isArray(next.post?.media)  ? next.post.media.length  : 0) &&
-  (Array.isArray(prev.post?.images) ? prev.post.images.length : 0) ===
-  (Array.isArray(next.post?.images) ? next.post.images.length : 0) &&
-  !!prev.post?.embedUrl       === !!next.post?.embedUrl       &&
-  !!prev.post?.videoUrl       === !!next.post?.videoUrl       &&
+  getPostMediaSignature(prev.post) === getPostMediaSignature(next.post) &&
   prev.priority               === next.priority               &&
   prev.loading                === next.loading
 );

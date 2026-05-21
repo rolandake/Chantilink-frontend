@@ -48,6 +48,10 @@ import About          from "./pages/About";
 import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
 import StoryViewer    from "./pages/Home/StoryViewer";
 import { GlobalModalManager } from "./pages/Home/PostCard";
+import {
+  markPostNotified,
+  shouldNotifyForPost,
+} from "./utils/postNotificationPreferences";
 
 export const HOME_REFRESH_EVENT    = "home:refresh";
 export const HOME_SCROLL_TOP_EVENT = "home:scrollTop";
@@ -417,8 +421,13 @@ function AppContent() {
       }, {});
       Object.entries(grouped).forEach(([type, notifs]) => {
         const count   = notifs.length;
+        const groupedLabel = type === "message"
+          ? t("messages.title").toLowerCase()
+          : type === "post" || type === "post_suggestion"
+            ? "publications"
+            : "stories";
         const message = count > 1
-          ? `${count} ${type === "message" ? t("messages.title").toLowerCase() : "stories"}`
+          ? `${count} ${groupedLabel}`
           : notifs[0].message;
         const id = Date.now() + Math.random();
         setLiveNotifications((prev) => [...prev.slice(-4), { id, type, message, timestamp: Date.now() }]);
@@ -446,6 +455,54 @@ function AppContent() {
       if (notificationTimer.current) clearTimeout(notificationTimer.current);
     };
   }, [socket, location.pathname, addNotification, t]);
+
+  useEffect(() => {
+    const notifyPost = (post) => {
+      const notification = shouldNotifyForPost(post, user);
+      if (!notification) return;
+      markPostNotified(post._id);
+      addNotification(notification);
+
+      if ("Notification" in window && Notification.permission === "granted") {
+        try {
+          new Notification("Chantilink", {
+            body: notification.message,
+            tag: `post-${post._id}`,
+          });
+        } catch {}
+      }
+    };
+
+    const onLocalPostNotification = (e) => {
+      const { post, type = "post", message } = e.detail || {};
+      if (!post?._id || !message) return;
+      addNotification({ type, message });
+    };
+
+    window.addEventListener("post:notify", onLocalPostNotification);
+
+    if (!socket) {
+      return () => window.removeEventListener("post:notify", onLocalPostNotification);
+    }
+
+    const onNewPost = (payload) => {
+      const post = payload?.post || payload?.data || payload;
+      notifyPost(post);
+    };
+
+    socket.on("new_post", onNewPost);
+    socket.on("newPost", onNewPost);
+    socket.on("post_created", onNewPost);
+    socket.on("postCreated", onNewPost);
+
+    return () => {
+      window.removeEventListener("post:notify", onLocalPostNotification);
+      socket.off("new_post", onNewPost);
+      socket.off("newPost", onNewPost);
+      socket.off("post_created", onNewPost);
+      socket.off("postCreated", onNewPost);
+    };
+  }, [socket, user, addNotification]);
 
   const handleCloseStory = useCallback(() => setStoryViewerOpen(false), []);
 

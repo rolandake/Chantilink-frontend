@@ -38,13 +38,22 @@ import React, {
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowUpIcon, ArrowPathIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowUpIcon, ArrowPathIcon, NewspaperIcon, ShareIcon,
+  BookmarkIcon, EyeSlashIcon, ArrowTopRightOnSquareIcon,
+} from "@heroicons/react/24/outline";
+import { BookmarkIcon as BookmarkSolid } from "@heroicons/react/24/solid";
 import { useDarkMode }      from "../../context/DarkModeContext";
 import { useStories }       from "../../context/StoryContext";
 import { usePosts }         from "../../context/PostsContext";
 import { useAuth }          from "../../context/AuthContext";
 import { useNews }          from "../../hooks/useNews";
 import axiosClient          from "../../api/axiosClientGlobal";
+import {
+  isPostHidden,
+  markPostNotified,
+  shouldNotifyForPost,
+} from "../../utils/postNotificationPreferences";
 
 import StoryContainer       from "./StoryContainer.jsx";
 import SuggestedAccounts    from "./SuggestedAccounts";
@@ -1171,10 +1180,10 @@ Toast.displayName = "Toast";
 
 const ALLOWED_CATEGORIES = new Set(["genieCivil","technologie","environnement"]);
 const CATEGORY_META = {
-  genieCivil:    {label:"🏗️ BTP",  gradient:"from-orange-500 to-red-500"},
-  technologie:   {label:"💻 Tech",  gradient:"from-green-500 to-emerald-500"},
-  environnement: {label:"🌱 Éco",   gradient:"from-teal-500 to-green-600"},
-  general:       {label:"📰 Actu",  gradient:"from-gray-500 to-gray-600"},
+  genieCivil:    {label:"BTP",  gradient:"from-orange-500 to-red-500", color:"#f97316"},
+  technologie:   {label:"Tech", gradient:"from-green-500 to-emerald-500", color:"#10b981"},
+  environnement: {label:"Eco",  gradient:"from-teal-500 to-green-600", color:"#14b8a6"},
+  general:       {label:"Info", gradient:"from-gray-500 to-gray-600", color:"#6b7280"},
 };
 const getCategoryMeta = (cat) => CATEGORY_META[cat]||CATEGORY_META.general;
 const fmtDate = (d)=>{
@@ -1184,39 +1193,173 @@ const fmtDate = (d)=>{
   return new Date(d).toLocaleDateString("fr-FR",{day:"numeric",month:"short"});
 };
 
-const NewsCard = memo(({ article, isDarkMode, onClick }) => {
+const INFO_SAVED_KEY = "chantilink_saved_info_v1";
+const INFO_HIDDEN_KEY = "chantilink_hidden_info_v1";
+
+const readInfoSet = (key) => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) || "[]");
+    return new Set(Array.isArray(raw) ? raw : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const writeInfoSet = (key, set) => {
+  try { localStorage.setItem(key, JSON.stringify([...set].slice(-500))); } catch {}
+};
+
+const getArticleKey = (article) => String(article?._id || article?.id || article?.url || article?.title || "");
+
+const InfoPostCard = memo(({ article, isDarkMode, onClick }) => {
   const [imgErr,setImgErr]=useState(false);
+  const articleKey = getArticleKey(article);
+  const [saved, setSaved] = useState(() => readInfoSet(INFO_SAVED_KEY).has(articleKey));
+  const [hidden, setHidden] = useState(() => readInfoSet(INFO_HIDDEN_KEY).has(articleKey));
   if (!ALLOWED_CATEGORIES.has(article.category)) return null;
+  if (hidden) return null;
   const meta=getCategoryMeta(article.category);
+  const shareArticle = async (e) => {
+    e.stopPropagation();
+    const url = article.url || article.link || window.location.href;
+    try {
+      await navigator.clipboard?.writeText(url);
+    } catch {}
+    window.dispatchEvent(new CustomEvent("feed:interaction", {
+      detail: {
+        action: "share",
+        post: {
+          _id: `info_${articleKey}`,
+          content: article.title,
+          category: article.category,
+          tags: ["information", article.category].filter(Boolean),
+        },
+        position: 0,
+      },
+    }));
+  };
+  const toggleSaved = (e) => {
+    e.stopPropagation();
+    const next = !saved;
+    const ids = readInfoSet(INFO_SAVED_KEY);
+    next ? ids.add(articleKey) : ids.delete(articleKey);
+    writeInfoSet(INFO_SAVED_KEY, ids);
+    setSaved(next);
+  };
+  const hideInfo = (e) => {
+    e.stopPropagation();
+    const ids = readInfoSet(INFO_HIDDEN_KEY);
+    ids.add(articleKey);
+    writeInfoSet(INFO_HIDDEN_KEY, ids);
+    setHidden(true);
+    window.dispatchEvent(new CustomEvent("feed:interaction", {
+      detail: {
+        action: "hide",
+        post: {
+          _id: `info_${articleKey}`,
+          content: article.title,
+          category: article.category,
+          tags: ["information", article.category].filter(Boolean),
+        },
+        position: 0,
+      },
+    }));
+  };
+
   return (
-    <div onClick={onClick} className={`mx-3 my-2 rounded-2xl overflow-hidden cursor-pointer active:scale-[0.98] transition-transform border ${isDarkMode?"bg-gray-900 border-gray-800":"bg-white border-gray-100"}`}
-      style={{boxShadow:isDarkMode?"0 2px 12px rgba(0,0,0,0.4)":"0 2px 12px rgba(0,0,0,0.07)"}}>
+    <article
+      onClick={onClick}
+      className={`relative w-full max-w-[630px] mx-auto cursor-pointer border-b transition-colors ${
+        isDarkMode ? "bg-black border-gray-900" : "bg-white border-gray-100"
+      }`}
+    >
+      <div className="flex items-center gap-3 px-3 py-3">
+        <div
+          className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full text-white"
+          style={{ backgroundColor: meta.color }}
+        >
+          <NewspaperIcon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className={`truncate text-sm font-semibold ${isDarkMode ? "text-white" : "text-gray-900"}`}>
+              {article.source || "Information"}
+            </span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold text-white bg-gradient-to-r ${meta.gradient}`}>
+              {meta.label}
+            </span>
+          </div>
+          <span className="text-xs text-gray-500">{fmtDate(article.publishedAt)}</span>
+        </div>
+        <button
+          type="button"
+          onClick={hideInfo}
+          aria-label="Masquer cette information"
+          className={`rounded-full p-2 ${isDarkMode ? "text-gray-400 hover:bg-white/10" : "text-gray-500 hover:bg-gray-100"}`}
+        >
+          <EyeSlashIcon className="h-5 w-5" />
+        </button>
+      </div>
+
+      <div className="px-3 pb-3">
+        <h3 className={`text-[15px] font-bold leading-snug ${isDarkMode ? "text-white" : "text-gray-900"}`}>
+          {article.title}
+        </h3>
+        {article.description && (
+          <p className={`mt-1.5 line-clamp-3 text-[13px] leading-relaxed ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
+            {article.description}
+          </p>
+        )}
+      </div>
+
       {article.image&&!imgErr?(
-        <div className="relative w-full overflow-hidden" style={{height:180}}>
+        <div className="relative w-full overflow-hidden bg-gray-200 dark:bg-gray-900" style={{aspectRatio:"1/1"}}>
           <img src={article.image} alt={article.title} className="w-full h-full object-cover" loading="lazy" onError={()=>setImgErr(true)}/>
-          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"/>
-          <div className={`absolute top-3 left-3 px-2.5 py-1 rounded-full text-[10px] font-bold text-white bg-gradient-to-r ${meta.gradient}`}>{meta.label}</div>
-          <div className={`absolute top-3 right-3 px-2.5 py-1 rounded-full text-[10px] font-semibold ${isDarkMode?"bg-black/60 text-gray-300":"bg-white/80 text-gray-600"}`}>Actualités</div>
         </div>
       ):(
-        <div className={`w-full flex items-center justify-center bg-gradient-to-br ${meta.gradient}`} style={{height:80}}><span className="text-white text-2xl">📰</span></div>
-      )}
-      <div className="px-4 pt-3 pb-4">
-        <p className={`text-[15px] font-bold leading-snug line-clamp-2 mb-1.5 ${isDarkMode?"text-white":"text-gray-900"}`}>{article.title}</p>
-        {article.description&&<p className={`text-[13px] leading-relaxed line-clamp-2 mb-2 ${isDarkMode?"text-gray-400":"text-gray-500"}`}>{article.description}</p>}
-        <div className={`flex items-center gap-1.5 text-[11px] ${isDarkMode?"text-gray-500":"text-gray-400"}`}>
-          <span className="font-semibold text-orange-500">{article.source}</span>
-          {article.publishedAt&&(<><span>·</span><span>{fmtDate(article.publishedAt)}</span></>)}
-          <span className="ml-auto font-medium text-orange-400">Lire →</span>
+        <div className={`w-full flex items-center justify-center bg-gradient-to-br ${meta.gradient}`} style={{aspectRatio:"1/1"}}>
+          <NewspaperIcon className="h-20 w-20 text-white/40" />
         </div>
+      )}
+
+      <div className="flex items-center justify-between px-3 py-2">
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+            className={`flex items-center gap-2 text-sm font-semibold transition-colors ${isDarkMode ? "text-gray-300 hover:text-orange-400" : "text-gray-700 hover:text-orange-500"}`}
+          >
+            <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+            <span>Lire</span>
+          </button>
+          <button
+            type="button"
+            onClick={shareArticle}
+            className={`flex items-center gap-2 text-sm font-semibold transition-colors ${isDarkMode ? "text-gray-300 hover:text-orange-400" : "text-gray-700 hover:text-orange-500"}`}
+          >
+            <ShareIcon className="h-5 w-5" />
+            <span>Partager</span>
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={toggleSaved}
+          aria-label={saved ? "Retirer cette information" : "Enregistrer cette information"}
+          className={`flex items-center gap-2 text-sm font-semibold transition-colors ${isDarkMode ? "text-gray-300 hover:text-orange-400" : "text-gray-700 hover:text-orange-500"}`}
+        >
+          {saved ? <BookmarkSolid className="h-5 w-5 text-orange-500" /> : <BookmarkIcon className="h-5 w-5" />}
+        </button>
       </div>
-    </div>
+    </article>
   );
 });
-NewsCard.displayName = "NewsCard";
+InfoPostCard.displayName = "InfoPostCard";
 
 const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest }) => {
   const wrapRef=useRef(null), notified=useRef(false), dwellRef=useRef(null);
+  const displayPost = useMemo(() => (
+    post?._displayPosition === index ? post : { ...post, _displayPosition: index }
+  ), [post, index]);
   useEffect(()=>{
     const el=wrapRef.current;if(!el)return;
     const tracker=createDwellTracker(post,onDwell,onSkip);
@@ -1230,7 +1373,7 @@ const PostCardWrapper = memo(({ post, index, onVisible, onDwell, onSkip, ...rest
   },[index,onVisible,onDwell,onSkip]);
   return (
     <div ref={wrapRef}>
-      <PostCard post={{...post,_displayPosition:index}} priority={index===0} {...rest}/>
+      <PostCard post={displayPost} priority={index===0} {...rest}/>
     </div>
   );
 });
@@ -1282,7 +1425,7 @@ const Feed = ({
     }
     const tagged = {
       ...post,
-      _displayKey: `dk_${nextKey()}_${post._id || "x"}`,
+      _displayKey: post._id ? `post_${post._id}` : `dk_${nextKey()}_x`,
     };
     if (post._id) taggedCache.current.set(post._id, tagged);
     return tagged;
@@ -1292,7 +1435,6 @@ const Feed = ({
     loadingRef.current = false;
     cursorRef.current  = 0;
     accRef.current     = [];
-    taggedCache.current.clear();
     const batch = pool.slice(0, PAGE_SIZE).map(tagPost);
     cursorRef.current = batch.length;
     accRef.current = batch;
@@ -1309,6 +1451,7 @@ const Feed = ({
     const rc = resetSignal !== prevReset.current;
     prevReset.current = resetSignal;
     if (!posts.length) {
+      if (isLoading || accRef.current.length > 0) return;
       accRef.current = []; cursorRef.current = 0;
       setDisplayedVer(v => v + 1);
       setShowAllSeen(false);
@@ -1431,7 +1574,7 @@ const Feed = ({
           priority={index === 0}
         />
         {newsItem && (
-          <NewsCard
+          <InfoPostCard
             key={`news-${newsSlot}`}
             article={newsItem}
             isDarkMode={isDarkMode}
@@ -1565,7 +1708,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       const fi   = followingIdsRef.current;
 
       if (!live.length) {
-        startTransition(() => setRawPool([]));
+        startTransition(() => setRawPool(prev => prev.length ? prev : []));
         return;
       }
 
@@ -1692,15 +1835,27 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     }, 2000);
   }, []);
 
+  const notifyFreshPosts = useCallback((posts) => {
+    posts.forEach((post) => {
+      const notification = shouldNotifyForPost(post, user);
+      if (!notification) return;
+      markPostNotified(post._id);
+      window.dispatchEvent(new CustomEvent("post:notify", {
+        detail: { ...notification, post },
+      }));
+    });
+  }, [user]);
+
   const addLivePosts=useCallback((list)=>{
     const ids=new Set(livePostsRef.current.map(p=>p._id));
-    const fresh=list.filter(p=>p?._id&&!ids.has(p._id)).map(({ _displayKey, ...rest })=>rest);
+    const fresh=list.filter(p=>p?._id&&!ids.has(p._id)&&!isPostHidden(p)).map(({ _displayKey, ...rest })=>rest);
     if(!fresh.length)return false;
     livePostsRef.current=[...livePostsRef.current,...fresh].slice(0,MAX_POOL);
     saveLivePool(livePostsRef.current);
+    notifyFreshPosts(fresh);
     startTransition(()=>setLivePostsVer(v=>v+1));
     return true;
-  },[]);
+  },[notifyFreshPosts]);
 
   useEffect(()=>{
     if(!user)return;
@@ -1848,10 +2003,11 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   useEffect(()=>{
     if(!rawPosts.length)return;
-    const ids=new Set(rawPosts.map(p=>p._id));
+    const visibleRawPosts = rawPosts.filter(p => !isPostHidden(p));
+    const ids=new Set(visibleRawPosts.map(p=>p._id));
     const filtered=livePostsRef.current.filter(p=>!ids.has(p._id));
     const cleanRaw = Array.from(
-      new Map(rawPosts.filter(p=>p?._id).map(p=>[p._id, p])).values()
+      new Map(visibleRawPosts.filter(p=>p?._id).map(p=>[p._id, p])).values()
     ).map(({ _displayKey, ...rest }) => rest);
     livePostsRef.current=[...filtered,...cleanRaw].slice(0,MAX_POOL);
     saveLivePool(livePostsRef.current);
@@ -1859,14 +2015,22 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   },[rawPosts]);
 
   useEffect(()=>{
-    if(!rawPool.length){setResolved([]);return;}
+    if(!rawPool.length){
+      if (!postsLoading && !livePostsRef.current.length) setResolved([]);
+      return;
+    }
     const controller = new AbortController();
     let cancelled = false;
 
     const immediate=rawPool.filter(p=>!hasExpirable(p));
     const exp=rawPool.filter(p=>hasExpirable(p));
 
-    setResolved(immediate);
+    if (immediate.length > 0) {
+      setResolved(prev => {
+        const same = prev.length === immediate.length && prev.every((p, i) => p._id === immediate[i]?._id);
+        return same ? prev : immediate;
+      });
+    }
 
     if(!exp.length) return () => { cancelled = true; };
 
@@ -1890,9 +2054,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   useEffect(()=>{if(resolved.length>0&&!latestId.current)latestId.current=resolved[0]._id;},[resolved]);
 
   const filtered=useMemo(()=>{
-    if(!searchQuery.trim())return resolved;
+    const visible = resolved.filter(p => p?._id && !isPostHidden(p));
+    if(!searchQuery.trim())return visible;
     const q=searchQuery.toLowerCase();
-    return resolved.filter(p=>(p.content||"").toLowerCase().includes(q)||(p.user?.fullName||"").toLowerCase().includes(q));
+    return visible.filter(p=>(p.content||"").toLowerCase().includes(q)||(p.user?.fullName||"").toLowerCase().includes(q));
   },[resolved,searchQuery]);
 
   const isLoading = postsLoading && resolved.length === 0 && livePostsRef.current.length === 0;
@@ -1906,7 +2071,19 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   },[]);
 
   const showToast     = useCallback((msg,type="info")=>{startTransition(()=>setToast({message:msg,type}));},[]);
-  const handleDeleted = useCallback((id)=>{startTransition(()=>removePost?.(id));},[removePost]);
+  const removePostEverywhere = useCallback((id) => {
+    if (!id) return;
+    livePostsRef.current = livePostsRef.current.filter(p => p._id !== id);
+    saveLivePool(livePostsRef.current);
+    setRawPool(prev => prev.filter(p => p._id !== id));
+    setResolved(prev => prev.filter(p => p._id !== id));
+    startTransition(() => {
+      removePost?.(id);
+      setLivePostsVer(v => v + 1);
+      setResetSig(k => k + 1);
+    });
+  }, [removePost]);
+  const handleDeleted = useCallback((id)=>{removePostEverywhere(id);},[removePostEverywhere]);
   const triggerReset  = useCallback(()=>{startTransition(()=>setResetSig(k=>k+1));},[]);
 
   // ✅ FIX 1 + FIX 3 — handleViewerNavigate

@@ -415,6 +415,7 @@ export default function AdminDashboard() {
   
   const [users,           setUsers]           = useState([]);
   const [reportedUsers,   setReportedUsers]   = useState([]);
+  const [feedbackSummary, setFeedbackSummary] = useState({ totalFeedbacks: 0, positive: 0, negative: 0, totalPostsWithFeedback: 0, recentFeedbacks: [] });
   const [loading,         setLoading]         = useState(true);
   const [searchQuery,     setSearchQuery]     = useState('');
   const [toasts,          setToasts]          = useState([]);
@@ -448,9 +449,24 @@ export default function AdminDashboard() {
     }
   }, [request, token]);
 
+  const loadFeedbackSummary = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await request('/admin/feedback-summary');
+      if (data.success && data.summary) {
+        setFeedbackSummary(data.summary);
+      }
+    } catch (err) {
+      console.warn('Impossible de charger le feedback admin:', err.message || err);
+    }
+  }, [request, token]);
+
   useEffect(() => {
-    if (token && user?.role === 'admin') loadUsers();
-  }, [token, user, loadUsers]);
+    if (token && ['admin', 'superadmin', 'moderator'].includes(user?.role)) {
+      loadUsers();
+      loadFeedbackSummary();
+    }
+  }, [token, user, loadUsers, loadFeedbackSummary]);
 
   const stats = useMemo(() => ({
     total:    users.length,
@@ -458,7 +474,8 @@ export default function AdminDashboard() {
     verified: users.filter(u => u.isVerified).length,
     banned:   users.filter(u => u.isBanned).length,
     reported: reportedUsers.length,
-  }), [users, reportedUsers]);
+    feedback: feedbackSummary.totalFeedbacks,
+  }), [users, reportedUsers, feedbackSummary]);
 
   const handleUserAction = useCallback(async (action, targetUser) => {
     if (action === 'notify') { setNotificationModal({ show: true, targetUser }); return; }
@@ -520,7 +537,7 @@ export default function AdminDashboard() {
       <div className="bg-white p-4 sticky top-0 z-40 border-b shadow-sm">
         <div className="flex justify-between items-center mb-4 max-w-4xl mx-auto">
           <h1 className="text-xl font-black text-blue-600">ADMIN DASHBOARD</h1>
-          <button onClick={loadUsers} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
+          <button onClick={() => { loadUsers(); loadFeedbackSummary(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
             <RotateCw size={18}/>
           </button>
         </div>
@@ -541,11 +558,43 @@ export default function AdminDashboard() {
       </div>
 
       {/* STATS */}
-      <div className="grid grid-cols-2 gap-3 p-4 max-w-4xl mx-auto">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4 max-w-4xl mx-auto">
         <div className="bg-blue-600   p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Membres</p><p className="text-3xl font-black">{stats.total}</p></div>
         <div className="bg-orange-500 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Élite</p><p className="text-3xl font-black">{stats.premium}</p></div>
         <div className="bg-green-600  p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Vérifiés</p><p className="text-3xl font-black">{stats.verified}</p></div>
         <div className="bg-red-600    p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Signalés</p><p className="text-3xl font-black">{stats.reported}</p></div>
+        <div className="bg-sky-600   p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Feedbacks</p><p className="text-3xl font-black">{stats.feedback}</p></div>
+      </div>
+
+      <div className="max-w-4xl mx-auto px-4 mb-6">
+        <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm uppercase font-black text-gray-500">Feedbacks récents</p>
+              <p className="text-xs text-gray-400">Derniers retours utilisateur enregistrés sur les posts.</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs font-black text-gray-500">Posts touchés</p>
+              <p className="text-lg font-black text-gray-900">{feedbackSummary.totalPostsWithFeedback}</p>
+            </div>
+          </div>
+          <div className="p-4 space-y-3">
+            {feedbackSummary.recentFeedbacks.length === 0 ? (
+              <div className="text-sm text-gray-500 py-6 text-center">Aucun feedback récent disponible.</div>
+            ) : (
+              feedbackSummary.recentFeedbacks.map((item, index) => (
+                <div key={`${item.postId}-${index}`} className="rounded-3xl bg-gray-50 p-4 border border-gray-100">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <span className="text-xs uppercase font-bold text-gray-500">{item.liked ? 'Positif' : 'Négatif'}</span>
+                    <span className="text-[10px] text-gray-400">{new Date(item.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}</span>
+                  </div>
+                  <p className="text-sm font-semibold text-gray-900 truncate">{item.postContent || 'Post sans texte'}</p>
+                  <p className="text-xs text-gray-500 mt-2">{item.reason ? `Raison : ${item.reason.replace(/_/g, ' ')}` : 'Sans raison détaillée'}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
 
       {/* TABS */}

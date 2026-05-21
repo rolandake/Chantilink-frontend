@@ -232,7 +232,20 @@ export function AuthProvider({ children }) {
 
   // ─── INJECT AXIOS ────────────────────────────────────────────────────────────
   useEffect(() => {
-    injectAuthHandlers({ getToken, logout, notify: addNotification });
+    const getLanguage = () => {
+      try {
+        if (user?.language) return user.language;
+        if (typeof window !== 'undefined') {
+          const l = window.localStorage?.getItem('cl_lang');
+          if (l) return l;
+          const nav = navigator?.language || navigator?.userLanguage || 'fr';
+          return String(nav).split('-')[0];
+        }
+      } catch (e) {}
+      return 'fr';
+    };
+
+    injectAuthHandlers({ getToken, logout, notify: addNotification, getLanguage });
   }, [getToken, logout, addNotification]);
 
   // ─── SOCKET ──────────────────────────────────────────────────────────────────

@@ -881,7 +881,12 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
     let cancelled = false;
 
     const initial = urls.map((url) => resolveSlotType(url, post?.mediaType));
-    setResolvedSlotTypes(initial);
+    setResolvedSlotTypes(prev => {
+      if (prev && prev.length === initial.length && prev.every((type, i) => type === initial[i])) {
+        return prev;
+      }
+      return initial;
+    });
 
     const suspects = initial
       .map((type, i) => ({ type, i, url: urls[i] }))
@@ -918,10 +923,11 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
 
   const validIndices = useMediaValidation(urls, slotTypes, post?.mediaType);
 
+  const optimisticIndices = useMemo(() => urls.map((_, i) => i), [urls]);
   const activeIndices = useMemo(() => {
-    if (!validIndices) return null;
-    return validIndices.filter(i => !failedSlots.has(i));
-  }, [validIndices, failedSlots]);
+    const base = validIndices?.length ? validIndices : optimisticIndices;
+    return base.filter(i => !failedSlots.has(i));
+  }, [validIndices, optimisticIndices, failedSlots]);
 
   const validUrls      = activeIndices ? activeIndices.map(i => urls[i])      : [];
   const validSlotTypes = activeIndices ? activeIndices.map(i => slotTypes[i]) : [];
@@ -957,7 +963,6 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
   }, [validUrls, validSlotTypes, validPosters, isLCPSlot, onRegisterVideoEl, showBadge, post, activeIndices, markSlotFailed, openLightbox]); // eslint-disable-line
 
   if (!total) return null;
-  if (activeIndices === null) return <MediaPlaceholder total={total} />;
 
   if (validTotal === 0) {
     const content = post?.content || post?.contenu || "";

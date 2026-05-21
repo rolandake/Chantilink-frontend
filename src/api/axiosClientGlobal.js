@@ -47,13 +47,14 @@ export const injectAuthHandlers = (handlers) => {
 };
 
 // ============================================
-// INTERCEPTEUR REQUEST — ajout du token Bearer
+// INTERCEPTEUR REQUEST — ajout du token Bearer + Accept-Language
 // ============================================
 axiosClient.interceptors.request.use(
   async (config) => {
     const publicRoutes = ["/auth/login", "/auth/register", "/auth/refresh", "/health"];
     const isPublic = publicRoutes.some((r) => config.url?.includes(r));
 
+    // --- Token Bearer (existant) --------------------------------
     if (!isPublic) {
       if (authHandlers?.getToken) {
         const token = await authHandlers.getToken();
@@ -62,6 +63,22 @@ axiosClient.interceptors.request.use(
         const token = localStorage.getItem("token");
         if (token) config.headers.Authorization = `Bearer ${token}`;
       }
+    }
+
+    // --- Langue client envoyée au backend -------------------------
+    try {
+      let lang = null;
+      // Priorité : handler fourni par l'app (Auth/Language contexts)
+      if (authHandlers?.getLanguage) {
+        try { lang = await authHandlers.getLanguage(); } catch {}
+      }
+      // Fallback : localStorage (clé i18n existante) -> navigateur -> 'fr'
+      if (!lang && typeof window !== "undefined") {
+        lang = window.localStorage?.getItem("cl_lang") || (navigator?.language || navigator?.userLanguage || "fr").split("-")[0];
+      }
+      if (lang) config.headers["Accept-Language"] = lang;
+    } catch (e) {
+      // ne pas bloquer la requête si erreur
     }
 
     return config;

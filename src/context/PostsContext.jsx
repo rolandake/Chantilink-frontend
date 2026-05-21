@@ -21,6 +21,7 @@ import React, {
 import { useAuth }     from "./AuthContext";
 import { idbGetPosts, idbSetPosts } from "../utils/idbMigration";
 import { syncNewPost, syncDeletePost, syncUpdatePost } from "../utils/cacheSync";
+import { isPostHidden } from "../utils/postNotificationPreferences";
 
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api");
 
@@ -55,7 +56,7 @@ function hasBlockedExternalVideoUrl(post) {
 
 function filterBlockedPosts(posts) {
   const before   = posts.length;
-  const filtered = posts.filter(p => !hasBlockedExternalVideoUrl(p));
+  const filtered = posts.filter(p => !hasBlockedExternalVideoUrl(p) && !isPostHidden(p));
   const removed  = before - filtered.length;
   if (removed > 0) console.log(`🧹 [PostsContext] ${removed} post(s) masqués (URLs bloquées)`);
   return filtered;
@@ -127,6 +128,7 @@ export const PostsProvider = ({ children }) => {
   const sessionLoadDone = useRef(
     typeof sessionStorage !== "undefined" && !!sessionStorage.getItem(SESSION_LOAD_KEY)
   );
+  const cacheHydratedRef = useRef(false);
   const didInitialFetchRef = useRef(false);
 
   // Nettoyer la clé sessionStorage quand le token change (nouveau login)
@@ -135,6 +137,7 @@ export const PostsProvider = ({ children }) => {
     if (token && token !== prevTokenRef.current) {
       try { sessionStorage.removeItem(SESSION_LOAD_KEY); } catch {}
       sessionLoadDone.current = false;
+      cacheHydratedRef.current = false;
       didInitialFetchRef.current = false;
     }
     prevTokenRef.current = token;
@@ -475,7 +478,9 @@ export const PostsProvider = ({ children }) => {
   // ============================================
   useEffect(() => {
     if (!user) return;
-    if (sessionLoadDone.current) return;
+    if (cacheHydratedRef.current) return;
+    const shouldFetchNetwork = !sessionLoadDone.current;
+    cacheHydratedRef.current = true;
     sessionLoadDone.current = true;
 
     try { sessionStorage.setItem(SESSION_LOAD_KEY, "1"); } catch {}
@@ -493,7 +498,7 @@ export const PostsProvider = ({ children }) => {
           setLoading(true);
         }
 
-        if (navigator.onLine && tokenRef.current) {
+        if (shouldFetchNetwork && navigator.onLine && tokenRef.current) {
           didInitialFetchRef.current = true;
           await fetchPosts(1, false);
         } else {
