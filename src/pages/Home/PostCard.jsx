@@ -23,7 +23,7 @@ import { Elements, CardElement, useElements, useStripe } from "@stripe/react-str
 import {
   TrashIcon, HeartIcon, ChatBubbleLeftIcon, ShareIcon, BookmarkIcon, EllipsisHorizontalIcon,
   XMarkIcon, EyeSlashIcon, ExclamationTriangleIcon, PlusCircleIcon, MinusCircleIcon,
-  BellIcon, InformationCircleIcon, CodeBracketIcon, LinkIcon, NoSymbolIcon, ArrowLeftIcon,
+  BellIcon, InformationCircleIcon, CodeBracketIcon, LinkIcon, NoSymbolIcon, ArrowLeftIcon, EyeIcon,
 } from "@heroicons/react/24/outline";
 import {
   HeartIcon as HeartSolid, CheckBadgeIcon, RocketLaunchIcon, BookmarkIcon as BookmarkSolid
@@ -55,6 +55,30 @@ const BOOST_PLANS = [
 ];
 
 const SAVED_POSTS_KEY = "chantilink_saved_posts_v1";
+const VIEWED_POSTS_SESSION_KEY = "chantilink_viewed_posts_session_v1";
+const VIEWED_POSTS_SESSION = new Set();
+
+const getPostViewsCount = (post) => {
+  const raw = Array.isArray(post?.views) ? post.views.length : (post?.viewsCount ?? post?.views ?? 0);
+  return Number.isFinite(Number(raw)) ? Number(raw) : 0;
+};
+
+const getSessionViewedPosts = () => {
+  if (typeof window === "undefined") return VIEWED_POSTS_SESSION;
+  if (VIEWED_POSTS_SESSION.size) return VIEWED_POSTS_SESSION;
+  try {
+    const parsed = JSON.parse(window.sessionStorage?.getItem(VIEWED_POSTS_SESSION_KEY) || "[]");
+    if (Array.isArray(parsed)) parsed.forEach((id) => VIEWED_POSTS_SESSION.add(String(id)));
+  } catch {}
+  return VIEWED_POSTS_SESSION;
+};
+
+const markSessionViewedPost = (postId) => {
+  if (!postId || typeof window === "undefined") return;
+  const viewed = getSessionViewedPosts();
+  viewed.add(String(postId));
+  try { window.sessionStorage?.setItem(VIEWED_POSTS_SESSION_KEY, JSON.stringify([...viewed].slice(-1000))); } catch {}
+};
 
 const getSavedPostIds = () => {
   if (typeof window === "undefined") return new Set();
@@ -687,7 +711,7 @@ GlobalModalManager.displayName = "GlobalModalManager";
 // ─────────────────────────────────────────────────────────────────────────────
 // ActionsBar
 // ─────────────────────────────────────────────────────────────────────────────
-const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, isDarkMode, onLike, onOpenComments, onOpenShare, onSave }) => (
+const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, viewsCount, isDarkMode, onLike, onOpenComments, onOpenShare, onSave }) => (
   <div className="flex items-center justify-between px-3 py-2">
     <div className="flex items-center gap-4">
       <button onClick={onLike} className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-orange-500 transition-colors">
@@ -705,6 +729,10 @@ const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, isDarkMode, 
         <ShareIcon className={`w-5 h-5 ${isDarkMode ? "text-gray-300" : "text-gray-700"}`} />
         <span>Partager</span>
       </button>
+      <div className={`flex items-center gap-2 text-sm font-semibold ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
+        <EyeIcon className="w-5 h-5" />
+        <span>{viewsCount || 0}</span>
+      </div>
     </div>
     <button onClick={onSave} className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-orange-500 transition-colors">
       {saved
@@ -1177,6 +1205,7 @@ const PostCardInner = forwardRef(({
   );
   const [likesCount,    setLikesCount]    = useState(() => Array.isArray(post.likes) ? post.likes.length : (post.likesCount || 0));
   const [commentsCount, setCommentsCount] = useState(() => Array.isArray(post.comments) ? post.comments.length : (post.commentsCount || 0));
+  const [viewsCount,    setViewsCount]    = useState(() => getPostViewsCount(post));
   const [comments,      setComments]      = useState(() => Array.isArray(post.comments) ? post.comments : []);
   const [saved,         setSaved]         = useState(() => getSavedPostIds().has(String(post._id)));
   const [showCommentsModal, setShowCommentsModal] = useState(false);
@@ -1212,6 +1241,7 @@ const PostCardInner = forwardRef(({
   }, []);
 
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
+  useEffect(() => { setViewsCount(getPostViewsCount(post)); }, [post._id, post.viewsCount, post.views]);
   useEffect(() => { if (post.isBoosted) setBoostedLocal(true); }, [post.isBoosted]);
   useEffect(() => {
     setHiddenLocal(isPostHidden(post));
@@ -1433,6 +1463,59 @@ const PostCardInner = forwardRef(({
     return arr.some(m => { const url = typeof m === "string" ? m : m?.url; return url && isVideoUrl(url); });
   }, [isVideoMediaType, embedUrl, videoUrl, post.media]);
 
+  useEffect(() => {
+    const el = cardRef.current;
+    const postId = post?._id;
+    if (!el || !postId || isMockPost || isOptimistic || isTempPost || !currentUser) return;
+    if (String(postId).startsWith("temp_") || String(postId).startsWith("post_")) return;
+
+    let timer = null;
+    let enteredAt = 0;
+    let cancelled = false;
+
+    const sendView = async (visibleMs = 0) => {
+      if (cancelled) return;
+      const viewed = getSessionViewedPosts();
+      if (viewed.has(String(postId))) return;
+      markSessionViewedPost(postId);
+      try {
+        const { data } = await axiosClient.post(`/posts/${postId}/view`, {
+          source: "post_card",
+          watchPct: hasVideoMedia ? 55 : 100,
+          watchTime: Math.max(1, Math.round(visibleMs / 1000)),
+        });
+        if (typeof data?.viewsCount === "number") setViewsCount(data.viewsCount);
+        window.dispatchEvent(new CustomEvent("feed:interaction", {
+          detail: { action: "view", post, position: post._displayPosition ?? 0, counted: !!data?.counted },
+        }));
+      } catch {
+        const viewedNow = getSessionViewedPosts();
+        viewedNow.delete(String(postId));
+        try { window.sessionStorage?.setItem(VIEWED_POSTS_SESSION_KEY, JSON.stringify([...viewedNow])); } catch {}
+      }
+    };
+
+    const obs = new IntersectionObserver(([entry]) => {
+      const visible = entry.isIntersecting && entry.intersectionRatio >= 0.55;
+      if (visible) {
+        enteredAt = Date.now();
+        clearTimeout(timer);
+        timer = setTimeout(() => sendView(Date.now() - enteredAt), hasVideoMedia ? 1800 : 1000);
+      } else {
+        clearTimeout(timer);
+        timer = null;
+        enteredAt = 0;
+      }
+    }, { threshold: [0, 0.25, 0.55, 0.75] });
+
+    obs.observe(el);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      obs.disconnect();
+    };
+  }, [post?._id, currentUser?._id, isMockPost, isOptimistic, isTempPost, hasVideoMedia]);
+
   const TEXT_CARD_THRESHOLD = 120;
   const hasRawMedia    = !!(embedUrl || videoUrl || imagesLen > 0 || mediaLen > 0 || post.thumbnail);
   const trimmedContent = content.trim();
@@ -1562,7 +1645,7 @@ const PostCardInner = forwardRef(({
         )}
 
         <ActionsBar
-          liked={liked} likesCount={likesCount} saved={saved} commentsCount={commentsCount}
+          liked={liked} likesCount={likesCount} saved={saved} commentsCount={commentsCount} viewsCount={viewsCount}
           isDarkMode={isDarkMode} onLike={handleLike}
           onOpenComments={handleOpenComments} onOpenShare={handleOpenShare} onSave={handleSave}
         />

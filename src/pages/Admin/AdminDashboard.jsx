@@ -71,6 +71,11 @@ const ClickableAvatar = memo(({ user, size = 48, navigate }) => {
 });
 ClickableAvatar.displayName = 'ClickableAvatar';
 
+const getFollowersCount = (user) => {
+  const raw = user?.followersCount ?? user?.followers?.length ?? 0;
+  return Number.isFinite(Number(raw)) ? Number(raw) : 0;
+};
+
 // ==========================================
 // 🚨 REPORTED USER CARD
 // ==========================================
@@ -78,6 +83,7 @@ const ReportedUserCard = memo(({ user, onAction, onViewReports, navigate }) => {
   const reportCount = user.moderation?.reportCount || 0;
   const strikes     = user.moderation?.strikes || 0;
   const riskLevel   = user.moderation?.riskLevel || 'low';
+  const followersCount = getFollowersCount(user);
   
   const riskColors = {
     low:      'bg-green-100 text-green-700 border-green-200',
@@ -119,7 +125,11 @@ const ReportedUserCard = memo(({ user, onAction, onViewReports, navigate }) => {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mt-3">
+      <div className="grid grid-cols-4 gap-2 mt-3">
+        <div className="bg-blue-50 p-2 rounded-lg border border-blue-100 text-center">
+          <p className="text-xs font-bold text-blue-600">{followersCount.toLocaleString('fr-FR')}</p>
+          <p className="text-[9px] text-blue-500 uppercase">Abonnés</p>
+        </div>
         <div className="bg-red-50 p-2 rounded-lg border border-red-100 text-center">
           <p className="text-xs font-bold text-red-600">{reportCount}</p>
           <p className="text-[9px] text-red-500 uppercase">Signalements</p>
@@ -281,6 +291,93 @@ const ReportsModal = memo(({ user, onClose, request }) => {
 });
 ReportsModal.displayName = 'ReportsModal';
 
+const actionLabels = {
+  post_create: 'Création',
+  post_update: 'Modification',
+  post_delete: 'Suppression',
+  view: 'Vue',
+  like: 'Like',
+  unlike: 'Unlike',
+  comment: 'Commentaire',
+  reply: 'Réponse',
+  comment_like: 'Like commentaire',
+  comment_unlike: 'Unlike commentaire',
+  share: 'Partage',
+  feedback: 'Feedback',
+};
+
+const ContentActionsPanel = memo(({ actions = [], summary = {} }) => (
+  <div className="w-full">
+    <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
+      <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
+        <div>
+          <p className="text-sm uppercase font-black text-gray-500">Traçabilité contenu</p>
+          <p className="text-xs text-gray-400">Vues, likes, commentaires, partages et modifications enregistrés côté serveur.</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs font-black text-gray-500">Actions</p>
+          <p className="text-lg font-black text-gray-900">{summary.total || 0}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-2 p-4 bg-gray-50 border-b">
+        {['view', 'like', 'comment', 'share', 'feedback', 'post_create'].map((key) => (
+          <div key={key} className="bg-white rounded-2xl border border-gray-100 p-3 text-center">
+            <p className="text-sm font-black text-gray-900">{summary[key] || 0}</p>
+            <p className="text-[9px] font-bold text-gray-400 uppercase truncate">{actionLabels[key]}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-3">
+        {actions.length === 0 ? (
+          <div className="text-sm text-gray-500 py-6 text-center">Aucune action de contenu enregistrée.</div>
+        ) : (
+          actions.slice(0, 15).map((item) => {
+            const actorName = item.actor?.fullName || item.actor?.username || item.actorSnapshot?.fullName || 'Utilisateur';
+            const ownerName = item.targetUser?.fullName || item.targetUser?.username || 'Créateur';
+            const postText = item.post?.content || item.metadata?.contentPreview || 'Publication';
+            return (
+              <div key={item._id} className="rounded-3xl bg-gray-50 p-4 border border-gray-100">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs uppercase font-black text-blue-600">{actionLabels[item.action] || item.action}</p>
+                    <p className="text-sm font-bold text-gray-900 truncate mt-1">{actorName} → {ownerName}</p>
+                    <p className="text-xs text-gray-500 truncate mt-1">{postText}</p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="text-[10px] font-bold text-gray-400">
+                      {new Date(item.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                    <p className="text-[10px] text-gray-400 mt-1">{item.request?.region || 'GLOBAL'}</p>
+                  </div>
+                </div>
+                {item.action === 'view' && (
+                  <div className="grid grid-cols-3 gap-2 mt-3">
+                    <div className="bg-white rounded-xl p-2 border text-center">
+                      <p className="text-xs font-black text-gray-700">{item.metadata?.counted ? 'Oui' : 'Non'}</p>
+                      <p className="text-[9px] text-gray-400 uppercase">Comptée</p>
+                    </div>
+                    <div className="bg-white rounded-xl p-2 border text-center">
+                      <p className="text-xs font-black text-gray-700">{Math.round(item.metadata?.watchPct || 0)}%</p>
+                      <p className="text-[9px] text-gray-400 uppercase">Visionné</p>
+                    </div>
+                    <div className="bg-white rounded-xl p-2 border text-center">
+                      <p className="text-xs font-black text-gray-700">{Math.round(item.metadata?.watchTime || 0)}s</p>
+                      <p className="text-[9px] text-gray-400 uppercase">Temps</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  </div>
+));
+ContentActionsPanel.displayName = 'ContentActionsPanel';
+
 // ==========================================
 // 👤 USER CARD
 // ==========================================
@@ -288,6 +385,7 @@ const UserCard = memo(({ user, onAction, navigate }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
   const isOnline = user.isOnline || false;
+  const followersCount = getFollowersCount(user);
   const dateInscription = new Date(user.createdAt).toLocaleDateString('fr-FR', {
     day: 'numeric', month: 'short', year: 'numeric'
   });
@@ -298,9 +396,9 @@ const UserCard = memo(({ user, onAction, navigate }) => {
   };
 
   return (
-    <div className={`transition-all border-b border-gray-100 ${isExpanded ? 'bg-blue-50/40' : 'bg-white'}`}>
+    <div className={`transition-all border-b border-gray-100 ${isExpanded ? 'bg-blue-50/40' : 'bg-white hover:bg-slate-50'}`}>
       <div className="p-4">
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
             {/* ✅ Avatar cliquable */}
             <div className="relative">
@@ -320,6 +418,12 @@ const UserCard = memo(({ user, onAction, navigate }) => {
                 {user.role === 'admin' && <Shield size={12} className="text-red-500 flex-shrink-0" />}
               </button>
               <p className="text-[11px] text-gray-400 truncate">{user.email}</p>
+              <button
+                onClick={goToProfile}
+                className="mt-1 inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-[10px] font-black text-blue-600 hover:bg-blue-100"
+              >
+                Voir le profil
+              </button>
               <div className="flex items-center gap-1.5 mt-1">
                 <Clock size={10} className={isOnline ? 'text-green-600' : 'text-gray-400'} />
                 <span className={`text-[9px] font-black uppercase ${isOnline ? 'text-green-600' : 'text-gray-400'}`}>
@@ -329,14 +433,21 @@ const UserCard = memo(({ user, onAction, navigate }) => {
             </div>
           </div>
 
-          <div className="flex flex-col items-end gap-1">
+          <div className="flex flex-col items-end gap-1 flex-shrink-0">
             {user.isBanned   && <span className="px-2 py-0.5 text-[8px] font-black rounded bg-red-600 text-white uppercase">Banni</span>}
             {user.isPremium  && <span className="px-2 py-0.5 text-[8px] font-black rounded bg-orange-500 text-white uppercase">Élite</span>}
             {user.isVerified && <span className="px-2 py-0.5 text-[8px] font-black rounded bg-blue-600 text-white uppercase">Certifié</span>}
+            <span className="px-2 py-0.5 text-[8px] font-black rounded bg-slate-100 text-slate-700 uppercase">
+              {followersCount.toLocaleString('fr-FR')} abonnés
+            </span>
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 mt-4 text-center">
+        <div className="grid grid-cols-4 gap-2 mt-4 text-center">
+          <div className="bg-blue-50 p-2 rounded-xl border border-blue-100">
+            <p className="text-[8px] font-bold text-blue-500 uppercase">Abonnés</p>
+            <p className="text-xs font-black text-blue-700">{followersCount.toLocaleString('fr-FR')}</p>
+          </div>
           <div className="bg-gray-50 p-2 rounded-xl border border-gray-100">
             <p className="text-[8px] font-bold text-gray-400 uppercase">Amis</p>
             <p className="text-xs font-black text-gray-700">{user.friends?.length || 0}</p>
@@ -375,6 +486,10 @@ const UserCard = memo(({ user, onAction, navigate }) => {
               <div className="flex justify-between border-b border-gray-50 pb-1">
                 <span className="text-gray-400">Inscrit</span>
                 <span className="font-bold text-gray-700">{dateInscription}</span>
+              </div>
+              <div className="flex justify-between border-b border-gray-50 pb-1">
+                <span className="text-gray-400">Abonnés</span>
+                <span className="font-bold text-gray-700">{followersCount.toLocaleString('fr-FR')}</span>
               </div>
               <div className="flex justify-between border-b border-gray-50 pb-1">
                 <span className="text-gray-400">Email</span>
@@ -416,6 +531,7 @@ export default function AdminDashboard() {
   const [users,           setUsers]           = useState([]);
   const [reportedUsers,   setReportedUsers]   = useState([]);
   const [feedbackSummary, setFeedbackSummary] = useState({ totalFeedbacks: 0, positive: 0, negative: 0, totalPostsWithFeedback: 0, recentFeedbacks: [] });
+  const [contentActions,  setContentActions]  = useState({ summary: { total: 0 }, actions: [] });
   const [loading,         setLoading]         = useState(true);
   const [searchQuery,     setSearchQuery]     = useState('');
   const [toasts,          setToasts]          = useState([]);
@@ -461,12 +577,25 @@ export default function AdminDashboard() {
     }
   }, [request, token]);
 
+  const loadContentActions = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await request('/admin/content-actions?limit=30');
+      if (data.success) {
+        setContentActions({ summary: data.summary || { total: 0 }, actions: data.actions || [] });
+      }
+    } catch (err) {
+      console.warn('Impossible de charger la traçabilité contenu:', err.message || err);
+    }
+  }, [request, token]);
+
   useEffect(() => {
     if (token && ['admin', 'superadmin', 'moderator'].includes(user?.role)) {
       loadUsers();
       loadFeedbackSummary();
+      loadContentActions();
     }
-  }, [token, user, loadUsers, loadFeedbackSummary]);
+  }, [token, user, loadUsers, loadFeedbackSummary, loadContentActions]);
 
   const stats = useMemo(() => ({
     total:    users.length,
@@ -475,7 +604,9 @@ export default function AdminDashboard() {
     banned:   users.filter(u => u.isBanned).length,
     reported: reportedUsers.length,
     feedback: feedbackSummary.totalFeedbacks,
-  }), [users, reportedUsers, feedbackSummary]);
+    actions:  contentActions.summary?.total || 0,
+    followers: users.reduce((sum, u) => sum + getFollowersCount(u), 0),
+  }), [users, reportedUsers, feedbackSummary, contentActions]);
 
   const handleUserAction = useCallback(async (action, targetUser) => {
     if (action === 'notify') { setNotificationModal({ show: true, targetUser }); return; }
@@ -534,14 +665,17 @@ export default function AdminDashboard() {
       </div>
 
       {/* HEADER */}
-      <div className="bg-white p-4 sticky top-0 z-40 border-b shadow-sm">
-        <div className="flex justify-between items-center mb-4 max-w-4xl mx-auto">
-          <h1 className="text-xl font-black text-blue-600">ADMIN DASHBOARD</h1>
-          <button onClick={() => { loadUsers(); loadFeedbackSummary(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
+      <div className="bg-white/95 backdrop-blur-xl p-4 sticky top-0 z-40 border-b shadow-sm">
+        <div className="flex justify-between items-center mb-4 max-w-[1600px] mx-auto">
+          <div>
+            <h1 className="text-xl md:text-2xl font-black text-blue-600">ADMIN DASHBOARD</h1>
+            <p className="text-xs text-gray-400 font-semibold">Utilisateurs, contenu, signalements et traçabilité en temps réel</p>
+          </div>
+          <button onClick={() => { loadUsers(); loadFeedbackSummary(); loadContentActions(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
             <RotateCw size={18}/>
           </button>
         </div>
-        <div className="flex gap-2 max-w-4xl mx-auto">
+        <div className="flex gap-2 max-w-[1600px] mx-auto">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
             <input 
@@ -558,15 +692,21 @@ export default function AdminDashboard() {
       </div>
 
       {/* STATS */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4 max-w-4xl mx-auto">
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 p-4 max-w-[1600px] mx-auto">
         <div className="bg-blue-600   p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Membres</p><p className="text-3xl font-black">{stats.total}</p></div>
+        <div className="bg-indigo-600 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Abonnés</p><p className="text-3xl font-black">{stats.followers.toLocaleString('fr-FR')}</p></div>
         <div className="bg-orange-500 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Élite</p><p className="text-3xl font-black">{stats.premium}</p></div>
         <div className="bg-green-600  p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Vérifiés</p><p className="text-3xl font-black">{stats.verified}</p></div>
         <div className="bg-red-600    p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Signalés</p><p className="text-3xl font-black">{stats.reported}</p></div>
         <div className="bg-sky-600   p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Feedbacks</p><p className="text-3xl font-black">{stats.feedback}</p></div>
+        <div className="bg-slate-800 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Actions</p><p className="text-3xl font-black">{stats.actions}</p></div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-4 mb-6">
+      <div className="max-w-[1600px] mx-auto px-4 mb-6">
+        <ContentActionsPanel actions={contentActions.actions} summary={contentActions.summary} />
+      </div>
+
+      <div className="max-w-[1600px] mx-auto px-4 mb-6">
         <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
           <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
             <div>
@@ -598,7 +738,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* TABS */}
-      <div className="max-w-4xl mx-auto px-4 mb-4">
+      <div className="max-w-[1600px] mx-auto px-4 mb-4">
         <div className="bg-white rounded-2xl p-2 flex gap-2 shadow-sm border">
           <button
             onClick={() => setActiveTab('all')}
@@ -616,7 +756,7 @@ export default function AdminDashboard() {
       </div>
 
       {/* LISTE */}
-      <div className="max-w-4xl mx-auto px-4 mt-2">
+      <div className="max-w-[1600px] mx-auto px-4 mt-2">
         <div className="bg-white rounded-[32px] shadow-sm border overflow-hidden">
           <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
             <span className="text-[10px] font-black text-gray-500 uppercase">
@@ -630,20 +770,28 @@ export default function AdminDashboard() {
           ) : activeTab === 'all' ? (
             filteredUsers.length === 0
               ? <div className="p-20 text-center text-gray-400 font-bold">Aucun résultat</div>
-              : filteredUsers.map(u => (
-                  <UserCard key={u._id} user={u} onAction={handleUserAction} navigate={navigate} />
-                ))
+              : (
+                <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3">
+                  {filteredUsers.map(u => (
+                    <UserCard key={u._id} user={u} onAction={handleUserAction} navigate={navigate} />
+                  ))}
+                </div>
+              )
           ) : (
             filteredReportedUsers.length === 0
               ? <div className="p-20 text-center text-gray-400 font-bold"><Flag size={48} className="mx-auto mb-4 opacity-50" />Aucun utilisateur signalé</div>
-              : filteredReportedUsers.map(u => (
-                  <ReportedUserCard 
-                    key={u._id} user={u} 
-                    onAction={handleUserAction}
-                    onViewReports={(user) => setReportsModal({ show: true, user })}
-                    navigate={navigate}
-                  />
-                ))
+              : (
+                <div className="grid grid-cols-1 xl:grid-cols-2">
+                  {filteredReportedUsers.map(u => (
+                    <ReportedUserCard 
+                      key={u._id} user={u} 
+                      onAction={handleUserAction}
+                      onViewReports={(user) => setReportsModal({ show: true, user })}
+                      navigate={navigate}
+                    />
+                  ))}
+                </div>
+              )
           )}
         </div>
       </div>

@@ -726,7 +726,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
 
             {/* Barre d'actions */}
             <div
-              className={`flex items-center justify-between pt-2 border-t ${isDarkMode ? "border-white/[0.05]" : "border-gray-100"}`}
+              className={`sticky bottom-0 -mx-4 flex items-center justify-between border-t px-4 py-3 ${isDarkMode ? "border-white/[0.05] bg-neutral-950/95" : "border-gray-100 bg-white/95"} backdrop-blur`}
               style={{ borderTopWidth: "0.5px" }}
             >
               <div className="flex items-center gap-1.5">

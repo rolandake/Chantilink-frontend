@@ -400,7 +400,12 @@ export default function ProfilePage({
   // ── Sync authUser -> profileUser quand owner ───────────────────────────────
   useEffect(() => {
     if (!isOwner || !authUser) return;
+    const uid = authUser._id || authUser.id;
+    if (uid) requestCache.current.delete(String(uid));
     setProfileUser(prev => ({ ...(prev || {}), ...authUser }));
+    if (!isMockProfile && uid && isValidObjectId(uid)) {
+      idbSetUser(uid, authUser).catch(err => console.warn("IDB User Save Error", err));
+    }
   }, [
     isOwner,
     authUser?._id,
@@ -411,6 +416,7 @@ export default function ProfilePage({
     authUser?.bio,
     authUser?.location,
     authUser?.website,
+    isMockProfile,
   ]);
 
   // ── Helper : headers Authorization Bearer ─────────────────────────────────
@@ -520,6 +526,17 @@ export default function ProfilePage({
     if (isMockProfile || !user?._id || !isValidObjectId(user._id)) return;
     try { await idbSetUser(user._id, user); } catch (err) { console.warn("IDB User Save Error", err); }
   }, [isMockProfile]);
+
+  const handleProfileUserUpdated = useCallback((updatedUser) => {
+    if (!updatedUser) return;
+    const updatedId = updatedUser._id || updatedUser.id || profileUser?._id;
+    if (!updatedId) return;
+    requestCache.current.delete(String(updatedId));
+    startTransition(() => {
+      setProfileUser(prev => ({ ...(prev || {}), ...updatedUser, _id: updatedId }));
+    });
+    saveUser({ ...(profileUser || {}), ...updatedUser, _id: updatedId });
+  }, [profileUser, saveUser]);
 
   // ── Post lifecycle ─────────────────────────────────────────────────────────
   const handlePostCreated = useCallback(async (newPost) => {
@@ -1044,6 +1061,7 @@ export default function ProfilePage({
             followers={profileUser.followers || []}
             following={profileUser.following || []}
             showToast={showLocalToast}
+            onUserUpdated={handleProfileUserUpdated}
           />
 
           <div style={{ padding: "0 16px", display: "flex", flexDirection: "column", gap: 16 }}>

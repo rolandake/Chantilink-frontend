@@ -1,6 +1,7 @@
 // src/pages/Profile/SettingsSection.jsx
 import React, { useState, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import MonetisationProgram from "./Monetisation/MonetisationProgram";
 import MonetisationDashboard from "./Monetisation/MonetisationDashboard";
 import CreateOffer from "./Monetisation/CreateOffer";
 import MyClients from "./Monetisation/MyClients";
@@ -14,6 +15,12 @@ const AdminDashboard = lazy(() => import('../Admin/AdminDashboard'));
 
 // ── ICÔNES SVG ────────────────────────────────────────────────────────────────
 const Icons = {
+  program: () => (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l7 3v5c0 4.5-2.9 8.3-7 10-4.1-1.7-7-5.5-7-10V6l7-3z" />
+      <path d="M9 12l2 2 4-5" />
+    </svg>
+  ),
   dashboard: () => (
     <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="7" height="7" rx="1.5" />
@@ -79,12 +86,13 @@ const LoadingSpinner = () => (
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 export default function SettingsSection({ user, showToast }) {
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [activeTab, setActiveTab] = useState("programme");
   const { isAdmin } = useAuth();
   const { isDarkMode } = useDarkMode();
   const userIsAdmin = isAdmin();
 
   const TABS = [
+    { id: "programme", label: "Programme",      IconComp: Icons.program  },
     { id: "dashboard", label: "Tableau de bord", IconComp: Icons.dashboard },
     { id: "create",    label: "Créer une offre",  IconComp: Icons.create   },
     { id: "clients",   label: "Mes clients",       IconComp: Icons.clients  },
@@ -96,6 +104,7 @@ export default function SettingsSection({ user, showToast }) {
 
   const renderContent = () => {
     switch (activeTab) {
+      case "programme": return <MonetisationProgram user={user} showToast={showToast} onNavigate={setActiveTab} />;
       case "dashboard": return <MonetisationDashboard />;
       case "create":    return <CreateOffer />;
       case "clients":   return <MyClients />;

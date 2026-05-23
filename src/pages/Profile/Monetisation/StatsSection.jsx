@@ -47,7 +47,7 @@ export default function StatsSection() {
   const { user, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
 
-  const [stats, setStats]     = useState({ totalRevenue:0, monthlyRevenue:0, salesCount:0, activeSubscribers:0 });
+  const [stats, setStats]     = useState({ totalRevenue:0, monthlyRevenue:0, salesCount:0, activeSubscribers:0, availableBalance:0, revenueBreakdown:{} });
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
 
@@ -92,6 +92,12 @@ export default function StatsSection() {
       color: '#ec4899',
     },
     {
+      label: 'Solde disponible',
+      value: `${Number(stats.availableBalance || 0).toLocaleString()} FCFA`,
+      icon: <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M20 7H4a2 2 0 00-2 2v8a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 3v4M8 3v4M7 14h.01M11 14h.01"/></svg>,
+      color: '#14b8a6',
+    },
+    {
       label: 'Ventes réalisées',
       value: stats.salesCount.toLocaleString(),
       icon: <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><path d="M3 6h18M16 10a4 4 0 01-8 0"/></svg>,
@@ -102,6 +108,24 @@ export default function StatsSection() {
       value: stats.activeSubscribers.toLocaleString(),
       icon: <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
       color: '#3b82f6',
+    },
+    {
+      label: 'Fonds créateur',
+      value: `${Number(stats.revenueBreakdown?.creatorFund || 0).toLocaleString()} FCFA`,
+      icon: <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l8 4-8 4-8-4 8-4z"/><path d="M4 11l8 4 8-4"/><path d="M4 15l8 4 8-4"/></svg>,
+      color: '#8b5cf6',
+    },
+    {
+      label: 'Partage publicitaire',
+      value: `${Number(stats.revenueBreakdown?.adShare || 0).toLocaleString()} FCFA`,
+      icon: <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 9h8M8 13h5"/></svg>,
+      color: '#0ea5e9',
+    },
+    {
+      label: 'Pourboires',
+      value: `${Number(stats.revenueBreakdown?.tips || 0).toLocaleString()} FCFA`,
+      icon: <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d="M12 21s-7-4.35-9.2-8.31C.73 8.96 2.88 5 7 5c2.09 0 3.3 1.02 5 3 1.7-1.98 2.91-3 5-3 4.12 0 6.27 3.96 4.2 7.69C19 16.65 12 21 12 21z"/></svg>,
+      color: '#ef4444',
     },
   ];
 

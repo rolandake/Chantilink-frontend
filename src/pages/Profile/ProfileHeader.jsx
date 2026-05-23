@@ -87,6 +87,16 @@ function bustCache(url) {
   return `${base}${sep}v=${Date.now()}`;
 }
 
+function withCacheVersion(url, version) {
+  if (!url || url.startsWith('blob:') || url.startsWith('data:')) return url;
+  if (!version) return url;
+  const raw = typeof version === 'number' ? version : Date.parse(version);
+  if (!Number.isFinite(raw)) return url;
+  const base = url.replace(/[?&]v=\d+/, '').replace(/[?&]t=\d+/, '');
+  const sep = base.includes('?') ? '&' : '?';
+  return `${base}${sep}v=${raw}`;
+}
+
 // ============================================
 // 🎨 MODAL FOLLOWERS/FOLLOWING
 // ============================================
@@ -298,7 +308,8 @@ export default function ProfileHeader({
   posts = [],
   followers = [],
   following = [],
-  showToast
+  showToast,
+  onUserUpdated
 }) {
   const { isDarkMode } = useDarkMode();
   const { updateUserProfile, getToken, user: authUser } = useAuth();
@@ -332,22 +343,20 @@ export default function ProfileHeader({
 
   // Recalcul dès que l'une des sources change
   useEffect(() => {
-    const url = localPhoto
-      || (isOwnProfile ? authUser?.profilePhoto : null)
-      || user?.profilePhoto
-      || '/default-avatar.png';
+    const sourceUrl = user?.profilePhoto || (isOwnProfile ? authUser?.profilePhoto : null);
+    const version = user?.profilePhotoUpdatedAt || user?.updatedAt || authUser?.updatedAt;
+    const url = localPhoto || withCacheVersion(sourceUrl, version) || '/default-avatar.png';
     debug('Photo', '🖼 resolvedProfilePhoto =', url);
     setResolvedProfilePhoto(url);
-  }, [localPhoto, isOwnProfile, authUser?.profilePhoto, user?.profilePhoto]);
+  }, [localPhoto, isOwnProfile, authUser?.profilePhoto, authUser?.updatedAt, user?.profilePhoto, user?.profilePhotoUpdatedAt, user?.updatedAt]);
 
   useEffect(() => {
-    const url = localCoverPhoto
-      || (isOwnProfile ? authUser?.coverPhoto : null)
-      || user?.coverPhoto
-      || '/default-cover.jpg';
+    const sourceUrl = user?.coverPhoto || (isOwnProfile ? authUser?.coverPhoto : null);
+    const version = user?.coverPhotoUpdatedAt || user?.updatedAt || authUser?.updatedAt;
+    const url = localCoverPhoto || withCacheVersion(sourceUrl, version) || '/default-cover.jpg';
     debug('Photo', '🖼 resolvedCoverPhoto =', url);
     setResolvedCoverPhoto(url);
-  }, [localCoverPhoto, isOwnProfile, authUser?.coverPhoto, user?.coverPhoto]);
+  }, [localCoverPhoto, isOwnProfile, authUser?.coverPhoto, authUser?.updatedAt, user?.coverPhoto, user?.coverPhotoUpdatedAt, user?.updatedAt]);
 
   // Reset local overrides quand on change d'utilisateur
   useEffect(() => {
@@ -538,6 +547,10 @@ export default function ProfileHeader({
         const freshUrl = serverUrl ? bustCache(serverUrl) : null;
         debug('Upload', '🔄 freshUrl avec cache-bust =', freshUrl);
         setLocalPhoto(freshUrl);
+        onUserUpdated?.({
+          ...response.data.user,
+          profilePhoto: serverUrl,
+        });
 
         // ✅ Sync le contexte Auth en arrière-plan.
         // updateUserProfile détecte que c'est une photo update et SKIP l'appel
@@ -611,6 +624,10 @@ export default function ProfileHeader({
         const freshUrl = serverUrl ? bustCache(serverUrl) : null;
         debug('Upload', '🔄 freshUrl cover avec cache-bust =', freshUrl);
         setLocalCoverPhoto(freshUrl);
+        onUserUpdated?.({
+          ...response.data.user,
+          coverPhoto: serverUrl,
+        });
 
         // Sync contexte Auth — skip PUT /:id automatiquement (photo update)
         updateUserProfile(user._id, {
@@ -644,12 +661,18 @@ export default function ProfileHeader({
     if (!user?._id) { showToast?.('Utilisateur introuvable', 'error'); return; }
     setSaving(true);
     try {
-      await updateUserProfile(user._id, {
+      const payload = {
         fullName: editData.fullName.trim(),
         username: editData.username.trim(),
         bio:      editData.bio.trim(),
         location: editData.location.trim(),
         website:  editData.website.trim(),
+      };
+      const updated = await updateUserProfile(user._id, payload);
+      onUserUpdated?.({
+        ...(updated?.user || updated || {}),
+        ...payload,
+        _id: user._id,
       });
       setIsEditingProfile(false);
       showToast?.('Profil mis à jour !', 'success');
