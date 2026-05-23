@@ -306,7 +306,9 @@ const actionLabels = {
   feedback: 'Feedback',
 };
 
-const ContentActionsPanel = memo(({ actions = [], summary = {} }) => (
+const ContentActionsPanel = memo(({ actions = [], summary = {} }) => {
+  const visibleActions = actions.filter((item) => item.action !== 'feedback');
+  return (
   <div className="w-full">
     <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
       <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
@@ -321,7 +323,7 @@ const ContentActionsPanel = memo(({ actions = [], summary = {} }) => (
       </div>
 
       <div className="grid grid-cols-3 md:grid-cols-6 gap-2 p-4 bg-gray-50 border-b">
-        {['view', 'like', 'comment', 'share', 'feedback', 'post_create'].map((key) => (
+        {['view', 'like', 'comment', 'share', 'post_create', 'post_update'].map((key) => (
           <div key={key} className="bg-white rounded-2xl border border-gray-100 p-3 text-center">
             <p className="text-sm font-black text-gray-900">{summary[key] || 0}</p>
             <p className="text-[9px] font-bold text-gray-400 uppercase truncate">{actionLabels[key]}</p>
@@ -330,10 +332,10 @@ const ContentActionsPanel = memo(({ actions = [], summary = {} }) => (
       </div>
 
       <div className="p-4 space-y-3">
-        {actions.length === 0 ? (
+        {visibleActions.length === 0 ? (
           <div className="text-sm text-gray-500 py-6 text-center">Aucune action de contenu enregistrée.</div>
         ) : (
-          actions.slice(0, 15).map((item) => {
+          visibleActions.slice(0, 15).map((item) => {
             const actorName = item.actor?.fullName || item.actor?.username || item.actorSnapshot?.fullName || 'Utilisateur';
             const ownerName = item.targetUser?.fullName || item.targetUser?.username || 'Créateur';
             const postText = item.post?.content || item.metadata?.contentPreview || 'Publication';
@@ -375,7 +377,8 @@ const ContentActionsPanel = memo(({ actions = [], summary = {} }) => (
       </div>
     </div>
   </div>
-));
+  );
+});
 ContentActionsPanel.displayName = 'ContentActionsPanel';
 
 // ==========================================
@@ -530,7 +533,6 @@ export default function AdminDashboard() {
   
   const [users,           setUsers]           = useState([]);
   const [reportedUsers,   setReportedUsers]   = useState([]);
-  const [feedbackSummary, setFeedbackSummary] = useState({ totalFeedbacks: 0, positive: 0, negative: 0, totalPostsWithFeedback: 0, recentFeedbacks: [] });
   const [contentActions,  setContentActions]  = useState({ summary: { total: 0 }, actions: [] });
   const [loading,         setLoading]         = useState(true);
   const [searchQuery,     setSearchQuery]     = useState('');
@@ -565,18 +567,6 @@ export default function AdminDashboard() {
     }
   }, [request, token]);
 
-  const loadFeedbackSummary = useCallback(async () => {
-    if (!token) return;
-    try {
-      const data = await request('/admin/feedback-summary');
-      if (data.success && data.summary) {
-        setFeedbackSummary(data.summary);
-      }
-    } catch (err) {
-      console.warn('Impossible de charger le feedback admin:', err.message || err);
-    }
-  }, [request, token]);
-
   const loadContentActions = useCallback(async () => {
     if (!token) return;
     try {
@@ -592,10 +582,9 @@ export default function AdminDashboard() {
   useEffect(() => {
     if (token && ['admin', 'superadmin', 'moderator'].includes(user?.role)) {
       loadUsers();
-      loadFeedbackSummary();
       loadContentActions();
     }
-  }, [token, user, loadUsers, loadFeedbackSummary, loadContentActions]);
+  }, [token, user, loadUsers, loadContentActions]);
 
   const stats = useMemo(() => ({
     total:    users.length,
@@ -603,10 +592,9 @@ export default function AdminDashboard() {
     verified: users.filter(u => u.isVerified).length,
     banned:   users.filter(u => u.isBanned).length,
     reported: reportedUsers.length,
-    feedback: feedbackSummary.totalFeedbacks,
     actions:  contentActions.summary?.total || 0,
     followers: users.reduce((sum, u) => sum + getFollowersCount(u), 0),
-  }), [users, reportedUsers, feedbackSummary, contentActions]);
+  }), [users, reportedUsers, contentActions]);
 
   const handleUserAction = useCallback(async (action, targetUser) => {
     if (action === 'notify') { setNotificationModal({ show: true, targetUser }); return; }
@@ -671,7 +659,7 @@ export default function AdminDashboard() {
             <h1 className="text-xl md:text-2xl font-black text-blue-600">ADMIN DASHBOARD</h1>
             <p className="text-xs text-gray-400 font-semibold">Utilisateurs, contenu, signalements et traçabilité en temps réel</p>
           </div>
-          <button onClick={() => { loadUsers(); loadFeedbackSummary(); loadContentActions(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
+          <button onClick={() => { loadUsers(); loadContentActions(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
             <RotateCw size={18}/>
           </button>
         </div>
@@ -692,49 +680,17 @@ export default function AdminDashboard() {
       </div>
 
       {/* STATS */}
-      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3 p-4 max-w-[1600px] mx-auto">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 p-4 max-w-[1600px] mx-auto">
         <div className="bg-blue-600   p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Membres</p><p className="text-3xl font-black">{stats.total}</p></div>
         <div className="bg-indigo-600 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Abonnés</p><p className="text-3xl font-black">{stats.followers.toLocaleString('fr-FR')}</p></div>
         <div className="bg-orange-500 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Élite</p><p className="text-3xl font-black">{stats.premium}</p></div>
         <div className="bg-green-600  p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Vérifiés</p><p className="text-3xl font-black">{stats.verified}</p></div>
         <div className="bg-red-600    p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Signalés</p><p className="text-3xl font-black">{stats.reported}</p></div>
-        <div className="bg-sky-600   p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Feedbacks</p><p className="text-3xl font-black">{stats.feedback}</p></div>
         <div className="bg-slate-800 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Actions</p><p className="text-3xl font-black">{stats.actions}</p></div>
       </div>
 
       <div className="max-w-[1600px] mx-auto px-4 mb-6">
         <ContentActionsPanel actions={contentActions.actions} summary={contentActions.summary} />
-      </div>
-
-      <div className="max-w-[1600px] mx-auto px-4 mb-6">
-        <div className="bg-white rounded-[32px] border border-gray-100 shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-4">
-            <div>
-              <p className="text-sm uppercase font-black text-gray-500">Feedbacks récents</p>
-              <p className="text-xs text-gray-400">Derniers retours utilisateur enregistrés sur les posts.</p>
-            </div>
-            <div className="text-right">
-              <p className="text-xs font-black text-gray-500">Posts touchés</p>
-              <p className="text-lg font-black text-gray-900">{feedbackSummary.totalPostsWithFeedback}</p>
-            </div>
-          </div>
-          <div className="p-4 space-y-3">
-            {feedbackSummary.recentFeedbacks.length === 0 ? (
-              <div className="text-sm text-gray-500 py-6 text-center">Aucun feedback récent disponible.</div>
-            ) : (
-              feedbackSummary.recentFeedbacks.map((item, index) => (
-                <div key={`${item.postId}-${index}`} className="rounded-3xl bg-gray-50 p-4 border border-gray-100">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <span className="text-xs uppercase font-bold text-gray-500">{item.liked ? 'Positif' : 'Négatif'}</span>
-                    <span className="text-[10px] text-gray-400">{new Date(item.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}</span>
-                  </div>
-                  <p className="text-sm font-semibold text-gray-900 truncate">{item.postContent || 'Post sans texte'}</p>
-                  <p className="text-xs text-gray-500 mt-2">{item.reason ? `Raison : ${item.reason.replace(/_/g, ' ')}` : 'Sans raison détaillée'}</p>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
       </div>
 
       {/* TABS */}

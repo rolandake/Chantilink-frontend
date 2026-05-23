@@ -30,6 +30,7 @@ import { Header }          from "./imports/importsComponents";
 import { useAuth }         from "./imports/importsContext";
 import { useStories }      from "./context/StoryContext";
 import { useDarkMode }     from "./context/DarkModeContext";
+import { useLanguage }     from "./context/LanguageContext";
 import { useMessagesData } from "./pages/Chat/hooks/useMessagesData";
 import { usePosts }        from "./context/PostsContext";
 import ProtectedAdminRoute from "./components/ProtectedAdminRoute";
@@ -261,6 +262,162 @@ const FloatingBackButton = memo(({ isDarkMode, onBack }) => {
   );
 });
 FloatingBackButton.displayName = "FloatingBackButton";
+
+const LANGUAGE_PROMPT_KEY = "chantilink_language_prompt_v1";
+const LANGUAGE_PROMPT_DELAY_MS = 45000;
+const LANGUAGE_PROMPT_MIN_NAV = 3;
+
+const getLanguagePromptUserId = (user) => user?._id || user?.id || user?.email || "anonymous";
+
+const SmartLanguagePrompt = memo(({ user, isDarkMode }) => {
+  const { language, supportedLanguages, changeLanguage, isChanging } = useLanguage();
+  const [open, setOpen] = useState(false);
+  const navCountRef = useRef(0);
+  const timerRef = useRef(null);
+  const dismissedRef = useRef(false);
+  const location = useLocation();
+
+  const userKey = getLanguagePromptUserId(user);
+
+  const hasPromptBeenDismissed = useCallback(() => {
+    if (!user) return true;
+    if (dismissedRef.current) return true;
+    try {
+      const stored = JSON.parse(localStorage.getItem(LANGUAGE_PROMPT_KEY) || "{}");
+      return stored?.userId === userKey && stored?.dismissed === true;
+    } catch {
+      return false;
+    }
+  }, [user, userKey]);
+
+  useEffect(() => {
+    if (!user) return;
+    dismissedRef.current = hasPromptBeenDismissed();
+    if (dismissedRef.current) {
+      setOpen(false);
+      return;
+    }
+
+    timerRef.current = setTimeout(() => {
+      if (!hasPromptBeenDismissed() && navCountRef.current >= LANGUAGE_PROMPT_MIN_NAV) setOpen(true);
+    }, LANGUAGE_PROMPT_DELAY_MS);
+
+    return () => clearTimeout(timerRef.current);
+  }, [hasPromptBeenDismissed, user]);
+
+  useEffect(() => {
+    if (!user || open || hasPromptBeenDismissed()) return;
+    navCountRef.current += 1;
+    if (navCountRef.current >= LANGUAGE_PROMPT_MIN_NAV && timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        if (!hasPromptBeenDismissed()) setOpen(true);
+      }, 1200);
+    }
+  }, [hasPromptBeenDismissed, location.pathname, user, open]);
+
+  const persistChoice = useCallback((langCode, dismissed = true) => {
+    dismissedRef.current = dismissed;
+    clearTimeout(timerRef.current);
+    try {
+      localStorage.setItem(LANGUAGE_PROMPT_KEY, JSON.stringify({
+        userId: userKey,
+        language: langCode,
+        dismissed,
+        at: Date.now(),
+      }));
+    } catch {}
+  }, [userKey]);
+
+  const selectLanguage = useCallback(async (langCode) => {
+    await changeLanguage(langCode, { sync: true });
+    persistChoice(langCode, true);
+    window.dispatchEvent(new CustomEvent("feed:language-changed", { detail: { language: langCode } }));
+    setOpen(false);
+  }, [changeLanguage, persistChoice]);
+
+  const dismiss = useCallback(() => {
+    persistChoice(language, true);
+    setOpen(false);
+  }, [language, persistChoice]);
+
+  if (!open || !user) return null;
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[500] flex items-center justify-center p-4"
+        style={{ background: "rgba(15,23,42,0.58)", backdropFilter: "blur(10px)" }}
+      >
+        <motion.div
+          initial={{ opacity: 0, y: 18, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 12, scale: 0.98 }}
+          className="w-full max-w-md overflow-hidden rounded-[28px] shadow-2xl"
+          style={{
+            background: isDarkMode ? "#0b1120" : "#ffffff",
+            border: isDarkMode ? "1px solid rgba(255,255,255,0.10)" : "1px solid rgba(15,23,42,0.08)",
+          }}
+        >
+          <div className="p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.12em]" style={{ color: "#f97316" }}>
+                  Préférence de navigation
+                </p>
+                <h2 className="mt-2 text-xl font-black" style={{ color: isDarkMode ? "#f8fafc" : "#0f172a" }}>
+                  Dans quelle langue voulez-vous continuer ?
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={dismiss}
+                className="rounded-full p-2 transition-colors"
+                style={{ color: isDarkMode ? "#94a3b8" : "#64748b", background: isDarkMode ? "rgba(255,255,255,0.06)" : "#f1f5f9" }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="mt-3 text-sm leading-6" style={{ color: isDarkMode ? "#94a3b8" : "#64748b" }}>
+              Ce choix adapte automatiquement les vidéos, textes et publications du feed. Les vidéos des services externes seront priorisées dans cette langue, avec une forte orientation génie civil.
+            </p>
+
+            <div className="mt-5 grid gap-2">
+              {supportedLanguages.map((lang) => {
+                const active = language === lang.code;
+                return (
+                  <button
+                    key={lang.code}
+                    type="button"
+                    disabled={isChanging}
+                    onClick={() => selectLanguage(lang.code)}
+                    className="flex items-center justify-between rounded-2xl px-4 py-3 text-left transition-all"
+                    style={{
+                      background: active ? "rgba(249,115,22,0.13)" : (isDarkMode ? "rgba(255,255,255,0.05)" : "#f8fafc"),
+                      border: active ? "1px solid rgba(249,115,22,0.45)" : (isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid #e2e8f0"),
+                      color: isDarkMode ? "#f8fafc" : "#0f172a",
+                    }}
+                  >
+                    <span className="flex items-center gap-3">
+                      <span className="text-xl">{lang.flag}</span>
+                      <span className="font-bold">{lang.label}</span>
+                    </span>
+                    {active && <span className="text-xs font-black uppercase" style={{ color: "#f97316" }}>Actuelle</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+});
+SmartLanguagePrompt.displayName = "SmartLanguagePrompt";
 
 // ============================================
 // useBackendReady
@@ -581,6 +738,8 @@ function AppContent() {
           />
         ))}
       </AnimatePresence>
+
+      <SmartLanguagePrompt user={user} isDarkMode={isDarkMode} />
 
       {/* ✅ HEADER — toujours visible, pas de transform/hide */}
       {showHeader && (

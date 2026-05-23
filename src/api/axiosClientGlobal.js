@@ -76,7 +76,10 @@ axiosClient.interceptors.request.use(
       if (!lang && typeof window !== "undefined") {
         lang = window.localStorage?.getItem("cl_lang") || (navigator?.language || navigator?.userLanguage || "fr").split("-")[0];
       }
-      if (lang) config.headers["Accept-Language"] = lang;
+      if (lang) {
+        config.headers["Accept-Language"] = lang;
+        config.headers["X-User-Language"] = lang;
+      }
     } catch (e) {
       // ne pas bloquer la requête si erreur
     }

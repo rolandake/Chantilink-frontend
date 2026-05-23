@@ -19,6 +19,7 @@ import React, {
   useCallback, useRef, useMemo
 } from "react";
 import { useAuth }     from "./AuthContext";
+import { useLanguage } from "./LanguageContext";
 import { idbGetPosts, idbSetPosts } from "../utils/idbMigration";
 import { syncNewPost, syncDeletePost, syncUpdatePost } from "../utils/cacheSync";
 import { isPostHidden } from "../utils/postNotificationPreferences";
@@ -118,6 +119,7 @@ function preloadFirstPostLCP(posts) {
 // ─────────────────────────────────────────────
 export const PostsProvider = ({ children }) => {
   const { user, token } = useAuth();
+  const { language } = useLanguage();
 
   const [posts,   setPosts]   = useState([]);
   const [loading, setLoading] = useState(false);
@@ -131,6 +133,15 @@ export const PostsProvider = ({ children }) => {
   // tokenRef — fetchPosts lit toujours le token courant sans closure stale
   const tokenRef = useRef(token);
   useEffect(() => { tokenRef.current = token; }, [token]);
+
+  const languageRef = useRef(language || "fr");
+  useEffect(() => { languageRef.current = language || "fr"; }, [language]);
+
+  const buildAuthHeaders = useCallback((activeToken = tokenRef.current) => ({
+    Authorization: `Bearer ${activeToken}`,
+    "Accept-Language": languageRef.current || "fr",
+    "X-User-Language": languageRef.current || "fr",
+  }), []);
 
   const userId    = user?._id || user?.id;
   const userIdRef = useRef(userId);
@@ -223,8 +234,9 @@ export const PostsProvider = ({ children }) => {
     abortController.current = new AbortController();
 
     try {
-      const res = await fetch(`${API_URL}/posts?page=${pageNumber}&limit=20`, {
-        headers: { Authorization: `Bearer ${currentToken}` },
+      const lang = encodeURIComponent(languageRef.current || "fr");
+      const res = await fetch(`${API_URL}/posts?page=${pageNumber}&limit=20&language=${lang}`, {
+        headers: buildAuthHeaders(currentToken),
         signal:  abortController.current.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -284,7 +296,7 @@ export const PostsProvider = ({ children }) => {
       setLoading(false);
       isLoadingRef.current = false;
     }
-  }, [normalizePost]);
+  }, [buildAuthHeaders, normalizePost]);
 
   // ============================================
   // FETCH NEXT PAGE
@@ -326,7 +338,7 @@ export const PostsProvider = ({ children }) => {
     try {
       const res = await fetch(
         `${API_URL}/posts/user/${targetUserId}?page=${pageNumber}&limit=20`,
-        { headers: { Authorization: `Bearer ${activeToken}` } }
+        { headers: buildAuthHeaders(activeToken) }
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data       = await res.json();
@@ -347,7 +359,7 @@ export const PostsProvider = ({ children }) => {
       } catch { /* cache inaccessible */ }
       return [];
     }
-  }, [normalizePost, waitForToken]);
+  }, [buildAuthHeaders, normalizePost, waitForToken]);
 
   // ============================================
   // OPTIMISTIC POST METHODS
@@ -383,7 +395,7 @@ export const PostsProvider = ({ children }) => {
     if (!currentToken) throw new Error("Connexion requise");
     const res = await fetch(`${API_URL}/posts`, {
       method:  "POST",
-      headers: { Authorization: `Bearer ${currentToken}` },
+      headers: buildAuthHeaders(currentToken),
       body:    formData,
     });
     if (!res.ok) {
@@ -400,7 +412,7 @@ export const PostsProvider = ({ children }) => {
       return [normalized, ...prev];
     });
     return normalized;
-  }, [normalizePost]);
+  }, [buildAuthHeaders, normalizePost]);
 
   const deletePost = useCallback(async (postId) => {
     const currentToken = tokenRef.current;
@@ -408,7 +420,7 @@ export const PostsProvider = ({ children }) => {
     try {
       const res = await fetch(`${API_URL}/posts/${postId}`, {
         method:  "DELETE",
-        headers: { Authorization: `Bearer ${currentToken}` },
+        headers: buildAuthHeaders(currentToken),
       });
       if (!res.ok) throw new Error("Suppression échouée");
       await syncDeletePost(postId, userIdRef.current);
@@ -418,7 +430,7 @@ export const PostsProvider = ({ children }) => {
       console.error("❌ Échec suppression:", err.message);
       return false;
     }
-  }, []);
+  }, [buildAuthHeaders]);
 
   const removePost = useCallback((postId) => {
     setPosts(prev => prev.filter(p => p._id !== postId));
@@ -447,7 +459,7 @@ export const PostsProvider = ({ children }) => {
     try {
       const res = await fetch(`${API_URL}/posts/${postId}/like`, {
         method:  "POST",
-        headers: { Authorization: `Bearer ${currentToken}` },
+        headers: buildAuthHeaders(currentToken),
       });
       if (!res.ok) throw new Error("Like échoué");
       const data    = await res.json();
@@ -460,7 +472,7 @@ export const PostsProvider = ({ children }) => {
       optimisticUpdate();
       return false;
     }
-  }, [normalizePost]);
+  }, [buildAuthHeaders, normalizePost]);
 
   const addComment = useCallback(async (postId, content) => {
     const currentToken = tokenRef.current;
@@ -468,7 +480,7 @@ export const PostsProvider = ({ children }) => {
     try {
       const res = await fetch(`${API_URL}/posts/${postId}/comment`, {
         method:  "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentToken}` },
+        headers: { ...buildAuthHeaders(currentToken), "Content-Type": "application/json" },
         body:    JSON.stringify({ content }),
       });
       if (!res.ok) throw new Error("Commentaire échoué");
@@ -483,7 +495,7 @@ export const PostsProvider = ({ children }) => {
       console.error("❌ Échec commentaire:", err.message);
       return false;
     }
-  }, []);
+  }, [buildAuthHeaders]);
 
   // ============================================
   // INIT — sessionLoadDone via sessionStorage garantit l'exécution
@@ -538,6 +550,18 @@ export const PostsProvider = ({ children }) => {
     didInitialFetchRef.current = true;
     fetchPosts(1, false);
   }, [user, token, fetchPosts]);
+
+  useEffect(() => {
+    if (!user || !token) return;
+    const handleLanguageChanged = () => {
+      sessionLoadDone.current = false;
+      setPage(1);
+      setHasMore(true);
+      fetchPosts(1, false);
+    };
+    window.addEventListener("feed:language-changed", handleLanguageChanged);
+    return () => window.removeEventListener("feed:language-changed", handleLanguageChanged);
+  }, [fetchPosts, token, user]);
 
   // ============================================
   // CLEANUP
