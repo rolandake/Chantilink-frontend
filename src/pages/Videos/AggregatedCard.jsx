@@ -24,6 +24,7 @@ import {
   FaEye, FaClock,
 } from 'react-icons/fa';
 import { IoSend } from 'react-icons/io5';
+import { safePostToIframe } from '../../utils/postMessageSafe';
 
 const API_URL  = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api');
 const API_BASE = API_URL.replace(/\/api$/, '');
@@ -294,9 +295,10 @@ HlsVideo.displayName='HlsVideo';
 // ─────────────────────────────────────────────────────────────────────────────
 const VimeoEmbed = memo(({ content, isActive, muted }) => {
   const iframeRef=useRef(null), isReadyRef=useRef(false), pendingRef=useRef([]);
+  
   const postCmd=useCallback((method,value)=>{
     const payload=JSON.stringify(value!==undefined?{method,value}:{method});
-    if (isReadyRef.current) iframeRef.current?.contentWindow?.postMessage(payload,'*');
+    if (isReadyRef.current) safePostToIframe(iframeRef.current, payload);
     else pendingRef.current.push(payload);
   },[]);
   useEffect(()=>{
@@ -305,14 +307,14 @@ const VimeoEmbed = memo(({ content, isActive, muted }) => {
         const data=typeof event.data==='string'?JSON.parse(event.data):event.data;
         if (data?.event==='ready') {
           isReadyRef.current=true;
-          pendingRef.current.forEach(p=>iframeRef.current?.contentWindow?.postMessage(p,'*'));
+          pendingRef.current.forEach(p=>safePostToIframe(iframeRef.current, p));
           pendingRef.current=[];
-          iframeRef.current?.contentWindow?.postMessage(JSON.stringify({method:'setVolume',value:muted?0:1}),'*');
-          if (isActive) iframeRef.current?.contentWindow?.postMessage(JSON.stringify({method:'play'}),'*');
+          safePostToIframe(iframeRef.current, JSON.stringify({method:'setVolume',value:muted?0:1}));
+          if (isActive) safePostToIframe(iframeRef.current, JSON.stringify({method:'play'}));
         }
         if (data?.event==='finish') {
-          iframeRef.current?.contentWindow?.postMessage(JSON.stringify({method:'seekTo',value:0}),'*');
-          iframeRef.current?.contentWindow?.postMessage(JSON.stringify({method:'play'}),'*');
+          safePostToIframe(iframeRef.current, JSON.stringify({method:'seekTo',value:0}));
+          safePostToIframe(iframeRef.current, JSON.stringify({method:'play'}));
         }
       } catch {}
     };

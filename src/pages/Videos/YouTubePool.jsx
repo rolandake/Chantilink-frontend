@@ -49,6 +49,28 @@ const loadYouTubeApi = () => {
   return _ytApiPromise;
 };
 
+const normalizeYouTubeIframeOrigin = (iframe) => {
+  if (!iframe || typeof window === 'undefined') return;
+  try {
+    const origin = window.location.origin;
+    const url = new URL(iframe.src);
+    let changed = false;
+    if (url.searchParams.has('forigin')) {
+      url.searchParams.set('forigin', origin);
+      changed = true;
+    }
+    if (url.searchParams.has('gporigin')) {
+      url.searchParams.set('gporigin', origin);
+      changed = true;
+    }
+    if (changed) {
+      iframe.src = url.toString();
+    }
+  } catch (e) {
+    // ignore
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PRECONNECT DNS/TLS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,9 +169,26 @@ class Slot {
     this._isWarmup    = false; // monté hors-viewport pour préchauffage
     this._warmupEl    = null;  // div hors-viewport à nettoyer lors de l'acquire
     this._onReadyCb   = null;  // callback optionnel fourni par acquire(opts.onReady)
+    this._ready        = false;
   }
 
   get _isDestroyed() { return this.state === 'released'; }
+
+  _getIframe() {
+    try {
+      return this.player && typeof this.player.getIframe === 'function'
+        ? this.player.getIframe()
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _canCallPlayer() {
+    if (!this.player || this.state === 'released' || !this._ready) return false;
+    const iframe = this._getIframe();
+    return !!iframe?.isConnected;
+  }
 
   async mountIframe() {
     if (this.state === 'released') return;
@@ -179,7 +218,6 @@ class Slot {
         cc_load_policy: 0,
         disablekb:      1,
         enablejsapi:    1,
-        origin: typeof window !== 'undefined' ? window.location.origin : '',
       },
       events: {
         onReady:       (e) => this._onReady(e),
@@ -187,6 +225,11 @@ class Slot {
         onError:       (e) => console.warn(`[YTPool] Error ${this.videoId} code=${e.data}`),
       },
     });
+
+    try {
+      const iframe = this._getIframe();
+      normalizeYouTubeIframeOrigin(iframe);
+    } catch {}
   }
 
   _onReady(event) {
@@ -201,16 +244,16 @@ class Slot {
           ? event.target.getIframe()
           : null;
 
-        if (iframe && !iframe.isConnected) {
+        if (!iframe || !iframe.isConnected) {
           if (attempt < 8) {
             setTimeout(() => safeApply(attempt + 1), 60);
             return;
           }
-          // Si après plusieurs essais l'iframe n'est toujours pas connectée,
-          // on continue quand même mais on protège les appels.
+          return;
         }
 
         this.state = 'active';
+        this._ready = true;
 
         // Qualité HD dès le départ (protégé)
         try { event.target.setPlaybackQuality('hd720'); } catch {}
@@ -244,19 +287,19 @@ class Slot {
   _onStateChange(event) {
     if (this.state === 'released') return;
     // 0 = ended → loop manuel
-    if (event.data === 0 && this._wantPlay && !this._isWarmup) {
+    if (event.data === 0 && this._wantPlay && !this._isWarmup && this._canCallPlayer()) {
       try { this.player?.seekTo(0); this.player?.playVideo(); } catch {}
     }
     // 1 = playing → resync son
     if (event.data === 1) { this._applyMute(this.player); }
     // -1 = unstarted → relancer si désiré
-    if (event.data === -1 && this._wantPlay && !this._isWarmup) {
+    if (event.data === -1 && this._wantPlay && !this._isWarmup && this._canCallPlayer()) {
       try { this.player?.playVideo(); } catch {}
     }
   }
 
   _applyMute(target) {
-    if (!target) return;
+    if (!target || !this._canCallPlayer()) return;
     try {
       if (this._wantMuted) { target.mute(); target.setVolume(0); }
       else                 { target.unMute(); target.setVolume(100); }
@@ -267,7 +310,7 @@ class Slot {
     this._wantPlay  = true;
     this._isWarmup  = false;
     try {
-      if (this.player && (this.state === 'active' || this.state === 'paused' || this.state === 'loading')) {
+      if (this._canCallPlayer() && (this.state === 'active' || this.state === 'paused')) {
         this.player.playVideo();
         this.state = 'active';
       }
@@ -277,7 +320,7 @@ class Slot {
   pause() {
     this._wantPlay = false;
     try {
-      if (this.player && this.state === 'active') {
+      if (this._canCallPlayer() && this.state === 'active') {
         this.player.pauseVideo();
         this.state = 'paused';
       }
@@ -304,6 +347,7 @@ class Slot {
   destroy() {
     if (this.state === 'released') return;
     this.state = 'released';
+    this._ready = false;
     if (this.idleHandle != null) {
       try { cancelIdleCallback(this.idleHandle); } catch {}
       try { clearTimeout(this.idleHandle); } catch {}

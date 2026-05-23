@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useVideos } from "../../context/VideoContext";
 import { useAuth } from "../../context/AuthContext";
 import axios from "axios";
+import axiosClient from "../../api/axiosClientGlobal";
 import {
   FaTimes, FaUpload, FaCamera, FaArrowLeft, 
   FaMagic, FaHashtag, FaExclamationCircle, FaChevronRight, FaVideo
@@ -12,7 +13,6 @@ import { HiSparkles } from "react-icons/hi2";
 // --- CONSTANTES ---
 const MAX_FILE_SIZE = 150 * 1024 * 1024; // 150MB
 const ACCEPT_TYPES = "video/mp4,video/webm,video/quicktime,video/x-msvideo";
-const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com' : 'http://localhost:5000');
 
 const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
   // --- REFS & CONTEXTS ---
@@ -299,17 +299,13 @@ const VideoModal = ({ showModal, setShowModal, onVideoPublished }) => {
 
       console.log("📤 Début upload...");
 
-      const res = await axios.post(`${API_URL}/videos`, formData, {
-        headers: { 
-            'Content-Type': 'multipart/form-data', 
-            'Authorization': `Bearer ${token}` 
-        },
+      const res = await axiosClient.post("/videos", formData, {
         onUploadProgress: (progressEvent) => {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            setUploadProgress(percentCompleted);
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          setUploadProgress(percentCompleted);
         },
         signal: abortControllerRef.current.signal,
-        timeout: 300000
+        timeout: 300000,
       });
 
       console.log("✅ Upload réussi:", res.data);

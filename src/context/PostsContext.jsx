@@ -68,7 +68,20 @@ function filterBlockedPosts(posts) {
 // ─────────────────────────────────────────────
 const _preloadInjected = new Set();
 
+function shouldPreloadAsLcp(url) {
+  if (!url || typeof url !== "string") return false;
+  if (url.startsWith("/") || url.startsWith("data:") || url.startsWith("blob:")) return true;
+  try {
+    const parsed = new URL(url);
+    const api = new URL(API_URL);
+    return parsed.origin === window.location.origin || parsed.origin === api.origin;
+  } catch {
+    return false;
+  }
+}
+
 function injectPreload(url) {
+  if (!shouldPreloadAsLcp(url)) return;
   if (!url || _preloadInjected.has(url)) return;
   if (document.querySelector(`link[rel="preload"][href="${url}"]`)) return;
   _preloadInjected.add(url);

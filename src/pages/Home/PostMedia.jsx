@@ -387,7 +387,12 @@ const EmbedItem = React.memo(({ url, thumbnail, title, showBadge = true }) => {
   const embedSrc = useMemo(() => {
     if (!showEmbed) return "";
     if (url.includes("player.vimeo.com")) return `${url.split("?")[0]}?autoplay=1&muted=0`;
-    if (isYouTubeUrl(url)) return `${normalizedUrl}?autoplay=1&rel=0&modestbranding=1`;
+    if (isYouTubeUrl(url)) {
+      const originParam = (typeof window !== 'undefined' && window.location && window.location.origin)
+        ? `&origin=${encodeURIComponent(window.location.origin)}`
+        : '';
+      return `${normalizedUrl}?autoplay=1&rel=0&modestbranding=1${originParam}`;
+    }
     return url;
   }, [showEmbed, url, normalizedUrl]);
 

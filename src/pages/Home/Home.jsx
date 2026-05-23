@@ -1211,7 +1211,25 @@ const writeInfoSet = (key, set) => {
 
 const getArticleKey = (article) => String(article?._id || article?.id || article?.url || article?.title || "");
 
-const InfoPostCard = memo(({ article, isDarkMode, onClick }) => {
+const copyTextFallback = (text) => {
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copied;
+  } catch {
+    return false;
+  }
+};
+
+const InfoPostCard = memo(({ article, isDarkMode, onClick, showToast }) => {
   const [imgErr,setImgErr]=useState(false);
   const articleKey = getArticleKey(article);
   const [saved, setSaved] = useState(() => readInfoSet(INFO_SAVED_KEY).has(articleKey));
@@ -1221,10 +1239,32 @@ const InfoPostCard = memo(({ article, isDarkMode, onClick }) => {
   const meta=getCategoryMeta(article.category);
   const shareArticle = async (e) => {
     e.stopPropagation();
-    const url = article.url || article.link || window.location.href;
+    const url = article.url || article.link || `${window.location.origin}/article/${article._id || article.id || ""}`;
+    const title = article.title || "Information ChantiLink";
+    let shared = false;
     try {
-      await navigator.clipboard?.writeText(url);
-    } catch {}
+      if (navigator.share) {
+        await navigator.share({ title, text: article.description || title, url });
+        shared = true;
+      }
+    } catch {
+      shared = false;
+    }
+    if (!shared) {
+      let copied = false;
+      try {
+        await navigator.clipboard?.writeText(url);
+        copied = true;
+      } catch {
+        copied = copyTextFallback(url);
+      }
+      showToast?.(
+        copied ? "Lien de l'information copié" : "Impossible de partager cette information",
+        copied ? "success" : "error"
+      );
+    } else {
+      showToast?.("Information prête à être partagée", "success");
+    }
     window.dispatchEvent(new CustomEvent("feed:interaction", {
       detail: {
         action: "share",
@@ -1578,6 +1618,7 @@ const Feed = ({
             key={`news-${newsSlot}`}
             article={newsItem}
             isDarkMode={isDarkMode}
+            showToast={showToast}
             onClick={() => setSelectedArticle(newsItem)}
           />
         )}

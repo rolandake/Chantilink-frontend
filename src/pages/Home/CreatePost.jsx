@@ -17,6 +17,7 @@
 //   - Texte > 280 chars → affichage classique avec troncature "voir plus"
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePosts } from "../../context/PostsContext";
 import { useDarkMode } from "../../context/DarkModeContext";
@@ -268,7 +269,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
     "👏","🎊","💪","🌟","⭐","💖","🙌","👌",
   ];
 
-  const MAX_CONTENT_LENGTH  = 2000;
+  const MAX_CONTENT_LENGTH  = 10000;
   const MAX_MEDIA_COUNT     = 5;
   const MAX_IMAGE_SIZE      = 5   * 1024 * 1024;
   const MAX_VIDEO_SIZE      = 200 * 1024 * 1024;
@@ -297,6 +298,13 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
   // Auto-focus textarea à l'ouverture
   useEffect(() => {
     if (isOpen) setTimeout(() => textareaRef.current?.focus(), 80);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
   }, [isOpen]);
 
   useEffect(() => {
@@ -477,7 +485,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
   const canPost     = (content.trim().length > 0 || mediaFiles.length > 0) && !posting;
   const charCount   = content.length;
   const charLeft    = MAX_CONTENT_LENGTH - charCount;
-  const charWarning = charLeft < 100;
+  const charWarning = charLeft < 500;
 
   return (
     <motion.div
@@ -499,7 +507,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
       )}
 
       {/* ── FERMÉ : pill cliquable ────────────────────────────────────────── */}
-      {!isOpen ? (
+      {(
         <motion.div
           onClick={() => setIsOpen(true)}
           className="cursor-pointer flex items-center gap-3 px-4 py-3 group"
@@ -511,26 +519,41 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
             <span className="text-gray-500 font-normal">Quoi de neuf ?</span>
           </div>
         </motion.div>
-      ) : (
+      )}
+
+      {isOpen && createPortal((
 
         /* ── OUVERT ──────────────────────────────────────────────────────── */
         <AnimatePresence>
           <motion.div
-            key="expanded"
+            key="create-post-backdrop"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="px-4 py-3 space-y-3"
+            className="fixed inset-0 z-[420] flex items-center justify-center bg-black/70 px-3 py-4 backdrop-blur-sm sm:px-5"
+          >
+          <motion.div
+            key="expanded"
+            initial={{ opacity: 0, y: 24, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 24, scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 360, damping: 32 }}
+            onClick={(e) => e.stopPropagation()}
+          className={`flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border shadow-2xl ${
+            isDarkMode
+              ? "border-white/10 bg-neutral-950 shadow-black/60"
+              : "border-gray-200 bg-white shadow-black/20"
+          }`}
           >
             {/* Header utilisateur */}
-            <div className="flex items-center gap-3">
+            <div className={`flex items-center gap-3 px-4 py-3 border-b ${isDarkMode ? "border-white/10" : "border-gray-100"}`}>
               <SimpleAvatar username={user?.username || user?.fullName} profilePhoto={user?.profilePhoto} size={40} />
               <div className="flex-1">
                 <p className={`font-semibold text-sm ${isDarkMode ? "text-white" : "text-gray-900"}`}>
                   {user?.fullName || user?.username}
                 </p>
                 <p className="text-xs text-gray-500">
-                  {isTextCard ? "✨ Publication colorée" : "Publication standard"}
+                  {isTextCard ? "Publication colorée courte" : "Publication texte long"}
                 </p>
               </div>
               {isTextCard && (
@@ -543,7 +566,17 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
                   ✨ Colorée
                 </motion.div>
               )}
+              <button
+                type="button"
+                onClick={resetForm}
+                className={`rounded-full p-2 transition ${isDarkMode ? "text-gray-400 hover:bg-white/10 hover:text-white" : "text-gray-500 hover:bg-gray-100 hover:text-gray-900"}`}
+                aria-label="Fermer la création"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
             </div>
+
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4" style={{ WebkitOverflowScrolling: "touch" }}>
 
             {/* Zone aperçu coloré OU textarea ─────────────────────────── */}
             <AnimatePresence mode="wait">
@@ -576,19 +609,22 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
                         : "bg-gray-50 text-gray-700 placeholder-gray-400 border-gray-200 focus:border-gray-300"
                     }`}
                     rows={2}
-                    placeholder="Modifier le texte…"
-                    maxLength={TEXT_CARD_THRESHOLD}
+                    placeholder="Continuez à écrire… le mode texte long s'active automatiquement."
+                    maxLength={MAX_CONTENT_LENGTH}
                   />
                   {/* Compteur */}
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-between">
+                    <span className={`text-[11px] ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
+                      Au-delà de {TEXT_CARD_THRESHOLD} caractères, la publication passe en texte long.
+                    </span>
                     <span className={`text-[11px] font-mono ${
-                      content.length >= TEXT_CARD_THRESHOLD - 20
+                      content.length >= MAX_CONTENT_LENGTH - 500
                         ? 'text-red-400'
-                        : content.length >= TEXT_CARD_THRESHOLD - 40
+                        : content.length >= TEXT_CARD_THRESHOLD - 20
                           ? 'text-orange-400'
                           : isDarkMode ? 'text-gray-600' : 'text-gray-400'
                     }`}>
-                      {TEXT_CARD_THRESHOLD - content.length}
+                      {charLeft}
                     </span>
                   </div>
                 </motion.div>
@@ -597,22 +633,26 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
                   {/* Textarea standard */}
                   <textarea
                     ref={textareaRef}
-                    placeholder="Quoi de neuf ?"
+                    placeholder="Exprimez votre idée, détaillez votre chantier, votre analyse ou votre retour d'expérience…"
                     value={content}
                     onChange={e => setContent(e.target.value)}
-                    className={`w-full px-0 py-2 resize-none focus:outline-none text-[15px] ${
+                    className={`w-full px-0 py-2 resize-y focus:outline-none text-[15px] leading-relaxed ${
                       isDarkMode ? "bg-transparent text-gray-200 placeholder-gray-600" : "bg-transparent text-gray-900 placeholder-gray-500"
                     }`}
-                    rows={3}
+                    rows={6}
                     maxLength={MAX_CONTENT_LENGTH}
+                    style={{ minHeight: 150, maxHeight: "42vh" }}
                   />
-                  {charWarning && (
-                    <div className="flex justify-end mt-1">
-                      <span className={`text-[11px] font-mono ${charLeft < 30 ? 'text-red-400' : 'text-orange-400'}`}>
-                        {charLeft} restants
-                      </span>
-                    </div>
-                  )}
+                  <div className="flex items-center justify-between mt-1">
+                    <span className={`text-[11px] ${isDarkMode ? "text-gray-600" : "text-gray-400"}`}>
+                      Texte long accepté jusqu'à {MAX_CONTENT_LENGTH.toLocaleString("fr-FR")} caractères.
+                    </span>
+                    <span className={`text-[11px] font-mono ${
+                      charWarning ? (charLeft < 100 ? "text-red-400" : "text-orange-400") : (isDarkMode ? "text-gray-600" : "text-gray-400")
+                    }`}>
+                      {charLeft}
+                    </span>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -784,9 +824,11 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
                 </motion.div>
               )}
             </AnimatePresence>
+            </div>
+          </motion.div>
           </motion.div>
         </AnimatePresence>
-      )}
+      ), document.body)}
     </motion.div>
   );
 }
