@@ -25,6 +25,12 @@ export const SUPPORTED_LANGUAGES = [
 export const DEFAULT_LANGUAGE = "fr";
 export const LANG_STORAGE_KEY = "cl_lang";
 
+export function normalizeLanguageCode(langCode) {
+  const raw = String(langCode || "").trim().toLowerCase();
+  const base = raw.split(/[-_]/)[0];
+  return SUPPORTED_LANGUAGES.some((l) => l.code === base) ? base : DEFAULT_LANGUAGE;
+}
+
 // ============================================================
 // INIT i18next
 // ============================================================
@@ -75,7 +81,8 @@ i18n
  * - Sauvegarde dans localStorage
  */
 export function applyLanguage(langCode) {
-  const lang = SUPPORTED_LANGUAGES.find((l) => l.code === langCode);
+  const normalized = normalizeLanguageCode(langCode);
+  const lang = SUPPORTED_LANGUAGES.find((l) => l.code === normalized);
   if (!lang) {
     console.warn(`[i18n] Langue inconnue: "${langCode}", fallback sur "${DEFAULT_LANGUAGE}"`);
     applyLanguage(DEFAULT_LANGUAGE);
@@ -92,6 +99,10 @@ export function applyLanguage(langCode) {
   // Persister dans localStorage
   localStorage.setItem(LANG_STORAGE_KEY, lang.code);
 
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("language:changed", { detail: { language: lang.code } }));
+  }
+
   if (import.meta.env.DEV) {
     console.log(`[i18n] ✅ Langue appliquée: ${lang.code} (${lang.dir})`);
   }
@@ -102,8 +113,7 @@ export function applyLanguage(langCode) {
  */
 export function getCurrentLanguage() {
   const stored = localStorage.getItem(LANG_STORAGE_KEY);
-  if (stored && SUPPORTED_LANGUAGES.find((l) => l.code === stored)) return stored;
-  return DEFAULT_LANGUAGE;
+  return normalizeLanguageCode(stored);
 }
 
 /**

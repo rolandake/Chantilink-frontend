@@ -37,6 +37,58 @@ export const usePosts = () => useContext(PostsContext);
 // ─────────────────────────────────────────────
 const isValidObjectId = (id) => /^[a-f\d]{24}$/i.test(String(id || ""));
 
+const BTP_KEYWORDS = [
+  "chantier", "construction", "btp", "génie civil", "genie civil", "bâtiment", "batiment",
+  "béton", "beton", "ciment", "grue", "pelleteuse", "pont", "route", "terrassement",
+  "coffrage", "ferraillage", "fondation", "maçonnerie", "maconnerie", "infrastructure",
+  "civil engineering", "construction site", "concrete", "formwork", "rebar", "earthwork",
+  "foundation", "bridge", "roadwork", "masonry", "site work",
+];
+
+const BOT_FALLBACK_CONTENT = {
+  fr: "Séquence chantier autour du BTP et du génie civil.",
+  en: "Construction and civil engineering site sequence.",
+  ar: "لقطة من موقع بناء مرتبطة بالهندسة المدنية.",
+};
+
+const normalizeLang = (lang = "fr") => {
+  const code = String(lang || "fr").toLowerCase().split(/[-_]/)[0];
+  return ["fr", "en", "ar"].includes(code) ? code : "fr";
+};
+
+const cleanBotText = (value = "") => String(value || "")
+  .replace(/https?:\/\/\S+/gi, "")
+  .replace(/\bt\.co\/\S+/gi, "")
+  .replace(/[@#][\p{L}\p{N}_-]+/gu, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const looksNoisyBotText = (value = "") => {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  if (/^[a-f0-9]{16,}$/i.test(text)) return true;
+  if (/^[A-Za-z0-9+/=_-]{24,}$/.test(text) && !/\s/.test(text)) return true;
+  const tokens = text.split(/\s+/);
+  const noisy = tokens.filter(t => /https?:|t\.co\//i.test(t) || /^[#@]/.test(t) || /^[A-Za-z0-9_-]{14,}$/.test(t)).length;
+  const letters = (text.match(/\p{L}/gu) || []).length;
+  const symbols = (text.match(/[^\p{L}\p{N}\s.,:;!?'"()\-]/gu) || []).length;
+  return noisy / Math.max(tokens.length, 1) > 0.45 || letters < 8 || symbols > letters * 0.45;
+};
+
+const isBotPost = (post) => !!(post?.isBot || post?.user?.isBot || post?.user?.isAutoCreated || post?._isBot);
+const hasPostMedia = (post) => !!(post?.videoUrl || post?.embedUrl || post?.sourceUrl || post?.media?.length || post?.images?.length);
+const isBtpPost = (post) => {
+  const text = [
+    post?.content || post?.contenu || "",
+    post?.title || "",
+    post?.description || "",
+    post?.category || "",
+    ...(Array.isArray(post?.hashtags) ? post.hashtags : []),
+    ...(Array.isArray(post?.tags) ? post.tags : []),
+  ].join(" ").toLowerCase();
+  return BTP_KEYWORDS.some(kw => text.includes(kw));
+};
+
 // ─────────────────────────────────────────────
 // FILTRE URLs EXTERNES BLOQUÉES
 // ─────────────────────────────────────────────
@@ -57,7 +109,11 @@ function hasBlockedExternalVideoUrl(post) {
 
 function filterBlockedPosts(posts) {
   const before   = posts.length;
-  const filtered = posts.filter(p => !hasBlockedExternalVideoUrl(p) && !isPostHidden(p));
+  const filtered = posts.filter(p => (
+    !hasBlockedExternalVideoUrl(p) &&
+    !isPostHidden(p) &&
+    !(isBotPost(p) && hasPostMedia(p) && p._botCivilRelevant === false)
+  ));
   const removed  = before - filtered.length;
   if (removed > 0) console.log(`🧹 [PostsContext] ${removed} post(s) masqués (URLs bloquées)`);
   return filtered;
@@ -129,6 +185,7 @@ export const PostsProvider = ({ children }) => {
 
   const isLoadingRef    = useRef(false);
   const abortController = useRef(null);
+  const networkBackoffUntilRef = useRef(0);
 
   // tokenRef — fetchPosts lit toujours le token courant sans closure stale
   const tokenRef = useRef(token);
@@ -186,6 +243,13 @@ export const PostsProvider = ({ children }) => {
   const normalizePost = useCallback((p) => {
     if (p.isOptimistic) return p;
     const rawUser = p.user || p.author || {};
+    const botPost = isBotPost({ ...p, user: rawUser });
+    const botCivilRelevant = !botPost || isBtpPost(p);
+    const cleanedContent = botPost ? cleanBotText(p.content || p.contenu || "") : null;
+    const contentIsUsable = cleanedContent && !looksNoisyBotText(cleanedContent) && isBtpPost({ ...p, content: cleanedContent });
+    const safeContent = botPost
+      ? (contentIsUsable ? cleanedContent : BOT_FALLBACK_CONTENT[normalizeLang(languageRef.current)])
+      : p.content;
     const normalizedUser = {
       ...rawUser,
       _id:          rawUser._id || rawUser.id || p.userId || p.author?._id || "unknown",
@@ -193,10 +257,15 @@ export const PostsProvider = ({ children }) => {
       profilePhoto: rawUser.profilePhoto || rawUser.profilePicture || rawUser.avatar || rawUser.photo || p.userProfilePhoto || null,
       isVerified:   !!(rawUser.isVerified || rawUser.verified || p.isVerified),
       isPremium:    !!(rawUser.isPremium  || p.isPremium),
+      isBot:         !!(rawUser.isBot || p.isBot),
+      isAutoCreated: !!(rawUser.isAutoCreated || p.isAutoCreated),
     };
     return {
       ...p,
       _id:      p._id || p.id,
+      _botCivilRelevant: botCivilRelevant,
+      content:  safeContent,
+      contenu:  botPost ? safeContent : p.contenu,
       user:     normalizedUser,
       likes:    Array.isArray(p.likes)    ? p.likes    : [],
       comments: Array.isArray(p.comments) ? p.comments : [],
@@ -211,15 +280,32 @@ export const PostsProvider = ({ children }) => {
   //   Avant le merge, on construit un Set des IDs déjà présents dans prev
   //   (hors optimistic) pour éviter tout doublon quand la page 2 arrive.
   // ============================================
-  const fetchPosts = useCallback(async (pageNumber = 1, append = false) => {
+  const fetchPosts = useCallback(async (pageNumber = 1, append = false, options = {}) => {
+    if (options.forceNetworkRetry) {
+      networkBackoffUntilRef.current = 0;
+    } else if (Date.now() < networkBackoffUntilRef.current) {
+      return { success: false, posts: [], error: "network_backoff" };
+    }
+
     const currentToken = tokenRef.current;
     if (!currentToken) {
       console.warn("⚠️ [PostsContext] fetchPosts bloqué : pas de token");
       return { success: false, posts: [] };
     }
     if (isLoadingRef.current) {
-      console.warn("⚠️ [PostsContext] fetchPosts bloqué : déjà en cours");
-      return { success: false, posts: [] };
+      if (options.waitIfLoading) {
+        const startedAt = Date.now();
+        const maxWaitMs = options.maxWaitMs || 2500;
+        while (isLoadingRef.current && Date.now() - startedAt < maxWaitMs) {
+          await new Promise(resolve => setTimeout(resolve, 80));
+        }
+      }
+      if (isLoadingRef.current) {
+        if (!options.silentIfLoading) {
+          console.warn("⚠️ [PostsContext] fetchPosts bloqué : déjà en cours");
+        }
+        return { success: false, posts: [], error: "already_loading" };
+      }
     }
 
     console.log(`📡 [PostsContext] fetchPosts page=${pageNumber} append=${append}`);
@@ -235,9 +321,12 @@ export const PostsProvider = ({ children }) => {
 
     try {
       const lang = encodeURIComponent(languageRef.current || "fr");
-      const res = await fetch(`${API_URL}/posts?page=${pageNumber}&limit=20&language=${lang}`, {
+      const refreshTs = options.forceNetworkRetry ? `&_ts=${Date.now()}` : "";
+      const url = `${API_URL}/posts?page=${pageNumber}&limit=20&language=${lang}${refreshTs}`;
+      const res = await fetch(url, {
         headers: buildAuthHeaders(currentToken),
         signal:  abortController.current.signal,
+        cache:   "no-store",
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -284,12 +373,17 @@ export const PostsProvider = ({ children }) => {
 
       setHasMore(data.hasMore ?? normalized.length === 20);
       setPage(pageNumber);
-      return { success: true, posts: clean };
+      return { success: true, posts: clean, page: pageNumber, hasMore: data.hasMore ?? normalized.length === 20 };
     } catch (err) {
       if (err.name !== "AbortError") {
-        console.error("❌ [PostsContext] fetchPosts erreur:", err.message);
+        const isNetworkFailure = err instanceof TypeError && /failed to fetch/i.test(err.message || "");
+        if (isNetworkFailure) {
+          networkBackoffUntilRef.current = Date.now() + 30000;
+          console.warn("⚠️ [PostsContext] API posts injoignable, nouvelle tentative dans 30s");
+        } else {
+          console.error("❌ [PostsContext] fetchPosts erreur:", err.message);
+        }
         setError(err.message);
-        setHasMore(false);
       }
       return { success: false, posts: [], error: err.message };
     } finally {
@@ -327,21 +421,31 @@ export const PostsProvider = ({ children }) => {
     let activeToken = tokenRef.current;
     if (!activeToken) {
       console.log("⏳ [PostsContext] fetchUserPosts : attente token...");
-      activeToken = await waitForToken(3000);
+      activeToken = await waitForToken(1200);
     }
-    if (!activeToken) {
-      console.error("❌ [PostsContext] fetchUserPosts : token null — abandon");
-      return [];
-    }
+    const requestHeaders = activeToken ? buildAuthHeaders(activeToken) : {};
 
     console.log(`📡 [PostsContext] fetchUserPosts userId=${targetUserId} page=${pageNumber}`);
     try {
-      const res = await fetch(
+      const urls = [
         `${API_URL}/posts/user/${targetUserId}?page=${pageNumber}&limit=20`,
-        { headers: buildAuthHeaders(activeToken) }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data       = await res.json();
+        `${API_URL}/users/${targetUserId}/posts?page=${pageNumber}&limit=20`,
+        `${API_URL}/posts?userId=${targetUserId}&page=${pageNumber}&limit=20`,
+      ];
+      let data = null;
+      let lastError = null;
+
+      for (const url of urls) {
+        const res = await fetch(url, { headers: requestHeaders, cache: "no-store" });
+        if (res.ok) {
+          data = await res.json();
+          break;
+        }
+        lastError = new Error(`HTTP ${res.status}`);
+        if (res.status !== 404) break;
+      }
+
+      if (!data) throw lastError || new Error("Aucune réponse posts utilisateur");
       const postsArray = data.posts || data.data || (Array.isArray(data) ? data : []);
       const normalized = postsArray.map(normalizePost);
       const clean      = filterBlockedPosts(normalized);
@@ -381,6 +485,7 @@ export const PostsProvider = ({ children }) => {
       next[idx] = normalized;
       return next;
     });
+    return normalized;
   }, [normalizePost]);
 
   const removeOptimisticPost = useCallback((tempId) => {
@@ -504,7 +609,7 @@ export const PostsProvider = ({ children }) => {
   useEffect(() => {
     if (!user) return;
     if (cacheHydratedRef.current) return;
-    const shouldFetchNetwork = !sessionLoadDone.current;
+    const wasSessionLoaded = sessionLoadDone.current;
     cacheHydratedRef.current = true;
     sessionLoadDone.current = true;
 
@@ -513,7 +618,10 @@ export const PostsProvider = ({ children }) => {
     const init = async () => {
       try {
         const cached = await idbGetPosts("allPosts");
-        if (cached?.length) {
+        const hasCachedPosts = cached?.length > 0;
+        const shouldFetchNetwork = !wasSessionLoaded || !hasCachedPosts;
+
+        if (hasCachedPosts) {
           const cleanCached = filterBlockedPosts(cached);
           preloadFirstPostLCP(cleanCached);
           setPosts(cleanCached);
@@ -557,10 +665,12 @@ export const PostsProvider = ({ children }) => {
       sessionLoadDone.current = false;
       setPage(1);
       setHasMore(true);
-      fetchPosts(1, false);
+      fetchPosts(1, false, { waitIfLoading: true, silentIfLoading: true });
     };
     window.addEventListener("feed:language-changed", handleLanguageChanged);
-    return () => window.removeEventListener("feed:language-changed", handleLanguageChanged);
+    return () => {
+      window.removeEventListener("feed:language-changed", handleLanguageChanged);
+    };
   }, [fetchPosts, token, user]);
 
   // ============================================
@@ -570,8 +680,24 @@ export const PostsProvider = ({ children }) => {
     return () => { abortController.current?.abort(); };
   }, []);
 
-  const refetch = useCallback(async () => {
-    return await fetchPosts(1, false);
+  // 🧹 Fonction d'isolation stricte pour éviter les leaks de state entre pages
+  const clearHomeState = useCallback(() => {
+    console.log("🧹 [PostsContext] Nettoyage complet du feed Home");
+    setPosts([]);
+    setLoading(false);
+    setError(null);
+    setPage(1);
+    setHasMore(true);
+    isLoadingRef.current = false;
+    didInitialFetchRef.current = false;
+    sessionLoadDone.current = false;
+    networkBackoffUntilRef.current = 0;
+    abortController.current?.abort();
+    abortController.current = new AbortController();
+  }, []);
+
+  const refetch = useCallback(async (options = {}) => {
+    return await fetchPosts(1, false, options);
   }, [fetchPosts]);
 
   // ============================================
@@ -596,12 +722,14 @@ export const PostsProvider = ({ children }) => {
     addPostOptimistic,
     replaceOptimisticPost,
     removeOptimisticPost,
+    clearHomeState,
   }), [
     posts, loading, error, hasMore, page,
     fetchPosts, fetchNextPage, fetchUserPosts,
     createPost, deletePost, removePost, updatePost,
     toggleLike, addComment, refetch,
     addPostOptimistic, replaceOptimisticPost, removeOptimisticPost,
+    clearHomeState,
   ]);
 
   return <PostsContext.Provider value={value}>{children}</PostsContext.Provider>;

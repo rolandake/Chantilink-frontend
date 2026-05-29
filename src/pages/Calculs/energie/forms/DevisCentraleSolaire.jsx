@@ -3,6 +3,12 @@ import { useState, useEffect } from 'react';
 import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import "jspdf-autotable";
+import {
+  addPdfFooters,
+  createChantilinkLogoCanvas,
+  drawChantilinkHeader,
+  fmtPdfMoney,
+} from "../../utils/exportBranding";
 
 const ouvragesInit = [
   {
@@ -149,7 +155,20 @@ export default function DevisCentraleSolaire({ currency = "XOF" }) {
     });
 
     const wb = XLSX.utils.book_new();
+    const ws0 = XLSX.utils.aoa_to_sheet([
+      ["CHANTILINK - DEVIS CENTRALE SOLAIRE", "", "", ""],
+      [`Date : ${new Date().toLocaleDateString("fr-FR")}`, "", "", ""],
+      [""],
+      ["Indicateur", "Valeur", "Unité", "Observation"],
+      ["Ouvrages", ouvrages.length, "u", "Détail dans l'onglet Détail par ouvrage"],
+      ["Matériaux cumulés", Object.keys(cumul).filter((m) => Number(cumul[m] || 0) > 0).length, "u", "Détail dans l'onglet Cumul global"],
+      ["Total TTC", totalGlobal, currency, "Montant global estimatif"],
+    ]);
+    ws0["!cols"] = [{ wch: 34 }, { wch: 18 }, { wch: 14 }, { wch: 48 }];
+    ws0["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+    XLSX.utils.book_append_sheet(wb, ws0, "Synthèse");
     const wsDetail = XLSX.utils.json_to_sheet(detailData);
+    wsDetail["!cols"] = [{ wch: 28 }, { wch: 36 }, { wch: 18 }];
     XLSX.utils.book_append_sheet(wb, wsDetail, "Détail par ouvrage");
 
     const cumulData = Object.keys(cumul).map((m) => ({
@@ -172,15 +191,30 @@ export default function DevisCentraleSolaire({ currency = "XOF" }) {
     XLSX.writeFile(wb, `devis_centrale_solaire_${dateStr}.xlsx`);
   };
 
-  const exportToPDF = () => {
-    const doc = new jsPDF();
+  const exportToPDF = async () => {
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
     const pageWidth = doc.internal.pageSize.getWidth();
+    const logoDataUrl = await createChantilinkLogoCanvas().catch(() => null);
 
-    doc.setFontSize(20);
-    doc.text("Devis Centrale Solaire", pageWidth / 2, 20, { align: "center" });
+    drawChantilinkHeader(doc, {
+      logoDataUrl,
+      title: "DEVIS CENTRALE SOLAIRE",
+      subtitle: "Récapitulatif global des ouvrages",
+    });
 
-    doc.setFontSize(14);
-    doc.text("1. Détail par ouvrage", 14, 30);
+    doc.setFillColor(243, 244, 246);
+    doc.roundedRect(14, 38, pageWidth - 28, 18, 2, 2, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(75, 85, 99);
+    doc.text("OUVRAGES", 20, 46);
+    doc.text("MATERIAUX", 96, 46);
+    doc.text("TOTAL TTC", 172, 46);
+    doc.setFontSize(11);
+    doc.setTextColor(17, 24, 39);
+    doc.text(String(ouvrages.length), 20, 52);
+    doc.text(String(Object.keys(cumul).filter((m) => Number(cumul[m] || 0) > 0).length), 96, 52);
+    doc.text(fmtPdfMoney(totalGlobal, currency), 172, 52);
 
     const detailBody = [];
     ouvrages.forEach(({ nom, materiaux }) => {
@@ -190,32 +224,44 @@ export default function DevisCentraleSolaire({ currency = "XOF" }) {
     });
 
     doc.autoTable({
-      startY: 35,
+      startY: 64,
       head: [["Ouvrage", "Matériau", "Quantité"]],
       body: detailBody,
-      styles: { fontSize: 10 },
-      headStyles: { fillColor: [255, 165, 0] },
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 2.5, lineColor: [229, 231, 235], valign: "top" },
+      headStyles: { fillColor: [249, 115, 22], textColor: [255, 255, 255], fontStyle: "bold" },
+      alternateRowStyles: { fillColor: [255, 247, 237] },
+      columnStyles: { 0: { cellWidth: 72, fontStyle: "bold" }, 1: { cellWidth: 136 }, 2: { cellWidth: 56, halign: "right", fontStyle: "bold" } },
+      margin: { left: 14, right: 14 },
     });
 
-    let y = doc.lastAutoTable.finalY + 10;
-    doc.text("2. Cumul global", 14, y);
+    doc.addPage();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.setTextColor(249, 115, 22);
+    doc.text("CUMUL GLOBAL", 10, 18);
 
     const cumulBody = Object.keys(cumul).map((m) => [
       m,
       cumul[m].toFixed(2),
       prixUnitaires[m] || "",
-      couts[m]?.toFixed(2) || "0.00",
+      fmtPdfMoney(couts[m] || 0, currency),
     ]);
-    cumulBody.push(["Total TTC", "", "", totalGlobal.toFixed(2)]);
+    cumulBody.push(["Total TTC", "", "", fmtPdfMoney(totalGlobal, currency)]);
 
     doc.autoTable({
-      startY: y + 5,
+      startY: 26,
       head: [["Matériau", "Quantité", `Prix unitaire (${currency})`, `Total (${currency})`]],
       body: cumulBody,
-      styles: { fontSize: 10 },
-      headStyles: { fillColor: [255, 165, 0] },
+      theme: "grid",
+      styles: { fontSize: 11, cellPadding: 3.5, lineColor: [229, 231, 235] },
+      headStyles: { fillColor: [249, 115, 22], textColor: [255, 255, 255], fontStyle: "bold", fontSize: 11 },
+      alternateRowStyles: { fillColor: [255, 247, 237] },
+      columnStyles: { 0: { cellWidth: 105, fontStyle: "bold" }, 1: { cellWidth: 50, halign: "right" }, 2: { cellWidth: 58, halign: "right" }, 3: { cellWidth: 64, halign: "right", fontStyle: "bold" } },
+      margin: { left: 10, right: 10 },
     });
 
+    addPdfFooters(doc, "ChantiLink - devis centrale solaire");
     const dateStr = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
     doc.save(`devis_centrale_solaire_${dateStr}.pdf`);
   };

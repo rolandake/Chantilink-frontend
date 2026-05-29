@@ -41,6 +41,7 @@ import axios from 'axios';
 import { profileApiPath } from './profileApi';
 
 const API_URL = profileApiPath("").replace(/\/$/, "");
+const R2_PUBLIC_URL = (import.meta.env.VITE_R2_PUBLIC_URL || "").replace(/\/+$/, "");
 const EMOJIS = ["😊", "🔥", "💡", "🎉", "🚀", "❤️", "😎", "✨", "🎵"];
 
 // ─────────────────────────────────────────────
@@ -79,20 +80,46 @@ function formatCount(n) {
 // HELPER — ajoute un cache-bust à une URL image
 // Utilise le paramètre ?v= (compatible avec la plupart des CDN)
 // ─────────────────────────────────────────────
+function resolveImageUrl(url) {
+  if (!url) return url;
+  const clean = String(url).trim();
+  if (!clean || clean.startsWith('blob:') || clean.startsWith('data:')) return clean;
+  if (/^https?:\/\//i.test(clean)) return clean;
+  if (clean === '/default-avatar.png' || clean === '/default-cover.jpg') return clean;
+
+  const publicId = clean.replace(/^\/+/, '');
+  if (R2_PUBLIC_URL && (
+    publicId.startsWith('chantilink/') ||
+    publicId.startsWith('profile_photos/') ||
+    publicId.startsWith('cover_photos/') ||
+    publicId.startsWith('posts/') ||
+    publicId.startsWith('stories/') ||
+    publicId.startsWith('videos/')
+  )) {
+    return `${R2_PUBLIC_URL}/${publicId}`;
+  }
+
+  const backendBase = API_URL.replace(/\/api\/?$/, '');
+  return `${backendBase}/${publicId}`;
+}
+
 function bustCache(url) {
   if (!url) return url;
+  const resolved = resolveImageUrl(url);
+  if (!resolved || resolved.startsWith('blob:') || resolved.startsWith('data:')) return resolved;
   // Retire un éventuel cache-bust précédent avant d'en ajouter un nouveau
-  const base = url.replace(/[?&]v=\d+/, '').replace(/[?&]t=\d+/, '');
+  const base = resolved.replace(/[?&]v=\d+/, '').replace(/[?&]t=\d+/, '');
   const sep  = base.includes('?') ? '&' : '?';
   return `${base}${sep}v=${Date.now()}`;
 }
 
 function withCacheVersion(url, version) {
-  if (!url || url.startsWith('blob:') || url.startsWith('data:')) return url;
-  if (!version) return url;
+  const resolved = resolveImageUrl(url);
+  if (!resolved || resolved.startsWith('blob:') || resolved.startsWith('data:')) return resolved;
+  if (!version) return resolved;
   const raw = typeof version === 'number' ? version : Date.parse(version);
-  if (!Number.isFinite(raw)) return url;
-  const base = url.replace(/[?&]v=\d+/, '').replace(/[?&]t=\d+/, '');
+  if (!Number.isFinite(raw)) return resolved;
+  const base = resolved.replace(/[?&]v=\d+/, '').replace(/[?&]t=\d+/, '');
   const sep = base.includes('?') ? '&' : '?';
   return `${base}${sep}v=${raw}`;
 }
@@ -539,7 +566,7 @@ export default function ProfileHeader({
       if (response.data?.user) {
         URL.revokeObjectURL(blobUrl);
 
-        const serverUrl = response.data.user.profilePhoto;
+        const serverUrl = resolveImageUrl(response.data.user.profilePhoto);
         debug('Upload', '🔗 URL serveur profilePhoto =', serverUrl);
 
         // ✅ FIX PROD : on applique directement l'URL serveur avec cache-bust.
@@ -617,7 +644,7 @@ export default function ProfileHeader({
       if (response.data?.user) {
         URL.revokeObjectURL(blobUrl);
 
-        const serverUrl = response.data.user.coverPhoto;
+        const serverUrl = resolveImageUrl(response.data.user.coverPhoto);
         debug('Upload', '🔗 URL serveur coverPhoto =', serverUrl);
 
         // ✅ FIX PROD : même logique que profilePhoto
@@ -712,15 +739,16 @@ export default function ProfileHeader({
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, ease: [0.25, 0.8, 0.25, 1] }}
         style={{
-          borderRadius: 28, overflow: 'hidden',
-          border: `1px solid ${bdr}`, background: bg,
-          boxShadow: isDarkMode ? '0 24px 80px rgba(0,0,0,0.6)' : '0 8px 40px rgba(0,0,0,0.1)',
+          overflow: 'hidden',
+          border: 'none',
+          background: bg,
+          boxShadow: 'none',
           fontFamily: "'Sora', 'DM Sans', sans-serif",
         }}
       >
 
         {/* ── COUVERTURE ── */}
-        <div style={{ position: 'relative', height: 220, overflow: 'hidden' }}>
+        <div style={{ position: 'relative', height: 150, overflow: 'hidden' }}>
           {/*
             ✅ FIX PROD : plus de key={coverPhotoKey} sur l'img.
             La key démontait/remontait le DOM, déclenchant une requête CDN
@@ -736,7 +764,8 @@ export default function ProfileHeader({
             onLoad={() => debug('Img', '✅ Cover chargée depuis:', resolvedCoverPhoto)}
             onError={(e) => {
               debug('Img', '❌ Erreur chargement cover:', resolvedCoverPhoto);
-              e.target.src = '/default-cover.jpg';
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = '/default-cover.jpg';
             }}
           />
           {/* Gradient overlay */}
@@ -754,24 +783,26 @@ export default function ProfileHeader({
           }} />
 
           {/* Boutons sur la couverture */}
-          <div style={{ position: 'absolute', top: 16, right: 16, display: 'flex', gap: 8 }}>
-            {!isOwnProfile && (
-              <motion.button
-                onClick={handleSendMessage}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '9px 16px', borderRadius: 50, border: 'none', cursor: 'pointer',
-                  background: 'rgba(59,130,246,0.9)', backdropFilter: 'blur(12px)',
-                  color: '#fff', fontWeight: 700, fontSize: 13,
-                  boxShadow: '0 4px 20px rgba(59,130,246,0.4)',
-                }}
-              >
-                <ChatBubbleLeftRightIcon style={{ width: 16, height: 16 }} />
-                <span>Message</span>
-              </motion.button>
-            )}
+          <div style={{ position: 'absolute', top: 12, left: 12, display: 'flex', gap: 8 }}>
+            <motion.button
+              onClick={() => navigate(-1)}
+              whileHover={{ scale: 1.06 }}
+              whileTap={{ scale: 0.94 }}
+              aria-label="Retour"
+              style={{
+                width: 38, height: 38, borderRadius: 999, border: 'none', cursor: 'pointer',
+                background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(12px)',
+                color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: '0 2px 12px rgba(0,0,0,0.25)',
+                fontSize: 24,
+                lineHeight: 1,
+              }}
+            >
+              ←
+            </motion.button>
+          </div>
+
+          <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 8 }}>
 
             {!isOwnProfile && (
               <div style={{ position: 'relative' }} ref={optionsMenuRef}>
@@ -851,20 +882,20 @@ export default function ProfileHeader({
         </div>
 
         {/* ── BODY ── */}
-        <div style={{ padding: '0 24px 28px', position: 'relative' }}>
+        <div style={{ padding: '0 10px 12px', position: 'relative' }}>
 
           {/* Avatar + boutons */}
-          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: -44, marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 14, marginTop: -36, marginBottom: 10 }}>
 
             {/* Avatar */}
             <div style={{ position: 'relative', flexShrink: 0 }}>
               <div
                 className="avatar-ring"
                 style={{
-                  width: 90, height: 90, borderRadius: 26, overflow: 'hidden',
+                  width: 76, height: 76, borderRadius: '50%', overflow: 'hidden',
                   border: isDarkMode ? '3px solid #0a0a0a' : '3px solid #fff',
                   background: isDarkMode ? '#1a1a1a' : '#f3f4f6',
-                  boxShadow: '0 0 0 0 rgba(249,115,22,0.55)',
+                  boxShadow: 'none',
                 }}
               >
                 {/*
@@ -880,8 +911,9 @@ export default function ProfileHeader({
                   onLoad={() => debug('Img', '✅ Photo profil chargée depuis:', resolvedProfilePhoto)}
                   onError={(e) => {
                     debug('Img', '❌ Erreur chargement photo profil:', resolvedProfilePhoto);
-                    if (e.target.src !== window.location.origin + '/default-avatar.png')
-                      e.target.src = '/default-avatar.png';
+                    e.currentTarget.onerror = null;
+                    if (e.currentTarget.src !== window.location.origin + '/default-avatar.png')
+                      e.currentTarget.src = '/default-avatar.png';
                   }}
                 />
               </div>
@@ -936,7 +968,7 @@ export default function ProfileHeader({
             </div>
 
             {/* Bouton Modifier */}
-            <div style={{ display: 'flex', gap: 8, paddingBottom: 6 }}>
+            <div style={{ display: 'flex', gap: 8, paddingBottom: 0 }}>
               {isOwnProfile && (
                 <motion.button
                   onClick={() => setIsEditingProfile(true)}
@@ -944,10 +976,10 @@ export default function ProfileHeader({
                   whileTap={{ scale: 0.97 }}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '9px 18px', borderRadius: 50, border: 'none', cursor: 'pointer',
-                    background: 'linear-gradient(135deg,#f97316,#ec4899)',
-                    color: '#fff', fontWeight: 700, fontSize: 13,
-                    boxShadow: '0 4px 18px rgba(249,115,22,0.4)',
+                    padding: '8px 14px', borderRadius: 999, border: `1px solid ${bdr}`, cursor: 'pointer',
+                    background: isDarkMode ? 'rgba(255,255,255,0.06)' : '#fff',
+                    color: isDarkMode ? '#f9fafb' : '#111827', fontWeight: 700, fontSize: 13,
+                    boxShadow: 'none',
                   }}
                 >
                   <PencilIcon style={{ width: 15, height: 15 }} />
@@ -1047,9 +1079,8 @@ export default function ProfileHeader({
                 <div style={{ marginBottom: 6 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
                     <h1 style={{
-                      fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em',
-                      background: 'linear-gradient(135deg, ' + (isDarkMode ? '#fff 60%, #f97316' : '#111 60%, #f97316') + ')',
-                      WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+                      fontSize: 20, fontWeight: 800, letterSpacing: 0,
+                      color: text,
                       margin: 0,
                     }}>
                       {user?.fullName || 'Utilisateur'}
@@ -1077,41 +1108,68 @@ export default function ProfileHeader({
                     )}
                   </div>
 
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                    gap: 6,
+                    margin: '8px 0 10px',
+                  }}>
                     {[
-                      { val: stats.followers, label: 'Abonnés',     clickType: 'followers' },
-                      { val: stats.following, label: 'Abonnements', clickType: 'following' },
-                      { val: stats.likes,     label: 'Go0ts',       clickType: null },
-                    ].map((s, i) => (
-                      <React.Fragment key={i}>
-                        {i > 0 && <span style={{ color: isDarkMode ? '#374151' : '#d1d5db', fontSize: 13 }}>·</span>}
-                        <span
-                          onClick={() => { if (s.clickType) { setModalType(s.clickType); setModalOpen(true); } }}
-                          style={{ fontSize: 13, color: sub, cursor: s.clickType ? 'pointer' : 'default' }}
-                        >
-                          <b style={{ color: text, fontWeight: 700 }}>{formatCount(s.val)}</b> {s.label}
-                        </span>
-                      </React.Fragment>
-                    ))}
+                      { value: stats.posts,     label: 'Publications' },
+                      { value: stats.followers, label: 'Abonnés', modal: 'followers' },
+                      { value: stats.following, label: 'Abonnements', modal: 'following' },
+                    ].map((item) => {
+                      const clickable = !!item.modal;
+                      const Tag = clickable ? 'button' : 'div';
+                      return (
+                      <Tag
+                        key={item.label}
+                        type={clickable ? 'button' : undefined}
+                        onClick={clickable ? () => { setModalType(item.modal); setModalOpen(true); } : undefined}
+                        className="stat-tile"
+                        style={{
+                        padding: '4px 2px',
+                        borderRadius: 0,
+                        background: 'transparent',
+                        border: 'none',
+                        boxShadow: 'none',
+                        textAlign: 'center',
+                        cursor: clickable ? 'pointer' : 'default',
+                        fontFamily: 'inherit',
+                      }}>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: text }}>{formatCount(item.value)}</div>
+                        <span style={{ fontSize: 10, color: sub }}>{item.label}</span>
+                      </Tag>
+                    );
+                    })}
                   </div>
 
                   {user?.bio && (
-                    <p style={{ fontSize: 14, color: isDarkMode ? '#d1d5db' : '#374151', lineHeight: 1.7, marginBottom: 12 }}>
+                    <p style={{ fontSize: 13, color: isDarkMode ? '#d1d5db' : '#374151', lineHeight: 1.35, margin: '0 0 4px' }}>
                       {user.bio}
                     </p>
                   )}
 
-                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 4 }}>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', color: sub }}>
                     {user?.location && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <MapPinIcon style={{ width: 14, height: 14, color: '#f97316', flexShrink: 0 }} />
-                        <span style={{ fontSize: 12, color: sub }}>{user.location}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        <MapPinIcon style={{ width: 14, height: 14, color: '#f97316' }} />
+                        <span style={{ fontSize: 13 }}>{user.location}</span>
                       </div>
                     )}
                     {memberSince && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <CalendarIcon style={{ width: 14, height: 14, color: '#f97316', flexShrink: 0 }} />
-                        <span style={{ fontSize: 12, color: sub }}>Membre depuis {memberSince}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        <CalendarIcon style={{ width: 14, height: 14, color: '#f97316' }} />
+                        <span style={{ fontSize: 13 }}>Membre depuis {memberSince}</span>
+                      </div>
+                    )}
+                    {user?.website && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        <a href={user.website.startsWith('http') ? user.website : `https://${user.website}`}
+                          target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: 13, color: '#f97316', textDecoration: 'none', fontWeight: 600 }}>
+                          🔗 {user.website.replace(/^https?:\/\//, '')}
+                        </a>
                       </div>
                     )}
                   </div>
@@ -1121,7 +1179,7 @@ export default function ProfileHeader({
           </AnimatePresence>
 
           {/* ── STATS CARDS ── */}
-          <div style={{ paddingTop: 20, borderTop: `1px solid ${bdr}` }}>
+          <div style={{ display: 'none', paddingTop: 20, borderTop: `1px solid ${bdr}` }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
               <h3 style={{ fontSize: 15, fontWeight: 700, color: text, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
                 Statistiques

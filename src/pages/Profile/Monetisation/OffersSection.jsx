@@ -1,9 +1,10 @@
 // src/pages/Profile/Monetisation/OffersSection.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
-import { getAuthToken, monetisationFetch } from './monetisationApi';
+import { getAuthToken, monetisationFetch, readMonetisationJson } from './monetisationApi';
+import useMonetisationRealtime, { emitMonetisationRefresh } from './useMonetisationRealtime';
 
 const TrashIcon = () => (
   <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -36,19 +37,28 @@ export default function OffersSection() {
   const sub  = isDarkMode ? '#6b7280' : '#9ca3af';
   const text = isDarkMode ? '#f3f4f6' : '#111827';
 
-  const fetchOffers = async () => {
-    setLoading(true); setError('');
+  const fetchOffers = useCallback(async ({ background = false } = {}) => {
+    if (!user) return;
+    if (!background) {
+      setLoading(true);
+      setError('');
+    }
     try {
       const token = await getAuthToken(getToken);
       const res  = await monetisationFetch('offers', { token });
       if (!res.ok) throw new Error('Erreur récupération offres');
-      const data = await res.json();
-      setOffers(data.offers);
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  };
+      const data = await readMonetisationJson(res);
+      setOffers(data.offers || []);
+    } catch (e) {
+      if (!background) setError(e.message);
+    }
+    finally {
+      if (!background) setLoading(false);
+    }
+  }, [getToken, user]);
 
-  useEffect(() => { if (user) fetchOffers(); }, [user, getToken]);
+  useEffect(() => { fetchOffers(); }, [fetchOffers]);
+  useMonetisationRealtime(fetchOffers, 'offers');
 
   const handleCreate = async () => {
     setError('');
@@ -63,10 +73,11 @@ export default function OffersSection() {
         token,
         body: JSON.stringify({ title, description, price:priceNumber }),
       });
-      const data = await res.json();
+      const data = await readMonetisationJson(res);
       if (!res.ok) throw new Error(data.message || 'Erreur création offre');
       setTitle(''); setDescription(''); setPrice(''); setShowForm(false);
-      fetchOffers();
+      await fetchOffers({ background: true });
+      emitMonetisationRefresh('all');
     } catch (e) { setError(e.message); }
     finally { setSubmitting(false); }
   };
@@ -76,9 +87,10 @@ export default function OffersSection() {
     try {
       const token = await getAuthToken(getToken);
       const res  = await monetisationFetch(`offers/${id}`, { method:'DELETE', token });
-      const data = await res.json();
+      const data = await readMonetisationJson(res);
       if (!res.ok) throw new Error(data.message || 'Erreur suppression');
-      fetchOffers();
+      await fetchOffers({ background: true });
+      emitMonetisationRefresh('all');
     } catch (e) { setError(e.message); }
   };
 

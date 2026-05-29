@@ -1,340 +1,377 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from "react";
 import { Doughnut } from "react-chartjs-2";
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
-import { 
-  Wrench, Hammer, Trash2, Plus, Save, History, 
-  ClipboardList, Banknote, HardHat 
+import {
+  Banknote,
+  ChevronDown,
+  ChevronUp,
+  ClipboardList,
+  Hammer,
+  HardHat,
+  Plus,
+  Ruler,
+  Save,
+  Trash2,
+  Wrench,
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
+import { useProjectStore } from "../../../../store/useProjectStore";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const STORAGE_KEY = "rehabilitation-history";
+const INTERVENTIONS = {
+  demolition: {
+    label: "Démolition / curage",
+    unit: "m³",
+    auto: "volume",
+    color: "#ef4444",
+    dot: "bg-red-500",
+  },
+  scarification: {
+    label: "Scarification chaussée",
+    unit: "m²",
+    auto: "surface",
+    color: "#f97316",
+    dot: "bg-orange-500",
+  },
+  reprofilage: {
+    label: "Reprofilage / rechargement",
+    unit: "m²",
+    auto: "surface",
+    color: "#fb923c",
+    dot: "bg-orange-400",
+  },
+  reprise_chaussee: {
+    label: "Reprise de chaussée",
+    unit: "m²",
+    auto: "surface",
+    color: "#a855f7",
+    dot: "bg-purple-500",
+  },
+  assainissement: {
+    label: "Curage / réparation assainissement",
+    unit: "ml",
+    auto: "longueur",
+    color: "#3b82f6",
+    dot: "bg-blue-500",
+  },
+  signalisation: {
+    label: "Remise à niveau signalisation",
+    unit: "u",
+    auto: "signalisation",
+    color: "#eab308",
+    dot: "bg-yellow-500",
+  },
+  divers: {
+    label: "Divers / finitions",
+    unit: "u",
+    auto: null,
+    color: "#6b7280",
+    dot: "bg-gray-500",
+  },
+};
 
-// Catégories de travaux pour classer les coûts
-const CATEGORIES = [
-  { id: "demolition", label: "Démolition / Curage", color: "red", bg: "bg-red-500/20", text: "text-red-400" },
-  { id: "chaussee", label: "Reprise Chaussée", color: "orange", bg: "bg-orange-500/20", text: "text-orange-400" },
-  { id: "assainissement", label: "Assainissement", color: "blue", bg: "bg-blue-500/20", text: "text-blue-400" },
-  { id: "signalisation", label: "Signalisation", color: "yellow", bg: "bg-yellow-500/20", text: "text-yellow-400" },
-  { id: "divers", label: "Divers / Finitions", color: "gray", bg: "bg-gray-500/20", text: "text-gray-400" },
-];
+const CATEGORY_KEYS = {
+  demolition: "coutDemolition",
+  scarification: "coutChaussee",
+  reprofilage: "coutChaussee",
+  reprise_chaussee: "coutChaussee",
+  assainissement: "coutAssainissement",
+  signalisation: "coutSignalisation",
+  divers: "coutDivers",
+};
 
-export default function Rehabilitation({ currency = "XOF", onCostChange }) {
-  
-  // --- ÉTATS ---
-  // Liste des tâches en cours de saisie
-  const [tasks, setTasks] = useState([]);
-  
-  // Saisie d'une nouvelle tâche
-  const [newTask, setNewTask] = useState({
-    category: "chaussee",
-    description: "",
-    cout: ""
-  });
+const fmt = (value, decimals = 0) =>
+  Number(value || 0).toLocaleString("fr-FR", { maximumFractionDigits: decimals });
+const fmtD = (value) => Number(value || 0).toFixed(2);
+const num = (value) => Number.parseFloat(value) || 0;
 
-  const [historique, setHistorique] = useState([]);
+const defaultIntervention = (type = "reprise_chaussee") => ({
+  id: Date.now() + Math.random(),
+  type,
+  description: "",
+  quantite: "",
+  prixUnitaire: "",
+  forfait: "",
+  expanded: true,
+});
+
+const normalizeIntervention = (item) => {
+  const type = INTERVENTIONS[item?.type] ? item.type : "reprise_chaussee";
+  return { ...defaultIntervention(type), ...(item || {}), type };
+};
+
+const autoQuantityFor = (type, refs) => {
+  const auto = INTERVENTIONS[type]?.auto;
+  if (auto === "surface") return refs.surface;
+  if (auto === "longueur") return refs.longueur;
+  if (auto === "volume") return refs.volume;
+  if (auto === "signalisation") return refs.signalisation;
+  return 0;
+};
+
+const computeIntervention = (item, refs) => {
+  const config = INTERVENTIONS[item.type] || INTERVENTIONS.reprise_chaussee;
+  const quantite = num(item.quantite) || autoQuantityFor(item.type, refs);
+  const montantQuantite = quantite * num(item.prixUnitaire);
+  const total = montantQuantite + num(item.forfait);
+  return { ...item, config, quantiteEffective: quantite, montantQuantite, total };
+};
+
+export default function Rehabilitation({ currency = "XOF", onCostChange, onMateriauxChange }) {
+  const terrassement = useProjectStore((state) => state.subResults.terrassement);
+  const chaussee = useProjectStore((state) => state.subResults.chaussee);
+  const hydraulique = useProjectStore((state) => state.subResults.ouvragesHydrauliques);
+  const signalisation = useProjectStore((state) => state.subResults.signalisation);
+  const setGlobalResults = useProjectStore((state) => state.setResults);
+  const setGlobalMaterials = useProjectStore((state) => state.setMaterials);
+  const setGlobalCost = useProjectStore((state) => state.setCost);
+
+  const [itemsRaw, setItemsRaw] = usePersistentState("tp:rehabilitation:interventions", [defaultIntervention("reprise_chaussee")]);
+  const [newType, setNewType] = usePersistentState("tp:rehabilitation:newType", "reprise_chaussee");
   const [message, setMessage] = useState(null);
 
-  // --- CALCULS (Mémorisés) ---
+  const items = useMemo(() => (
+    Array.isArray(itemsRaw) && itemsRaw.length ? itemsRaw.map(normalizeIntervention) : [defaultIntervention("reprise_chaussee")]
+  ), [itemsRaw]);
+
+  const refs = useMemo(() => ({
+    longueur: chaussee?.longueur || terrassement?.longueurReference || 0,
+    surface: chaussee?.surface || terrassement?.surfacePlateforme || 0,
+    volume: terrassement?.totalDeblai || terrassement?.totalFoisonne || 0,
+    signalisation: signalisation?.quantiteSignalisation || 0,
+    hydraulique: hydraulique?.volume || 0,
+  }), [
+    chaussee?.longueur,
+    chaussee?.surface,
+    terrassement?.longueurReference,
+    terrassement?.surfacePlateforme,
+    terrassement?.totalDeblai,
+    terrassement?.totalFoisonne,
+    signalisation?.quantiteSignalisation,
+    hydraulique?.volume,
+  ]);
+
   const results = useMemo(() => {
-    const total = tasks.reduce((sum, task) => sum + (parseFloat(task.cout) || 0), 0);
-    
-    // Regroupement par catégorie pour le graphique
-    const byCategory = {};
-    CATEGORIES.forEach(cat => byCategory[cat.id] = 0);
-    
-    tasks.forEach(task => {
-      if (byCategory[task.category] !== undefined) {
-        byCategory[task.category] += parseFloat(task.cout) || 0;
-      }
+    const interventionsCalc = items.map((item) => computeIntervention(item, refs));
+    const byCategory = {
+      coutDemolition: 0,
+      coutChaussee: 0,
+      coutAssainissement: 0,
+      coutSignalisation: 0,
+      coutDivers: 0,
+    };
+
+    interventionsCalc.forEach((item) => {
+      const key = CATEGORY_KEYS[item.type] || "coutDivers";
+      byCategory[key] += item.total;
     });
 
-    return { total, byCategory };
-  }, [tasks]);
+    return {
+      interventionsCalc,
+      byCategory,
+      total: interventionsCalc.reduce((sum, item) => sum + item.total, 0),
+      quantiteTotale: interventionsCalc.reduce((sum, item) => sum + item.quantiteEffective, 0),
+    };
+  }, [items, refs]);
 
-  // --- SYNC PARENT ---
   useEffect(() => {
-    if (onCostChange) onCostChange(results.total);
-  }, [results.total, onCostChange]);
+    const materials = {
+      nbTaches: results.interventionsCalc.length,
+      quantiteRehabilitation: results.quantiteTotale,
+      ...results.byCategory,
+    };
 
-  // --- HISTORIQUE ---
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // ✅ FILTRE les entrées invalides (sans tasks ou tasks non-array)
-        const valid = parsed.filter(item => Array.isArray(item?.tasks));
-        setHistorique(valid);
-      }
-    } catch (err) {
-      console.error("Erreur chargement historique:", err);
-    }
-  }, []);
+    onCostChange?.(results.total);
+    onMateriauxChange?.(materials);
+    setGlobalCost("rehabilitation", results.total);
+    setGlobalMaterials("rehabilitation", materials);
+    setGlobalResults("rehabilitation", {
+      nbTaches: results.interventionsCalc.length,
+      total: results.total,
+      quantiteTotale: results.quantiteTotale,
+      references: refs,
+      ...results.byCategory,
+    });
+  }, [results, refs, onCostChange, onMateriauxChange, setGlobalCost, setGlobalMaterials, setGlobalResults]);
 
-  // --- HANDLERS ---
-  const handleAddTask = () => {
-    if (!newTask.description || !newTask.cout) return showToast("⚠️ Champs incomplets", "error");
-    
-    setTasks([...tasks, { ...newTask, id: Date.now() }]);
-    setNewTask({ category: "chaussee", description: "", cout: "" }); // Reset
-  };
+  const updateItem = (id, patch) => setItemsRaw((prev) => (Array.isArray(prev) ? prev : []).map((item) => (
+    item.id === id ? { ...item, ...patch } : item
+  )));
+  const addItem = () => setItemsRaw((prev) => [...(Array.isArray(prev) ? prev : []), defaultIntervention(newType)]);
+  const removeItem = (id) => setItemsRaw((prev) => (Array.isArray(prev) ? prev : []).filter((item) => item.id !== id));
 
-  const removeTask = (id) => {
-    setTasks(tasks.filter(t => t.id !== id));
+  const showToast = (text, type = "success") => {
+    setMessage({ text, type });
+    setTimeout(() => setMessage(null), 2500);
   };
 
   const handleSave = () => {
-    if (tasks.length === 0) return showToast("⚠️ Aucune tâche définie", "error");
-    
-    const newEntry = {
-      id: Date.now(),
-      date: new Date().toLocaleString(),
-      tasks: tasks, // ✅ S'assure que tasks est toujours un array
-      total: results.total
-    };
-
-    const newHist = [newEntry, ...historique];
-    setHistorique(newHist);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
-    showToast("✅ Réhabilitation sauvegardée !");
+    if (results.total <= 0) return showToast("Aucune intervention chiffrée", "error");
+    showToast("Réhabilitation ajoutée à la synthèse");
   };
 
-  const clearHistory = () => {
-    if (window.confirm("Vider l'historique ?")) {
-      setHistorique([]);
-      localStorage.removeItem(STORAGE_KEY);
-      showToast("Historique vidé");
-    }
-  };
-
-  const showToast = (msg, type = "success") => {
-    setMessage({ text: msg, type });
-    setTimeout(() => setMessage(null), 3000);
-  };
-
-  // --- CHART DATA ---
   const chartData = {
-    labels: CATEGORIES.map(c => c.label),
+    labels: ["Démolition", "Chaussée", "Assainissement", "Signalisation", "Divers"],
     datasets: [{
-      data: CATEGORIES.map(c => results.byCategory[c.id]),
+      data: [
+        results.byCategory.coutDemolition,
+        results.byCategory.coutChaussee,
+        results.byCategory.coutAssainissement,
+        results.byCategory.coutSignalisation,
+        results.byCategory.coutDivers,
+      ],
       backgroundColor: ["#ef4444", "#f97316", "#3b82f6", "#eab308", "#6b7280"],
-      borderColor: "#1f2937",
-      borderWidth: 4,
-    }]
+      borderColor: "#111827",
+      borderWidth: 2,
+    }],
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
-      
-      {/* Toast */}
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative font-sans">
       {message && (
-        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold ${message.type === "error" ? "bg-red-600" : "bg-green-600"}`}>
+        <div className={`fixed top-4 right-4 px-5 py-3 rounded-xl shadow-2xl z-50 font-bold ${
+          message.type === "error" ? "bg-red-600" : "bg-green-600"
+        }`}>
           {message.text}
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-green-600/20 rounded-lg text-green-500">
+          <div className="p-2 bg-green-500/20 rounded-lg text-green-400">
             <Wrench className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Réhabilitation</h2>
-            <p className="text-xs text-gray-400">Maintenance & Réparations</p>
+            <h2 className="text-xl font-bold text-white uppercase tracking-tight">Réhabilitation</h2>
+            <p className="text-xs text-gray-400 font-medium">Maintenance, reprises et réparations TP</p>
           </div>
         </div>
-        <div className="bg-gray-800 rounded-lg px-4 py-2 border border-gray-700">
-          <span className="text-xs text-gray-400 block">Total Estimé</span>
-          <span className="text-lg font-black text-green-400">
-            {results.total.toLocaleString(undefined, { maximumFractionDigits: 0 })} <span className="text-sm text-gray-500">{currency}</span>
+        <div className="text-right">
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Total estimé</span>
+          <span className="text-2xl font-black text-green-400 tracking-tighter">
+            {fmt(results.total)} <span className="text-sm text-gray-500 font-normal">{currency}</span>
           </span>
         </div>
       </div>
 
-      {/* Main Grid */}
-      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
-          
-          {/* GAUCHE : SAISIE DES TÂCHES (5 cols) */}
-          <div className="lg:col-span-5 flex flex-col gap-5">
-            
-            {/* Formulaire Ajout */}
-            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 shadow-lg">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-green-400 uppercase tracking-wider mb-4">
+      <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          <div className="xl:col-span-7 space-y-5">
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
                 <Plus className="w-4 h-4" /> Ajouter une intervention
               </h3>
-              
-              <div className="space-y-4">
-                {/* Catégorie */}
-                <div className="grid grid-cols-2 gap-2">
-                  {CATEGORIES.map(cat => (
-                    <button
-                      key={cat.id}
-                      onClick={() => setNewTask({ ...newTask, category: cat.id })}
-                      className={`text-xs font-bold py-2 rounded-lg border transition-all ${
-                        newTask.category === cat.id 
-                          ? `${cat.bg} ${cat.text} border-${cat.color}-500` 
-                          : "bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800"
-                      }`}
-                    >
-                      {cat.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Champs */}
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase">Description</label>
-                    <input 
-                      type="text" 
-                      placeholder="Ex: Bouchage nids de poule PK10"
-                      value={newTask.description}
-                      onChange={e => setNewTask({...newTask, description: e.target.value})}
-                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500 font-bold uppercase">Coût Estimé ({currency})</label>
-                    <input 
-                      type="number" 
-                      placeholder="Ex: 150000"
-                      value={newTask.cout}
-                      onChange={e => setNewTask({...newTask, cout: e.target.value})}
-                      className="w-full bg-gray-900 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none"
-                    />
-                  </div>
-                </div>
-
-                <button 
-                  onClick={handleAddTask}
-                  className="w-full bg-green-600 hover:bg-green-500 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex justify-center items-center gap-2"
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+                <select
+                  value={newType}
+                  onChange={(event) => setNewType(event.target.value)}
+                  className="bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:border-green-500"
                 >
-                  <Plus className="w-5 h-5" /> Ajouter à la liste
+                  {Object.entries(INTERVENTIONS).map(([key, item]) => (
+                    <option key={key} value={key}>{item.label}</option>
+                  ))}
+                </select>
+                <button onClick={addItem} className="bg-green-600 hover:bg-green-500 text-white px-5 py-3 rounded-xl font-bold flex items-center justify-center gap-2">
+                  <Plus className="w-4 h-4" /> Ajouter
                 </button>
               </div>
+              <p className="mt-3 text-xs text-green-200/70">
+                Références disponibles : {refs.surface ? `${fmtD(refs.surface)} m²` : "—"} | {refs.longueur ? `${fmtD(refs.longueur)} ml` : "—"} | {refs.volume ? `${fmtD(refs.volume)} m³` : "—"}
+              </p>
             </div>
 
-            {/* Liste des tâches ajoutées (Scrollable si beaucoup) */}
-            <div className="flex-1 bg-gray-800/30 border border-gray-700 rounded-2xl p-4 overflow-y-auto min-h-[200px]">
-              <h4 className="text-xs font-bold text-gray-400 uppercase mb-3 flex items-center justify-between">
-                <span>Liste des tâches ({tasks.length})</span>
-                {tasks.length > 0 && <span className="text-green-400">{results.total.toLocaleString()} {currency}</span>}
-              </h4>
-              
-              {tasks.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-600 opacity-50">
-                  <ClipboardList className="w-12 h-12 mb-2" />
-                  <p className="text-sm">Aucune tâche ajoutée</p>
+            {results.interventionsCalc.map((item) => (
+              <div key={item.id} className="border border-gray-700 rounded-2xl overflow-hidden bg-gray-800/40">
+                <div className="p-4 flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    onClick={() => updateItem(item.id, { expanded: !item.expanded })}
+                    className="flex items-center gap-3 text-left min-w-0"
+                  >
+                    <div className="p-2 bg-gray-950/50 rounded-xl">
+                      <Hammer className="w-5 h-5" style={{ color: item.config.color }} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-black text-white truncate">{item.description || item.config.label}</p>
+                      <p className="text-xs text-gray-400">
+                        {fmtD(item.quantiteEffective)} {item.config.unit} | {fmt(item.total)} {currency}
+                      </p>
+                    </div>
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => removeItem(item.id)} className="p-2 rounded-lg text-red-400 hover:bg-red-500/10" aria-label="Supprimer">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                    {item.expanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+                  </div>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {tasks.map((task) => {
-                    const cat = CATEGORIES.find(c => c.id === task.category);
-                    return (
-                      <div key={task.id} className="bg-gray-800 p-3 rounded-xl flex justify-between items-center group border border-gray-700 hover:border-gray-500 transition">
-                        <div className="flex items-center gap-3 overflow-hidden">
-                          <div className={`w-2 h-8 rounded-full bg-${cat?.color || 'gray'}-500 shrink-0`} />
-                          <div className="truncate">
-                            <p className="text-sm font-bold text-gray-200 truncate">{task.description}</p>
-                            <p className={`text-[10px] uppercase font-bold text-${cat?.color || 'gray'}-400`}>{cat?.label}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <span className="text-sm font-mono font-bold text-white">{parseFloat(task.cout).toLocaleString()}</span>
-                          <button onClick={() => removeTask(task.id)} className="text-gray-500 hover:text-red-500 transition">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
 
-            {tasks.length > 0 && (
-              <button 
-                onClick={handleSave}
-                className="w-full bg-gradient-to-r from-green-600 to-teal-600 hover:opacity-90 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition flex justify-center items-center gap-2"
-              >
-                <Save className="w-5 h-5" /> Sauvegarder le projet
-              </button>
-            )}
+                {item.expanded && (
+                  <div className="p-4 border-t border-gray-700/60 bg-gray-950/30">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <InputGroup label="Description" type="text" value={item.description} onChange={(value) => updateItem(item.id, { description: value })} placeholder="Ex: reprise nid de poule PK10" />
+                      <InputGroup label={`Quantité (${item.config.unit})`} value={item.quantite} onChange={(value) => updateItem(item.id, { quantite: value })} placeholder={fmtD(autoQuantityFor(item.type, refs))} />
+                      <InputGroup label={`Prix unitaire (${currency}/${item.config.unit})`} value={item.prixUnitaire} onChange={(value) => updateItem(item.id, { prixUnitaire: value })} />
+                      <InputGroup label={`Forfait (${currency})`} value={item.forfait} onChange={(value) => updateItem(item.id, { forfait: value })} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
 
-          {/* DROITE : RÉSULTATS (7 cols) */}
-          <div className="lg:col-span-7 flex flex-col gap-6">
-            
-            {/* KPIs */}
-            <div className="grid grid-cols-3 gap-4">
-              <ResultCard label="Interventions" value={tasks.length} unit="u" icon={<Hammer className="w-4 h-4"/>} color="text-green-400" bg="bg-green-500/10" />
-              <ResultCard label="Moyenne / Tâche" value={tasks.length > 0 ? (results.total / tasks.length).toFixed(0) : 0} unit={currency} icon={<Banknote className="w-4 h-4"/>} color="text-blue-400" bg="bg-blue-500/10" border />
-              <ResultCard label="Poste Principal" value={tasks.length > 0 ? "Mixte" : "-"} unit="" icon={<HardHat className="w-4 h-4"/>} color="text-orange-400" bg="bg-orange-500/10" />
+          <div className="xl:col-span-5 space-y-5">
+            <div className="grid grid-cols-2 gap-4">
+              <ResultCard label="Interventions" value={results.interventionsCalc.length} unit="u" icon={<ClipboardList className="w-4 h-4" />} />
+              <ResultCard label="Quantités" value={fmt(results.quantiteTotale, 2)} unit="u/ml/m²" icon={<Ruler className="w-4 h-4" />} />
+              <ResultCard label="Moyenne" value={fmt(results.total / (results.interventionsCalc.length || 1))} unit={currency} icon={<Banknote className="w-4 h-4" />} />
+              <ResultCard label="Poste principal" value={results.total > 0 ? "Mixte" : "-"} unit="" icon={<HardHat className="w-4 h-4" />} accent />
             </div>
 
-            {/* Graphique & Détails */}
-            <div className="flex-1 bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-8 items-center relative overflow-hidden">
-               <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-green-600/10 rounded-full blur-3xl pointer-events-none" />
-
-               <div className="w-40 h-40 flex-shrink-0 relative">
-                  <Doughnut data={chartData} options={{ cutout: "70%", plugins: { legend: { display: false } } }} />
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                     <span className="text-sm font-bold text-green-400">Budget</span>
-                  </div>
-               </div>
-
-               <div className="flex-1 w-full space-y-3">
-                  <h4 className="text-gray-400 text-sm font-medium border-b border-gray-700 pb-2">Répartition Budgétaire</h4>
-                  {CATEGORIES.map(cat => {
-                    const amount = results.byCategory[cat.id];
-                    if (amount === 0) return null;
-                    return (
-                      <div key={cat.id} className="flex justify-between items-center">
-                        <div className="flex items-center gap-2">
-                          <div className={`w-3 h-3 rounded-full bg-${cat.color}-500`}/>
-                          <span className="text-sm text-gray-300">{cat.label}</span>
-                        </div>
-                        <span className="text-sm font-bold text-white font-mono">{amount.toLocaleString()} {currency}</span>
-                      </div>
-                    );
-                  })}
-                  {results.total === 0 && <p className="text-gray-500 text-sm italic text-center py-4">Ajoutez des tâches pour voir la répartition</p>}
-               </div>
-            </div>
-
-            {/* Historique */}
-            {historique.length > 0 && (
-              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden flex-1 min-h-[150px]">
-                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
-                  <h4 className="text-xs font-bold text-gray-400 flex items-center gap-2">
-                    <History className="w-3 h-3" /> Projets précédents
-                  </h4>
-                  <button onClick={clearHistory} className="text-[10px] text-red-400 hover:underline">Vider</button>
-                </div>
-                <div className="overflow-y-auto max-h-[180px] p-2 space-y-2">
-                  {historique.map((item) => {
-                    // ✅ PROTECTION : Vérifie que tasks existe et est un array
-                    const tasksCount = Array.isArray(item?.tasks) ? item.tasks.length : 0;
-                    
-                    return (
-                      <div key={item.id} className="flex justify-between items-center bg-gray-700/30 p-2 rounded hover:bg-gray-700/50 transition border border-transparent hover:border-green-500/30">
-                        <div className="flex flex-col">
-                           <span className="text-[10px] text-gray-500">{item.date}</span>
-                           <span className="text-xs text-gray-300">{tasksCount} tâche(s)</span>
-                        </div>
-                        <div className="text-right">
-                          <span className="text-sm font-bold text-green-400">{parseFloat(item.total || 0).toLocaleString()} {currency}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
+            <div className="bg-gray-800 rounded-3xl p-6 border border-gray-700 shadow-xl">
+              <div className="w-48 h-48 mx-auto relative">
+                <Doughnut data={chartData} options={{ cutout: "72%", plugins: { legend: { display: false } } }} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span className="text-[10px] text-gray-500 uppercase font-bold">Budget</span>
+                  <span className="text-sm font-bold text-white">{fmt(results.total)} {currency}</span>
                 </div>
               </div>
-            )}
+              <div className="mt-6 space-y-3">
+                {Object.entries(results.byCategory).map(([key, value]) => {
+                  if (!value) return null;
+                  const label = {
+                    coutDemolition: "Démolition / curage",
+                    coutChaussee: "Chaussée",
+                    coutAssainissement: "Assainissement",
+                    coutSignalisation: "Signalisation",
+                    coutDivers: "Divers",
+                  }[key];
+                  return <MaterialRow key={key} label={label} value={`${fmt(value)} ${currency}`} color="bg-green-500" />;
+                })}
+                {results.total === 0 && <p className="text-center text-xs text-gray-500">Les coûts apparaîtront selon les interventions ajoutées.</p>}
+              </div>
+            </div>
 
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-green-300 uppercase tracking-widest mb-4">
+                <Banknote className="w-4 h-4" /> Synthèse réhabilitation
+              </h3>
+              <SummaryLine label="Démolition / curage" value={`${fmt(results.byCategory.coutDemolition)} ${currency}`} />
+              <SummaryLine label="Reprise chaussée" value={`${fmt(results.byCategory.coutChaussee)} ${currency}`} />
+              <SummaryLine label="Assainissement" value={`${fmt(results.byCategory.coutAssainissement)} ${currency}`} />
+              <SummaryLine label="Signalisation" value={`${fmt(results.byCategory.coutSignalisation)} ${currency}`} />
+              <div className="mt-4 pt-4 border-t border-green-500/20 flex items-center justify-between">
+                <span className="text-xs font-black uppercase text-green-300">Total réhabilitation</span>
+                <span className="text-xl font-black text-white">{fmt(results.total)} {currency}</span>
+              </div>
+              <button
+                onClick={handleSave}
+                className="mt-5 w-full bg-green-600 hover:bg-green-500 text-white py-4 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 active:scale-95"
+              >
+                <Save className="w-5 h-5" /> Valider la synthèse
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -342,15 +379,43 @@ export default function Rehabilitation({ currency = "XOF", onCostChange }) {
   );
 }
 
-// --- SOUS-COMPOSANTS ---
+const InputGroup = ({ label, value, onChange, placeholder, type = "number" }) => (
+  <div className="flex flex-col">
+    <label className="mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+    <input
+      type={type}
+      value={value ?? ""}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-green-500 focus:ring-1 focus:ring-green-500 outline-none transition-all font-mono text-sm"
+      placeholder={placeholder || "0"}
+    />
+  </div>
+);
 
-const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
-  <div className={`rounded-xl p-3 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-600' : ''}`}>
-    <span className="text-[10px] text-gray-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+const ResultCard = ({ label, value, unit, icon, accent = false }) => (
+  <div className={`rounded-2xl p-4 text-center border ${accent ? "bg-green-500/10 border-green-500/30" : "bg-gray-800/70 border-gray-700"}`}>
+    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center justify-center gap-1">
       {icon} {label}
     </span>
-    <span className={`text-xl font-black ${color}`}>
-      {value} <span className="text-xs font-normal text-gray-500">{unit}</span>
+    <span className={`text-xl font-black ${accent ? "text-green-300" : "text-white"}`}>
+      {value} <span className="text-xs font-normal text-gray-500 lowercase">{unit}</span>
     </span>
+  </div>
+);
+
+const MaterialRow = ({ label, value, color }) => (
+  <div className="flex items-center justify-between text-sm">
+    <div className="flex items-center gap-2 min-w-0">
+      <span className={`w-3 h-3 rounded-full ${color}`} />
+      <span className="text-gray-300 truncate">{label}</span>
+    </div>
+    <span className="font-mono font-bold text-white">{value}</span>
+  </div>
+);
+
+const SummaryLine = ({ label, value }) => (
+  <div className="flex items-center justify-between py-2 text-sm border-b border-gray-700/50 last:border-0">
+    <span className="text-gray-400">{label}</span>
+    <span className="font-mono font-bold text-white">{value}</span>
   </div>
 );

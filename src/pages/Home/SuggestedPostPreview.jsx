@@ -102,12 +102,7 @@ const resolveExpired = async (url, externalId, signal) => {
   if (!pexId) return null;
   const cached = urlRead(`pexels_${pexId}`);
   if (cached) return cached;
-  try {
-    const res = await axiosClient.get(`/videos/refresh-url?id=${pexId}`, { signal });
-    const fresh = res.data?.url || res.data?.videoUrl || null;
-    if (fresh) urlWrite(`pexels_${pexId}`, fresh);
-    return fresh;
-  } catch { return null; }
+  return null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

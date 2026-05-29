@@ -19,6 +19,12 @@ import {
   Layers,
   Calculator
 } from "lucide-react";
+import {
+  addPdfFooters,
+  createChantilinkLogoCanvas,
+  drawChantilinkHeader,
+  fmtPdfMoney,
+} from "../utils/exportBranding";
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale);
 
@@ -88,27 +94,141 @@ export default function DevisFerroviaire({ currency = "XOF" }) {
     setEtapes(copy);
   };
 
-  const exportPDF = () => {
-    const doc = new jsPDF();
-    doc.setFontSize(18);
-    doc.text("DEVIS ESTIMATIF - PROJET FERROVIAIRE", 105, 20, { align: "center" });
-    
-    const body = [];
-    etapes.forEach(e => {
-        e.materiaux.forEach((m, i) => {
-            if(parseFloat(m.quantite) > 0) {
-                body.push([i === 0 ? e.nom : "", m.nom, m.quantite, prixUnitaires[m.nom.toLowerCase()], (m.quantite * prixUnitaires[m.nom.toLowerCase()]).toFixed(0)]);
-            }
-        });
+  const detailRows = useMemo(() => {
+    const rows = [];
+    etapes.forEach((e) => {
+      e.materiaux.forEach((m, i) => {
+        const quantite = parseFloat(m.quantite) || 0;
+        if (quantite > 0) {
+          const pu = parseFloat(prixUnitaires[m.nom.toLowerCase()]) || 0;
+          rows.push({
+            poste: i === 0 ? e.nom : "",
+            phase: e.nom,
+            designation: m.nom,
+            quantite,
+            pu,
+            total: quantite * pu,
+          });
+        }
+      });
+    });
+    return rows;
+  }, [etapes, prixUnitaires]);
+
+  const materialRows = useMemo(() =>
+    Object.entries(cumul)
+      .filter(([, value]) => Number(value || 0) > 0)
+      .map(([name, value]) => [name, Number(value || 0).toFixed(2), "u"]),
+  [cumul]);
+
+  const exportExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const ws0 = XLSX.utils.aoa_to_sheet([
+      ["CHANTILINK - DEVIS FERROVIAIRE", "", "", ""],
+      [`Date : ${new Date().toLocaleDateString("fr-FR")}`, "", "", ""],
+      [""],
+      ["Indicateur", "Valeur", "Unité", "Observation"],
+      ["Lignes BPU", detailRows.length, "u", "Détail dans l'onglet BPU"],
+      ["Matériaux cumulés", materialRows.length, "u", "Détail dans l'onglet Matériaux"],
+      ["Total général", totalGlobal, currency, "Montant global estimatif"],
+    ]);
+    ws0["!cols"] = [{ wch: 32 }, { wch: 18 }, { wch: 14 }, { wch: 46 }];
+    ws0["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+    XLSX.utils.book_append_sheet(wb, ws0, "Synthèse");
+
+    const bpu = [
+      ["Poste", "Désignation", "Quantité", `PU (${currency})`, `Total (${currency})`],
+      ...detailRows.map((r) => [r.poste, r.designation, r.quantite, r.pu, r.total]),
+      ["TOTAL GÉNÉRAL", "", "", "", totalGlobal],
+    ];
+    const ws1 = XLSX.utils.aoa_to_sheet(bpu);
+    ws1["!cols"] = [{ wch: 36 }, { wch: 30 }, { wch: 14 }, { wch: 16 }, { wch: 20 }];
+    ws1["!autofilter"] = { ref: `A1:E${Math.max(1, bpu.length)}` };
+    XLSX.utils.book_append_sheet(wb, ws1, "BPU");
+
+    const ws2 = XLSX.utils.aoa_to_sheet([
+      ["Matériau cumulé", "Quantité", "Unité"],
+      ...materialRows,
+    ]);
+    ws2["!cols"] = [{ wch: 34 }, { wch: 18 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws2, "Matériaux cumulés");
+    XLSX.writeFile(wb, `devis_ferroviaire_${Date.now()}.xlsx`);
+  };
+
+  const exportPDF = async () => {
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+    const pageW = doc.internal.pageSize.getWidth();
+    const logoDataUrl = await createChantilinkLogoCanvas().catch(() => null);
+
+    drawChantilinkHeader(doc, {
+      logoDataUrl,
+      title: "DEVIS FERROVIAIRE",
+      subtitle: "Bordereau estimatif global",
     });
 
+    doc.setFillColor(243, 244, 246);
+    doc.roundedRect(14, 38, pageW - 28, 18, 2, 2, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(75, 85, 99);
+    doc.text("LIGNES BPU", 20, 46);
+    doc.text("MATERIAUX", 96, 46);
+    doc.text("TOTAL GENERAL", 172, 46);
+    doc.setFontSize(11);
+    doc.setTextColor(17, 24, 39);
+    doc.text(String(detailRows.length), 20, 52);
+    doc.text(String(materialRows.length), 96, 52);
+    doc.text(fmtPdfMoney(totalGlobal, currency), 172, 52);
+
     doc.autoTable({
-      startY: 30,
-      head: [['Poste', 'Désignation', 'Qté', 'PU', 'Total']],
-      body: body,
-      theme: 'grid',
-      headStyles: { fillColor: [49, 46, 129] }
+      startY: 64,
+      head: [["Poste", "Désignation", "Qté", "PU", "Total"]],
+      body: [
+        ...detailRows.map((r) => [
+          r.poste,
+          r.designation,
+          r.quantite.toLocaleString("fr-FR"),
+          fmtPdfMoney(r.pu, currency),
+          fmtPdfMoney(r.total, currency),
+        ]),
+        ["TOTAL GÉNÉRAL", "", "", "", fmtPdfMoney(totalGlobal, currency)],
+      ],
+      theme: "grid",
+      headStyles: { fillColor: [49, 46, 129], textColor: [255, 255, 255], fontStyle: "bold" },
+      styles: { fontSize: 9, cellPadding: 2.5, lineColor: [229, 231, 235], valign: "top" },
+      alternateRowStyles: { fillColor: [249, 250, 251] },
+      columnStyles: {
+        0: { cellWidth: 72, fontStyle: "bold" },
+        1: { cellWidth: 68 },
+        2: { cellWidth: 30, halign: "right" },
+        3: { cellWidth: 45, halign: "right" },
+        4: { cellWidth: 49, halign: "right", fontStyle: "bold" },
+      },
+      margin: { left: 14, right: 14 },
     });
+
+    doc.addPage();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.setTextColor(49, 46, 129);
+    doc.text("MATÉRIAUX CUMULÉS", 10, 18);
+    doc.autoTable({
+      startY: 26,
+      head: [["Matériau cumulé", "Quantité", "Unité"]],
+      body: materialRows,
+      theme: "grid",
+      headStyles: { fillColor: [49, 46, 129], textColor: [255, 255, 255], fontSize: 11 },
+      styles: { fontSize: 11, cellPadding: 3.5, lineColor: [229, 231, 235] },
+      alternateRowStyles: { fillColor: [238, 242, 255] },
+      columnStyles: {
+        0: { cellWidth: 145, fontStyle: "bold" },
+        1: { cellWidth: 85, halign: "right", fontStyle: "bold" },
+        2: { cellWidth: 47 },
+      },
+      margin: { left: 10, right: 10 },
+    });
+
+    addPdfFooters(doc, "ChantiLink - devis ferroviaire");
     doc.save("Devis_RailPro.pdf");
   };
 
@@ -243,6 +363,9 @@ export default function DevisFerroviaire({ currency = "XOF" }) {
       <div className="flex-shrink-0 p-4 border-t border-gray-800 bg-gray-900/50 backdrop-blur-sm flex justify-center gap-4">
         <button onClick={exportPDF} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 px-8 py-3 rounded-full font-bold text-sm transition-all shadow-lg shadow-indigo-500/20 active:scale-95">
           <Download className="w-4 h-4" /> Générer le BPU (PDF)
+        </button>
+        <button onClick={exportExcel} className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 px-8 py-3 rounded-full font-bold text-sm transition-all shadow-lg shadow-emerald-900/20 active:scale-95">
+          <Package className="w-4 h-4" /> Export Excel
         </button>
         <button onClick={() => setView("phases")} className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 px-8 py-3 rounded-full font-bold text-sm border border-gray-700 transition-all">
           <Trash2 className="w-4 h-4 text-red-500" /> Réinitialiser

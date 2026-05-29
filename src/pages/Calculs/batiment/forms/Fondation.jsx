@@ -4,9 +4,11 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
 import {
   BrickWall, Ruler, Banknote, Save, Trash2, History,
   Anchor, Droplets, Info, Target, Link, Zap, AlertTriangle,
+  ChevronDown,
 } from "lucide-react";
 
 import { useProjectStore } from "../../../../store/useProjectStore";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -14,15 +16,6 @@ const STORAGE_KEY = "fondation-history-pro";
 
 // ─── TYPES FONDATION ── ratios corrigés selon descriptif du devis ─────────────
 const TYPES_FONDATION = {
-  BETON_PROPRETE: {
-    label: "Béton de propreté",
-    acier: 0,
-    icon: "🟩",
-    desc: "Béton maigre dosé 150 kg/m³, sans armatures — sous semelles, radier, longrines",
-    dosageForce: "150",
-    epaisseurDefaut: 0.05,           // 5 cm standard descriptif
-    needsPropreteAuto: false,
-  },
   FILANTE: {
     label: "Semelle Filante",
     acier: 80,                        // ✅ ratio standard BTP Côte d'Ivoire
@@ -77,6 +70,23 @@ const DOSAGES_CIMENT = {
 const fmt  = (n) => Math.round(n).toLocaleString("fr-FR");
 const fmtD = (n, d = 2) => (n || 0).toFixed(d);
 
+const computeSurfaceCoffrage = ({ typeFondation, longueur, largeur, profondeur, nombre }) => {
+  if (longueur <= 0 || largeur <= 0 || profondeur <= 0) return 0;
+
+  switch (typeFondation) {
+    case "FILANTE":
+    case "LONGRINE":
+      return 2 * longueur * profondeur;
+    case "ISOLEE":
+    case "MASSIF":
+      return 2 * (longueur + largeur) * profondeur * nombre;
+    case "RADIER":
+      return 2 * (longueur + largeur) * profondeur;
+    default:
+      return 0;
+  }
+};
+
 // ─── COMPOSANT PRINCIPAL ──────────────────────────────────────────────────────
 export default function Fondation({ currency = "XOF", onCostChange, onMateriauxChange }) {
 
@@ -86,10 +96,11 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
   const setCost      = useProjectStore((s) => s.setCost);
 
   // ── États ─────────────────────────────────────────────────────────────────
-  const [inputs, setInputs] = useState({
+  const [inputs, setInputs] = usePersistentState("fondation:inputs", {
     typeFondation: "ISOLEE",
     dosage:        "400",
     ratioAcier:    "120",   // ✅ éditable par l'utilisateur
+    nombre:        "1",
     longueur:      "",
     largeur:       "",
     profondeur:    "",
@@ -99,7 +110,7 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
   });
 
   // Béton de propreté automatique
-  const [propreteAuto, setPropreteAuto] = useState({
+  const [propreteAuto, setPropreteAuto] = usePersistentState("fondation:propreteAuto", {
     actif: true,
     epaisseur: "0.05",
   });
@@ -107,23 +118,46 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
   const [historique, setHistorique]   = useState([]);
   const [message,    setMessage]      = useState(null);
   const [showTooltip, setShowTooltip] = useState(null);
+  const [activeTab, setActiveTab]      = usePersistentState("fondation:activeTab", "ouvrages");
 
   // ── Liaison terrassement ──────────────────────────────────────────────────
   const [autoData, setAutoData] = useState({
     volumeRefDisponible: false,
     volumeRef: 0,
     profondeurRef: 0,
+    surfaceRef: 0,
   });
 
   useEffect(() => {
-    if (terrassement.totalDeblai > 0) {
+    if (terrassement.totalDeblai > 0 || terrassement.surfacePlateforme > 0) {
       setAutoData({
-        volumeRefDisponible: true,
+        volumeRefDisponible: terrassement.totalDeblai > 0,
         volumeRef:     terrassement.totalDeblai,
         profondeurRef: terrassement.profondeurMoyenne || 0,
+        surfaceRef:    terrassement.surfacePlateforme || 0,
       });
     }
-  }, [terrassement.totalDeblai, terrassement.profondeurMoyenne]);
+  }, [terrassement.totalDeblai, terrassement.profondeurMoyenne, terrassement.surfacePlateforme]);
+
+  const surfaceAsSquareSide = autoData.surfaceRef > 0 ? Math.sqrt(autoData.surfaceRef) : 0;
+  const autoInputValues = useMemo(() => {
+    const canUseSurface = inputs.typeFondation === "RADIER";
+
+    return {
+      longueur: canUseSurface ? surfaceAsSquareSide : 0,
+      largeur: canUseSurface ? surfaceAsSquareSide : 0,
+      profondeur: autoData.profondeurRef || 0,
+    };
+  }, [inputs.typeFondation, surfaceAsSquareSide, autoData.profondeurRef]);
+
+  const getEffectiveInput = (key) => {
+    const current = inputs[key];
+    const auto = autoInputValues[key];
+    if ((current === undefined || current === "") && Number(auto) > 0) return String(auto);
+    return current;
+  };
+
+  const needsQuantity = ["ISOLEE", "MASSIF"].includes(inputs.typeFondation);
 
   // ✅ Préremplissage intelligent selon le type sélectionné
   const handleTypeChange = (key) => {
@@ -133,7 +167,8 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
       typeFondation: key,
       dosage:     type.dosageForce || prev.dosage,
       ratioAcier: String(type.acier),   // ✅ prérempli mais modifiable
-      profondeur: key === "BETON_PROPRETE" ? "0.05" : prev.profondeur,
+      nombre: ["ISOLEE", "MASSIF"].includes(key) ? (prev.nombre || "1") : "1",
+      profondeur: prev.profondeur,
     }));
   };
 
@@ -146,13 +181,22 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
 
   // ── Moteur de calcul principal ────────────────────────────────────────────
   const results = useMemo(() => {
-    const L     = parseFloat(inputs.longueur)    || 0;
-    const l     = parseFloat(inputs.largeur)     || 0;
-    const p     = parseFloat(inputs.profondeur)  || 0;
+    const L     = parseFloat(getEffectiveInput("longueur"))   || 0;
+    const l     = parseFloat(getEffectiveInput("largeur"))    || 0;
+    const p     = parseFloat(getEffectiveInput("profondeur")) || 0;
+    const nb    = needsQuantity ? (parseFloat(inputs.nombre) || 1) : 1;
     const marge = 1 + (parseFloat(inputs.margePerte) || 0) / 100;
 
-    const volumeBrut     = L * l * p;
+    const surfaceSupport = L * l * nb;
+    const volumeBrut     = surfaceSupport * p;
     const volumeCommande = volumeBrut * marge;
+    const surfaceCoffrage = computeSurfaceCoffrage({
+      typeFondation: inputs.typeFondation,
+      longueur: L,
+      largeur: l,
+      profondeur: p,
+      nombre: nb,
+    });
 
     const configDosage = DOSAGES_CIMENT[inputs.dosage];
     const ratioAcier   = parseFloat(inputs.ratioAcier) || 0;
@@ -168,9 +212,8 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
     // ✅ Calcul automatique béton de propreté
     const typeInfo = TYPES_FONDATION[inputs.typeFondation];
     const epProprete = parseFloat(propreteAuto.epaisseur) || 0.05;
-    const surface    = L * l;
-    const volumeProprete     = typeInfo.needsPropreteAuto && propreteAuto.actif && surface > 0
-      ? surface * epProprete
+    const volumeProprete     = typeInfo.needsPropreteAuto && propreteAuto.actif && surfaceSupport > 0
+      ? surfaceSupport * epProprete
       : 0;
     const volumePropreteCmd  = volumeProprete * marge;
     const configProprete     = DOSAGES_CIMENT[150];
@@ -188,7 +231,7 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
     const volumeRemblaiEstime = Math.max(0, (terrassement.totalDeblai || 0) - volumeCommande);
 
     return {
-      volumeBrut, volumeCommande, surface,
+      volumeBrut, volumeCommande, surface: surfaceSupport, surfaceSupport, surfaceCoffrage, nombre: nb,
       cimentT, cimentSacs, sableT, gravierT,
       acierT, acierKg, eauL,
       total, coutMateriaux, mo,
@@ -197,7 +240,7 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
       volumeProprete, volumePropreteCmd,
       cimentProprete, sableProprete, gravierProprete, sacsProprete,
     };
-  }, [inputs, propreteAuto, terrassement.totalDeblai]);
+  }, [inputs, propreteAuto, terrassement.totalDeblai, autoInputValues, needsQuantity]);
 
   // ── Synchronisation store ─────────────────────────────────────────────────
   useEffect(() => {
@@ -205,7 +248,11 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
     if (onMateriauxChange) onMateriauxChange({
       volume: results.volumeCommande,
       ciment: results.cimentT + results.cimentProprete,
+      sable: results.sableT + results.sableProprete,
+      gravier: results.gravierT + results.gravierProprete,
+      eau: results.eauL,
       acier:  results.acierT,
+      coffrage: results.surfaceCoffrage,
     });
 
     setCost("fondation", results.total);
@@ -213,18 +260,27 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
       volumeBetonFondation: results.volumeCommande,
       volumeRemblaiEstime:  results.volumeRemblaiEstime,
       typeFondation:        inputs.typeFondation,
-      longueur:             parseFloat(inputs.longueur)   || 0,
-      largeur:              parseFloat(inputs.largeur)    || 0,
-      profondeur:           parseFloat(inputs.profondeur) || 0,
+      longueur:             parseFloat(getEffectiveInput("longueur"))   || 0,
+      largeur:              parseFloat(getEffectiveInput("largeur"))    || 0,
+      profondeur:           parseFloat(getEffectiveInput("profondeur")) || 0,
       acierKg:              results.acierKg,
       surface:              results.surface,
+      volumeBetonProprete:  results.volumePropreteCmd,
+      surfaceBetonProprete: results.volumeProprete > 0 ? results.surfaceSupport : 0,
+      surfaceSupport:       results.surfaceSupport,
+      surfaceCoffrage:      results.surfaceCoffrage,
+      nombre:               results.nombre,
+      volumeBetonTotal:     results.volumeCommande + results.volumePropreteCmd,
+      cimentSacs:           results.cimentSacs + results.sacsProprete,
     });
     setMaterials("fondation", {
       volume:  results.volumeCommande,
       ciment:  results.cimentT + results.cimentProprete,
       sable:   results.sableT  + results.sableProprete,
       gravier: results.gravierT + results.gravierProprete,
+      eau:     results.eauL,
       acier:   results.acierT,
+      coffrage: results.surfaceCoffrage,
     });
   }, [results.total, results.volumeCommande, results.cimentT, results.acierT,
       results.volumeRemblaiEstime, results.cimentProprete]);
@@ -303,11 +359,28 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
         </div>
       </div>
 
+      {/* TABS mobile */}
+      <div className="flex-shrink-0 flex border-b border-gray-800 lg:hidden">
+        {[["ouvrages", "Ouvrages"], ["synthese", "Synthèse"]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors ${
+              activeTab === key
+                ? "text-red-400 border-b-2 border-red-400"
+                : "text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex-1 overflow-y-auto p-4 lg:p-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
           {/* ══ GAUCHE ══ */}
-          <div className="lg:col-span-5 flex flex-col gap-5">
+          <div className={`lg:col-span-5 flex-col gap-5 ${activeTab !== "ouvrages" ? "hidden lg:flex" : "flex"}`}>
 
             {/* Liaison terrassement */}
             {autoData.volumeRefDisponible && (
@@ -321,6 +394,9 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
                     Déblais totaux : <span className="font-mono font-bold text-amber-300">{fmtD(autoData.volumeRef)} m³</span>
                     {autoData.profondeurRef > 0 && (
                       <> · Profondeur : <span className="font-mono font-bold text-amber-300">{fmtD(autoData.profondeurRef)} m</span></>
+                    )}
+                    {autoData.surfaceRef > 0 && (
+                      <> · Surface plateforme : <span className="font-mono font-bold text-amber-300">{fmtD(autoData.surfaceRef)} m²</span></>
                     )}
                   </p>
                   {autoData.profondeurRef > 0 && !inputs.profondeur && (
@@ -346,25 +422,25 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
 
             {/* ✅ Type d'ouvrage avec préremplissage intelligent */}
             <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-4">
-              <h3 className="text-[10px] font-bold text-red-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-                Type d'élément
-                <span className="text-[9px] text-gray-500 normal-case font-normal">— dosage & acier préremplis automatiquement</span>
+              <h3 className="text-[10px] font-bold text-red-400 uppercase tracking-widest mb-3">
+                Ouvrage de fondation
               </h3>
-              <div className="grid grid-cols-3 gap-2">
-                {Object.entries(TYPES_FONDATION).map(([key, type]) => (
-                  <button key={key}
-                    onClick={() => handleTypeChange(key)}
-                    className={`p-2 rounded-xl border text-[9px] font-bold transition-all flex flex-col items-center gap-1 ${
-                      inputs.typeFondation === key
-                        ? "border-red-500 bg-red-500/10 text-red-400"
-                        : "border-gray-700 bg-gray-800 text-gray-500"
-                    }`}>
-                    <span className="text-lg">{type.icon}</span>
-                    <span className="text-center leading-tight">{type.label}</span>
-                    <span className="text-[8px] opacity-60">{type.acier} kg/m³</span>
-                    <span className="text-[8px] opacity-40">{type.dosageForce} kg ciment</span>
-                  </button>
-                ))}
+              <label className="block mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+                Type d'ouvrage
+              </label>
+              <div className="relative">
+                <select
+                  value={inputs.typeFondation}
+                  onChange={(e) => handleTypeChange(e.target.value)}
+                  className="w-full appearance-none bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 pr-10 text-sm text-white focus:border-red-500 focus:ring-1 focus:ring-red-500/30 focus:outline-none transition-all"
+                >
+                  {Object.entries(TYPES_FONDATION).map(([key, type]) => (
+                    <option key={key} value={key}>
+                      {type.label} - {type.dosageForce} kg/m³ - HA {type.acier} kg/m³
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
               </div>
               {inputs.typeFondation && (
                 <p className="mt-2 text-[10px] text-gray-500 italic leading-relaxed">
@@ -423,7 +499,7 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
                 )}
 
                 <p className="mt-2 text-[9px] text-green-400/50 italic">
-                  Surface fondation × épaisseur · Dosage 150 kg/m³ CPJ 42,5 · Sans armatures
+                  Surface support de l'ouvrage × épaisseur · Dosage 150 kg/m³ CPJ 42,5 · Sans armatures
                 </p>
               </div>
             )}
@@ -434,12 +510,19 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
                 <Ruler className="w-3 h-3" /> Dimensions Géométriques
               </h3>
               <div className="grid grid-cols-2 gap-4">
+                {needsQuantity && (
+                  <InputGroup label="Nombre d'ouvrages" value={inputs.nombre}
+                    onChange={(e) => setInputs({ ...inputs, nombre: e.target.value })} />
+                )}
                 <InputGroup label="Longueur (m)" value={inputs.longueur}
+                  autoValue={autoInputValues.longueur}
                   onChange={(e) => setInputs({ ...inputs, longueur: e.target.value })} />
                 <InputGroup label="Largeur (m)"  value={inputs.largeur}
+                  autoValue={autoInputValues.largeur}
                   onChange={(e) => setInputs({ ...inputs, largeur: e.target.value })} />
                 <InputGroup label="Épaisseur / Prof. (m)" value={inputs.profondeur}
-                  onChange={(e) => setInputs({ ...inputs, profondeur: e.target.value })} full />
+                  autoValue={autoInputValues.profondeur}
+                  onChange={(e) => setInputs({ ...inputs, profondeur: e.target.value })} full={!needsQuantity} />
               </div>
             </div>
 
@@ -448,14 +531,12 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <div>
                   <label className="text-[10px] font-bold text-gray-500 uppercase block mb-1">Dosage Ciment</label>
-                  <select
-                    className="w-full bg-gray-900 border border-gray-600 rounded-lg p-2 text-sm text-white focus:border-red-500 outline-none"
-                    value={inputs.dosage}
-                    onChange={(e) => setInputs({ ...inputs, dosage: e.target.value })}>
-                    {Object.entries(DOSAGES_CIMENT).map(([kg, val]) => (
-                      <option key={kg} value={kg}>{val.label}</option>
-                    ))}
-                  </select>
+                  <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5">
+                    <p className="text-sm font-bold text-emerald-200">{DOSAGES_CIMENT[inputs.dosage]?.label || `${inputs.dosage} kg/m³`}</p>
+                    <p className="text-[9px] font-bold uppercase tracking-wide text-emerald-400/70">
+                      Appliqué automatiquement selon l'ouvrage
+                    </p>
+                  </div>
                 </div>
                 <InputGroup label="Pertes & Recouv. (%)" value={inputs.margePerte}
                   onChange={(e) => setInputs({ ...inputs, margePerte: e.target.value })} />
@@ -506,15 +587,37 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
                 <Save className="w-5 h-5" /> Calculer & Enregistrer
               </button>
             </div>
+
+            {/* Synthèse interne */}
+            <div className="bg-gray-800/50 border border-red-500/20 rounded-2xl p-4">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div>
+                  <p className="text-[10px] text-red-300 uppercase font-bold tracking-widest">Synthèse fondation</p>
+                  <p className="text-[11px] text-gray-500">Récapitulatif interne en temps réel</p>
+                </div>
+                <span className="text-sm font-black text-red-400 font-mono">{fmt(results.total)} {currency}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <ReadonlySummaryField label="Surface support" value={fmtD(results.surfaceSupport)} unit="m²" />
+                <ReadonlySummaryField label="Nombre" value={fmtD(results.nombre, 0)} unit="u" />
+                <ReadonlySummaryField label="Coffrage" value={fmtD(results.surfaceCoffrage)} unit="m²" />
+                <ReadonlySummaryField label="Volume brut" value={fmtD(results.volumeBrut)} unit="m³" />
+                <ReadonlySummaryField label="Volume commande" value={fmtD(results.volumeCommande)} unit="m³" />
+                <ReadonlySummaryField label="Béton propreté" value={fmtD(results.volumePropreteCmd)} unit="m³" />
+                <ReadonlySummaryField label="Ciment total" value={fmtD(results.cimentSacs + results.sacsProprete, 1)} unit="sacs" />
+                <ReadonlySummaryField label="Acier HA" value={fmtD(results.acierKg, 0)} unit="kg" />
+              </div>
+            </div>
           </div>
 
           {/* ══ DROITE ══ */}
-          <div className="lg:col-span-7 flex flex-col gap-6">
+          <div className={`lg:col-span-7 flex-col gap-6 ${activeTab !== "synthese" ? "hidden lg:flex" : "flex"}`}>
 
             {/* Cartes résultats */}
             <div className="grid grid-cols-3 gap-4">
               <ResultCard label="Volume à Commander" value={fmtD(results.volumeCommande)} unit="m³"   icon="🧊" color="text-red-400"  bg="bg-red-500/10" />
               <ResultCard label="Ciment BA"           value={fmtD(results.cimentSacs, 1)} unit="sacs" icon="🧱" color="text-gray-200" bg="bg-gray-500/10" border />
+              <ResultCard label="Coffrage"            value={fmtD(results.surfaceCoffrage)} unit="m²" icon="📐" color="text-amber-300" bg="bg-amber-500/10" />
               <ResultCard label="Acier HA"            value={fmtD(results.acierKg, 0)}   unit="kg"   icon={<Target className="w-4 h-4"/>} color="text-blue-400" bg="bg-blue-500/10" />
             </div>
 
@@ -553,6 +656,7 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
                 <MaterialRow label={`Ciment (${inputs.dosage} kg/m³)`} val={`${fmtD(results.cimentT)} t · ${fmtD(results.cimentSacs,1)} sacs`} color="bg-red-500" />
                 <MaterialRow label="Sable 0/5"                          val={`${fmtD(results.sableT)} t`}   color="bg-amber-500" />
                 <MaterialRow label="Gravier 5/25"                       val={`${fmtD(results.gravierT)} t`} color="bg-stone-500" />
+                <MaterialRow label="Coffrage fondation"                 val={`${fmtD(results.surfaceCoffrage)} m²`} color="bg-amber-400" />
                 <MaterialRow
                   label={`Acier HA (${inputs.ratioAcier} kg/m³)`}
                   val={`${fmtD(results.acierKg, 0)} kg`}
@@ -612,12 +716,39 @@ export default function Fondation({ currency = "XOF", onCostChange, onMateriauxC
 }
 
 // ─── SOUS-COMPOSANTS ──────────────────────────────────────────────────────────
-const InputGroup = ({ label, value, onChange, full = false }) => (
-  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
-    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase">{label}</label>
-    <input type="number" value={value} onChange={onChange}
-      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-all font-mono text-sm"
-      placeholder="0" />
+const InputGroup = ({ label, value, onChange, full = false, autoValue = 0 }) => {
+  const usesAutoValue = (value === undefined || value === "") && Number(autoValue) > 0;
+
+  return (
+    <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <label className="text-[10px] font-bold text-gray-500 uppercase">{label}</label>
+        {usesAutoValue && (
+          <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-300">
+            Auto
+          </span>
+        )}
+      </div>
+      <input type="number" value={usesAutoValue ? fmtD(autoValue) : value} onChange={onChange}
+        className={`w-full bg-gray-900 border rounded-xl px-4 py-2.5 focus:border-red-500 focus:ring-1 focus:ring-red-500 transition-all font-mono text-sm ${
+          usesAutoValue ? "border-emerald-500/40 text-emerald-200" : "border-gray-600 text-white"
+        }`}
+        placeholder={usesAutoValue ? `Auto: ${fmtD(autoValue)}` : "0"} />
+    </div>
+  );
+};
+
+const ReadonlySummaryField = ({ label, value, unit }) => (
+  <div>
+    <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide leading-tight">{label}</label>
+    <div className="flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-950/70 px-3 py-2">
+      <input
+        readOnly
+        value={value}
+        className="min-w-0 flex-1 bg-transparent text-sm font-mono font-bold text-white outline-none"
+      />
+      <span className="text-[10px] font-bold uppercase text-gray-500">{unit}</span>
+    </div>
   </div>
 );
 

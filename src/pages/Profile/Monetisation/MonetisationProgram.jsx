@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useAuth } from "../../../context/AuthContext";
 import { useDarkMode } from "../../../context/DarkModeContext";
-import { getAuthToken, monetisationFetch } from "./monetisationApi";
+import { getAuthToken, monetisationFetch, readMonetisationJson } from "./monetisationApi";
+import useMonetisationRealtime, { emitMonetisationRefresh } from "./useMonetisationRealtime";
 
 const fallbackStatus = (user = {}) => {
   const followersCount = user.followersCount || user.followers?.length || 0;
@@ -206,23 +207,24 @@ export default function MonetisationProgram({ user, showToast, onNavigate }) {
   const sub = dark ? "#94a3b8" : "#64748b";
   const border = dark ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.08)";
 
-  const refresh = async () => {
-    setLoading(true);
+  const refresh = useCallback(async ({ background = false } = {}) => {
+    if (!background) setLoading(true);
     try {
       const token = await getAuthToken(getToken);
       const res = await monetisationFetch("status", { token });
       if (!res.ok) throw new Error("Statut monétisation indisponible.");
-      setStatus(await res.json());
+      setStatus(await readMonetisationJson(res));
     } catch (err) {
       setStatus(fallbackStatus(user));
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
-  };
+  }, [getToken, user]);
 
   useEffect(() => {
     refresh();
-  }, [getToken, user?._id]);
+  }, [refresh]);
+  useMonetisationRealtime(refresh, "status");
 
   const progress = useMemo(() => {
     const checks = [...(status.certification?.checks || []), ...(status.monetisation?.checks || [])];
@@ -239,13 +241,14 @@ export default function MonetisationProgram({ user, showToast, onNavigate }) {
         token,
         body: JSON.stringify({ type }),
       });
-      const body = await res.json().catch(() => ({}));
+      const body = await readMonetisationJson(res).catch(() => ({}));
       if (!res.ok) {
         const firstMissing = body.missing?.[0]?.label;
         throw new Error(firstMissing ? `Condition manquante : ${firstMissing}` : body.message || "Demande impossible.");
       }
       showToast?.("Demande envoyée. L'équipe ChantiLink va l'examiner.", "success");
       await refresh();
+      emitMonetisationRefresh("all");
     } catch (err) {
       showToast?.(err.message || "Impossible d'envoyer la demande.", "error");
     } finally {

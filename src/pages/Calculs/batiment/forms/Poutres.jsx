@@ -9,6 +9,7 @@ import {
 import { 
   Grid, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Layers, Info, Target
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -27,10 +28,10 @@ const DOSAGE_BETON = {
   eau: 175       // L/m3
 };
 
-export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxChange }) {
+export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxChange, onResultsChange }) {
   
   // --- ÉTATS ---
-  const [inputs, setInputs] = useState({
+  const [inputs, setInputs] = usePersistentState("elevations:poutres:inputs", {
     type: "PRINCIPALE",
     nombre: "1",
     longueur: "",
@@ -92,10 +93,24 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
       onMateriauxChange({
         volume: results.volumeFinal,
         ciment: results.cimentT,
-        acier: results.acierT
+        sable: results.sableT,
+        gravier: results.gravierT,
+        eau: results.eauL,
+        acier: results.acierT,
+        coffrage: results.surfaceCoffrage,
       });
     }
-  }, [results.total, results.volumeFinal, results.cimentT, results.acierT, onTotalChange, onMateriauxChange]);
+    onResultsChange?.({
+      typePoutre: inputs.type,
+      nombre: parseFloat(inputs.nombre) || 0,
+      longueur: parseFloat(inputs.longueur) || 0,
+      largeur: parseFloat(inputs.largeur) || 0,
+      hauteur: parseFloat(inputs.hauteur) || 0,
+      volumeFinal: results.volumeFinal,
+      surfaceCoffrage: results.surfaceCoffrage,
+      acierKg: results.acierKg,
+    });
+  }, [results.total, results.volumeFinal, results.cimentT, results.acierT, results.surfaceCoffrage, onTotalChange, onMateriauxChange, onResultsChange]);
 
   // --- HISTORIQUE ---
   useEffect(() => {
@@ -243,6 +258,7 @@ export default function Poutres({ currency = "XOF", onTotalChange, onMateriauxCh
                   <MaterialRow label="Sable (Ratio 0.6)" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-500" />
                   <MaterialRow label="Gravier (Ratio 0.85)" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
                   <MaterialRow label={`Acier (${results.ratioAcier}kg/m³)`} val={`${results.acierKg.toFixed(0)} kg`} color="bg-red-500" />
+                  <MaterialRow label="Coffrage poutres" val={`${results.surfaceCoffrage.toFixed(1)} m²`} color="bg-indigo-500" />
                   
                   <div className="pt-2 border-t border-gray-700 flex justify-between items-center mt-2">
                     <span className="text-xs text-gray-400 flex items-center gap-1">

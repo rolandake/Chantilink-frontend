@@ -1,9 +1,10 @@
 // src/pages/Profile/Monetisation/WithdrawalsSection.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
-import { getAuthToken, monetisationFetch } from './monetisationApi';
+import { getAuthToken, monetisationFetch, readMonetisationJson } from './monetisationApi';
+import useMonetisationRealtime, { emitMonetisationRefresh } from './useMonetisationRealtime';
 
 export default function WithdrawalsSection() {
   const { user, getToken } = useAuth();
@@ -23,20 +24,28 @@ export default function WithdrawalsSection() {
   const text = isDarkMode ? '#f3f4f6' : '#111827';
   const sub  = isDarkMode ? '#6b7280' : '#9ca3af';
 
-  const fetchWithdrawals = async () => {
+  const fetchWithdrawals = useCallback(async ({ background = false } = {}) => {
     if (!user) return;
-    setLoading(true);
+    if (!background) {
+      setLoading(true);
+      setError('');
+    }
     try {
       const token = await getAuthToken(getToken);
       const res  = await monetisationFetch('withdrawals', { token });
       if (!res.ok) throw new Error('Erreur chargement retraits');
-      const data = await res.json();
+      const data = await readMonetisationJson(res);
       setWithdrawals(data.withdrawals || []);
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  };
+    } catch (e) {
+      if (!background) setError(e.message);
+    }
+    finally {
+      if (!background) setLoading(false);
+    }
+  }, [getToken, user]);
 
-  useEffect(() => { fetchWithdrawals(); }, [user, getToken]);
+  useEffect(() => { fetchWithdrawals(); }, [fetchWithdrawals]);
+  useMonetisationRealtime(fetchWithdrawals, 'withdrawals');
 
   const handleWithdraw = async () => {
     setError(''); setSuccess('');
@@ -50,11 +59,12 @@ export default function WithdrawalsSection() {
         token,
         body: JSON.stringify({ amount:num, method }),
       });
-      const data = await res.json();
+      const data = await readMonetisationJson(res);
       if (!res.ok) throw new Error(data.message || 'Erreur lors du retrait');
       setAmount('');
       setSuccess('Demande de retrait envoyée avec succès !');
-      fetchWithdrawals();
+      await fetchWithdrawals({ background: true });
+      emitMonetisationRefresh('all');
       setTimeout(() => setSuccess(''), 4000);
     } catch (e) { setError(e.message); }
     finally { setSubmitting(false); }

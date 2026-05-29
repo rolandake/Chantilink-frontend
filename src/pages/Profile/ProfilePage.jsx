@@ -81,39 +81,77 @@ export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
     const seen = new Set();
     const result = [];
     const sorted = [...cache.entries()].sort((a, b) => b[1].ts - a[1].ts);
-    for (const [, { posts, ts }] of sorted) {
+    for (const [userId, { posts, ts }] of sorted) {
       if (now - ts > maxAge) continue;
       for (const p of posts) {
         if (!p?._id || seen.has(p._id)) continue;
         seen.add(p._id);
-        result.push({ ...p, _fromProfileCache: true });
+        result.push({ 
+          ...p, 
+          _fromProfileCache: true,
+          _profileCacheUserId: userId,
+          _profileCacheLoadedAt: ts,
+          // Marquer pour isolation: ne pas mélanger automatiquement avec home feed
+          _shouldIsolateFromHomeFeed: true,
+        });
       }
     }
     return result;
   } catch { return []; }
 };
 
+// 🧹 Nettoyer le cache des posts du profil quand on navigue away
+export const clearProfilePostsCache = () => {
+  if (typeof window !== "undefined") {
+    try {
+      window.__profilePostsCache__ = new Map();
+      console.log("✅ [ProfilePage] Cache des posts du profil nettoyé");
+    } catch {}
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
-const normalizePost = (p) => ({
-  _id:             p._id || p.id,
-  content:         p.content || "",
-  media: Array.isArray(p.media)
-    ? p.media.map((m) => ({ url: m?.url || m?.path || m?.location || m, type: m?.type || "image" }))
-    : [],
-  user: typeof p.user === "object" ? (p.user._id ? p.user : { _id: p.user.id }) : { _id: p.user },
-  likes:           p.likes    || [],
-  comments:        p.comments || [],
-  views:           p.views    || [],
-  shares:          p.shares   || [],
-  createdAt:       p.createdAt,
-  mediaType:       p.mediaType       || null,
-  textCardPalette: p.textCardPalette ?? undefined,
-  location:        p.location        || null,
-  privacy:         p.privacy         || null,
-  isOptimistic:    p.isOptimistic    || false,
-});
+const normalizePost = (p) => {
+  const rawUser = p.user || p.auteur || p.author || {};
+  const normalizedUser = typeof rawUser === "object"
+    ? {
+        ...(rawUser || {}),
+        _id: rawUser._id || rawUser.id || p.userId || p.owner || p.createdBy,
+        fullName: rawUser.fullName || rawUser.name || p.fullName || "Utilisateur",
+        profilePhoto: rawUser.profilePhoto || rawUser.avatar || p.userProfilePhoto || null,
+      }
+    : { _id: rawUser || p.userId || p.owner || p.createdBy, fullName: p.fullName || "Utilisateur" };
+
+  return {
+    _id:             p._id || p.id,
+    content:         p.content || p.contenu || "",
+    contenu:         p.contenu || p.content || "",
+    media: Array.isArray(p.media)
+      ? p.media.map((m) => ({ url: m?.url || m?.path || m?.location || m, type: m?.type || p.mediaType || "image" }))
+      : [],
+    user:            normalizedUser,
+    author:          p.author || p.auteur || normalizedUser,
+    userId:          p.userId || normalizedUser._id,
+    likes:           p.likes    || [],
+    comments:        p.comments || [],
+    views:           p.views    || [],
+    shares:          p.shares   || [],
+    likesCount:      p.likesCount,
+    commentsCount:   p.commentsCount,
+    viewsCount:      p.viewsCount,
+    sharesCount:     p.sharesCount,
+    createdAt:       p.createdAt,
+    updatedAt:       p.updatedAt,
+    mediaType:       p.mediaType       || null,
+    textCardPalette: p.textCardPalette ?? undefined,
+    location:        p.location        || null,
+    privacy:         p.privacy         || null,
+    isBoosted:       !!p.isBoosted,
+    isOptimistic:    p.isOptimistic    || false,
+  };
+};
 
 const extractPostsFromResult = (result) => {
   if (!result) return [];
@@ -124,6 +162,16 @@ const extractPostsFromResult = (result) => {
   if (result.success && Array.isArray(result.posts)) return result.posts;
   return [];
 };
+
+const profileDebug = (...args) => {
+  if (import.meta.env?.DEV) console.log("[ProfileDebug]", ...args);
+};
+
+const withTimeout = (promise, ms, fallbackValue) =>
+  Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve(fallbackValue), ms)),
+  ]);
 
 const extractImageUrls = (posts = [], max = 15) => {
   const urls = [];
@@ -234,6 +282,17 @@ const getPostsFromHomePool = (targetId) => {
   } catch { return []; }
 };
 
+const isVideoPost = (post) => {
+  if (!post) return false;
+  if (String(post.mediaType || "").toLowerCase().includes("video")) return true;
+  const media = Array.isArray(post.media) ? post.media : [];
+  return media.some((m) => {
+    const type = String(m?.type || "").toLowerCase();
+    const url = String(m?.url || m?.path || m?.location || m || "").toLowerCase().split("?")[0];
+    return type.includes("video") || /\.(mp4|webm|mov|avi|mkv|flv|m4v)$/i.test(url) || /\/videos?\//i.test(url);
+  });
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPOSANTS UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,11 +319,13 @@ const FollowButton = memo(({ isFollowing, isLoading, onClick, isDarkMode }) => (
     whileHover={{ scale: isLoading ? 1 : 1.04, y: isLoading ? 0 : -1 }}
     whileTap={{ scale: isLoading ? 1 : 0.97 }}
     style={{
-      padding: "11px 36px",
+      width: "100%",
+      minHeight: 36,
+      padding: "8px 14px",
       borderRadius: 999,
       fontFamily: "'Sora','DM Sans',sans-serif",
       fontWeight: 700,
-      fontSize: 15,
+      fontSize: 14,
       cursor: isLoading ? "not-allowed" : "pointer",
       border: isFollowing
         ? `1px solid ${isDarkMode ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)"}`
@@ -273,9 +334,9 @@ const FollowButton = memo(({ isFollowing, isLoading, onClick, isDarkMode }) => (
         ? (isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)")
         : "linear-gradient(135deg,#f97316,#ec4899)",
       color: isFollowing ? (isDarkMode ? "#9ca3af" : "#6b7280") : "#fff",
-      boxShadow: isFollowing ? "none" : "0 6px 24px rgba(249,115,22,0.4)",
+      boxShadow: "none",
       opacity: isLoading ? 0.7 : 1,
-      display: "flex", alignItems: "center", gap: 8,
+      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
       transition: "all 0.2s",
     }}
   >
@@ -370,7 +431,7 @@ export default function ProfilePage({
     initialUser || navInstantUser || (isOwner ? authUser : null)
   );
   const [profilePosts,   setProfilePosts]   = useState(initialPosts || []);
-  const [selectedTab,    setSelectedTab]    = useState("posts");
+  const [selectedTab,    setSelectedTab]    = useState("feed");
   const [toast,          setToast]          = useState(null);
   const [followLoading,  setFollowLoading]  = useState(false);
   const [page,           setPage]           = useState(1);
@@ -541,10 +602,11 @@ export default function ProfilePage({
   // ── Post lifecycle ─────────────────────────────────────────────────────────
   const handlePostCreated = useCallback(async (newPost) => {
     const normalized = normalizePost(newPost);
-    if (!isMockProfile) await syncNewPost(normalized, profileUser._id);
+    const ownerId = profileUser?._id || targetUserId || authUserId;
+    if (!isMockProfile && ownerId) await syncNewPost(normalized, ownerId);
     startTransition(() => setProfilePosts(prev => [normalized, ...prev]));
     showLocalToast("Post publié !");
-  }, [profileUser?._id, showLocalToast, isMockProfile]);
+  }, [profileUser?._id, targetUserId, authUserId, showLocalToast, isMockProfile]);
 
   const handlePostDeleted = useCallback(async (postId) => {
     if (!isMockProfile) await syncDeletePost(postId, profileUser._id);
@@ -554,9 +616,25 @@ export default function ProfilePage({
 
   // ── loadProfilePosts ───────────────────────────────────────────────────────
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
-    if (!targetId || loadingRef.current) return;
+    profileDebug("loadProfilePosts:start", {
+      targetId,
+      pageNumber,
+      append,
+      prefetchedCount: Array.isArray(prefetchedPosts) ? prefetchedPosts.length : 0,
+      loadingLocked: loadingRef.current,
+      currentPosts: profilePosts.length,
+    });
+
+    if (!targetId || loadingRef.current) {
+      profileDebug("loadProfilePosts:skip", {
+        reason: !targetId ? "missing_targetId" : "loading_locked",
+        targetId,
+      });
+      return;
+    }
     if (!isValidObjectId(targetId)) {
       const localPosts = getPostsFromHomePool(targetId);
+      profileDebug("loadProfilePosts:invalidObjectId", { targetId, homePoolCount: localPosts.length });
       if (localPosts.length > 0) {
         startTransition(() => setProfilePosts(localPosts.map(normalizePost)));
         storeProfilePostsInCache(targetId, localPosts);
@@ -570,11 +648,13 @@ export default function ProfilePage({
 
       if (prefetchedPosts && !append) {
         postsArray = prefetchedPosts;
+        profileDebug("loadProfilePosts:prefetched", { count: postsArray.length });
         startTransition(() => setProfilePosts(prefetchedPosts));
       }
 
       if (isMockProfile && initialPosts && !append) {
         postsArray = initialPosts;
+        profileDebug("loadProfilePosts:mockInitial", { count: postsArray.length });
         startTransition(() => setProfilePosts(initialPosts));
         storeProfilePostsInCache(targetId, initialPosts);
         return;
@@ -582,35 +662,63 @@ export default function ProfilePage({
 
       if (!isMockProfile && !append && !prefetchedPosts) {
         try {
-          const cached = await getCachedPosts(targetId);
+          profileDebug("loadProfilePosts:cache:start", { targetId });
+          const cached = await withTimeout(getCachedPosts(targetId), 1200, []);
           if (Array.isArray(cached) && cached.length > 0) {
             postsArray = cached;
+            profileDebug("loadProfilePosts:cache", { count: cached.length });
             startTransition(() => setProfilePosts(cached));
-            storeProfilePostsInCache(targetId, cached);
+            Promise.resolve(storeProfilePostsInCache(targetId, cached)).catch(() => {});
+          } else {
+            profileDebug("loadProfilePosts:cacheEmpty", { targetId });
           }
-        } catch (e) { console.warn("IDB cache read error:", e); }
+        } catch (e) {
+          profileDebug("loadProfilePosts:cache:error", { message: e?.message });
+          console.warn("IDB cache read error:", e);
+        }
       }
 
       if (!append && !prefetchedPosts && postsArray.length === 0) {
         const homePostsForUser = getPostsFromHomePool(targetId);
+        profileDebug("loadProfilePosts:homePool", { count: homePostsForUser.length });
         if (homePostsForUser.length > 0) {
           postsArray = homePostsForUser;
           startTransition(() => setProfilePosts(homePostsForUser.map(normalizePost)));
-          storeProfilePostsInCache(targetId, homePostsForUser);
+          Promise.resolve(storeProfilePostsInCache(targetId, homePostsForUser)).catch(() => {});
         }
       }
 
       if (navigator.onLine && !prefetchedPosts) {
         try {
-          const result  = await fetchUserPosts(targetId, pageNumber);
+          profileDebug("loadProfilePosts:api:start", { targetId, pageNumber });
+          const result  = await Promise.race([
+            fetchUserPosts(targetId, pageNumber),
+            new Promise(resolve => setTimeout(() => resolve([]), 10000)),
+          ]);
           const fetched = extractPostsFromResult(result);
+          profileDebug("loadProfilePosts:api:done", {
+            resultType: Array.isArray(result) ? "array" : typeof result,
+            fetchedCount: fetched.length,
+            previousSourceCount: postsArray.length,
+          });
           if (fetched.length > 0) postsArray = fetched;
-        } catch {
+        } catch (err) {
+          profileDebug("loadProfilePosts:api:error", { message: err?.message });
           if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info");
         }
+      } else {
+        profileDebug("loadProfilePosts:api:skip", {
+          online: navigator.onLine,
+          hasPrefetchedPosts: !!prefetchedPosts,
+        });
       }
 
       setHasMore(postsArray.length >= 20);
+      profileDebug("loadProfilePosts:final", {
+        finalCount: postsArray.length,
+        append,
+        hasMore: postsArray.length >= 20,
+      });
       startTransition(() => {
         setProfilePosts(prev => {
           const base   = append ? prev : [];
@@ -620,14 +728,39 @@ export default function ProfilePage({
             .filter(p => { if (!p?._id || seen.has(p._id)) return false; seen.add(p._id); return true; })
             .map(normalizePost)
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          profileDebug("loadProfilePosts:setState", {
+            previousCount: prev.length,
+            mergedCount: merged.length,
+            uniqueCount: unique.length,
+            sampleIds: unique.slice(0, 3).map(p => p._id),
+          });
           if (!isMockProfile && isValidObjectId(targetId)) savePosts(targetId, unique);
           storeProfilePostsInCache(targetId, unique);
           return unique;
         });
       });
     } catch (err) { console.error("[Profile] loadProfilePosts error:", err); }
-    finally { loadingRef.current = false; setIsLoadingPosts(false); }
-  }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts]);
+    finally {
+      profileDebug("loadProfilePosts:end", { targetId, pageNumber });
+      loadingRef.current = false;
+      setIsLoadingPosts(false);
+    }
+  }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts, profilePosts.length]);
+
+  useEffect(() => {
+    if (!isLoadingPosts) return;
+    const timer = setTimeout(() => {
+      profileDebug("postsLoadingWatchdog:release", {
+        targetUserId,
+        currentPosts: profilePosts.length,
+        loadingLocked: loadingRef.current,
+      });
+      loadingRef.current = false;
+      setIsLoadingPosts(false);
+      if (profilePosts.length === 0) setHasMore(false);
+    }, 12000);
+    return () => clearTimeout(timer);
+  }, [isLoadingPosts, profilePosts.length]);
 
   useEffect(() => {
     if (profilePosts.length > 0 && profileUser?._id)
@@ -736,11 +869,24 @@ export default function ProfilePage({
 
   // ── useEffect principal : chargement du profil ────────────────────────────
   useEffect(() => {
-    if (authLoading) return;
-    if (!authUser) { navigate("/auth", { replace: true }); return; }
+    profileDebug("mainEffect:start", {
+      authLoading,
+      hasAuthUser: !!authUser,
+      authUserId,
+      routeUserId: userId,
+      targetUserId,
+      isOwner,
+      hasProfileUser: !!profileUser,
+      isLoadingUser,
+      postsCount: profilePosts.length,
+    });
+
+    if (authLoading && !authUser && !targetUserId) return;
+    if (!authUser && !targetUserId) { navigate("/auth", { replace: true }); return; }
 
     // Cas 1 : navigation instantanée (instantUser depuis PostCard)
     if (navInstantUser && !initialUser && !silentRevalidatedRef.current) {
+      profileDebug("mainEffect:case", "navInstantUser");
       silentRevalidatedRef.current = true;
       setIsLoadingUser(false);
       setUserNotFound(false);
@@ -763,6 +909,7 @@ export default function ProfilePage({
 
     // Cas 2 : profil injecté (SSR / parent)
     if (initialUser) {
+      profileDebug("mainEffect:case", "initialUser");
       setProfileUser(initialUser);
       setIsBot(!!initialUser.isBot);
       setIsLoadingUser(false);
@@ -774,6 +921,7 @@ export default function ProfilePage({
 
     // Cas 3 : pas d'ID
     if (!targetUserId || targetUserId === "undefined") {
+      profileDebug("mainEffect:case", "missingTargetUserId");
       setIsLoadingUser(false);
       setUserNotFound(true);
       return;
@@ -781,6 +929,7 @@ export default function ProfilePage({
 
     // Cas 4 : mock ID
     if (isMockId(targetUserId)) {
+      profileDebug("mainEffect:case", "mockId");
       const result = buildProfileFromEmbeddedUser(targetUserId);
       if (result) {
         setProfileUser(result.profile);
@@ -803,6 +952,7 @@ export default function ProfilePage({
 
     // Cas 5 : ID invalide
     if (!isValidObjectId(targetUserId)) {
+      profileDebug("mainEffect:case", "invalidObjectId", { targetUserId, isOwner });
       if (isOwner) {
         setProfileUser(authUser);
         setIsBot(false);
@@ -817,10 +967,18 @@ export default function ProfilePage({
 
     // Cas 6 : chargement normal depuis l'API
     (async () => {
-      setIsLoadingUser(true);
+      profileDebug("mainEffect:case", "normalApi", { targetUserId, isOwner });
+      if (!profileUser && isValidObjectId(targetUserId)) {
+        setProfileUser(isOwner ? authUser : buildMinimalUser(targetUserId));
+      }
+      setIsLoadingUser(!profileUser && !isValidObjectId(targetUserId));
       setUserNotFound(false);
+      let postsLoadPromise = null;
       try {
-        await idbClearOtherKeys(`profilePosts_${targetUserId}`);
+        postsLoadPromise = loadProfilePosts(targetUserId, 1, false);
+        idbClearOtherKeys(`profilePosts_${targetUserId}`)
+          .then(() => profileDebug("mainEffect:idbClearOtherKeys:done", { targetUserId }))
+          .catch(err => profileDebug("mainEffect:idbClearOtherKeys:error", { message: err?.message }));
 
         if (isOwner) {
           setProfileUser(authUser);
@@ -902,20 +1060,33 @@ export default function ProfilePage({
         }
 
         setPage(1); setHasMore(true);
-        await loadProfilePosts(targetUserId, 1, false);
+        await postsLoadPromise;
       } catch (err) {
         console.error("Profil Load Error:", err);
+        profileDebug("mainEffect:error", { message: err?.message });
         if (!profileUser && isValidObjectId(targetUserId)) {
           setProfileUser(buildMinimalUser(targetUserId));
           setUserNotFound(false);
         }
         showLocalToast("Erreur lors du chargement", "error");
       } finally {
+        profileDebug("mainEffect:end", { targetUserId });
         setIsLoadingUser(false);
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, authUser?._id, targetUserId, isOwner]);
+
+  useEffect(() => {
+    if (!isLoadingUser || profileUser || !isValidObjectId(targetUserId)) return;
+    const timer = setTimeout(() => {
+      profileDebug("userLoadingWatchdog:release", { targetUserId, isOwner, hasAuthUser: !!authUser });
+      setProfileUser(isOwner && authUser ? authUser : buildMinimalUser(targetUserId));
+      setUserNotFound(false);
+      setIsLoadingUser(false);
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, [isLoadingUser, profileUser, targetUserId, isOwner, authUser]);
 
   // ── Socket temps réel ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -962,195 +1133,282 @@ export default function ProfilePage({
   }, [socket, profileUser?._id, savePosts, isMockProfile, isBot]);
 
   // ── Stats ──────────────────────────────────────────────────────────────────
+  const effectiveProfileUser =
+    profileUser ||
+    (isValidObjectId(targetUserId)
+      ? (isOwner && authUser ? authUser : buildMinimalUser(targetUserId))
+      : null);
+
   const stats = {
     posts:     profilePosts.length,
-    followers: profileUser?.followers?.length || profileUser?.followersCount || 0,
-    following: profileUser?.following?.length || profileUser?.followingCount || 0,
+    followers: effectiveProfileUser?.followers?.length || effectiveProfileUser?.followersCount || 0,
+    following: effectiveProfileUser?.following?.length || effectiveProfileUser?.followingCount || 0,
   };
 
-  const pageBg = isDarkMode ? "#080808" : "#f5f5f7";
+  const pageBg = isDarkMode ? "#080808" : "#fff";
 
-  const handleProfileBack = useCallback(() => {
-    if (window.history.length > 1) navigate(-1);
-    else navigate("/");
-  }, [navigate]);
+  useEffect(() => {
+    profileDebug("renderState", {
+      targetUserId,
+      authLoading,
+      isLoadingUser,
+      isLoadingPosts,
+      userNotFound,
+      hasProfileUser: !!profileUser,
+      hasEffectiveProfileUser: !!effectiveProfileUser,
+      postsCount: profilePosts.length,
+      hasMore,
+      selectedTab,
+      firstPost: profilePosts[0] ? {
+        id: profilePosts[0]._id,
+        content: String(profilePosts[0].content || profilePosts[0].contenu || "").slice(0, 80),
+        userId: profilePosts[0].user?._id || profilePosts[0].userId || profilePosts[0].author?._id,
+        userName: profilePosts[0].user?.fullName || profilePosts[0].user?.username || profilePosts[0].fullName,
+        mediaType: profilePosts[0].mediaType,
+        mediaCount: Array.isArray(profilePosts[0].media) ? profilePosts[0].media.length : 0,
+      } : null,
+    });
+  }, [
+    targetUserId,
+    authLoading,
+    isLoadingUser,
+    isLoadingPosts,
+    userNotFound,
+    profileUser,
+    effectiveProfileUser,
+    profilePosts,
+    hasMore,
+    selectedTab,
+  ]);
 
-  // ── Écrans d'état ──────────────────────────────────────────────────────────
-  if (authLoading || (isLoadingUser && !profileUser)) {
+  const handleLoadMore = useCallback(() => {
+    if (!hasMore || isLoadingPosts || loadingRef.current || !effectiveProfileUser?._id) return;
+    const nextPage = page + 1;
+    setPage(nextPage);
+    loadProfilePosts(effectiveProfileUser._id, nextPage, true);
+  }, [effectiveProfileUser?._id, hasMore, isLoadingPosts, loadProfilePosts, page]);
+
+  const renderPostsFeed = () => {
+    if (profilePosts.length === 0 && !isLoadingPosts) {
+      return <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />;
+    }
+
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: pageBg }}>
-        <LoadingSpinner darkMode={isDarkMode} />
+      <div className="profile-feed-list">
+        {profilePosts.map((post, index) => {
+          const isLast = index === profilePosts.length - 1;
+          return (
+            <div key={post._id || index} ref={isLast ? lastPostRef : undefined}>
+              <PostCard
+                post={post}
+                onDeleted={handlePostDeleted}
+                showToast={showLocalToast}
+                priority={index < 2}
+                ignoreHidden
+              />
+            </div>
+          );
+        })}
+        {isLoadingPosts && <LoadingSpinner darkMode={isDarkMode} text="Chargement des publications..." />}
       </div>
+    );
+  };
+
+  const renderContent = () => {
+    if (selectedTab === "settings" && isOwner) {
+      return (
+        <section className="profile-section profile-panel">
+          <SettingsSection user={effectiveProfileUser} showToast={showLocalToast} />
+        </section>
+      );
+    }
+
+    if (selectedTab === "feed") {
+      return (
+        <section className="profile-section profile-feed-section">
+          {isOwner && !isMockProfile && !isBot && (
+            <CreatePost
+              user={effectiveProfileUser || authUser}
+              showToast={showLocalToast}
+              onPostCreated={handlePostCreated}
+            />
+          )}
+          {renderPostsFeed()}
+        </section>
+      );
+    }
+
+    const videoPosts = profilePosts.filter(isVideoPost);
+    return (
+      <section className="profile-section">
+        <ProfileMediaGrid
+          posts={videoPosts}
+          isDarkMode={isDarkMode}
+          isLoading={isLoadingPosts}
+          hasMore={hasMore}
+          onLoadMore={handleLoadMore}
+          isOwner={isOwner}
+          emptyMessage={isOwner ? "Tes videos apparaitront ici." : "Les videos publiees apparaitront ici."}
+        />
+      </section>
+    );
+  };
+
+  if (authLoading || (isLoadingUser && !effectiveProfileUser)) {
+    return (
+      <main style={{ minHeight: "100vh", background: pageBg, padding: "32px 16px" }}>
+        <LoadingSpinner darkMode={isDarkMode} text="Chargement du profil..." />
+      </main>
     );
   }
 
-  if (userNotFound || (!profileUser && !isLoadingUser)) {
+  if (userNotFound && !effectiveProfileUser) {
     return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: pageBg, fontFamily: "'Sora','DM Sans',sans-serif" }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 56, marginBottom: 16 }}>🔍</div>
-          <p style={{ fontSize: 18, fontWeight: 700, color: isDarkMode ? "#d1d5db" : "#374151", marginBottom: 20 }}>
-            Profil introuvable
+      <main style={{ minHeight: "100vh", background: pageBg, padding: "32px 16px" }}>
+        <div style={{
+          maxWidth: 520,
+          margin: "56px auto",
+          padding: "34px 24px",
+          textAlign: "center",
+          borderRadius: 18,
+          background: isDarkMode ? "#111" : "#fff",
+          color: isDarkMode ? "#f8fafc" : "#0f172a",
+          border: isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(15,23,42,0.08)",
+          fontFamily: "'Sora','DM Sans',sans-serif",
+        }}>
+          <h1 style={{ margin: "0 0 8px", fontSize: 22, fontWeight: 800 }}>Profil introuvable</h1>
+          <p style={{ margin: 0, color: isDarkMode ? "#94a3b8" : "#64748b", fontSize: 14 }}>
+            Ce profil n'est pas disponible pour le moment.
           </p>
-          <motion.button
-            onClick={() => navigate(-1)}
-            whileHover={{ scale: 1.04, y: -1 }}
-            whileTap={{ scale: 0.97 }}
-            style={{
-              padding: "11px 28px", borderRadius: 999, border: "none", cursor: "pointer",
-              background: "linear-gradient(135deg,#f97316,#ec4899)", color: "#fff",
-              fontWeight: 700, fontSize: 14, boxShadow: "0 6px 24px rgba(249,115,22,0.4)",
-            }}
-          >
-            Retour
-          </motion.button>
         </div>
-      </div>
+        {toast && <Toast message={toast.message} type={toast.type} />}
+      </main>
     );
   }
 
-  // ── Rendu principal ────────────────────────────────────────────────────────
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: pageBg,
-      padding: "0",
-      fontFamily: "'Sora','DM Sans',sans-serif",
-      transition: "background 0.3s",
-    }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <main className="profile-page-shell" style={{ background: pageBg }}>
+      <style>{`
+        .profile-page-shell {
+          min-height: 100vh;
+          padding: 14px 12px 56px;
+          font-family: 'Sora','DM Sans',sans-serif;
+        }
+        .profile-page-frame {
+          width: min(100%, 760px);
+          margin: 0 auto;
+        }
+        .profile-layout-card {
+          overflow: hidden;
+          border-radius: 18px;
+          border: 1px solid ${isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(15,23,42,0.08)"};
+          background: ${isDarkMode ? "#0f0f0f" : "#fff"};
+          box-shadow: ${isDarkMode ? "0 18px 60px rgba(0,0,0,0.42)" : "0 18px 50px rgba(15,23,42,0.08)"};
+        }
+        .profile-section {
+          padding: 10px;
+          background: ${isDarkMode ? "#0f0f0f" : "#fff"};
+        }
+        .profile-feed-section {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          padding: 12px;
+        }
+        .profile-feed-list {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        .profile-panel {
+          padding: 14px;
+        }
+        @media (max-width: 640px) {
+          .profile-page-shell { padding: 0 0 42px; }
+          .profile-page-frame { width: 100%; }
+          .profile-layout-card {
+            border-left: 0;
+            border-right: 0;
+            border-radius: 0;
+            box-shadow: none;
+          }
+          .profile-section { padding: 3px; }
+          .profile-feed-section { padding: 8px; }
+        }
+      `}</style>
 
-      <motion.button
-        onClick={handleProfileBack}
-        whileHover={{ scale: 1.02 }}
-        whileTap={{ scale: 0.96 }}
-        className="fixed z-[90] flex items-center gap-2 pl-2 pr-4 py-2 rounded-full shadow-xl"
-        style={{
-          top: "max(16px, env(safe-area-inset-top, 16px))",
-          left: 16,
-          background: isDarkMode ? "rgba(15,23,42,0.92)" : "rgba(255,255,255,0.92)",
-          border: "1px solid rgba(148,163,184,0.18)",
-          color: isDarkMode ? "#f8fafc" : "#111827",
-          backdropFilter: "blur(14px)",
-          WebkitBackdropFilter: "blur(14px)",
-        }}
-      >
-        <span style={{ width: 28, height: 28, display: "grid", placeItems: "center", borderRadius: 999, background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.04)" }}>
-          <span style={{ display: "inline-block", width: 12, height: 12, borderLeft: "2px solid currentColor", borderBottom: "2px solid currentColor", transform: "rotate(45deg)" }} />
-        </span>
-        <span style={{ fontSize: 14, fontWeight: 700 }}>Retour</span>
-      </motion.button>
-
-      {isMockProfile && (
-        <div style={{ maxWidth: 820, margin: "0 auto", padding: "12px 16px 0" }}>
-          <div style={{ padding: "12px 20px", borderRadius: 16, background: "rgba(59,130,246,0.08)", border: "1px solid rgba(59,130,246,0.2)" }}>
-            <p style={{ fontSize: 13, color: "#3b82f6", textAlign: "center", margin: 0, fontWeight: 500 }}>
-              Profil de démonstration — Toutes les interactions sont simulées
-            </p>
-          </div>
-        </div>
-      )}
-
-      <div style={{ maxWidth: 820, margin: "0 auto", padding: "0 0 24px" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
+      <div className="profile-page-frame">
+        <div className="profile-layout-card">
           <ProfileHeader
-            user={profileUser}
+            user={effectiveProfileUser}
             isOwnProfile={isOwner}
             posts={profilePosts}
-            followers={profileUser.followers || []}
-            following={profileUser.following || []}
+            followers={effectiveProfileUser?.followers || []}
+            following={effectiveProfileUser?.following || []}
             showToast={showLocalToast}
             onUserUpdated={handleProfileUserUpdated}
           />
 
-          <div style={{ padding: "0 16px", display: "flex", flexDirection: "column", gap: 16 }}>
-
-            {!isOwner && (
-              <div style={{ display: "flex", justifyContent: "center" }}>
-                <FollowButton
-                  isFollowing={followStatus}
-                  isLoading={followLoading}
-                  onClick={handleFollowToggle}
-                  isDarkMode={isDarkMode}
-                />
-              </div>
-            )}
-
-            <ProfileMenu
-              selectedTab={selectedTab}
-              onSelectTab={setSelectedTab}
-              isOwner={isOwner}
-              stats={stats}
-            />
-
-            {selectedTab === "posts" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                {isOwner && !isMockProfile && !isBot && (
-                  <CreatePost user={authUser} onPostCreated={handlePostCreated} showToast={showLocalToast} />
-                )}
-
-                {isLoadingPosts && profilePosts.length === 0 ? (
-                  <LoadingSpinner darkMode={isDarkMode} text="Chargement des posts..." />
-                ) : profilePosts.length === 0 && !isLoadingPosts ? (
-                  <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                    {profilePosts.map((post, index) => (
-                      <div key={post._id} ref={index === profilePosts.length - 1 ? lastPostRef : null}>
-                        <PostCard
-                          post={post}
-                          onDeleted={handlePostDeleted}
-                          showToast={showLocalToast}
-                          mockPost={isMockProfile}
-                        />
-                      </div>
-                    ))}
-                    {isLoadingPosts && (
-                      <div style={{ textAlign: "center", padding: "16px 0" }}>
-                        <div style={{
-                          display: "inline-block", width: 28, height: 28,
-                          border: `3px solid ${isDarkMode ? "rgba(249,115,22,0.2)" : "rgba(249,115,22,0.15)"}`,
-                          borderTopColor: "#f97316", borderRadius: "50%",
-                          animation: "spin 0.8s linear infinite",
-                        }} />
-                      </div>
-                    )}
-                    {!hasMore && profilePosts.length > 0 && (
-                      <p style={{ textAlign: "center", padding: "16px 0", fontSize: 13, color: isDarkMode ? "#4b5563" : "#9ca3af" }}>
-                        · Tous les posts affichés ·
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {selectedTab === "photos" && (
-              <ProfileMediaGrid
-                posts={profilePosts}
+          {!isOwner && (
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 8,
+              padding: "0 14px 14px",
+              background: isDarkMode ? "#0f0f0f" : "#fff",
+            }}>
+              <FollowButton
+                isFollowing={!!followStatus}
+                isLoading={followLoading}
+                onClick={handleFollowToggle}
                 isDarkMode={isDarkMode}
-                isLoading={isLoadingPosts}
-                hasMore={hasMore}
-                onLoadMore={() => {
-                  const nextPage = page + 1;
-                  setPage(nextPage);
-                  if (profileUser?._id) loadProfilePosts(profileUser._id, nextPage, true);
-                }}
-                featuredFirst={false}
-                isOwner={isOwner}
               />
-            )}
+              <motion.button
+                type="button"
+                onClick={() => navigate('/messages', {
+                  state: {
+                    selectedContact: {
+                      id: effectiveProfileUser?._id || effectiveProfileUser?.id,
+                      fullName: effectiveProfileUser?.fullName,
+                      username: effectiveProfileUser?.username,
+                      profilePhoto: effectiveProfileUser?.profilePhoto,
+                      isOnline: effectiveProfileUser?.isOnline,
+                      lastSeen: effectiveProfileUser?.lastSeen,
+                    },
+                    openChat: true,
+                  },
+                })}
+                whileHover={{ scale: 1.03, y: -1 }}
+                whileTap={{ scale: 0.97 }}
+                style={{
+                  minHeight: 36,
+                  borderRadius: 999,
+                  border: `1px solid ${isDarkMode ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)"}`,
+                  background: isDarkMode ? "rgba(255,255,255,0.05)" : "#fff",
+                  color: isDarkMode ? "#f9fafb" : "#111827",
+                  fontFamily: "'Sora','DM Sans',sans-serif",
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                Message
+              </motion.button>
+            </div>
+          )}
 
-            {selectedTab === "settings" && isOwner && !isBot && (
-              <SettingsSection user={authUser} showToast={showLocalToast} />
-            )}
+          <ProfileMenu
+            selectedTab={selectedTab}
+            onTabChange={setSelectedTab}
+            isDarkMode={isDarkMode}
+            isOwner={isOwner}
+          />
 
-          </div>
+          {renderContent()}
         </div>
       </div>
 
       {toast && <Toast message={toast.message} type={toast.type} />}
-    </div>
+    </main>
   );
 }

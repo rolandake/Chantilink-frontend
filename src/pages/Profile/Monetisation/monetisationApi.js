@@ -17,3 +17,15 @@ export async function monetisationFetch(path, { token, ...options } = {}) {
     credentials: "include",
   });
 }
+
+export async function readMonetisationJson(response, fallbackMessage = "Réponse monétisation invalide") {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!contentType.includes("application/json")) {
+    const text = await response.text().catch(() => "");
+    const looksLikeHtml = /^\s*</.test(text);
+    throw new Error(looksLikeHtml ? "Route monétisation indisponible sur le backend." : fallbackMessage);
+  }
+
+  return response.json();
+}

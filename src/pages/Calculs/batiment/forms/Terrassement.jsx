@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { useProjectStore } from "../../../../store/useProjectStore";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -40,7 +41,7 @@ const TYPES_OUVRAGE = {
   EVACUATION:   { cat:"C", label:"Évacuation des déblais",                desc:"Transport des terres excavées (foisonnement appliqué)", formule:"Volume en place × coeff foisonnement",      icon:Truck,            fields:[{key:"volume",label:"Volume en place (m³)",placeholder:"ex: 300"},{key:"distance",label:"Distance décharge (km)",placeholder:"ex: 15"}],                                                    unit:"m³", compute:(f)=>f("volume"),                                                 hasSol:true, isEvac:true },
   DEPOT:        { cat:"C", label:"Mise en dépôt / stockage",              desc:"Terres conservées sur site",                           formule:"Volume stocké (m³)",                         icon:Archive,          fields:[{key:"volume",label:"Volume stocké (m³)",placeholder:"ex: 80"}],                                                                                                                            unit:"m³", compute:(f)=>f("volume"),                                                hasSol:false, prixUnit:true, isStockage:true },
   SPECIAL:      { cat:"C", label:"Terrassement spécial",                  desc:"Rocher, nappe, pompage, soutènement, démolition",      formule:"Volume (m³) ou Forfait",                    icon:Wrench,           fields:[{key:"volume",label:"Volume (m³)",placeholder:"ex: 50"}],                                                                                                                                  unit:"m³", compute:(f)=>f("volume"),                                                hasSol:true, note:"Rocher, nappe phréatique, terrain instable, démolition enterrée." },
-  REMBLAI:      { cat:"D", label:"Remblaiement",                          desc:"Autour des fondations, longrines, dallages",           formule:"Volume fouille − Volume béton",              icon:Shovel,           fields:[{key:"volFouille",label:"Volume fouille (m³)",placeholder:"ex: 120"},{key:"volBeton",label:"Volume béton (m³)",placeholder:"ex: 30"}],                                                       unit:"m³", compute:(f)=>Math.max(0,f("volFouille")-f("volBeton")),                   hasSol:false, isRemblai:true },
+  REMBLAI:      { cat:"D", label:"Remblaiement",                          desc:"Mise en place des terres ou matériaux d'apport",       formule:"Volume remblai",                             icon:Shovel,           fields:[{key:"volume",label:"Volume remblai (m³)",placeholder:"ex: 90"}],                                                                                                                                  unit:"m³", compute:(f)=>f("volume"),                                                hasSol:false, isRemblai:true },
   COMPACTAGE:   { cat:"D", label:"Compactage",                            desc:"Compactage des remblais",                              formule:"Surface (m²)",                              icon:RotateCcw,        fields:[{key:"surface",label:"Surface (m²)",placeholder:"ex: 400"}],                                                                                                                               unit:"m²", compute:(f)=>f("surface"),                                                hasSol:false, prixUnit:true },
   COUCHE_FORME: { cat:"D", label:"Couche de forme",                       desc:"Latérite, grave, tout-venant",                         formule:"Surface × Épaisseur",                       icon:Package,          fields:[{key:"surface",label:"Surface (m²)",placeholder:"ex: 500"},{key:"epaisseur",label:"Épaisseur (m)",placeholder:"ex: 0.20"}],                                                                unit:"m³", compute:(f)=>f("surface")*f("epaisseur"),                                 hasSol:false, prixUnit:true },
 };
@@ -57,17 +58,104 @@ const defaultOuvrage = (type = "RIGOLE") => ({
 // ─── COMPOSANT PRINCIPAL ──────────────────────────────────────────────────────
 
 export default function Terrassement({ currency = "XOF", onCostChange }) {
-  const [ouvrages, setOuvrages]             = useState([defaultOuvrage("DECAPAGE"), defaultOuvrage("RIGOLE")]);
-  const [prixExcavation, setPrixExcavation] = useState("");
-  const [prixEvacuation, setPrixEvacuation] = useState("");
-  const [capaciteCamion, setCapaciteCamion] = useState("16");
-  const [newType, setNewType]               = useState("TROU");
-  const [activeTab, setActiveTab]           = useState("ouvrages");
+  const [ouvrages, setOuvrages]             = usePersistentState("terrassement:ouvrages", [defaultOuvrage("DECAPAGE"), defaultOuvrage("RIGOLE")]);
+  const [prixExcavation, setPrixExcavation] = usePersistentState("terrassement:prixExcavation", "");
+  const [prixEvacuation, setPrixEvacuation] = usePersistentState("terrassement:prixEvacuation", "");
+  const [capaciteCamion, setCapaciteCamion] = usePersistentState("terrassement:capaciteCamion", "16");
+  const [newType, setNewType]               = usePersistentState("terrassement:newType", "TROU");
+  const [activeTab, setActiveTab]           = usePersistentState("terrassement:activeTab", "ouvrages");
 
   // ── Store global ──────────────────────────────────────────────────────────
   const setResults   = useProjectStore((s) => s.setResults);
   const setMaterials = useProjectStore((s) => s.setMaterials);
   const setCost      = useProjectStore((s) => s.setCost);
+
+  const volumeFouillesAuto = useMemo(() => ouvrages.reduce((sum, o) => {
+    const def = TYPES_OUVRAGE[o.type];
+    if (!def?.hasSol || def.isEvac || def.isRemblai || def.isStockage) return sum;
+    return sum + def.compute(getF(o.fields));
+  }, 0), [ouvrages]);
+
+  const volumeDepotDisponibleAuto = useMemo(() => {
+    const volumeDepotSaisi = ouvrages
+      .filter((o) => o.type === "DEPOT")
+      .reduce((sum, o) => sum + (parseFloat(o.fields?.volume) || 0), 0);
+
+    return volumeDepotSaisi > 0 ? volumeDepotSaisi : volumeFouillesAuto;
+  }, [ouvrages, volumeFouillesAuto]);
+
+  const surfacePlateformeAuto = useMemo(() => {
+    const decapageSurfaces = ouvrages
+      .filter((o) => o.type === "DECAPAGE")
+      .map((o) => parseFloat(o.fields?.surface) || 0)
+      .filter((surface) => surface > 0);
+
+    if (decapageSurfaces.length > 0) return Math.max(...decapageSurfaces);
+
+    const excavationSurfaces = ouvrages
+      .filter((o) => o.type === "EXCAVATION")
+      .map((o) => parseFloat(o.fields?.surface) || 0)
+      .filter((surface) => surface > 0);
+
+    return excavationSurfaces.length > 0 ? Math.max(...excavationSurfaces) : 0;
+  }, [ouvrages]);
+
+  const autoFieldValues = useMemo(() => ({
+    NIVELLEMENT: {
+      surface: surfacePlateformeAuto,
+    },
+    EXCAVATION: {
+      surface: surfacePlateformeAuto,
+    },
+    EVACUATION: {
+      volume: volumeFouillesAuto,
+    },
+    DEPOT: {
+      volume: volumeFouillesAuto,
+    },
+    REMBLAI: {
+      volume: volumeDepotDisponibleAuto,
+    },
+    COMPACTAGE: {
+      surface: surfacePlateformeAuto,
+    },
+    COUCHE_FORME: {
+      surface: surfacePlateformeAuto,
+    },
+  }), [volumeFouillesAuto, volumeDepotDisponibleAuto, surfacePlateformeAuto]);
+
+  const getEffectiveFields = useCallback((ouvrage) => {
+    const autoFields = autoFieldValues[ouvrage.type] || {};
+    const fields = { ...(ouvrage.fields || {}) };
+
+    Object.entries(autoFields).forEach(([key, value]) => {
+      if ((fields[key] === undefined || fields[key] === "") && Number(value) > 0) {
+        fields[key] = String(value);
+      }
+    });
+
+    return fields;
+  }, [autoFieldValues]);
+
+  const deblaisUsage = useMemo(() => {
+    const effectiveVolume = (o) => parseFloat(getEffectiveFields(o).volume) || 0;
+    const evacue = ouvrages
+      .filter((o) => o.type === "EVACUATION")
+      .reduce((sum, o) => sum + effectiveVolume(o), 0);
+    const stocke = ouvrages
+      .filter((o) => o.type === "DEPOT")
+      .reduce((sum, o) => sum + effectiveVolume(o), 0);
+    const remblaye = ouvrages
+      .filter((o) => o.type === "REMBLAI")
+      .reduce((sum, o) => sum + effectiveVolume(o), 0);
+
+    return {
+      evacue,
+      stocke,
+      remblaye,
+      solde: volumeFouillesAuto - evacue - stocke - remblaye,
+    };
+  }, [ouvrages, volumeFouillesAuto, getEffectiveFields]);
 
   // ── Calcul ────────────────────────────────────────────────────────────────
   const results = useMemo(() => {
@@ -76,7 +164,7 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
     const ouvragesCalc = ouvrages.map((o) => {
       const def  = TYPES_OUVRAGE[o.type];
       if (!def) return { ...o, vol: 0 };
-      const vol  = def.compute(getF(o.fields));
+      const vol  = def.compute(getF(getEffectiveFields(o)));
       const coeff = NATURE_SOL[o.typeSol]?.coeff || 1.25;
       const pu   = parseFloat(o.prixUnit) || 0;
 
@@ -116,7 +204,7 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
       ouvragesCalc, totalDeblai, totalRemblai, totalFoisonne, deblaisNets,
       coutExcavation, coutEvacuation, coutSpeciaux, total, nbCamions,
     };
-  }, [ouvrages, prixExcavation, prixEvacuation, capaciteCamion]);
+  }, [ouvrages, prixExcavation, prixEvacuation, capaciteCamion, getEffectiveFields]);
 
   // ── Synchronisation store global ──────────────────────────────────────────
   useEffect(() => {
@@ -131,6 +219,10 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
       totalRemblai:  results.totalRemblai,
       deblaisNets:   Math.max(0, results.deblaisNets),
       nbCamions:     results.nbCamions,
+      deblaisEvacues: deblaisUsage.evacue,
+      deblaisStockes: deblaisUsage.stocke,
+      deblaisRemblayes: deblaisUsage.remblaye,
+      soldeDeblais: deblaisUsage.solde,
       // Profondeur moyenne estimée (utile pour pré-remplir Fondation)
       profondeurMoyenne: (() => {
         const fouilles = ouvrages.filter(o =>
@@ -142,9 +234,14 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
       })(),
       // Surfaces excavées (utile pour le remblai)
       surfacePlateforme: (() => {
-        const decapage = ouvrages.find(o => o.type === "DECAPAGE");
-        return parseFloat(decapage?.fields?.surface) || 0;
+        return surfacePlateformeAuto;
       })(),
+      surfaceCompactage: results.ouvragesCalc
+        .filter((o) => o.type === "COMPACTAGE")
+        .reduce((sum, o) => sum + (o.vol || 0), 0),
+      surfaceCoucheForme: results.ouvragesCalc
+        .filter((o) => o.type === "COUCHE_FORME")
+        .reduce((sum, o) => sum + (parseFloat(o.fields?.surface) || surfacePlateformeAuto || 0), 0),
     });
 
     // ✅ MATÉRIAUX (ici c'est principalement de la logistique)
@@ -152,7 +249,7 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
       volume:   results.totalDeblai,
       foisonne: results.totalFoisonne,
     });
-  }, [results.total, results.totalDeblai, results.totalFoisonne, results.totalRemblai]);
+  }, [results.total, results.totalDeblai, results.totalFoisonne, results.totalRemblai, surfacePlateformeAuto, deblaisUsage]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const updateOuvrage = useCallback((id, patch) =>
@@ -243,6 +340,7 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
                 <OuvrageCard key={ouvrage.id}
                   ouvrage={ouvrage} def={def} cat={cat} Icon={Icon}
                   vol={calc?.vol || 0} calc={calc} currency={currency}
+                  autoFields={autoFieldValues[ouvrage.type] || {}}
                   onToggle={() => toggleExpand(ouvrage.id)}
                   onRemove={() => removeOuvrage(ouvrage.id)}
                   onLabelChange={(v) => updateOuvrage(ouvrage.id, { label: v })}
@@ -256,32 +354,60 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
             {/* Ajout ouvrage */}
             <div className="flex-shrink-0 mt-1 bg-gray-900/40 border border-gray-700/50 rounded-2xl p-4">
               <p className="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-3">Ajouter un ouvrage</p>
-              {Object.entries(CATEGORIES).map(([catKey, catDef]) => (
-                <div key={catKey} className="mb-3">
-                  <p className={`text-[10px] font-bold mb-1.5 ${catDef.color}`}>{catDef.label}</p>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {Object.entries(TYPES_OUVRAGE).filter(([, d]) => d.cat === catKey).map(([key, d]) => {
-                      const Ic = d.icon;
-                      return (
-                        <button key={key} onClick={() => setNewType(key)}
-                          className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-left transition-all text-xs font-medium truncate ${
-                            newType === key
-                              ? `${catDef.border} ${catDef.bg} ${catDef.color}`
-                              : "border-gray-700/50 text-gray-500 hover:border-gray-600 hover:text-gray-300"
-                          }`}>
-                          <Ic className="w-3 h-3 flex-shrink-0" />
-                          <span className="truncate">{d.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+              <label className="block mb-1.5 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+                Type de terrassement
+              </label>
+              <div className="relative">
+                <select
+                  value={newType}
+                  onChange={(e) => setNewType(e.target.value)}
+                  className="w-full appearance-none bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 pr-10 text-sm text-white focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 focus:outline-none transition-all"
+                >
+                  {Object.entries(CATEGORIES).map(([catKey, catDef]) => (
+                    <optgroup key={catKey} label={catDef.label}>
+                      {Object.entries(TYPES_OUVRAGE)
+                        .filter(([, d]) => d.cat === catKey)
+                        .map(([key, d]) => (
+                          <option key={key} value={key}>{d.label}</option>
+                        ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+              </div>
               <button onClick={addOuvrage}
                 className="w-full mt-3 flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-500 text-white py-3 rounded-xl font-bold text-sm transition-all">
                 <Plus className="w-4 h-4" />
                 Ajouter — {TYPES_OUVRAGE[newType]?.label}
               </button>
+            </div>
+
+            {/* Récapitulatif interne */}
+            <div className="flex-shrink-0 bg-gray-900/60 border border-amber-500/20 rounded-2xl p-4">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div>
+                  <p className="text-[10px] text-amber-300 uppercase font-bold tracking-widest">
+                    Récapitulatif interne
+                  </p>
+                  <p className="text-[11px] text-gray-500">Synthèse mise à jour en temps réel</p>
+                </div>
+                <span className="text-sm font-black text-amber-400 font-mono">
+                  {fmt(results.total)} {currency}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <ReadonlySummaryField label="Surface plateforme" value={fmtD(surfacePlateformeAuto)} unit="m²" />
+                <ReadonlySummaryField label="Déblais bruts" value={fmtD(results.totalDeblai)} unit="m³" />
+                <ReadonlySummaryField label="Volume foisonné" value={fmtD(results.totalFoisonne)} unit="m³" />
+                <ReadonlySummaryField label="Déblais nets" value={fmtD(Math.max(0, results.deblaisNets))} unit="m³" />
+                <ReadonlySummaryField label="Déblais évacués" value={fmtD(deblaisUsage.evacue)} unit="m³" />
+                <ReadonlySummaryField label="Déblais stockés" value={fmtD(deblaisUsage.stocke)} unit="m³" />
+                <ReadonlySummaryField label="Solde déblais" value={fmtD(deblaisUsage.solde)} unit="m³" />
+                <ReadonlySummaryField label="Remblai" value={fmtD(results.totalRemblai)} unit="m³" />
+                <ReadonlySummaryField label="Camions" value={results.nbCamions} unit="rot." />
+                <ReadonlySummaryField label="Coût total" value={fmt(results.total)} unit={currency} />
+              </div>
             </div>
           </div>
 
@@ -403,7 +529,7 @@ export default function Terrassement({ currency = "XOF", onCostChange }) {
 
 // ─── OUVRAGE CARD ─────────────────────────────────────────────────────────────
 
-function OuvrageCard({ ouvrage, def, cat, Icon, vol, calc, currency,
+function OuvrageCard({ ouvrage, def, cat, Icon, vol, calc, currency, autoFields = {},
   onToggle, onRemove, onLabelChange, onSolChange, onPrixChange, onFieldChange }) {
   return (
     <div className={`border rounded-2xl overflow-hidden flex-shrink-0 ${cat.border} ${cat.bg}`}>
@@ -434,14 +560,29 @@ function OuvrageCard({ ouvrage, def, cat, Icon, vol, calc, currency,
             className="w-full bg-gray-900/60 border border-gray-700/50 rounded-xl px-3 py-2 text-xs text-white placeholder-gray-600 focus:border-amber-500/50 focus:outline-none transition-colors" />
 
           <div className="grid grid-cols-2 gap-3">
-            {def.fields.map((field) => (
-              <div key={field.key}>
-                <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{field.label}</label>
-                <input type="number" value={ouvrage.fields?.[field.key] || ""} onChange={(e) => onFieldChange(field.key, e.target.value)}
-                  placeholder={field.placeholder}
-                  className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white font-mono text-sm focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 focus:outline-none transition-all" />
-              </div>
-            ))}
+            {def.fields.map((field) => {
+              const manualValue = ouvrage.fields?.[field.key];
+              const autoValue = autoFields[field.key];
+              const usesAutoValue = (manualValue === undefined || manualValue === "") && Number(autoValue) > 0;
+
+              return (
+                <div key={field.key}>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">{field.label}</label>
+                    {usesAutoValue && (
+                      <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-300">
+                        Auto
+                      </span>
+                    )}
+                  </div>
+                  <input type="number" value={usesAutoValue ? fmtD(autoValue) : manualValue || ""} onChange={(e) => onFieldChange(field.key, e.target.value)}
+                    placeholder={usesAutoValue ? `Auto: ${fmtD(autoValue)} ${def.unit}` : field.placeholder}
+                    className={`w-full bg-gray-900 border rounded-xl px-3 py-2 font-mono text-sm focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 focus:outline-none transition-all ${
+                      usesAutoValue ? "border-emerald-500/40 text-emerald-200" : "border-gray-700 text-white"
+                    }`} />
+                </div>
+              );
+            })}
             {(def.prixUnit || def.isRemblai) && (
               <div className={def.fields.length % 2 === 0 ? "col-span-2" : ""}>
                 <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
@@ -516,6 +657,20 @@ const PriceInput = ({ label, value, onChange }) => (
     <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide leading-tight">{label}</label>
     <input type="number" value={value} onChange={(e) => onChange(e.target.value)} placeholder="0"
       className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-white font-mono text-sm focus:border-amber-500 focus:ring-1 focus:ring-amber-500/30 focus:outline-none transition-all" />
+  </div>
+);
+
+const ReadonlySummaryField = ({ label, value, unit }) => (
+  <div>
+    <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide leading-tight">{label}</label>
+    <div className="flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-950/70 px-3 py-2">
+      <input
+        readOnly
+        value={value}
+        className="min-w-0 flex-1 bg-transparent text-sm font-mono font-bold text-white outline-none"
+      />
+      <span className="text-[10px] font-bold uppercase text-gray-500">{unit}</span>
+    </div>
   </div>
 );
 

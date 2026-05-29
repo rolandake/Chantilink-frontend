@@ -15,6 +15,7 @@ import React, {
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import { useLanguage } from '../../context/LanguageContext';
 import { useVideos } from '../../context/VideoContext';
 import VideoCard, { isFeedLocked } from './VideoCard';
 import AggregatedCard from './AggregatedCard';
@@ -80,6 +81,63 @@ const CONFIG = {
     simPenalty:     0.35,
     simThreshold:   0.42,
   },
+};
+
+const CIVIL_FALLBACK_COPY = {
+  fr: {
+    title: 'Vidéo de chantier et génie civil',
+    tags: ['geniecivil', 'btp', 'chantier'],
+  },
+  en: {
+    title: 'Civil engineering and construction site video',
+    tags: ['civilengineering', 'construction', 'sitework'],
+  },
+  ar: {
+    title: 'فيديو عن الهندسة المدنية ومواقع البناء',
+    tags: ['هندسةمدنية', 'بناء', 'موقع'],
+  },
+};
+
+const normalizeFeedLanguage = (lang = 'fr') => {
+  const code = String(lang || 'fr').toLowerCase().split(/[-_]/)[0];
+  return ['fr', 'en', 'ar'].includes(code) ? code : 'fr';
+};
+
+const cleanText = (value = '') => String(value || '')
+  .replace(/https?:\/\/\S+/gi, '')
+  .replace(/\bt\.co\/\S+/gi, '')
+  .replace(/[@#][\p{L}\p{N}_-]+/gu, '')
+  .replace(/&amp;/gi, '&')
+  .replace(/&quot;/gi, '"')
+  .replace(/&#39;/gi, "'")
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const looksHashedOrNoisy = (value = '') => {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  if (/^[a-f0-9]{16,}$/i.test(text)) return true;
+  if (/^[A-Za-z0-9+/=_-]{24,}$/.test(text) && !/\s/.test(text)) return true;
+  const tokens = text.split(/\s+/);
+  const noisyTokens = tokens.filter((t) => (
+    /https?:|t\.co\//i.test(t) ||
+    /^[#@]/.test(t) ||
+    /^[A-Za-z0-9_-]{14,}$/.test(t)
+  )).length;
+  const letters = (text.match(/\p{L}/gu) || []).length;
+  const symbols = (text.match(/[^\p{L}\p{N}\s.,:;!?'"()\-]/gu) || []).length;
+  return noisyTokens / Math.max(tokens.length, 1) > 0.45 || letters < 8 || symbols > letters * 0.45;
+};
+
+const cleanTags = (tags, lang = 'fr') => {
+  const fallback = CIVIL_FALLBACK_COPY[normalizeFeedLanguage(lang)].tags;
+  const source = Array.isArray(tags) ? tags : [];
+  const cleaned = source
+    .map((tag) => cleanText(tag).replace(/^#+/, '').replace(/[^\p{L}\p{N}_-]/gu, '').toLowerCase())
+    .filter((tag) => tag.length >= 3 && tag.length <= 28 && !looksHashedOrNoisy(tag))
+    .filter((tag, index, arr) => arr.indexOf(tag) === index)
+    .slice(0, 3);
+  return cleaned.length ? cleaned : fallback;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -349,11 +407,38 @@ const isPlayableCandidate = (item) => {
   return false;
 };
 
-const BTP_KW = ['chantier','construction','btp','béton','beton','ciment','grue','pelleteuse','pont','route','hydraulique','terrassement','civil engineering','concrete','scaffolding','formwork','rebar'];
+const BTP_KW = [
+  'chantier','construction','btp','bâtiment','batiment','béton','beton','ciment','grue','pelleteuse',
+  'pont','route','voirie','hydraulique','terrassement','coffrage','ferraillage','fondation','maçonnerie',
+  'maconnerie','charpente','topographie','architecture','ouvrage','infrastructure','assainissement',
+  'civil engineering','construction site','building site','concrete','scaffolding','formwork','rebar',
+  'excavation','earthwork','foundation','structural','bridge','roadwork','masonry','site work',
+];
 const detectBTPLocal = (item) => {
   if (!item) return false;
-  const text=[item.title||'',item.description||'',item.channelName||'',item.category||''].join(' ').toLowerCase();
+  const text=[
+    item.title||'',item.description||'',item.channelName||'',item.category||'',
+    ...(Array.isArray(item.hashtags) ? item.hashtags : []),
+    ...(Array.isArray(item.tags) ? item.tags : []),
+  ].join(' ').toLowerCase();
   return BTP_KW.some(kw=>text.includes(kw));
+};
+
+const sanitizeAggregatedItem = (item, language = 'fr') => {
+  const lang = normalizeFeedLanguage(language);
+  const fallback = CIVIL_FALLBACK_COPY[lang] || CIVIL_FALLBACK_COPY.fr;
+  const title = cleanText(item.title || item.description || '');
+  const description = cleanText(item.description || '');
+  const hasUsableTitle = title && !looksHashedOrNoisy(title) && detectBTPLocal({ ...item, title, description });
+  const hasUsableDescription = description && !looksHashedOrNoisy(description) && description !== title;
+
+  return {
+    ...item,
+    title: hasUsableTitle ? title.slice(0, 140) : fallback.title,
+    description: hasUsableDescription ? description.slice(0, 180) : '',
+    hashtags: cleanTags(item.hashtags || item.tags, lang),
+    tags: cleanTags(item.tags || item.hashtags, lang),
+  };
 };
 
 const extractYoutubeIds = (items, fromIndex, count=4) => {
@@ -806,6 +891,7 @@ SlideItem.displayName='SlideItem';
 const VideosPage = () => {
   ensureCSS();
   const navigate=useNavigate(), {getToken}=useAuth(), isOnline=useOnline();
+  const { language } = useLanguage();
   const {videos:userVideos,loading:userLoading,hasMore:userHasMore,fetchVideos:fetchUserVideos}=useVideos();
   useVhFix();
 
@@ -982,15 +1068,24 @@ const VideosPage = () => {
     try {
       aggLoadingRef.current=true;
       const token=await getToken();
-      const headers=token?{Authorization:`Bearer ${token}`}:{};
-      const btpHint=userProfile.isBTPUser?'&btpBoost=1':'';
+      const activeLanguage=normalizeFeedLanguage(language);
+      const headers={
+        'Accept-Language':activeLanguage,
+        'X-User-Language':activeLanguage,
+        ...(token?{Authorization:`Bearer ${token}`}:{})
+      };
+      const btpHint='&btpBoost=1&domain=btp&civilOnly=1';
       const coldStart=userProfile.isNewUser?'&coldStart=1':'';
       const intentHint=userProfile.dominantIntent?`&intent=${userProfile.dominantIntent}`:'';
       const netHint=networkMgr.effectiveType!=='default'?`&quality=${networkMgr.effectiveType}`:'';
-      const res=await fetch(`${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all${btpHint}${coldStart}${intentHint}${netHint}`,{headers});
+      const langHint=`&language=${encodeURIComponent(activeLanguage)}&lang=${encodeURIComponent(activeLanguage)}`;
+      const res=await fetch(`${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=all${btpHint}${coldStart}${intentHint}${netHint}${langHint}`,{headers});
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json=await res.json();
-      const finalItems=(json.data||[]).filter(isPlayableCandidate).map(c=>({...c,_isAggregated:true}));
+      const finalItems=(json.data||[])
+        .filter(isPlayableCandidate)
+        .filter(detectBTPLocal)
+        .map(c=>sanitizeAggregatedItem({...c,_isAggregated:true},activeLanguage));
       aggPool.current=[...aggPool.current,...finalItems];
       aggPageRef.current=page;
       aggHasMoreRef.current=json.pagination?.hasMore||false;
@@ -1001,7 +1096,7 @@ const VideosPage = () => {
       aggHasMoreRef.current=false;
       if (aggPool.current.length>=CONFIG.recycleMin) recycle();
     } finally { aggLoadingRef.current=false; }
-  },[getToken,appendItems,recycle]);
+  },[getToken,appendItems,recycle,language]);
 
   useEffect(()=>{
     const newOnes=(userVideos||[]).filter(v=>{
@@ -1116,6 +1211,11 @@ const VideosPage = () => {
     fetchUserVideos(true);
     fetchAggregated(1,CONFIG.aggregated.initialLoad);
   },[fetchUserVideos,fetchAggregated]);
+
+  useEffect(()=>{
+    if (!fetchTriggered.current) return;
+    handleVideoPublished();
+  },[language]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(()=>()=>{
     document.getElementById('vp-styles')?.remove();

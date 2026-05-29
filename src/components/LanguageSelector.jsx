@@ -29,6 +29,7 @@ export default function LanguageSelector({ variant = "pills", className = "" }) 
   const handleChange = async (langCode) => {
     if (langCode === language || isChanging) return;
     await changeLanguage(langCode, { sync: true }); // Sync backend car utilisateur connecté
+    window.dispatchEvent(new CustomEvent("feed:language-changed", { detail: { language: langCode } }));
   };
 
   // ── Variant : pills ─────────────────────────────────────────

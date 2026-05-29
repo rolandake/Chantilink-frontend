@@ -1,9 +1,10 @@
 // src/pages/Profile/Monetisation/MyClients.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
-import { getAuthToken, monetisationFetch } from './monetisationApi';
+import { getAuthToken, monetisationFetch, readMonetisationJson } from './monetisationApi';
+import useMonetisationRealtime from './useMonetisationRealtime';
 
 export default function MyClients() {
   const { user, getToken } = useAuth();
@@ -18,29 +19,25 @@ export default function MyClients() {
   const text = isDarkMode ? '#f3f4f6' : '#111827';
   const sub  = isDarkMode ? '#6b7280' : '#9ca3af';
 
-  useEffect(() => {
+  const fetchClients = useCallback(async ({ background = false } = {}) => {
     if (!user) return;
-    (async () => {
-      setLoading(true);
-      try {
-        const token = await getAuthToken(getToken);
-        const res  = await monetisationFetch('clients', { token });
-        if (!res.ok) return;
-        const data = await res.json();
-        setClients(data.clients || []);
-      } catch {}
-      finally { setLoading(false); }
-    })();
-  }, [user, getToken]);
+    if (!background) setLoading(true);
+    try {
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('clients', { token });
+      if (!res.ok) return;
+      const data = await readMonetisationJson(res);
+      setClients(data.clients || []);
+    } catch {}
+    finally {
+      if (!background) setLoading(false);
+    }
+  }, [getToken, user]);
 
-  // Données de démonstration si vide
-  const DEMO = [
-    { _id:'1', username:'kouassi_dev',   fullName:'Kouassi Emmanuel',  avatar:null, totalSpent:45000, purchasesCount:3, lastPurchase: new Date(Date.now()-86400000).toISOString() },
-    { _id:'2', username:'amara_design',  fullName:'Amara Diallo',      avatar:null, totalSpent:30000, purchasesCount:2, lastPurchase: new Date(Date.now()-172800000).toISOString() },
-    { _id:'3', username:'fatou_creative',fullName:'Fatou Coulibaly',   avatar:null, totalSpent:15000, purchasesCount:1, lastPurchase: new Date(Date.now()-604800000).toISOString() },
-  ];
-  const items = clients.length > 0 ? clients : (loading ? [] : DEMO);
-  const filtered = items.filter(c =>
+  useEffect(() => { fetchClients(); }, [fetchClients]);
+  useMonetisationRealtime(fetchClients, 'clients');
+
+  const filtered = clients.filter(c =>
     c.fullName?.toLowerCase().includes(search.toLowerCase()) ||
     c.username?.toLowerCase().includes(search.toLowerCase())
   );

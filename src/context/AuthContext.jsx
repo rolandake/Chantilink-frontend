@@ -246,7 +246,7 @@ export function AuthProvider({ children }) {
     };
 
     injectAuthHandlers({ getToken, logout, notify: addNotification, getLanguage });
-  }, [getToken, logout, addNotification]);
+  }, [getToken, logout, addNotification, user?.language]);
 
   // ─── SOCKET ──────────────────────────────────────────────────────────────────
   useEffect(() => {

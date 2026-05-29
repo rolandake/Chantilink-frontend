@@ -1,37 +1,44 @@
 // src/pages/Profile/Monetisation/MonetisationDashboard.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import StatsSection from "./StatsSection";
 import OffersSection from "./OffersSection";
 import TransactionsSection from "./TransactionsSection";
 import WithdrawalsSection from "./WithdrawalsSection";
 import NotificationsSection from "./NotificationsSection";
-import RevenueStats from "./RevenueStats";
-import MyClients from "./MyClients";
 import { useDarkMode } from '../../../context/DarkModeContext';
 import { useAuth } from '../../../context/AuthContext';
-import { getAuthToken, monetisationFetch } from './monetisationApi';
+import { getAuthToken, monetisationFetch, readMonetisationJson } from './monetisationApi';
+import useMonetisationRealtime from './useMonetisationRealtime';
 
 export default function MonetisationDashboard() {
   const { isDarkMode } = useDarkMode();
   const { getToken } = useAuth();
-  const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
 
-  useEffect(() => {
-    async function fetchDashboardData() {
-      setLoading(true); setError(null);
-      try {
-        const token = await getAuthToken(getToken);
-        const res  = await monetisationFetch("dashboard", { token });
-        if (!res.ok) throw new Error("Erreur API " + res.status);
-        setData(await res.json());
-      } catch (e) { setError(e.message); }
-      finally { setLoading(false); }
+  const fetchDashboardData = useCallback(async ({ background = false } = {}) => {
+    if (!background) {
+      setLoading(true);
+      setError(null);
     }
-    fetchDashboardData();
+    try {
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch("dashboard", { token });
+      if (!res.ok) throw new Error("Erreur API " + res.status);
+      await readMonetisationJson(res).catch(() => ({}));
+    } catch (e) {
+      if (!background) setError(e.message);
+    }
+    finally {
+      if (!background) setLoading(false);
+    }
   }, [getToken]);
+  
+  useEffect(() => {
+    fetchDashboardData();
+  }, [fetchDashboardData]);
+  useMonetisationRealtime(fetchDashboardData, 'dashboard');
 
   const bdr  = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
   const font = "'Sora','DM Sans',sans-serif";

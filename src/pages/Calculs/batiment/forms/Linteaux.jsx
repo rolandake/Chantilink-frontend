@@ -9,6 +9,7 @@ import {
 import { 
   BetweenHorizontalEnd, Ruler, Banknote, Save, Trash2, History, Anchor, Droplets, Component, Layers, Info, Target 
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -28,11 +29,11 @@ const TYPES_LINTEAUX = [
   { id: "prefa", label: "Préfabriqué (Bloc U)", icon: <BetweenHorizontalEnd className="w-4 h-4"/>, desc: "Le bloc sert de coffrage" },
 ];
 
-export default function Linteaux({ currency = "XOF", onTotalChange, onMateriauxChange }) {
+export default function Linteaux({ currency = "XOF", onTotalChange, onMateriauxChange, onResultsChange }) {
   
   // --- ÉTATS ---
-  const [typeLinteau, setTypeLinteau] = useState("coule");
-  const [inputs, setInputs] = useState({
+  const [typeLinteau, setTypeLinteau] = usePersistentState("elevations:linteaux:typeLinteau", "coule");
+  const [inputs, setInputs] = usePersistentState("elevations:linteaux:inputs", {
     nombre: "1",
     longueur: "", // Longueur totale (ouverture + appuis)
     largeur: "",
@@ -89,10 +90,24 @@ export default function Linteaux({ currency = "XOF", onTotalChange, onMateriauxC
       onMateriauxChange({
         volume: results.volumeTotal,
         ciment: results.cimentT,
-        acier: results.acierT
+        sable: results.sableT,
+        gravier: results.gravierT,
+        eau: results.eauL,
+        acier: results.acierT,
+        coffrage: results.surfaceCoffrage,
       });
     }
-  }, [results.total, results.volumeTotal, results.cimentT, results.acierT, onTotalChange, onMateriauxChange]);
+    onResultsChange?.({
+      typeLinteau,
+      nombre: parseFloat(inputs.nombre) || 0,
+      longueur: parseFloat(inputs.longueur) || 0,
+      largeur: parseFloat(inputs.largeur) || 0,
+      hauteur: parseFloat(inputs.hauteur) || 0,
+      volumeTotal: results.volumeTotal,
+      surfaceCoffrage: results.surfaceCoffrage,
+      acierKg: results.acierKg,
+    });
+  }, [results.total, results.volumeTotal, results.cimentT, results.acierT, results.surfaceCoffrage, typeLinteau, onTotalChange, onMateriauxChange, onResultsChange]);
 
   // --- HISTORIQUE ---
   useEffect(() => {
@@ -243,6 +258,7 @@ export default function Linteaux({ currency = "XOF", onTotalChange, onMateriauxC
                   <MaterialRow label="Sable (0.6 t/m³)" val={`${results.sableT.toFixed(2)} t`} color="bg-amber-500" />
                   <MaterialRow label="Gravier (0.85 t/m³)" val={`${results.gravierT.toFixed(2)} t`} color="bg-stone-500" />
                   <MaterialRow label="Acier (80kg/m³)" val={`${results.acierKg.toFixed(0)} kg`} color="bg-red-500" />
+                  <MaterialRow label="Coffrage linteaux" val={`${results.surfaceCoffrage.toFixed(1)} m²`} color="bg-indigo-500" />
                   
                   <div className="pt-2 border-t border-gray-700 flex justify-between items-center mt-2">
                     <span className="text-xs text-gray-400 flex items-center gap-1">

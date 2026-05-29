@@ -33,6 +33,7 @@ import { useDarkMode } from "../../context/DarkModeContext";
 import PostMedia from "./PostMedia";
 import ErrorBoundary from "../../components/ErrorBoundary";
 import axiosClient from "../../api/axiosClientGlobal";
+import useTranslatedText from "../../hooks/useTranslatedText";
 import {
   getPostAuthor,
   hidePostPreference,
@@ -1165,7 +1166,7 @@ FeedbackModal.displayName = "FeedbackModal";
 // PostCardInner
 // ─────────────────────────────────────────────────────────────────────────────
 const PostCardInner = forwardRef(({
-  post, onDeleted, showToast, mockPost = false, priority = false,
+  post, onDeleted, showToast, mockPost = false, priority = false, ignoreHidden = false,
 }, ref) => {
   const { isDarkMode } = useDarkMode();
   const { user: currentUser, getToken, updateUserProfile } = useAuth();
@@ -1428,8 +1429,9 @@ const PostCardInner = forwardRef(({
   }, [ref]);
 
   const content        = post.content || post.contenu || "";
-  const shouldTruncate = content.length > 280;
-  const displayContent = shouldTruncate && !expanded ? content.substring(0, 280) + "..." : content;
+  const { text: translatedContent, isTranslated, isTranslating } = useTranslatedText(content, post);
+  const shouldTruncate = translatedContent.length > 280;
+  const displayContent = shouldTruncate && !expanded ? translatedContent.substring(0, 280) + "..." : translatedContent;
   const isBoosted      = boostedLocal || !!post.isBoosted;
 
   const embedUrl      = post.embedUrl  || null;
@@ -1483,16 +1485,15 @@ const PostCardInner = forwardRef(({
           source: "post_card",
           watchPct: hasVideoMedia ? 55 : 100,
           watchTime: Math.max(1, Math.round(visibleMs / 1000)),
+        }, {
+          skipNetworkRetry: true,
+          timeout: 8000,
         });
         if (typeof data?.viewsCount === "number") setViewsCount(data.viewsCount);
         window.dispatchEvent(new CustomEvent("feed:interaction", {
           detail: { action: "view", post, position: post._displayPosition ?? 0, counted: !!data?.counted },
         }));
-      } catch {
-        const viewedNow = getSessionViewedPosts();
-        viewedNow.delete(String(postId));
-        try { window.sessionStorage?.setItem(VIEWED_POSTS_SESSION_KEY, JSON.stringify([...viewedNow])); } catch {}
-      }
+      } catch {}
     };
 
     const obs = new IntersectionObserver(([entry]) => {
@@ -1541,9 +1542,34 @@ const PostCardInner = forwardRef(({
 
   const formattedDate = useRelativeTime(post.createdAt || null);
 
-  if (hiddenLocal) return null;
+  if (hiddenLocal && !ignoreHidden) {
+    if (import.meta.env?.DEV) {
+      console.warn("[PostCardDebug] hidden post", {
+        postId: post._id,
+        reason: "hidden_local_preference",
+        rawUser: post.user,
+        rawAuthor: post.author,
+        userId: post.userId,
+        content: String(post.content || post.contenu || "").slice(0, 80),
+      });
+    }
+    return null;
+  }
 
-  if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
+  if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) {
+    if (import.meta.env?.DEV) {
+      console.warn("[PostCardDebug] hidden post", {
+        postId: post._id,
+        reason: postUser.isBannedOrDeleted ? "banned_or_deleted_author" : "invalid_author",
+        postUser,
+        rawUser: post.user,
+        rawAuthor: post.author,
+        userId: post.userId,
+        content: String(post.content || post.contenu || "").slice(0, 80),
+      });
+    }
+    return null;
+  }
 
   return (
     <>
@@ -1625,6 +1651,11 @@ const PostCardInner = forwardRef(({
         {content && effectiveMediaType !== "text-card" && (
           <div className="px-3 pb-2">
             <p className={`text-sm ${isDarkMode ? "text-gray-200" : "text-gray-800"}`}>{displayContent}</p>
+            {(isTranslated || isTranslating) && (
+              <p className={`mt-1 text-[11px] ${isDarkMode ? "text-gray-500" : "text-gray-400"}`}>
+                {isTranslating ? "Traduction..." : "Traduit automatiquement"}
+              </p>
+            )}
             {shouldTruncate && (
               <button onClick={handleExpand} className="text-gray-500 text-sm hover:text-gray-400 mt-1">
                 {expanded ? "voir moins" : "voir plus"}
@@ -1678,7 +1709,7 @@ const PostCardInner = forwardRef(({
           <Suspense fallback={null}>
             <PostCommentsModal
               isOpen={showCommentsModal} onClose={() => setShowCommentsModal(false)}
-              postId={post._id} postUser={postUser} postContent={content}
+              postId={post._id} postUser={postUser} postContent={translatedContent || content}
               postMediaUrl={mediaUrls[0] || null} likesCount={likesCount}
               comments={comments} setComments={setComments}
               currentUser={currentUser} getToken={getToken} showToast={showToast}
@@ -1694,7 +1725,7 @@ const PostCardInner = forwardRef(({
           <Suspense fallback={null}>
             <PostShareModal
               isOpen={showShareModal} onClose={() => setShowShareModal(false)}
-              postId={post._id} postUser={postUser} postContent={content}
+              postId={post._id} postUser={postUser} postContent={translatedContent || content}
               postMediaUrl={mediaUrls[0] || null} likesCount={likesCount}
               commentsCount={commentsCount} navigate={navigate} showToast={showToast}
             />
@@ -1710,7 +1741,7 @@ PostCardInner.displayName = "PostCardInner";
 // ─────────────────────────────────────────────────────────────────────────────
 // PostCard — wrapper
 // ─────────────────────────────────────────────────────────────────────────────
-const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false }, ref) => {
+const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mockPost = false, priority = false, ignoreHidden = false }, ref) => {
   const { isDarkMode } = useDarkMode();
   if (loading) return <SkeletonPostCard isDarkMode={isDarkMode} />;
   if (!post || !post._id) return null;
@@ -1731,6 +1762,7 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mock
       showToast={showToast}
       mockPost={mockPost}
       priority={priority}
+      ignoreHidden={ignoreHidden}
     />
   );
 });

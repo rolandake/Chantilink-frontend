@@ -5,6 +5,7 @@ import {
   Columns, Ruler, Save, History, Anchor, Circle, Square,
   Type, ScanLine, Layers, Droplets, Info, Minus, Plus, Link,
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -35,14 +36,17 @@ export default function Poteaux({
   projectResults,    // ✅ nouveau (résultats des autres sous-modules)
 }) {
 
-  const [typePoteau, setTypePoteau] = useState("rectangulaire");
-  const [inputs,     setInputs]     = useState({
+  const [typePoteau, setTypePoteau] = usePersistentState("elevations:poteaux:typePoteau", "rectangulaire");
+  const [inputs,     setInputs]     = usePersistentState("elevations:poteaux:inputs", {
     nombre:         "1",
     longueur:       "",
     largeur:        "",
     epaisseur:      "",
+    largeurAme:     "",
+    hauteurSection: "",
     diametre:       "",
     section:        "",
+    perimetre:      "",
     prixUnitaire:   "",
     coutMainOeuvre: "",
   });
@@ -68,13 +72,15 @@ export default function Poteaux({
       aireSection = Math.PI * Math.pow(d / 2, 2);
       perimetre = Math.PI * d;
     } else if (typePoteau === "t_shape") {
-      const L  = parseFloat(inputs.largeur) || 0;
-      const ep = parseFloat(inputs.epaisseur) || 0;
-      aireSection = (L * ep) + ((L - ep) * ep);
-      perimetre = L * 4;
+      const largeurAile = parseFloat(inputs.largeur) || 0;
+      const epAile = parseFloat(inputs.epaisseur) || 0;
+      const largeurAme = parseFloat(inputs.largeurAme) || 0;
+      const hauteurSection = parseFloat(inputs.hauteurSection) || 0;
+      aireSection = largeurAile * epAile + largeurAme * Math.max(0, hauteurSection - epAile);
+      perimetre = aireSection > 0 ? 2 * (largeurAile + hauteurSection) : 0;
     } else {
       aireSection = parseFloat(inputs.section) || 0;
-      perimetre = Math.sqrt(aireSection) * 4;
+      perimetre = parseFloat(inputs.perimetre) || 0;
     }
 
     const volumeTotal     = aireSection * h * nb;
@@ -101,7 +107,10 @@ export default function Poteaux({
       typePoteau,
       largeur:   parseFloat(inputs.largeur)   || 0,
       epaisseur: parseFloat(inputs.epaisseur) || 0,
+      largeurAme: parseFloat(inputs.largeurAme) || 0,
+      hauteurSection: parseFloat(inputs.hauteurSection) || 0,
       diametre:  parseFloat(inputs.diametre)  || 0,
+      perimetre,
     };
   }, [inputs, typePoteau]);
 
@@ -111,10 +120,14 @@ export default function Poteaux({
     onMateriauxChange?.({
       volume: results.volumeTotal,
       ciment: results.cimentT,
+      sable: results.sableT,
+      gravier: results.gravierT,
+      eau: results.eauL,
       acier:  results.acierT,
+      coffrage: results.surfaceCoffrage,
     });
 
-    // ✅ ÉMISSION DES RÉSULTATS TECHNIQUES → Longrines, Poutres pourront les lire
+    // ✅ ÉMISSION DES RÉSULTATS TECHNIQUES → Chaînage, Poutres pourront les lire
     onResultsChange?.({
       nombre:        results.nombre,
       aireSection:   results.aireSection,
@@ -126,7 +139,7 @@ export default function Poteaux({
       largeur:       results.largeur,
       epaisseur:     results.epaisseur,
       diametre:      results.diametre,
-      // Entraxe moyen estimé (pour longrines) — peut être affiné par l'utilisateur
+      // Entraxe moyen estimé (pour chaînage) — peut être affiné par l'utilisateur
       entraxeMoyen: results.nombre > 1 ? 3.5 : 0,
     });
   }, [results.total, results.volumeTotal, results.aireSection, results.nombre]);
@@ -290,12 +303,15 @@ export default function Poteaux({
                   <InputGroup label="Diamètre (m)" value={inputs.diametre} onChange={handleChange("diametre")} placeholder="0.30" full />
                 )}
                 {typePoteau === "t_shape" && (<>
-                  <InputGroup label="Largeur Totale (m)" value={inputs.largeur}   onChange={handleChange("largeur")}   placeholder="0.40" />
-                  <InputGroup label="Épaisseur (m)"      value={inputs.epaisseur} onChange={handleChange("epaisseur")} placeholder="0.15" />
+                  <InputGroup label="Largeur aile (m)" value={inputs.largeur} onChange={handleChange("largeur")} placeholder="0.40" />
+                  <InputGroup label="Épaisseur aile (m)" value={inputs.epaisseur} onChange={handleChange("epaisseur")} placeholder="0.12" />
+                  <InputGroup label="Largeur âme (m)" value={inputs.largeurAme} onChange={handleChange("largeurAme")} placeholder="0.15" />
+                  <InputGroup label="Hauteur section (m)" value={inputs.hauteurSection} onChange={handleChange("hauteurSection")} placeholder="0.40" />
                 </>)}
-                {typePoteau === "autre" && (
-                  <InputGroup label="Aire Section (m²)" value={inputs.section} onChange={handleChange("section")} placeholder="0.09" full />
-                )}
+                {typePoteau === "autre" && (<>
+                  <InputGroup label="Aire Section (m²)" value={inputs.section} onChange={handleChange("section")} placeholder="0.09" />
+                  <InputGroup label="Périmètre coffrage (m)" value={inputs.perimetre} onChange={handleChange("perimetre")} placeholder="1.20" />
+                </>)}
               </div>
               <div className="pt-3 border-t border-gray-700 grid grid-cols-2 gap-3">
                 <InputGroup label={`PU Béton (${currency}/m³)`}  value={inputs.prixUnitaire}    onChange={handleChange("prixUnitaire")} />
@@ -317,13 +333,13 @@ export default function Poteaux({
               <ResultCard label="Acier HA"       value={fmtD(results.acierKg, 0)}     unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-red-400"    bg="bg-red-500/10" />
             </div>
 
-            {/* ✅ Aperçu données transmises aux Longrines */}
+            {/* ✅ Aperçu données transmises au chaînage */}
             {results.volumeTotal > 0 && (
               <div className="flex items-start gap-3 p-3 bg-blue-500/5 border border-blue-500/20 rounded-2xl">
                 <Link className="w-3.5 h-3.5 text-blue-400 mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
                   <p className="text-[10px] text-blue-300 font-bold uppercase tracking-wider mb-1">
-                    Données transmises automatiquement → Longrines
+                    Données transmises automatiquement → Chaînage
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <span className="text-[10px] bg-blue-500/15 text-blue-300 px-2 py-0.5 rounded font-mono">
@@ -356,6 +372,7 @@ export default function Poteaux({
                 <MaterialRow label="Ciment (350kg/m³)"    val={`${fmtD(results.cimentT)} t`}   color="bg-blue-500" />
                 <MaterialRow label="Sable (Ratio 0.6)"    val={`${fmtD(results.sableT)} t`}    color="bg-amber-500" />
                 <MaterialRow label="Gravier (Ratio 0.85)" val={`${fmtD(results.gravierT)} t`}  color="bg-stone-500" />
+                <MaterialRow label="Coffrage poteaux"     val={`${fmtD(results.surfaceCoffrage, 1)} m²`} color="bg-indigo-500" />
                 <MaterialRow label="Acier (120kg/m³)"     val={`${fmtD(results.acierKg, 0)} kg`} color="bg-red-500" />
                 <div className="pt-2 border-t border-gray-700 flex justify-between items-center">
                   <span className="text-xs text-gray-400 flex items-center gap-1">

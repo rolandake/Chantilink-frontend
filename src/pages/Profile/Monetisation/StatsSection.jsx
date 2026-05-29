@@ -1,9 +1,10 @@
 // src/pages/Profile/Monetisation/StatsSection.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
-import { getAuthToken, monetisationFetch } from './monetisationApi';
+import { getAuthToken, monetisationFetch, readMonetisationJson } from './monetisationApi';
+import useMonetisationRealtime from './useMonetisationRealtime';
 
 const StatCard = ({ label, value, icon, color, delay, isDarkMode }) => {
   const bdr = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
@@ -51,19 +52,27 @@ export default function StatsSection() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
 
-  useEffect(() => {
+  const fetchStats = useCallback(async ({ background = false } = {}) => {
     if (!user) return;
-    (async () => {
-      setLoading(true); setError('');
-      try {
-        const token = await getAuthToken(getToken);
-        const res  = await monetisationFetch('stats', { token });
-        if (!res.ok) throw new Error('Erreur chargement statistiques');
-        setStats(await res.json());
-      } catch (e) { setError(e.message); }
-      finally { setLoading(false); }
-    })();
-  }, [user, getToken]);
+    if (!background) {
+      setLoading(true);
+      setError('');
+    }
+    try {
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('stats', { token });
+      if (!res.ok) throw new Error('Erreur chargement statistiques');
+      setStats(await readMonetisationJson(res));
+    } catch (e) {
+      if (!background) setError(e.message);
+    }
+    finally {
+      if (!background) setLoading(false);
+    }
+  }, [getToken, user]);
+
+  useEffect(() => { fetchStats(); }, [fetchStats]);
+  useMonetisationRealtime(fetchStats, 'stats');
 
   const font = "'Sora','DM Sans',sans-serif";
 

@@ -4,10 +4,11 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
 import {
   Ruler, Save, History, Anchor, Droplets, Link, Layers, Info,
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const STORAGE_KEY = "longrines-history-pro";
+const STORAGE_KEY = "chainage-history-pro";
 
 const DOSAGE_BETON = {
   ciment:  0.350,
@@ -17,10 +18,10 @@ const DOSAGE_BETON = {
 };
 
 const TYPES_LONGRINES = [
-  { id: "filante",       label: "Filante",        acierCoef: 80,  desc: "Chaînage bas standard" },
-  { id: "liaison",       label: "Liaison",         acierCoef: 100, desc: "Anti-sismique / Liaison massifs" },
-  { id: "redressement",  label: "Redressement",    acierCoef: 120, desc: "Poutre d'équilibre" },
-  { id: "prefab",        label: "Préfabriquée",    acierCoef: 60,  desc: "Longrine industrielle" },
+  { id: "bas",           label: "Chaînage bas",             acierCoef: 80,  desc: "Liaison basse au niveau des murs ou soubassements" },
+  { id: "haut",          label: "Chaînage haut",            acierCoef: 90,  desc: "Liaison haute sous dalle, toiture ou plancher" },
+  { id: "intermediaire", label: "Chaînage intermédiaire",   acierCoef: 80,  desc: "Raidisseur horizontal intermédiaire" },
+  { id: "redressement",  label: "Chaînage de redressement", acierCoef: 120, desc: "Liaison renforcée pour reprise d'excentrement" },
 ];
 
 const fmtD = (n, d = 2) => (n || 0).toFixed(d);
@@ -34,11 +35,13 @@ export default function Longrines({
   projectResults,   // ✅ nouveau — contient poteaux, murs, etc.
 }) {
 
-  const [typeLongrine, setTypeLongrine] = useState("filante");
-  const [inputs, setInputs] = useState({
+  const [typeLongrine, setTypeLongrine] = usePersistentState("elevations:longrines:typeLongrine", "bas");
+  const [inputs, setInputs] = usePersistentState("elevations:longrines:inputs", {
+    nombre:         "1",
     longueur:       "",
     largeur:        "",
     hauteur:        "",
+    facesCoffrage:  "3",
     prixUnitaire:   "",
     coutMainOeuvre: "",
     marge:          "10",
@@ -46,8 +49,8 @@ export default function Longrines({
   const [historique, setHistorique] = useState([]);
   const [message,    setMessage]    = useState(null);
 
-  // ✅ LIAISON AUTOMATIQUE : Poteaux → Longrines
-  // Quand les poteaux sont calculés, on peut suggérer la longueur totale des longrines
+  // ✅ LIAISON AUTOMATIQUE : Poteaux → Chaînage
+  // Quand les poteaux sont calculés, on peut suggérer la longueur totale du chaînage.
   const poteauxData = projectResults?.poteaux;
   const autoSuggestion = useMemo(() => {
     if (!poteauxData?.nombre || poteauxData.nombre < 2) return null;
@@ -73,16 +76,30 @@ export default function Longrines({
     }));
   };
 
+  const autoInputValues = useMemo(() => ({
+    longueur: autoSuggestion?.longueurEstimee || 0,
+    largeur:  autoSuggestion?.largeurSugeree  || 0,
+  }), [autoSuggestion]);
+
+  const getEffectiveInput = (key) => {
+    const current = inputs[key];
+    const auto = autoInputValues[key];
+    if ((current === undefined || current === "") && Number(auto) > 0) return String(auto);
+    return current;
+  };
+
   // ── Calcul ────────────────────────────────────────────────────────────────
   const results = useMemo(() => {
-    const L = parseFloat(inputs.longueur) || 0;
-    const l = parseFloat(inputs.largeur)  || 0;
+    const nb = parseFloat(inputs.nombre) || 1;
+    const L = parseFloat(getEffectiveInput("longueur")) || 0;
+    const l = parseFloat(getEffectiveInput("largeur"))  || 0;
     const h = parseFloat(inputs.hauteur)  || 0;
+    const facesCoffrage = parseFloat(inputs.facesCoffrage) || 3;
     const margeCoef = 1 + (parseFloat(inputs.marge) || 0) / 100;
 
-    const volumeTheorique = L * l * h;
+    const volumeTheorique = L * l * h * nb;
     const volumeCommande  = volumeTheorique * margeCoef;
-    const surfaceCoffrage = (2 * h) * L;
+    const surfaceCoffrage = ((2 * h) + (facesCoffrage >= 3 ? l : 0)) * L * nb;
 
     const acierRatio = TYPES_LONGRINES.find((t) => t.id === typeLongrine)?.acierCoef || 80;
     const acierKg    = volumeTheorique * acierRatio;
@@ -102,8 +119,10 @@ export default function Longrines({
       volumeTheorique, volumeCommande, surfaceCoffrage,
       cimentT, cimentSacs, sableT, gravierT, acierT, acierKg, eauL,
       total, acierRatio,
+      nombre: nb,
+      facesCoffrage,
     };
-  }, [inputs, typeLongrine]);
+  }, [inputs, typeLongrine, autoInputValues]);
 
   // ── Sync parent + store ───────────────────────────────────────────────────
   useEffect(() => {
@@ -111,16 +130,23 @@ export default function Longrines({
     onMateriauxChange?.({
       volume: results.volumeCommande,
       ciment: results.cimentT,
+      sable: results.sableT,
+      gravier: results.gravierT,
+      eau: results.eauL,
       acier:  results.acierT,
+      coffrage: results.surfaceCoffrage,
     });
     // ✅ Émission résultats → autres modules
     onResultsChange?.({
-      longueur:        parseFloat(inputs.longueur) || 0,
-      largeur:         parseFloat(inputs.largeur)  || 0,
+      longueur:        parseFloat(getEffectiveInput("longueur")) || 0,
+      largeur:         parseFloat(getEffectiveInput("largeur"))  || 0,
       hauteur:         parseFloat(inputs.hauteur)  || 0,
+      nombre:          results.nombre,
       volumeCommande:  results.volumeCommande,
+      volumeTheorique: results.volumeTheorique,
       surfaceCoffrage: results.surfaceCoffrage,
       acierKg:         results.acierKg,
+      cimentSacs:      results.cimentSacs,
       typeLongrine,
     });
   }, [results.total, results.volumeCommande, results.acierKg]);
@@ -144,7 +170,7 @@ export default function Longrines({
     const newHist = [newEntry, ...historique];
     setHistorique(newHist);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newHist));
-    showToast("✅ Longrines sauvegardées !");
+    showToast("✅ Chaînage sauvegardé !");
   };
 
   const showToast = (msg, type = "success") => {
@@ -180,8 +206,8 @@ export default function Longrines({
             <Link className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Élévation : Longrines</h2>
-            <p className="text-xs text-gray-400 font-medium tracking-tight">Liaison de fondation & Redressement</p>
+            <h2 className="text-xl font-bold text-white">Élévation : Chaînage</h2>
+            <p className="text-xs text-gray-400 font-medium tracking-tight">Liaisons horizontales bas, haut et intermédiaires</p>
           </div>
         </div>
         <div className="text-right">
@@ -208,7 +234,7 @@ export default function Longrines({
                   </p>
                   <p className="text-xs text-emerald-200/70">
                     {autoSuggestion.nombre} poteaux · Entraxe ~{autoSuggestion.entraxe} m
-                    → Longueur estimée : <span className="font-mono font-bold text-emerald-300">{autoSuggestion.longueurEstimee} m</span>
+                    → Chaînage estimé : <span className="font-mono font-bold text-emerald-300">{autoSuggestion.longueurEstimee} m</span>
                   </p>
                   <button onClick={applyAutoLongueur}
                     className="mt-2 text-[10px] bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 px-3 py-1 rounded-lg font-bold hover:bg-emerald-500/30 transition-all">
@@ -218,7 +244,7 @@ export default function Longrines({
               </div>
             )}
 
-            {/* Type de longrine */}
+            {/* Type de chaînage */}
             <div className="bg-gray-800 p-2 rounded-2xl border border-gray-700">
               <div className="grid grid-cols-2 gap-2">
                 {TYPES_LONGRINES.map((t) => (
@@ -241,9 +267,11 @@ export default function Longrines({
                 <Ruler className="w-3 h-3" /> Dimensions Fouille (m)
               </h3>
               <div className="grid grid-cols-2 gap-4">
-                <InputGroup label="Longueur Totale" value={inputs.longueur} onChange={(v) => setInputs({ ...inputs, longueur: v })} full />
-                <InputGroup label="Largeur"         value={inputs.largeur}  onChange={(v) => setInputs({ ...inputs, largeur: v })}  placeholder="0.20" />
+                <InputGroup label="Nombre de lignes" value={inputs.nombre} onChange={(v) => setInputs({ ...inputs, nombre: v })} />
+                <InputGroup label="Longueur Totale" value={inputs.longueur} onChange={(v) => setInputs({ ...inputs, longueur: v })} autoValue={autoInputValues.longueur} full />
+                <InputGroup label="Largeur"         value={inputs.largeur}  onChange={(v) => setInputs({ ...inputs, largeur: v })}  autoValue={autoInputValues.largeur} placeholder="0.20" />
                 <InputGroup label="Hauteur"         value={inputs.hauteur}  onChange={(v) => setInputs({ ...inputs, hauteur: v })}  placeholder="0.40" />
+                <InputGroup label="Faces coffrage"  value={inputs.facesCoffrage} onChange={(v) => setInputs({ ...inputs, facesCoffrage: v })} placeholder="2 ou 3" />
                 <InputGroup label="Marge perte (%)" value={inputs.marge}    onChange={(v) => setInputs({ ...inputs, marge: v })} />
               </div>
             </div>
@@ -256,8 +284,28 @@ export default function Longrines({
               </div>
               <button onClick={handleSave}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-4 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 mt-4">
-                <Save className="w-5 h-5" /> Enregistrer Longrines
+                <Save className="w-5 h-5" /> Enregistrer le chaînage
               </button>
+            </div>
+
+            {/* Synthèse interne */}
+            <div className="bg-gray-800/50 border border-emerald-500/20 rounded-2xl p-4">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div>
+                  <p className="text-[10px] text-emerald-300 uppercase font-bold tracking-widest">Synthèse chaînage</p>
+                  <p className="text-[11px] text-gray-500">Récapitulatif interne en temps réel</p>
+                </div>
+                <span className="text-sm font-black text-emerald-400 font-mono">{fmt(results.total)} {currency}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <ReadonlySummaryField label="Longueur" value={fmtD(parseFloat(getEffectiveInput("longueur")) || 0)} unit="m" />
+                <ReadonlySummaryField label="Nombre" value={fmtD(results.nombre, 0)} unit="u" />
+                <ReadonlySummaryField label="Volume brut" value={fmtD(results.volumeTheorique)} unit="m³" />
+                <ReadonlySummaryField label="Volume commande" value={fmtD(results.volumeCommande)} unit="m³" />
+                <ReadonlySummaryField label="Coffrage" value={fmtD(results.surfaceCoffrage)} unit="m²" />
+                <ReadonlySummaryField label="Ciment" value={fmtD(results.cimentSacs, 1)} unit="sacs" />
+                <ReadonlySummaryField label="Acier HA" value={fmtD(results.acierKg, 0)} unit="kg" />
+              </div>
             </div>
           </div>
 
@@ -294,7 +342,7 @@ export default function Longrines({
                 <div className="flex items-start gap-2 p-3 bg-emerald-500/5 rounded-lg border border-emerald-500/20">
                   <Info className="w-4 h-4 text-emerald-400 mt-0.5" />
                   <p className="text-[10px] text-emerald-200/70 leading-relaxed italic">
-                    Les longrines de <strong>redressement</strong> nécessitent un ratio d'acier élevé pour compenser l'excentrement des charges.
+                    Le chaînage de <strong>redressement</strong> nécessite un ratio d'acier élevé pour compenser l'excentrement des charges.
                   </p>
                 </div>
               </div>
@@ -303,8 +351,8 @@ export default function Longrines({
             {historique.length > 0 && (
               <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
                 <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
-                    <History className="w-3 h-3" /> Historique de liaison
+                <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
+                    <History className="w-3 h-3" /> Historique du chaînage
                   </h4>
                 </div>
                 <div className="max-h-[100px] overflow-y-auto">
@@ -327,12 +375,39 @@ export default function Longrines({
   );
 }
 
-const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
-  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
-    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
-    <input type="number" value={value} onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder || "0"}
-      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all font-mono text-sm" />
+const InputGroup = ({ label, value, onChange, placeholder, full = false, autoValue = 0 }) => {
+  const usesAutoValue = (value === undefined || value === "") && Number(autoValue) > 0;
+
+  return (
+    <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
+        {usesAutoValue && (
+          <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-300">
+            Auto
+          </span>
+        )}
+      </div>
+      <input type="number" value={usesAutoValue ? fmtD(autoValue) : value} onChange={(e) => onChange(e.target.value)}
+        placeholder={usesAutoValue ? `Auto: ${fmtD(autoValue)}` : placeholder || "0"}
+        className={`w-full bg-gray-900 border rounded-xl px-4 py-2.5 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-all font-mono text-sm ${
+          usesAutoValue ? "border-emerald-500/40 text-emerald-200" : "border-gray-600 text-white"
+        }`} />
+    </div>
+  );
+};
+
+const ReadonlySummaryField = ({ label, value, unit }) => (
+  <div>
+    <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide leading-tight">{label}</label>
+    <div className="flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-950/70 px-3 py-2">
+      <input
+        readOnly
+        value={value}
+        className="min-w-0 flex-1 bg-transparent text-sm font-mono font-bold text-white outline-none"
+      />
+      <span className="text-[10px] font-bold uppercase text-gray-500">{unit}</span>
+    </div>
   </div>
 );
 

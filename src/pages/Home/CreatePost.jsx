@@ -244,6 +244,8 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
   const fileInputRef       = useRef(null);
   const abortControllerRef = useRef(null);
   const textareaRef        = useRef(null);
+  const postingRef         = useRef(false);
+  const optimisticUrlsRef  = useRef([]);
 
   const [isOpen,         setIsOpen]         = useState(false);
   const [content,        setContent]        = useState("");
@@ -275,6 +277,12 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
   const MAX_VIDEO_SIZE      = 200 * 1024 * 1024;
   const ALLOWED_IMAGE_TYPES = ["image/jpeg","image/jpg","image/png","image/webp"];
   const ALLOWED_VIDEO_TYPES = ["video/mp4","video/webm","video/quicktime"];
+
+  const postDebug = (section, message, data) => {
+    if (!import.meta.env?.DEV) return;
+    if (data !== undefined) console.log(`[CreatePost:${section}] ${message}`, data);
+    else console.log(`[CreatePost:${section}] ${message}`);
+  };
 
   // ── Détermine si on est en mode "carte colorée" ──────────────────────────
   // ✅ v2 : seuil 120 chars (au lieu de 280) — cohérence avec PostCard.jsx v7
@@ -318,7 +326,11 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
     return () => urls.forEach(u => URL.revokeObjectURL(u.url));
   }, [mediaFiles]);
 
-  useEffect(() => () => { abortControllerRef.current?.abort(); }, []);
+  useEffect(() => () => {
+    abortControllerRef.current?.abort();
+    optimisticUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+    optimisticUrlsRef.current = [];
+  }, []);
 
   const resetForm = useCallback(() => {
     setContent("");
@@ -375,7 +387,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
   // handlePost — optimiste + progression réelle + support texte coloré
   // ─────────────────────────────────────────────────────────────────────────
   const handlePost = async () => {
-    if (posting || !user) return;
+    if (postingRef.current || posting || !user) return;
 
     const trimmedContent = content.trim();
     if (!trimmedContent && mediaFiles.length === 0) {
@@ -386,6 +398,8 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
       showToast?.(`Texte trop long (max ${MAX_CONTENT_LENGTH} caractères)`, "error");
       return;
     }
+    postingRef.current = true;
+    setPosting(true);
 
     // Capture l'état courant avant reset
     const capturedIsTextCard   = isTextCard;
@@ -393,9 +407,12 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
     const capturedFiles        = [...mediaFiles];
     const capturedContent      = trimmedContent;
     const capturedLocation     = location.trim();
+    const capturedPrivacy      = privacy;
+    const optimisticObjectUrls = capturedFiles.map(file => URL.createObjectURL(file));
+    optimisticUrlsRef.current.push(...optimisticObjectUrls);
 
     // ── Post optimiste instantané ─────────────────────────────────────────
-    const tempId = `temp_${Date.now()}`;
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     const optimisticPost = {
       _id:       tempId,
       content:   capturedContent,
@@ -407,11 +424,11 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
         isVerified:   user.isVerified || false,
         isPremium:    user.isPremium  || false,
       },
-      media:     previewUrls.map(p => p.url),
+      media:     optimisticObjectUrls,
       mediaType: capturedIsTextCard
         ? "text-card"
-        : previewUrls.some(p => p.type === "video") ? "video"
-        : previewUrls.length > 0 ? "image"
+        : capturedFiles.some(file => file.type?.startsWith("video")) ? "video"
+        : optimisticObjectUrls.length > 0 ? "image"
         : null,
       // Palette choisie (transmise pour que PostMedia puisse la lire)
       textCardPalette: capturedIsTextCard ? capturedPaletteIndex : undefined,
@@ -419,7 +436,7 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
       comments:     [],
       shares:       [],
       location:     capturedLocation || null,
-      privacy,
+      privacy:      capturedPrivacy,
       createdAt:    new Date().toISOString(),
       isOptimistic: true,
     };
@@ -428,40 +445,98 @@ export default function CreatePost({ user, showToast, onPostCreated }) {
     resetForm();
 
     // ── Upload arrière-plan ───────────────────────────────────────────────
-    setPosting(true);
     setUploadProgress(0);
     abortControllerRef.current = new AbortController();
+
+    postDebug("Upload", "Debut envoi post", {
+      tempId,
+      contentLength: capturedContent.length,
+      filesCount: capturedFiles.length,
+      isTextCard: capturedIsTextCard,
+      files: capturedFiles.map(file => ({
+        name: file.name,
+        type: file.type,
+        size: file.size,
+      })),
+    });
 
     const formData = new FormData();
     formData.append("content", capturedContent);
     if (capturedLocation) formData.append("location", capturedLocation);
-    formData.append("privacy", privacy);
+    formData.append("privacy", capturedPrivacy);
     if (capturedIsTextCard) formData.append("textCardPalette", String(capturedPaletteIndex));
     capturedFiles.forEach(file => formData.append("media", file));
 
-    try {
-      const response = await axiosClient.post("/posts", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
+    const postConfig = {
         signal:  abortControllerRef.current.signal,
-        timeout: 60000,
+        timeout: 120000,
         onUploadProgress: (evt) => {
           if (evt.total) setUploadProgress(Math.round((evt.loaded * 100) / evt.total));
         },
-      });
+      };
+
+    try {
+      let response;
+      try {
+        response = await axiosClient.post("/posts", formData, postConfig);
+      } catch (err) {
+        postDebug("Upload", "Premier envoi echoue", {
+          status: err.response?.status,
+          message: err.message,
+          data: err.response?.data,
+        });
+
+        const canRetryAsPlainText =
+          capturedIsTextCard &&
+          capturedFiles.length === 0 &&
+          err.response?.status >= 500;
+
+        if (!canRetryAsPlainText) throw err;
+
+        const fallbackData = new FormData();
+        fallbackData.append("content", capturedContent);
+        if (capturedLocation) fallbackData.append("location", capturedLocation);
+        fallbackData.append("privacy", capturedPrivacy);
+        response = await axiosClient.post("/posts", fallbackData, postConfig);
+      }
 
       const realPost = response.data?.data || response.data;
-      replaceOptimisticPost?.(tempId, realPost);
+      postDebug("Upload", "Post cree cote serveur", {
+        status: response.status,
+        postId: realPost?._id || realPost?.id,
+        mediaCount: Array.isArray(realPost?.media) ? realPost.media.length : 0,
+        mediaType: realPost?.mediaType,
+      });
+      const normalizedPost = replaceOptimisticPost?.(tempId, realPost) || realPost;
+      optimisticObjectUrls.forEach(url => URL.revokeObjectURL(url));
+      optimisticUrlsRef.current = optimisticUrlsRef.current.filter(url => !optimisticObjectUrls.includes(url));
       showToast?.("Post publié ! 🎉", "success");
-      onPostCreated?.(realPost);
+      onPostCreated?.(normalizedPost);
 
     } catch (err) {
-      if (err.name === "CanceledError" || err.name === "AbortError") return;
+      if (err.name === "CanceledError" || err.name === "AbortError") {
+        removeOptimisticPost?.(tempId);
+        optimisticObjectUrls.forEach(url => URL.revokeObjectURL(url));
+        optimisticUrlsRef.current = optimisticUrlsRef.current.filter(url => !optimisticObjectUrls.includes(url));
+        return;
+      }
       removeOptimisticPost?.(tempId);
+      optimisticObjectUrls.forEach(url => URL.revokeObjectURL(url));
+      optimisticUrlsRef.current = optimisticUrlsRef.current.filter(url => !optimisticObjectUrls.includes(url));
+      postDebug("Upload", "Publication echouee", {
+        status: err.response?.status,
+        message: err.message,
+        data: err.response?.data,
+        filesCount: capturedFiles.length,
+      });
       const msg = err.response?.status === 401
         ? "Session expirée. Reconnectez-vous."
+        : err.response?.data?.code === "R2_ACCESS_DENIED"
+        ? "Stockage média R2 refusé. Redémarre le backend pour activer le fallback local, ou corrige le token R2."
         : err.response?.data?.message || err.message || "Publication échouée. Réessayez.";
       showToast?.(msg, "error");
     } finally {
+      postingRef.current = false;
       setPosting(false);
       setTimeout(() => setUploadProgress(0), 800);
     }

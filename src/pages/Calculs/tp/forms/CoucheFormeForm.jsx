@@ -23,7 +23,7 @@ const PROP_SABLE = 0.4;
 const PROP_GRAVIER = 0.2;
 const PROP_TERRE = 0.4;
 
-export function CoucheFormeForm({ currency = "FCFA", onTotalChange = () => {} }) {
+export function CoucheFormeForm({ currency = "FCFA", onTotalChange = () => {}, onMateriauxChange = () => {} }) {
   const {
     localInputs,
     updateInput,
@@ -89,7 +89,26 @@ export function CoucheFormeForm({ currency = "FCFA", onTotalChange = () => {} })
   // Sync parent (Total projet)
   useEffect(() => {
     onTotalChange(results.total);
-  }, [results.total]);
+    onMateriauxChange({
+      volume: results.volumeFini,
+      volumeCommande: results.volumeCommande,
+      tonnageTotal: results.tonnageTotal,
+      sableT: results.sableT,
+      gravierT: results.gravierT,
+      terreT: results.terreT,
+      nombreCamions: Math.ceil((results.volumeCommande || 0) / 16),
+    });
+  }, [
+    results.total,
+    results.volumeFini,
+    results.volumeCommande,
+    results.tonnageTotal,
+    results.sableT,
+    results.gravierT,
+    results.terreT,
+    onTotalChange,
+    onMateriauxChange,
+  ]);
 
   const handleSave = async () => {
     if (results.volumeFini <= 0) return showToast("⚠️ Dimensions invalides", "error");

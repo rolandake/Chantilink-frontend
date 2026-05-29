@@ -16,6 +16,7 @@ import React, {
 import {
   applyLanguage,
   getCurrentLanguage,
+  normalizeLanguageCode,
   SUPPORTED_LANGUAGES,
   LANG_STORAGE_KEY,
 } from "../i18n";
@@ -56,13 +57,23 @@ export function LanguageProvider({ children, getToken }) {
   // ── Sync quand localStorage change (autre onglet) ────────────
   useEffect(() => {
     const handleStorage = (e) => {
-      if (e.key === LANG_STORAGE_KEY && e.newValue && e.newValue !== language) {
-        setLanguage(e.newValue);
-        applyLanguage(e.newValue);
+      const nextLanguage = normalizeLanguageCode(e.newValue);
+      if (e.key === LANG_STORAGE_KEY && nextLanguage && nextLanguage !== language) {
+        setLanguage(nextLanguage);
+        applyLanguage(nextLanguage);
       }
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
+  }, [language]);
+
+  useEffect(() => {
+    const handleLanguageEvent = (e) => {
+      const nextLanguage = normalizeLanguageCode(e.detail?.language || localStorage.getItem(LANG_STORAGE_KEY));
+      if (nextLanguage && nextLanguage !== language) setLanguage(nextLanguage);
+    };
+    window.addEventListener("language:changed", handleLanguageEvent);
+    return () => window.removeEventListener("language:changed", handleLanguageEvent);
   }, [language]);
 
   // ── Sauvegarder côté backend (debounced) ─────────────────────
@@ -118,9 +129,10 @@ export function LanguageProvider({ children, getToken }) {
    */
   const changeLanguage = useCallback(
     async (langCode, { sync = true } = {}) => {
-      if (langCode === language) return;
+      const nextLanguage = normalizeLanguageCode(langCode);
+      if (nextLanguage === language) return;
 
-      const isSupported = SUPPORTED_LANGUAGES.find((l) => l.code === langCode);
+      const isSupported = SUPPORTED_LANGUAGES.find((l) => l.code === nextLanguage);
       if (!isSupported) {
         console.warn(`[LanguageContext] Langue non supportée: "${langCode}"`);
         return;
@@ -129,12 +141,12 @@ export function LanguageProvider({ children, getToken }) {
       setChanging(true);
       try {
         // 1️⃣ Appliquer immédiatement (i18n + HTML + localStorage)
-        applyLanguage(langCode);
-        setLanguage(langCode);
+        applyLanguage(nextLanguage);
+        setLanguage(nextLanguage);
 
         // 2️⃣ Sync backend en arrière-plan (debounced, silencieux)
         if (sync) {
-          syncToBackend(langCode);
+          syncToBackend(nextLanguage);
         }
       } finally {
         setChanging(false);
@@ -151,14 +163,15 @@ export function LanguageProvider({ children, getToken }) {
   const initFromUser = useCallback(
     (userLanguage) => {
       if (!userLanguage) return;
-      if (userLanguage === language) return;
+      const nextLanguage = normalizeLanguageCode(userLanguage);
+      if (nextLanguage === language) return;
 
-      const isSupported = SUPPORTED_LANGUAGES.find((l) => l.code === userLanguage);
+      const isSupported = SUPPORTED_LANGUAGES.find((l) => l.code === nextLanguage);
       if (!isSupported) return;
 
       // Appliquer sans sync backend (on vient justement du backend)
-      applyLanguage(userLanguage);
-      setLanguage(userLanguage);
+      applyLanguage(nextLanguage);
+      setLanguage(nextLanguage);
     },
     [language]
   );

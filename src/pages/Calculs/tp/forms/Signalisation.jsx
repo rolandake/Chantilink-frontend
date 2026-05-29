@@ -75,9 +75,23 @@ export default function EquipementsDeSignalisation({ currency = "XOF", onCostCha
   useEffect(() => {
     if (typeof onCostChange      === "function") onCostChange(results.totalGlobal);
     if (typeof onMateriauxChange === "function") {
-      onMateriauxChange({ poidsLogistique: results.poidsTotalT, total: results.totalGlobal });
+      onMateriauxChange({
+        quantiteSignalisation: Number(inputs.quantite || 0),
+        poidsLogistique: results.poidsTotalT,
+        coutFourniture: results.totalFourniture,
+        coutPose: results.totalPose,
+      });
     }
-  }, [results.totalGlobal, selectedType]);
+  }, [
+    results.totalGlobal,
+    results.totalFourniture,
+    results.totalPose,
+    results.poidsTotalT,
+    inputs.quantite,
+    selectedType,
+    onCostChange,
+    onMateriauxChange,
+  ]);
 
   const showToast = (msg, type = "success") => {
     setMessage({ text: msg, type });

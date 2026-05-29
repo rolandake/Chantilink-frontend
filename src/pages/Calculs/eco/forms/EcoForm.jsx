@@ -1,8 +1,8 @@
 // src/pages/Calculs/eco/forms/EcoForm.jsx
 import React, { useState, useMemo, useCallback } from "react";
 import {
-  Leaf, ChevronLeft, LayoutDashboard, Download,
-  FileText, FileSpreadsheet, FileType2, X, TrendingUp, Table2
+  Leaf, ChevronLeft, LayoutDashboard,
+  FileText, X, TrendingUp, Table2
 } from "lucide-react";
 
 import TerrassementEco from "./TerrassementEco.jsx";
@@ -13,28 +13,30 @@ import MateriauxEco    from "./MateriauxEco.jsx";
 import DechetsEco      from "./DechetsEco.jsx";
 import TransportEco    from "./TransportEco.jsx";
 import DevisEco        from "./DevisEco.jsx";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 // ─── CONFIG ÉTAPES ────────────────────────────────────────────
 const stepsConfig = [
-  { id: "terrassement", label: "Terrassement",  component: TerrassementEco, icon: "🚜", color: "text-amber-500"   },
-  { id: "fondation",    label: "Fondation Éco", component: FondationEco,    icon: "🏗️", color: "text-red-500"     },
-  { id: "energie",      label: "Énergie",        component: EnergieEco,      icon: "⚡", color: "text-yellow-400"  },
-  { id: "eau",          label: "Eau",            component: EauEco,          icon: "💧", color: "text-cyan-400"    },
-  { id: "materiaux",    label: "Matériaux",      component: MateriauxEco,    icon: "🧱", color: "text-emerald-500" },
-  { id: "dechets",      label: "Déchets",        component: DechetsEco,      icon: "🗑️", color: "text-orange-500"  },
-  { id: "transport",    label: "Transport",      component: TransportEco,    icon: "🚛", color: "text-blue-500"    },
+  { id: "terrassement", label: "Gestion terres / sols", component: TerrassementEco, icon: "🌱", color: "text-emerald-400" },
+  { id: "fondation",    label: "Béton bas carbone",     component: FondationEco,    icon: "🧪", color: "text-red-300"     },
+  { id: "energie",      label: "Énergie & CO₂",          component: EnergieEco,      icon: "⚡", color: "text-yellow-400"  },
+  { id: "eau",          label: "Eau & réemploi",         component: EauEco,          icon: "💧", color: "text-cyan-400"    },
+  { id: "materiaux",    label: "Matériaux durables",     component: MateriauxEco,    icon: "♻️", color: "text-emerald-500" },
+  { id: "dechets",      label: "Déchets & recyclage",    component: DechetsEco,      icon: "🗑️", color: "text-orange-500"  },
+  { id: "transport",    label: "Transport bas carbone",  component: TransportEco,    icon: "🚛", color: "text-blue-500"    },
 ];
 
 const fmt = (n, currency = "XOF") =>
   `${Number(n || 0).toLocaleString("fr-FR")} ${currency}`;
 
-const today = () => new Date().toLocaleDateString("fr-FR");
-
 // ─── TABLEAU RÉCAP ────────────────────────────────────────────
-const RecapTable = ({ costs, currency }) => {
+const RecapTable = ({ costs, quantites, currency, onOpenDevis }) => {
   const rows  = stepsConfig.map(s => ({ ...s, cost: costs[s.id] || 0 }));
   const total = rows.reduce((a, r) => a + r.cost, 0);
   const hasAny = rows.some(r => r.cost > 0);
+  const materialCount = Object.values(quantites || {}).reduce((sum, mats) => (
+    sum + Object.values(mats || {}).filter(value => Number(value || 0) > 0).length
+  ), 0);
 
   return (
     <div className="rounded-2xl overflow-hidden border"
@@ -94,191 +96,35 @@ const RecapTable = ({ costs, currency }) => {
           <p className="text-xs italic">Les calculs apparaîtront ici automatiquement</p>
         </div>
       )}
-    </div>
-  );
-};
-
-// ─── PANNEAU EXPORT ───────────────────────────────────────────
-const ExportPanel = ({ costs, currency }) => {
-  const [exporting, setExporting] = useState(null);
-  const hasData = stepsConfig.some(s => (costs[s.id] || 0) > 0);
-  const totalGeneral = stepsConfig.reduce((a, s) => a + (costs[s.id] || 0), 0);
-
-  const rows = stepsConfig.map(s => ({
-    label: s.label, icon: s.icon, cost: costs[s.id] || 0,
-  }));
-
-  const exportPDF = useCallback(async () => {
-    setExporting("pdf");
-    try {
-      if (!window.jspdf) {
-        await new Promise((res, rej) => {
-          const s = document.createElement("script");
-          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-          s.onload = res; s.onerror = rej; document.head.appendChild(s);
-        });
-      }
-      if (!window.jspdf?.jsPDF?.prototype?.autoTable) {
-        await new Promise((res, rej) => {
-          const s = document.createElement("script");
-          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js";
-          s.onload = res; s.onerror = rej; document.head.appendChild(s);
-        });
-      }
-      const { jsPDF } = window.jspdf;
-      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      doc.setFillColor(17, 24, 39); doc.rect(0, 0, 210, 297, "F");
-      doc.setFillColor(22, 163, 74); doc.rect(0, 0, 210, 32, "F");
-      doc.setTextColor(255, 255, 255); doc.setFontSize(20); doc.setFont("helvetica", "bold");
-      doc.text("DEVIS ÉCOLOGIQUE", 14, 14);
-      doc.setFontSize(9); doc.setFont("helvetica", "normal");
-      doc.setTextColor(134, 239, 172);
-      doc.text("CHANTILINK — Construction Durable & Éco-Responsable", 14, 22);
-      doc.text(`Généré le ${today()}`, 14, 28);
-      doc.autoTable({
-        startY: 40,
-        head: [["Poste", `Coût (${currency})`]],
-        body: [
-          ...rows.map(r => [r.label, r.cost ? r.cost.toLocaleString("fr-FR") : "—"]),
-          ["TOTAL", totalGeneral.toLocaleString("fr-FR")],
-        ],
-        theme: "grid",
-        styles: { fontSize: 10, font: "helvetica", textColor: [229, 231, 235], fillColor: [31, 41, 55], lineColor: [55, 65, 81], lineWidth: 0.3 },
-        headStyles: { fillColor: [22, 163, 74], textColor: [255, 255, 255], fontStyle: "bold" },
-        alternateRowStyles: { fillColor: [17, 24, 39] },
-        didParseCell: (data) => {
-          if (data.row.index === rows.length) {
-            data.cell.styles.fillColor = [20, 83, 45];
-            data.cell.styles.fontStyle = "bold";
-            data.cell.styles.textColor = [255, 255, 255];
-          }
-        },
-        margin: { left: 14, right: 14 },
-      });
-      const pageH = doc.internal.pageSize.height;
-      doc.setTextColor(75, 85, 99); doc.setFontSize(7);
-      doc.text("Document généré par ChantiLink — www.chantilink.com", 14, pageH - 8);
-      doc.save(`devis_eco_${Date.now()}.pdf`);
-    } catch (e) { console.error(e); alert("Erreur export PDF."); }
-    finally { setExporting(null); }
-  }, [rows, totalGeneral, currency]);
-
-  const exportExcel = useCallback(async () => {
-    setExporting("excel");
-    try {
-      if (!window.XLSX) {
-        await new Promise((res, rej) => {
-          const s = document.createElement("script");
-          s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-          s.onload = res; s.onerror = rej; document.head.appendChild(s);
-        });
-      }
-      const XLSX = window.XLSX;
-      const wb = XLSX.utils.book_new();
-      const ws1Data = [
-        ["DEVIS ÉCOLOGIQUE — CHANTILINK", ""],
-        [`Date : ${today()}`, ""],
-        [""],
-        ["Poste", `Coût (${currency})`],
-        ...rows.map(r => [r.label, r.cost]),
-        [""],
-        ["TOTAL", totalGeneral],
-      ];
-      const ws1 = XLSX.utils.aoa_to_sheet(ws1Data);
-      ws1["!cols"] = [{ wch: 25 }, { wch: 20 }];
-      XLSX.utils.book_append_sheet(wb, ws1, "Récapitulatif");
-      XLSX.writeFile(wb, `devis_eco_${Date.now()}.xlsx`);
-    } catch (e) { console.error(e); alert("Erreur export Excel."); }
-    finally { setExporting(null); }
-  }, [rows, totalGeneral, currency]);
-
-  const exportWord = useCallback(() => {
-    setExporting("word");
-    try {
-      const tableRows = rows.map(r => `
-        <tr style="background:${r.cost > 0 ? "#f0fdf4" : "#fff"}">
-          <td style="padding:8px 12px;border:1px solid #ddd;font-weight:600">${r.icon} ${r.label}</td>
-          <td style="padding:8px 12px;border:1px solid #ddd;text-align:right;font-weight:bold;color:#16a34a">
-            ${r.cost ? r.cost.toLocaleString("fr-FR") + " " + currency : "—"}
-          </td>
-        </tr>`).join("");
-      const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-        <head><meta charset="utf-8"><title>Devis Écologique</title></head>
-        <body style="font-family:Arial,sans-serif;padding:30px;color:#111">
-          <h1 style="color:#16a34a;border-bottom:3px solid #16a34a;padding-bottom:8px">DEVIS ÉCOLOGIQUE — CHANTILINK</h1>
-          <p style="color:#6b7280;margin:0 0 24px">Date : ${today()}</p>
-          <table style="width:100%;border-collapse:collapse;font-size:13px">
-            <thead><tr style="background:#16a34a;color:#fff">
-              <th style="padding:10px 12px;border:1px solid #15803d;text-align:left">Poste</th>
-              <th style="padding:10px 12px;border:1px solid #15803d;text-align:right">Coût (${currency})</th>
-            </tr></thead>
-            <tbody>${tableRows}</tbody>
-            <tfoot><tr style="background:#14532d;color:#fff">
-              <td style="padding:10px 12px;border:1px solid #15803d;font-weight:bold;font-size:14px">TOTAL GÉNÉRAL</td>
-              <td style="padding:10px 12px;border:1px solid #15803d;text-align:right;font-weight:bold;font-size:14px">
-                ${totalGeneral.toLocaleString("fr-FR")} ${currency}
-              </td>
-            </tr></tfoot>
-          </table>
-          <p style="margin-top:32px;color:#9ca3af;font-size:11px">Document généré par ChantiLink — ${today()}</p>
-        </body></html>`;
-      const blob = new Blob([html], { type: "application/msword;charset=utf-8" });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href = url; a.download = `devis_eco_${Date.now()}.doc`; a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) { console.error(e); alert("Erreur export Word."); }
-    finally { setExporting(null); }
-  }, [rows, totalGeneral, currency]);
-
-  return (
-    <div className="rounded-2xl overflow-hidden border"
-      style={{ background: "linear-gradient(135deg, rgba(17,24,39,0.98) 0%, rgba(20,83,45,0.3) 100%)", borderColor: "rgba(34,197,94,0.25)" }}>
-      <div className="px-5 py-3 flex items-center gap-3 border-b"
+      <div className="px-5 py-4 border-t flex flex-col sm:flex-row sm:items-center gap-3"
         style={{ background: "rgba(34,197,94,0.08)", borderColor: "rgba(34,197,94,0.2)" }}>
-        <Download className="w-4 h-4 text-green-400" />
-        <span className="text-xs font-bold text-green-300 uppercase tracking-widest">Exporter le devis</span>
-        {!hasData && <span className="ml-auto text-[10px] text-gray-600 italic">Complétez au moins une section</span>}
-      </div>
-      <div className="p-4 flex flex-col sm:flex-row gap-3">
-        <ExportBtn icon={<FileText className="w-5 h-5"/>} label="PDF" sublabel="Rapport imprimable"
-          color="from-red-600 to-rose-700" glowColor="rgba(239,68,68,0.3)"
-          disabled={!hasData} loading={exporting==="pdf"} onClick={exportPDF} />
-        <ExportBtn icon={<FileSpreadsheet className="w-5 h-5"/>} label="Excel" sublabel="Tableau structuré"
-          color="from-green-600 to-emerald-700" glowColor="rgba(34,197,94,0.3)"
-          disabled={!hasData} loading={exporting==="excel"} onClick={exportExcel} />
-        <ExportBtn icon={<FileType2 className="w-5 h-5"/>} label="Word" sublabel="Document .doc"
-          color="from-blue-600 to-indigo-700" glowColor="rgba(59,130,246,0.3)"
-          disabled={!hasData} loading={exporting==="word"} onClick={exportWord} />
+        <div className="flex-1">
+          <p className="text-[10px] text-green-300 font-bold uppercase tracking-widest">Synthèse complète</p>
+          <p className="text-xs text-gray-400">
+            {materialCount} indicateur{materialCount > 1 ? "s" : ""} récupéré{materialCount > 1 ? "s" : ""} dans les ouvrages Eco.
+          </p>
+        </div>
+        <button
+          onClick={onOpenDevis}
+          disabled={!hasAny}
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:text-gray-500 px-4 py-3 text-sm font-bold transition"
+        >
+          <FileText className="w-4 h-4" /> Voir devis et exports
+        </button>
       </div>
     </div>
   );
 };
-
-const ExportBtn = ({ icon, label, sublabel, color, glowColor, disabled, loading, onClick }) => (
-  <button onClick={onClick} disabled={disabled || loading}
-    className={`flex-1 flex items-center gap-3 px-4 py-3 rounded-xl font-bold transition-all active:scale-95 ${disabled ? "opacity-30 cursor-not-allowed" : "hover:scale-[1.02]"}`}
-    style={{ boxShadow: disabled ? "none" : `0 4px 20px ${glowColor}`, border: `0.5px solid ${disabled ? "rgba(75,85,99,0.3)" : glowColor}`, background: disabled ? "rgba(55,65,81,0.4)" : undefined }}>
-    <span className={`p-2 rounded-lg bg-gradient-to-br ${color} text-white`}>
-      {loading ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin"/> : icon}
-    </span>
-    <div className="text-left">
-      <div className={`text-sm font-bold ${disabled ? "text-gray-500" : "text-white"}`}>{label}</div>
-      <div className={`text-[10px] ${disabled ? "text-gray-600" : "text-white/60"}`}>{sublabel}</div>
-    </div>
-    {!disabled && !loading && <Download className="w-4 h-4 text-white/50 ml-auto"/>}
-  </button>
-);
 
 // ─────────────────────────────────────────────────────────────
 // ECO FORM — COMPOSANT PRINCIPAL
 // ─────────────────────────────────────────────────────────────
 export default function EcoForm({ currency = "XOF" }) {
-  const [selectedStep, setSelectedStep] = useState(null);
+  const [selectedStep, setSelectedStep] = usePersistentState("eco:selectedStep", null);
   const [showDevis,    setShowDevis]    = useState(false);
 
-  const [costs,     setCosts]     = useState(() => Object.fromEntries(stepsConfig.map(s => [s.id, 0])));
-  const [quantites, setQuantites] = useState(() => Object.fromEntries(stepsConfig.map(s => [s.id, {}])));
+  const [costs,     setCosts]     = usePersistentState("eco:costs", Object.fromEntries(stepsConfig.map(s => [s.id, 0])));
+  const [quantites, setQuantites] = usePersistentState("eco:quantites", Object.fromEntries(stepsConfig.map(s => [s.id, {}])));
 
   const handleCostChange = useCallback((stepId, value) => {
     setCosts(prev => {
@@ -434,25 +280,16 @@ export default function EcoForm({ currency = "XOF" }) {
 
             {/* Récap */}
             <div className="px-4 pb-4">
-              <RecapTable costs={costs} currency={currency} />
-            </div>
-
-            {/* Export */}
-            <div className="px-4 pb-6">
-              <ExportPanel costs={costs} currency={currency} />
+              <RecapTable
+                costs={costs}
+                quantites={quantites}
+                currency={currency}
+                onOpenDevis={() => setShowDevis(true)}
+              />
             </div>
           </div>
         )}
 
-        {/* Mobile floating buttons */}
-        <div className="lg:hidden fixed bottom-20 right-4 left-4 z-40 flex flex-col gap-2 pointer-events-none">
-          {totalGeneral > 0 && !selectedStep && (
-            <button onClick={() => setShowDevis(true)}
-              className="pointer-events-auto w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-xl font-bold shadow-2xl flex items-center justify-center gap-2 border border-green-400/30 active:scale-95">
-              <FileText className="w-4 h-4"/> Voir Devis Éco ({totalGeneral.toLocaleString()})
-            </button>
-          )}
-        </div>
       </main>
 
       {/* ── MODAL DEVIS ──────────────────────────────────── */}

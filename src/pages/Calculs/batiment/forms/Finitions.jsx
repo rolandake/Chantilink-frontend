@@ -3,10 +3,12 @@ import { Doughnut } from "react-chartjs-2";
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
 import {
   PaintRoller, Grid3X3, Hammer, Layers, Palette, Component,
-  Save, Trash2, History, Ruler, Brush, Info, Package, Droplets, Link,
+  Save, Trash2, History, Ruler, Brush, Info, Package, Link,
+  ChevronDown,
 } from "lucide-react";
 
 import { useProjectStore } from "../../../../store/useProjectStore";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -38,6 +40,19 @@ const FINITION_CONFIG = {
     colleKgM2: 4, jointKgM2: 0.4, perte: 12, unit: "m²",
     autoSource: "murs",        autoKey: "surfaceNette",  autoLabel: "Surface murs nette",
   },
+  plafond: {
+    label: "Faux plafond", icon: <Hammer className="w-5 h-5" />, color: "#f97316",
+    perte: 7, unit: "m²",
+    autoSource: "dalles", autoKey: "surfaceCarrelage", autoLabel: "Surface plafond",
+  },
+};
+
+const DEFAULT_INPUTS = {
+  surface:        "",
+  prixMateriel:   "",
+  prixMainOeuvre: "",
+  couches:        "2",
+  marge:          "10",
 };
 
 const safeLoadHistorique = () => {
@@ -67,15 +82,21 @@ export default function Finitions({
   // ✅ Lecture depuis le store global (murs → finitions, dalles → carrelage)
   const mursResults   = useProjectStore((s) => s.subResults.murs);
   const dallesResults = useProjectStore((s) => s.subResults.dalles);
+  const setGlobalResults = useProjectStore((s) => s.setResults);
+  const setGlobalMaterials = useProjectStore((s) => s.setMaterials);
+  const setGlobalCost = useProjectStore((s) => s.setCost);
 
-  const [selectedType, setSelectedType] = useState("peinture");
-  const [inputs, setInputs] = useState({
-    surface:        "",
-    prixMateriel:   "",
-    prixMainOeuvre: "",
-    couches:        "2",
-    marge:          "10",
-  });
+  const [selectedType, setSelectedType] = usePersistentState("finitions:selectedType", "peinture");
+  const [activeView, setActiveView] = usePersistentState("finitions:activeView", "ouvrages");
+  const [savedInputs, setSavedInputs] = usePersistentState("finitions:inputs", DEFAULT_INPUTS);
+  const inputs = useMemo(() => ({ ...DEFAULT_INPUTS, ...savedInputs }), [savedInputs]);
+  const setInputs = (next) => {
+    setSavedInputs((prev) => {
+      const base = { ...DEFAULT_INPUTS, ...prev };
+      const value = typeof next === "function" ? next(base) : next;
+      return { ...DEFAULT_INPUTS, ...value };
+    });
+  };
   const [historique, setHistorique] = useState(safeLoadHistorique);
   const [message,    setMessage]    = useState(null);
 
@@ -121,6 +142,8 @@ export default function Finitions({
     let totalMainOeuvre = surf * mo;
     let qtePrincipale   = 0;
     let sacsColle       = 0;
+    let jointKg         = 0;
+    let colleKg         = 0;
 
     if (selectedType === "peinture") {
       const nbCouches  = parseFloat(inputs.couches) || 2;
@@ -129,21 +152,64 @@ export default function Finitions({
     } else if (selectedType === "carrelage" || selectedType === "faience") {
       qtePrincipale  = surf * margin;
       totalMateriaux = qtePrincipale * pm;
-      sacsColle      = Math.ceil((surf * config.colleKgM2) / 25);
+      colleKg        = surf * config.colleKgM2;
+      jointKg        = surf * config.jointKgM2;
+      sacsColle      = Math.ceil(colleKg / 25);
+    } else if (selectedType === "platre") {
+      qtePrincipale  = surf * config.consoKgM2 * margin;
+      totalMateriaux = qtePrincipale * pm;
     } else {
       qtePrincipale  = surf * margin;
       totalMateriaux = qtePrincipale * pm;
     }
 
     const total = totalMateriaux + totalMainOeuvre;
-    return { surface: surf, qtePrincipale, sacsColle, totalMateriaux, totalMainOeuvre, total };
+    return {
+      surface: surf, qtePrincipale, sacsColle, colleKg, jointKg,
+      totalMateriaux, totalMainOeuvre, total,
+    };
   }, [inputs, selectedType]);
 
   // ── Sync parent ───────────────────────────────────────────────────────────
   useEffect(() => {
     onTotalChange?.(results.total);
-    onResultsChange?.({ surface: results.surface, type: selectedType, total: results.total });
-  }, [results.total, results.surface]);
+    const materials = {
+      surface: results.surface,
+      peinture: selectedType === "peinture" ? results.qtePrincipale : 0,
+      revetement: ["carrelage", "faience", "parquet", "plafond"].includes(selectedType) ? results.qtePrincipale : 0,
+      enduit: selectedType === "platre" ? results.qtePrincipale : 0,
+      colle: results.colleKg,
+      joint: results.jointKg,
+    };
+    onMateriauxChange?.(materials);
+    onResultsChange?.({ surface: results.surface, type: selectedType, total: results.total, ...materials });
+    setGlobalCost("finitions", results.total);
+    setGlobalMaterials("finitions", materials);
+    setGlobalResults("finitions", { surface: results.surface, type: selectedType, total: results.total, ...materials });
+  }, [results.total, results.surface, results.qtePrincipale, results.colleKg, results.jointKg, selectedType]);
+
+  const synthese = useMemo(() => {
+    const rows = [
+      ...historique,
+      ...(results.total > 0 ? [{
+        id: "current",
+        label: FINITION_CONFIG[selectedType].label,
+        type: selectedType,
+        surface: results.surface,
+        qtePrincipale: results.qtePrincipale,
+        total: results.total,
+        totalMateriaux: results.totalMateriaux,
+        totalMainOeuvre: results.totalMainOeuvre,
+      }] : []),
+    ];
+    return {
+      lignes: rows.length,
+      surface: rows.reduce((sum, item) => sum + (parseFloat(item.surface) || 0), 0),
+      total: rows.reduce((sum, item) => sum + (parseFloat(item.total) || 0), 0),
+      fournitures: rows.reduce((sum, item) => sum + (parseFloat(item.totalMateriaux) || 0), 0),
+      pose: rows.reduce((sum, item) => sum + (parseFloat(item.totalMainOeuvre) || 0), 0),
+    };
+  }, [historique, results, selectedType]);
 
   const showToast = (msg, type = "success") => {
     setMessage({ text: msg, type });
@@ -201,7 +267,7 @@ export default function Finitions({
       )}
 
       {/* Header */}
-      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex flex-col md:flex-row justify-between md:items-center gap-4 bg-gray-900/50 backdrop-blur-sm">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-violet-500/20 rounded-lg text-violet-400"><Brush className="w-6 h-6" /></div>
           <div>
@@ -209,35 +275,66 @@ export default function Finitions({
             <p className="text-xs text-gray-400 font-medium">Revêtements & Décoration</p>
           </div>
         </div>
-        <div className="text-right">
-          <span className="text-[10px] text-gray-500 uppercase font-bold block">Budget Estimé</span>
-          <span className="text-2xl font-black text-violet-400 tracking-tighter">
-            {fmt(results.total)} <span className="text-sm text-gray-500 font-normal">{currency}</span>
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="min-w-[230px]">
+            <label className="block mb-1 text-[9px] text-gray-500 uppercase font-bold tracking-wider">
+              Ouvrage de finition
+            </label>
+            <div className="relative">
+              <select
+                value={selectedType}
+                onChange={(e) => {
+                  setSelectedType(e.target.value);
+                  setActiveView("ouvrages");
+                }}
+                className="w-full appearance-none bg-gray-950 border border-gray-700 rounded-xl px-3 py-2.5 pr-9 text-sm text-white focus:border-violet-500 focus:outline-none"
+              >
+                {Object.entries(FINITION_CONFIG).map(([id, cfg]) => (
+                  <option key={id} value={id}>{cfg.label}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+            </div>
+          </div>
+          <div className="text-right min-w-[130px]">
+            <span className="text-[10px] text-gray-500 uppercase font-bold block">Budget Estimé</span>
+            <span className="text-2xl font-black text-violet-400 tracking-tighter">
+              {fmt(results.total)} <span className="text-sm text-gray-500 font-normal">{currency}</span>
+            </span>
+          </div>
         </div>
       </div>
 
+      <div className="shrink-0 flex border-b border-gray-800 bg-gray-900">
+        {[["ouvrages", "Ouvrages"], ["synthese", "Synthèse"]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveView(key)}
+            className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-wider transition-colors ${
+              activeView === key
+                ? "text-violet-400 border-b-2 border-violet-400"
+                : "text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeView === "synthese" ? (
+        <FinitionsSynthese
+          currency={currency}
+          selectedType={selectedType}
+          results={results}
+          synthese={synthese}
+          historique={historique}
+        />
+      ) : (
       <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
 
           {/* ── GAUCHE ── */}
           <div className="lg:col-span-5 flex flex-col gap-5">
-
-            {/* Sélecteur de type */}
-            <div className="grid grid-cols-5 gap-2 bg-gray-800 p-2 rounded-2xl border border-gray-700 shadow-inner">
-              {Object.entries(FINITION_CONFIG).map(([id, cfg]) => (
-                <button key={id} onClick={() => setSelectedType(id)}
-                  className={`flex flex-col items-center justify-center p-2 rounded-xl transition-all ${
-                    selectedType === id
-                      ? "bg-violet-600 text-white shadow-lg scale-105"
-                      : "text-gray-500 hover:bg-gray-700"
-                  }`}
-                  title={cfg.label}>
-                  {cfg.icon}
-                  <span className="text-[8px] mt-1 font-bold uppercase truncate w-full text-center">{cfg.label}</span>
-                </button>
-              ))}
-            </div>
 
             {/* ✅ BANDEAU LIAISON AUTOMATIQUE */}
             {autoValue && (
@@ -327,12 +424,16 @@ export default function Finitions({
                 {(selectedType === "carrelage" || selectedType === "faience") && (<>
                   <MaterialRow label="Carreaux (Nets)"    val={`${fmtD(results.qtePrincipale, 1)} m²`}    color="bg-emerald-500" />
                   <MaterialRow label="Colle (Sacs 25kg)"  val={`${results.sacsColle} sacs`}               color="bg-blue-500" />
+                  <MaterialRow label="Joint" val={`${fmtD(results.jointKg, 1)} kg`} color="bg-cyan-500" />
                 </>)}
                 {selectedType === "platre" && (
                   <MaterialRow label="Enduit (kg)" val={`${fmtD(results.qtePrincipale, 0)} kg`} color="bg-gray-400" />
                 )}
                 {selectedType === "parquet" && (
                   <MaterialRow label="Parquet (m²)" val={`${fmtD(results.qtePrincipale, 1)} m²`} color="bg-amber-500" />
+                )}
+                {selectedType === "plafond" && (
+                  <MaterialRow label="Faux plafond" val={`${fmtD(results.qtePrincipale, 1)} m²`} color="bg-orange-500" />
                 )}
 
                 <div className="pt-2 border-t border-gray-700 flex justify-between items-center">
@@ -380,9 +481,63 @@ export default function Finitions({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
+
+const FinitionsSynthese = ({ currency, selectedType, results, synthese, historique }) => (
+  <div className="flex-1 overflow-y-auto bg-gray-900 text-gray-100 p-4 lg:p-6">
+    <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
+      <div className="xl:col-span-5 flex flex-col gap-4">
+        <div className="bg-gray-800/60 border border-violet-500/20 rounded-2xl p-4">
+          <p className="text-[10px] text-violet-300 uppercase font-bold tracking-widest">Synthèse finitions</p>
+          <div className="mt-3 flex items-end justify-between gap-3">
+            <div>
+              <p className="text-[11px] text-gray-500">Ouvrage actif</p>
+              <p className="text-lg font-black text-white">{FINITION_CONFIG[selectedType].label}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[10px] text-gray-500 uppercase font-bold">Total actif</p>
+              <p className="text-xl font-black text-violet-400">{fmt(results.total)} <span className="text-xs text-gray-500">{currency}</span></p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-4">
+          <p className="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-3">Récapitulatif interne</p>
+          <div className="grid grid-cols-2 gap-3">
+            <ReadonlySummaryField label="Lignes" value={synthese.lignes} unit="u" />
+            <ReadonlySummaryField label="Surface cumulée" value={fmtD(synthese.surface)} unit="m²" />
+            <ReadonlySummaryField label="Fournitures" value={fmt(synthese.fournitures)} unit={currency} />
+            <ReadonlySummaryField label="Pose" value={fmt(synthese.pose)} unit={currency} />
+            <ReadonlySummaryField label="Total finitions" value={fmt(synthese.total)} unit={currency} />
+            <ReadonlySummaryField label="Besoin actif" value={fmtD(results.qtePrincipale, 1)} unit={FINITION_CONFIG[selectedType].unit} />
+          </div>
+        </div>
+      </div>
+
+      <div className="xl:col-span-7 bg-gray-800/40 border border-gray-700 rounded-2xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-700 bg-gray-800/70">
+          <p className="text-[10px] text-gray-500 uppercase font-bold tracking-widest">Dernières lignes enregistrées</p>
+        </div>
+        <div className="divide-y divide-gray-800/70">
+          {historique.length === 0 ? (
+            <div className="px-4 py-8 text-center text-xs text-gray-500 italic">Aucune finition enregistrée</div>
+          ) : historique.slice(0, 8).map((item) => (
+            <div key={item.id} className="px-4 py-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-white truncate">{item.label}</p>
+                <p className="text-[10px] text-gray-500">{item.date} · {item.surface} m²</p>
+              </div>
+              <p className="text-sm font-black text-violet-300 font-mono flex-shrink-0">{fmt(item.total)} {currency}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
   <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
@@ -409,5 +564,19 @@ const MaterialRow = ({ label, val, color }) => (
       <span className="text-gray-300 text-xs font-medium">{label}</span>
     </div>
     <span className="text-xs font-bold text-white font-mono">{val}</span>
+  </div>
+);
+
+const ReadonlySummaryField = ({ label, value, unit }) => (
+  <div>
+    <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide leading-tight">{label}</label>
+    <div className="flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-950/70 px-3 py-2">
+      <input
+        readOnly
+        value={value}
+        className="min-w-0 flex-1 bg-transparent text-sm font-mono font-bold text-white outline-none"
+      />
+      <span className="text-[10px] font-bold uppercase text-gray-500">{unit}</span>
+    </div>
   </div>
 );

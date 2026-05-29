@@ -17,7 +17,7 @@ ChartJS.register(ArcElement, Tooltip, Legend);
 const DENSITE_ENROBE = 2.35; // T/m3 compacté
 const RATIO_BITUME = 0.06;   // 6% de bitume moyen dans le mélange BB
 
-export function CoucheRoulForm({ currency = "FCFA", onTotalChange = () => {} }) {
+export function CoucheRoulForm({ currency = "FCFA", onTotalChange = () => {}, onMateriauxChange = () => {} }) {
   const {
     localInputs,
     updateInput,
@@ -86,7 +86,14 @@ export function CoucheRoulForm({ currency = "FCFA", onTotalChange = () => {} }) 
   // Sync parent
   useEffect(() => {
     onTotalChange(Number(results.total));
-  }, [results.total, onTotalChange]);
+    onMateriauxChange({
+      volume: Number(results.volume || 0),
+      enrobe: Number(results.tonnage || 0),
+      roulementT: Number(results.tonnage || 0),
+      bitumeT: Number(results.bitume || 0),
+      granulatsT: Number(results.granulats || 0),
+    });
+  }, [results.total, results.volume, results.tonnage, results.bitume, results.granulats, onTotalChange, onMateriauxChange]);
 
   const handleSave = async () => {
     if (Number(results.volume) === 0) return showToast("⚠️ Dimensions invalides", "error");

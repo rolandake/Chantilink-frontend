@@ -1065,12 +1065,11 @@ const ProfileMediaGrid = ({
   return (
     <>
       <div style={{ width: "100%" }}>
-      <SortTabs activeSort={sortKey} onSort={setSortKey} isDarkMode={isDarkMode} total={displayPostsWithViews.length} />
 
       <div style={{
         display: "grid",
         gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-        gap: 8,
+        gap: 3,
         width: "100%",
       }}>
         {isLoading && displayPostsWithViews.length === 0
@@ -1091,6 +1090,7 @@ const ProfileMediaGrid = ({
           Array.from({ length: 6 }).map((_, i) => <SkeletonCell key={`sk-${i}`} isDarkMode={isDarkMode} />)
         }
       </div>
+
       </div>
 
       {hasMore && <div ref={sentinelRef} style={{ height: 28 }} />}

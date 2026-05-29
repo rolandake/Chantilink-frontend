@@ -30,13 +30,25 @@ export default function BuseForm({
     if (results && isValid) {
       onMateriauxChange({
         volume: results.volume,
-        ciment: results.cimentT,
-        acier: results.acierT,
-        sable: results.sableT,
-        gravier: results.gravierT
+        cimentT: results.cimentT,
+        acierT: results.acierT,
+        sableT: results.sableT,
+        gravierT: results.gravierT,
+        eauL: results.eauL,
       });
     }
-  }, [results?.total, isValid]);
+  }, [
+    results?.total,
+    results?.volume,
+    results?.cimentT,
+    results?.acierT,
+    results?.sableT,
+    results?.gravierT,
+    results?.eauL,
+    isValid,
+    onCostChange,
+    onMateriauxChange,
+  ]);
 
   // --- HISTORIQUE ---
   useEffect(() => {

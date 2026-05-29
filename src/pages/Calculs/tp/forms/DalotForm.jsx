@@ -93,11 +93,23 @@ export default function DalotForm({ currency = "XOF", onCostChange, onMateriauxC
     if (onMateriauxChange) {
       onMateriauxChange({
         volume: results.volumeTotal,
-        ciment: results.cimentT,
-        acier: results.acierT
+        coffrage: results.surfaceCoffrage,
+        cimentT: results.cimentT,
+        sableT: results.volumeTotal * DOSAGE.sable,
+        gravierT: results.volumeTotal * DOSAGE.gravier,
+        acierT: results.acierT,
+        eauL: results.volumeTotal * DOSAGE.eau,
       });
     }
-  }, [results.total]);
+  }, [
+    results.total,
+    results.volumeTotal,
+    results.surfaceCoffrage,
+    results.cimentT,
+    results.acierT,
+    onCostChange,
+    onMateriauxChange,
+  ]);
 
   // --- HISTORIQUE ---
   useEffect(() => {

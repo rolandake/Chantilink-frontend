@@ -18,7 +18,7 @@ const DENSITE_ENROBE = 2.35;    // T/m3 compacté
 const RATIO_BITUME_PUR = 0.055; // 5.5% de bitume dans le mélange
 const DOSAGE_ACCROCHAGE = 1.0;  // 1kg d'émulsion par m2
 
-export function CoucheRoulForm({ currency = "FCFA", onTotalChange = () => {} }) {
+export function CoucheRoulForm({ currency = "FCFA", onTotalChange = () => {}, onMateriauxChange = () => {} }) {
   const {
     localInputs,
     updateInput,
@@ -79,7 +79,24 @@ export function CoucheRoulForm({ currency = "FCFA", onTotalChange = () => {} }) 
   // Sync Parent
   useEffect(() => {
     onTotalChange(results.total);
-  }, [results.total, onTotalChange]);
+    onMateriauxChange({
+      surface: Number(localInputs.surface || 0),
+      volume: results.volume,
+      fondationT: results.tonnageEnrobe,
+      enrobe: results.tonnageEnrobe,
+      bitumeT: results.poidsBitumePur,
+      emulsionKg: results.emulsionAccrochageKg,
+    });
+  }, [
+    results.total,
+    results.volume,
+    results.tonnageEnrobe,
+    results.poidsBitumePur,
+    results.emulsionAccrochageKg,
+    localInputs.surface,
+    onTotalChange,
+    onMateriauxChange,
+  ]);
 
   const handleSave = async () => {
     if (results.tonnageEnrobe <= 0) return showToast("⚠️ Surface ou épaisseur invalide", "error");

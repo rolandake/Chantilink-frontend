@@ -11,6 +11,10 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "ht
 
 // ✅ Backend URL (sans /api) — dérivé automatiquement
 const BACKEND_URL = API_BASE_URL.replace("/api", "");
+const normalizeLang = (lang) => {
+  const code = String(lang || "fr").toLowerCase().split(/[-_]/)[0];
+  return ["fr", "en", "ar"].includes(code) ? code : "fr";
+};
 
 export { BACKEND_URL };
 
@@ -54,6 +58,14 @@ axiosClient.interceptors.request.use(
     const publicRoutes = ["/auth/login", "/auth/register", "/auth/refresh", "/health"];
     const isPublic = publicRoutes.some((r) => config.url?.includes(r));
 
+    if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+      config.headers?.delete?.("Content-Type");
+      if (config.headers && !config.headers.delete) {
+        delete config.headers["Content-Type"];
+        delete config.headers["content-type"];
+      }
+    }
+
     // --- Token Bearer (existant) --------------------------------
     if (!isPublic) {
       if (authHandlers?.getToken) {
@@ -77,8 +89,9 @@ axiosClient.interceptors.request.use(
         lang = window.localStorage?.getItem("cl_lang") || (navigator?.language || navigator?.userLanguage || "fr").split("-")[0];
       }
       if (lang) {
-        config.headers["Accept-Language"] = lang;
-        config.headers["X-User-Language"] = lang;
+        const normalizedLang = normalizeLang(lang);
+        config.headers["Accept-Language"] = normalizedLang;
+        config.headers["X-User-Language"] = normalizedLang;
       }
     } catch (e) {
       // ne pas bloquer la requête si erreur
@@ -126,6 +139,13 @@ axiosClient.interceptors.response.use(
 
     // ── Erreur réseau / timeout : retry cold start Render ───────────
     if (error.code === "ECONNABORTED" || error.code === "ERR_NETWORK") {
+      if (originalRequest?.skipNetworkRetry) {
+        if (!originalRequest?.silentNetworkError) {
+          console.warn("⚠️ [AxiosClient] Appel non critique ignoré après erreur réseau:", originalRequest?.url);
+        }
+        return Promise.reject(error);
+      }
+
       console.error("❌ [AxiosClient] Erreur réseau ou timeout");
       console.error("🔍 [AxiosClient] URL tentée:", originalRequest?.url);
       console.error("🔍 [AxiosClient] Base URL:", API_BASE_URL);

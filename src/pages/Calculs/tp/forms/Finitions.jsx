@@ -25,7 +25,7 @@ const FINITION_TYPES = [
   { id: "autre", label: "Autre", icon: <Hammer className="w-5 h-5"/>, color: "rose", unit: "u", bg: "bg-rose-500/10", text: "text-rose-400" },
 ];
 
-export default function Finitions({ currency = "XOF", onCostChange }) {
+export default function Finitions({ currency = "XOF", onCostChange, onMateriauxChange }) {
   
   // === ÉTATS ===
   const [selectedType, setSelectedType] = useState("peinture");
@@ -84,8 +84,23 @@ export default function Finitions({ currency = "XOF", onCostChange }) {
   // 1. Sync Parent (Anti-Loop)
   useEffect(() => {
     if (onCostChange) onCostChange(results.total);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results.total]);
+    if (onMateriauxChange) {
+      onMateriauxChange({
+        finitionSurface: results.surface,
+        couches: results.nbCouches,
+        coutMateriaux: results.totalMateriaux,
+        coutMainOeuvre: results.totalMainOeuvre,
+      });
+    }
+  }, [
+    results.total,
+    results.surface,
+    results.nbCouches,
+    results.totalMateriaux,
+    results.totalMainOeuvre,
+    onCostChange,
+    onMateriauxChange,
+  ]);
 
   // 2. Chargement Historique
   useEffect(() => {

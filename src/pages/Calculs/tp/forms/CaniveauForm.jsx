@@ -84,11 +84,26 @@ export default function CaniveauForm({ currency = "XOF", onCostChange, onMateria
     if (onMateriauxChange) {
       onMateriauxChange({
         volume: results.volumeTotal,
-        ciment: results.cimentT,
-        acier: results.acierT
+        coffrage: results.surfaceCoffrage,
+        cimentT: results.cimentT,
+        sableT: results.sableT,
+        gravierT: results.gravierT,
+        acierT: results.acierT,
+        eauL: results.eauL,
       });
     }
-  }, [results.total]);
+  }, [
+    results.total,
+    results.volumeTotal,
+    results.surfaceCoffrage,
+    results.cimentT,
+    results.sableT,
+    results.gravierT,
+    results.acierT,
+    results.eauL,
+    onCostChange,
+    onMateriauxChange,
+  ]);
 
   // --- HISTORIQUE ---
   useEffect(() => {

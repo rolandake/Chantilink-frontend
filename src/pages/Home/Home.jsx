@@ -56,11 +56,12 @@ import {
 } from "../../utils/postNotificationPreferences";
 
 import StoryContainer       from "./StoryContainer.jsx";
+import CreatePost           from "./CreatePost";
 import SuggestedAccounts    from "./SuggestedAccounts";
 import SuggestedPostPreview from "./SuggestedPostPreview";
 import PostCard, { GlobalModalManager } from "./PostCard";
 import VirtualFeed          from "./VirtualFeed";
-import { readAllCachedProfilePosts } from "../Profile/ProfilePage";
+import { readAllCachedProfilePosts, clearProfilePostsCache } from "../Profile/ProfilePage";
 
 const StoryCreator             = lazy(() => import("./StoryCreator"));
 const StoryViewer              = lazy(() => import("./StoryViewer"));
@@ -132,6 +133,16 @@ const SCORE_CACHE_MAX     = 3000;
 
 const invalidateScoreCache = () => { SCORE_CACHE_VERSION.v++; };
 
+const seededJitter = (id, seed = 0) => {
+  const input = `${id || ""}:${seed}`;
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return ((hash >>> 0) / 4294967295) - 0.5;
+};
+
 const getCachedScore = (post, ctx, seenIds, followingIds, now) => {
   const id  = post._id;
   if (!id) return scoreOnePostRaw(post, ctx, seenIds, followingIds, now);
@@ -159,6 +170,13 @@ const saveLivePool = (pool) => {
   try {
     const slim = pool.slice(0, 200).map(({ _displayKey, ...rest }) => rest);
     sessionStorage.setItem(LIVE_POOL_KEY, JSON.stringify(slim));
+  } catch {}
+};
+
+const clearPersistedFeed = () => {
+  try {
+    sessionStorage.removeItem(LIVE_POOL_KEY);
+    sessionStorage.removeItem(SEEN_IDS_KEY);
   } catch {}
 };
 
@@ -813,6 +831,7 @@ const createScoringContext = () => ({
   trend:   createTrendWindow(),
   calib:   createCausalCalibrator(),
   weights: loadWeights(),
+  refreshSeed: Date.now() + Math.random(),
 });
 
 let _scoringCtx = null;
@@ -919,9 +938,10 @@ const scoreOnePostRaw = (p, ctx, seenIds, followingIds, now) => {
         fatigueP    +
         emotionP
       );
+  const refreshJitter = seededJitter(p._id || p._displayKey || p.createdAt, ctx.refreshSeed) * 14;
   return {
-    post:  { ...p, _score:Math.max(0,rawScore*seenDecay*sessionMul), _isControl:isControl },
-    score: Math.max(0, rawScore*seenDecay*sessionMul),
+    post:  { ...p, _score:Math.max(0,(rawScore + refreshJitter)*seenDecay*sessionMul), _isControl:isControl },
+    score: Math.max(0, (rawScore + refreshJitter)*seenDecay*sessionMul),
   };
 };
 
@@ -1019,7 +1039,7 @@ const URL_CACHE_PREFIX = "murl_";
 const urlCR = (k)=>{try{const r=sessionStorage.getItem(URL_CACHE_PREFIX+k);if(!r)return null;const{url,exp}=JSON.parse(r);if(Date.now()>exp){sessionStorage.removeItem(URL_CACHE_PREFIX+k);return null;}return url;}catch{return null;}};
 const urlCW = (k,url)=>{try{sessionStorage.setItem(URL_CACHE_PREFIX+k,JSON.stringify({url,exp:Date.now()+URL_CACHE_TTL}));}catch{}};
 const EXPIRABLE=[
-  {name:"pexels",  test:(u)=>u.includes("videos.pexels.com/video-files/"), extractId:(u)=>u.match(/video-files\/(\d+)\//)?.[1]||null, resolve:async(id)=>{const r=await axiosClient.get(`/videos/refresh-url?id=${id}`);return r.data?.url||r.data?.videoUrl||null;}},
+  {name:"pexels",  test:(u)=>u.includes("videos.pexels.com/video-files/"), extractId:(u)=>u.match(/video-files\/(\d+)\//)?.[1]||null, resolve:async()=>null},
   {name:"pixabay", test:(u)=>/cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\//.test(u), extractId:(u)=>u.match(/\/(\d+)-\d+_/)?.[1]||null, resolve:async(id)=>{const r=await axiosClient.get(`/api/proxy/video?id=${id}&source=pixabay`);return r.data?.url||r.data?.videoUrl||null;}},
 ];
 const DEAD_HOSTS    = ["youtube.com/watch","youtu.be/","dailymotion.com/video","tiktok.com/@"];
@@ -1439,6 +1459,7 @@ const Feed = ({
   const accRef      = useRef([]);
   const prevReset   = useRef(resetSignal);
   const loadingRef  = useRef(false);
+  const requestMoreInFlightRef = useRef(false);
   const cursorRef   = useRef(0);
   const onScrollProgressRef = useRef(onScrollProgress);
   const onNeedMorePostsRef  = useRef(onNeedMorePosts);
@@ -1506,6 +1527,23 @@ const Feed = ({
     }
   }, [resetSignal, posts, initFeed]);
 
+  const requestMorePosts = useCallback(async () => {
+    if (requestMoreInFlightRef.current) return false;
+    requestMoreInFlightRef.current = true;
+    const before = postsRef.current.length;
+    setIsFetchingAPI(true);
+    try {
+      const gotMore = await onNeedMorePostsRef.current?.();
+      if (!gotMore && postsRef.current.length <= before) {
+        setIsFetchingAPI(false);
+        setShowAllSeen(true);
+      }
+      return !!gotMore;
+    } finally {
+      requestMoreInFlightRef.current = false;
+    }
+  }, []);
+
   const loadMore = useCallback(()=>{
     if (loadingRef.current) return;
     const pool=postsRef.current;
@@ -1513,14 +1551,14 @@ const Feed = ({
     const cursor=cursorRef.current;
     const remaining=pool.length-cursor;
     if (remaining<FRESH_POOL_THRESHOLD) {
-      onNeedMorePostsRef.current?.();
-      if (remaining===0){setIsFetchingAPI(true);return;}
+      requestMorePosts();
+      if (remaining===0)return;
     }
     loadingRef.current=true;
     const ratio=cursor/Math.max(pool.length,1);
     onScrollProgressRef.current?.(ratio);
     const batch=pool.slice(cursor, cursor+PAGE_SIZE);
-    if (!batch.length){setShowAllSeen(true);setIsFetchingAPI(true);loadingRef.current=false;onNeedMorePostsRef.current?.();return;}
+    if (!batch.length){setShowAllSeen(true);loadingRef.current=false;requestMorePosts();return;}
     setShowAllSeen(false);
     setIsFetchingAPI(false);
 
@@ -1543,7 +1581,7 @@ const Feed = ({
     Promise.resolve().then(()=>{loadingRef.current=false;});
     setDisplayedVer(v => v + 1);
     scheduleIdlePrefetch(pool,cursorRef.current,PREFETCH_AHEAD,30);
-  },[tagPost]);
+  },[requestMorePosts, tagPost]);
 
   const loadMoreRef=useRef(loadMore);
   useEffect(()=>{loadMoreRef.current=loadMore;},[loadMore]);
@@ -1707,7 +1745,7 @@ Feed.displayName = "Feed";
 const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const { isDarkMode }   = useDarkMode();
   const { fetchStories, stories=[] } = useStories();
-  const { posts:rawPosts=[], fetchNextPage, hasMore, loading:postsLoading, refetch, removePost } = usePosts()||{};
+  const { posts:rawPosts=[], fetchPosts, fetchNextPage, hasMore, loading:postsLoading, refetch, removePost } = usePosts()||{};
   const { user }         = useAuth();
   const navigate         = useNavigate();
   const [,startPageTrans] = useTransition();
@@ -1728,14 +1766,10 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const followingIdsRef = useRef(new Set());
   const [followingVer,  setFollowingVer] = useState(0);
 
-  const livePostsRef = useRef(loadLivePool());
+  const livePostsRef = useRef([]);
   const [livePostsVer, setLivePostsVer] = useState(0);
 
-  const [resolved, setResolved] = useState(() => {
-    const cached = loadLivePool();
-    if (!cached.length) return [];
-    return cached.filter(p => isValidPost(p) && !hasExpirable(p)).slice(0, PAGE_SIZE);
-  });
+  const [resolved, setResolved] = useState([]);
 
   const [rawPool, setRawPool] = useState([]);
 
@@ -1816,12 +1850,16 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   const scrollIdleTimerRef = useRef(null);
   const currentApiPageRef   = useRef(1);
   const fetchingNextPageRef = useRef(false);
+  const pageOneRefreshRef   = useRef({ inFlight: false, lastAt: 0 });
   const saveSeenIdsTimer    = useRef(null);
+  const initialRefreshRef   = useRef({ userId: null, promise: null });
 
   const hasMoreRef       = useRef(hasMore);
+  const fetchPostsRef    = useRef(fetchPosts);
   const fetchNextPageRef2 = useRef(fetchNextPage);
   const refetchRef       = useRef(refetch);
   useEffect(() => { hasMoreRef.current = hasMore; },           [hasMore]);
+  useEffect(() => { fetchPostsRef.current = fetchPosts; },     [fetchPosts]);
   useEffect(() => { fetchNextPageRef2.current = fetchNextPage; }, [fetchNextPage]);
   useEffect(() => { refetchRef.current = refetch; },           [refetch]);
 
@@ -1841,6 +1879,8 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       persistedSeenIdsRef.current = new Set();
       saveSeenIds(new Set());
     }
+    // 🧹 Nettoyer les posts du profil qui auraient pu rester du précédent passage
+    livePostsRef.current = livePostsRef.current.filter(p => !p._fromProfileCache);
     setTimeout(() => startTransition(() => setResetSig(k => k + 1)), 0);
   }, []);
 
@@ -1887,23 +1927,136 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     });
   }, [user]);
 
-  const addLivePosts=useCallback((list)=>{
-    const ids=new Set(livePostsRef.current.map(p=>p._id));
-    const fresh=list.filter(p=>p?._id&&!ids.has(p._id)&&!isPostHidden(p)).map(({ _displayKey, ...rest })=>rest);
-    if(!fresh.length)return false;
-    livePostsRef.current=[...livePostsRef.current,...fresh].slice(0,MAX_POOL);
+  const addLivePosts=useCallback((list, options = {})=>{
+    const incoming = Array.from(
+      new Map(
+        (Array.isArray(list) ? list : [])
+          .filter(p=>p?._id&&!isPostHidden(p))
+          .map(({ _displayKey, ...rest })=>[rest._id, rest])
+      ).values()
+    );
+    if(!incoming.length)return false;
+
+    const incomingIds = new Set(incoming.map(p=>p._id));
+    const kept = options.resetPool
+      ? []
+      : livePostsRef.current.filter(p=>p?._id&&!incomingIds.has(p._id));
+
+    livePostsRef.current = options.prepend
+      ? [...incoming, ...kept].slice(0,MAX_POOL)
+      : [...kept, ...incoming].slice(0,MAX_POOL);
+
     saveLivePool(livePostsRef.current);
-    notifyFreshPosts(fresh);
+    notifyFreshPosts(incoming.filter(p=>!options.silent));
     startTransition(()=>setLivePostsVer(v=>v+1));
     return true;
   },[notifyFreshPosts]);
+
+  const guardedRefetchFirstPage = useCallback(async (options = {}) => {
+    const { force = false, minInterval = 20_000, refetchOptions = {} } = options;
+    const now = Date.now();
+    if (pageOneRefreshRef.current.inFlight) return null;
+    if (!force && now - pageOneRefreshRef.current.lastAt < minInterval) return null;
+
+    pageOneRefreshRef.current.inFlight = true;
+    pageOneRefreshRef.current.lastAt = now;
+    try {
+      return await refetchRef.current?.({
+        waitIfLoading: true,
+        silentIfLoading: true,
+        ...refetchOptions,
+      });
+    } finally {
+      pageOneRefreshRef.current.inFlight = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    const currentUserId = user?._id || user?.id;
+    if (!currentUserId) return;
+    if (initialRefreshRef.current.userId === currentUserId && initialRefreshRef.current.promise) return;
+
+    let cancelled = false;
+    clearPersistedFeed();
+    invalidateScoreCache();
+    getScoringContext().refreshSeed = Date.now() + Math.random();
+    livePostsRef.current = [];
+    persistedSeenIdsRef.current = new Set();
+    latestId.current = null;
+    currentApiPageRef.current = 1;
+    fetchingNextPageRef.current = false;
+    prefetchTriggeredRef.current = false;
+    fallbackFetchedRef.current = false;
+
+    setResolved([]);
+    setRawPool([]);
+    setApiPages(1);
+    startTransition(() => {
+      setLivePostsVer(v => v + 1);
+      setResetSig(k => k + 1);
+    });
+
+    const waitForPostsIdle = async (maxWaitMs = 2500) => {
+      const start = Date.now();
+      while (loadingRef.current && Date.now() - start < maxWaitMs) {
+        await new Promise(resolve => setTimeout(resolve, 80));
+      }
+    };
+
+    const refreshPromise = (async () => {
+      try {
+        await waitForPostsIdle();
+        if (cancelled) return;
+
+        const first = await guardedRefetchFirstPage({
+          force: true,
+          refetchOptions: { forceNetworkRetry: true },
+        });
+        if (cancelled) return;
+        const firstPosts = first?.posts || [];
+        let nextPosts = [];
+
+        if (hasMoreRef.current && typeof fetchPostsRef.current === "function") {
+          const second = await fetchPostsRef.current(2, true, { forceNetworkRetry: true });
+          if (cancelled) return;
+          if (second?.success) {
+            currentApiPageRef.current = 2;
+            setApiPages(2);
+            nextPosts = second.posts || [];
+          }
+        }
+
+        const incoming = [...firstPosts, ...nextPosts];
+        if (incoming.length > 0) {
+          latestId.current = incoming[0]._id;
+          addLivePosts(incoming, { prepend: true, silent: true, resetPool: true });
+        }
+      } catch {
+        // Le fallback existant prendra le relais si le refresh réseau échoue.
+      } finally {
+        if (initialRefreshRef.current.userId === currentUserId) {
+          initialRefreshRef.current.promise = null;
+        }
+      }
+    })();
+    initialRefreshRef.current = { userId: currentUserId, promise: refreshPromise };
+
+    return () => { cancelled = true; };
+  }, [addLivePosts, guardedRefetchFirstPage, user?._id, user?.id]);
 
   useEffect(()=>{
     if(!user)return;
     const ctrl = new AbortController();
     (async()=>{
       try{
-        const{data}=await axiosClient.get("/users/following?limit=500",{signal:ctrl.signal});
+        const userId = user?._id || user?.id;
+        if (!userId) return;
+        const{data}=await axiosClient.get(`/users/${userId}/following?limit=500`,{
+          signal: ctrl.signal,
+          skipNetworkRetry: true,
+          silentNetworkError: true,
+          timeout: 8000,
+        });
         const list=Array.isArray(data)?data:(data?.users||data?.following||[]);
         const newSet = new Set(list.map(u=>u._id||u.id).filter(Boolean));
         const prev = followingIdsRef.current;
@@ -1918,22 +2071,27 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
   },[user]);
 
   const handleNeedMorePosts=useCallback(async()=>{
-    if(fetchingNextPageRef.current||!user)return;
+    if(fetchingNextPageRef.current||!user)return false;
     fetchingNextPageRef.current=true;
     try{
       if(hasMoreRef.current&&typeof fetchNextPageRef2.current==="function"){
-        const nextPage=currentApiPageRef.current+1;currentApiPageRef.current=nextPage;
         const result=await fetchNextPageRef2.current();const newApiPosts=result?.posts||[];
-        if(newApiPosts.length>0){addLivePosts(newApiPosts);setApiPages(nextPage);return;}
+        if(result?.success){
+          const nextPage=result.page||currentApiPageRef.current+1;
+          currentApiPageRef.current=nextPage;
+          setApiPages(nextPage);
+        }
+        if(newApiPosts.length>0){addLivePosts(newApiPosts);return true;}
       }
       const now=Date.now();
       if(now-silentLastFetchRef.current>=SILENT_COOLDOWN_MS/2){
-        silentLastFetchRef.current=now;const result=await refetchRef.current?.();const fp=result?.posts||[];
-        if(fp.length>0){const added=addLivePosts(fp);if(!added)startTransition(()=>setLivePostsVer(v=>v+1));}
+        silentLastFetchRef.current=now;const result=await guardedRefetchFirstPage();const fp=result?.posts||[];
+        if(fp.length>0){const added=addLivePosts(fp);if(!added)startTransition(()=>setLivePostsVer(v=>v+1));return true;}
       }
     }catch(e){ if(e?.name==="CanceledError"||e?.name==="AbortError") return; }
     finally{fetchingNextPageRef.current=false;}
-  },[user,addLivePosts]);
+    return false;
+  },[user,addLivePosts,guardedRefetchFirstPage]);
 
   useEffect(()=>{
     const scrollEl = scrollRef.current;
@@ -2038,8 +2196,17 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   useEffect(()=>{
     if(!user)return;
-    const h=()=>{const rc=livePostsRef.current.filter(p=>!p._fromFallback&&!p._fromProfileCache).length;if(rc<FALLBACK_THRESHOLD){const c=readAllCachedProfilePosts();if(c.length>0)addLivePosts(c);}};
-    window.addEventListener("profilePostsCached",h);return()=>window.removeEventListener("profilePostsCached",h);
+    const h=()=>{
+      const rc=livePostsRef.current.filter(p=>!p._fromFallback&&!p._fromProfileCache).length;
+      if(rc<FALLBACK_THRESHOLD){
+        const c=readAllCachedProfilePosts();
+        // 🧹 Filtrer les posts isolés du profil pour prévenir les leaks
+        const filtered = c.filter(p => !p._shouldIsolateFromHomeFeed);
+        if(filtered.length>0)addLivePosts(filtered);
+      }
+    };
+    window.addEventListener("profilePostsCached",h);
+    return()=>window.removeEventListener("profilePostsCached",h);
   },[user,addLivePosts]);
 
   useEffect(()=>{
@@ -2050,7 +2217,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     const cleanRaw = Array.from(
       new Map(visibleRawPosts.filter(p=>p?._id).map(p=>[p._id, p])).values()
     ).map(({ _displayKey, ...rest }) => rest);
-    livePostsRef.current=[...filtered,...cleanRaw].slice(0,MAX_POOL);
+    livePostsRef.current=[...cleanRaw,...filtered].slice(0,MAX_POOL);
     saveLivePool(livePostsRef.current);
     startTransition(()=>setLivePostsVer(v=>v+1));
   },[rawPosts]);
@@ -2154,30 +2321,46 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     if(isRefreshing)return;
     scrollRef.current?.scrollTo({top:0,behavior:"smooth"});
     setIsRefreshing(true);setNewPosts(0);setApiPages(1);
-    persistedSeenIdsRef.current = new Set();
-    saveSeenIds(new Set());
     invalidateScoreCache();
     prefetchTriggeredRef.current=false;currentApiPageRef.current=1;
     fetchingNextPageRef.current=false;fallbackFetchedRef.current=false;
     try{
       if(postsLoading)await new Promise(resolve=>{const maxWait=setTimeout(resolve,2000);const check=setInterval(()=>{if(!loadingRef.current){clearInterval(check);clearTimeout(maxWait);resolve();}},100);});
-      const[,r]=await Promise.allSettled([fetchStories(true),refetchRef.current?.()]);
+      const[,r]=await Promise.allSettled([
+        fetchStories(true),
+        guardedRefetchFirstPage({ force: true, refetchOptions: { forceNetworkRetry: true } }),
+      ]);
       const fp=r?.value?.posts||[];
-      if(fp.length>0){latestId.current=fp[0]._id;addLivePosts(fp);}
+      let nextPagePosts=[];
+      if(hasMoreRef.current&&typeof fetchPostsRef.current==="function"){
+        const next=await fetchPostsRef.current(2,true,{ forceNetworkRetry: true });
+        if(next?.success){
+          currentApiPageRef.current=2;
+          setApiPages(2);
+          nextPagePosts=next.posts||[];
+        }
+      }
+      const incoming=[...fp,...nextPagePosts];
+      if(incoming.length>0){
+        latestId.current=incoming[0]._id;
+        setResolved([]);
+        addLivePosts(incoming,{prepend:true,silent:true});
+      }
     }catch{showToast("Erreur lors de l'actualisation","error");}
     finally{setIsRefreshing(false);triggerReset();}
-  },[isRefreshing,postsLoading,fetchStories,showToast,triggerReset,addLivePosts]);
+  },[isRefreshing,postsLoading,fetchStories,showToast,triggerReset,addLivePosts,guardedRefetchFirstPage]);
 
   const handleScrollProgress=useCallback(async(ratio)=>{
     if(!user||isRefreshing)return;
+    if(loadingRef.current||fetchingNextPageRef.current||silentFetchingRef.current)return;
     const now=Date.now(),cooldownOk=now-silentLastFetchRef.current>=SILENT_COOLDOWN_MS;
     if(!cooldownOk)return;
     if(ratio>=PREFETCH_THRESHOLD&&!prefetchTriggeredRef.current){
       prefetchTriggeredRef.current=true;silentFetchingRef.current=true;silentLastFetchRef.current=now;
-      try{const r=await refetchRef.current?.();addLivePosts(r?.posts||[]);}catch{}
+      try{const r=await guardedRefetchFirstPage();addLivePosts(r?.posts||[]);}catch{}
       finally{silentFetchingRef.current=false;setTimeout(()=>{prefetchTriggeredRef.current=false;},10_000);}
     }
-  },[user,isRefreshing,addLivePosts]);
+  },[user,isRefreshing,addLivePosts,guardedRefetchFirstPage]);
 
   useEffect(()=>{window.addEventListener(HOME_REFRESH_EVENT,handleRefresh);return()=>window.removeEventListener(HOME_REFRESH_EVENT,handleRefresh);},[handleRefresh]);
   useEffect(()=>{const h=()=>scrollRef.current?.scrollTo({top:0,behavior:"smooth"});window.addEventListener(HOME_SCROLL_TOP_EVENT,h);return()=>window.removeEventListener(HOME_SCROLL_TOP_EVENT,h);},[]);
@@ -2190,7 +2373,7 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
       if(document.hidden||isRefreshing||loadingRef.current)return;
       if(Date.now()-lastHiddenAt<5000)return;
       try{
-        const r=await refetchRef.current?.();const fp=r?.posts||[];
+        const r=await guardedRefetchFirstPage({ minInterval: POLL_INTERVAL - 1_000 });const fp=r?.posts||[];
         if(!fp.length||!latestId.current)return;
         const idx=fp.findIndex(p=>p._id===latestId.current);
         const newer=idx>0?fp.slice(0,idx):[];if(!newer.length)return;
@@ -2212,13 +2395,23 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     const id=setInterval(poll,POLL_INTERVAL);
     document.addEventListener("visibilitychange", onVisibility);
     return()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVisibility); };
-  },[user,isRefreshing]);
+  },[user,isRefreshing,guardedRefetchFirstPage]);
 
   const handleShowNew=useCallback(()=>{
     setNewPosts(0);currentApiPageRef.current=1;fetchingNextPageRef.current=false;
     invalidateScoreCache();
     startTransition(()=>setResetSig(k=>k+1));
   },[]);
+
+  const handleHomePostCreated = useCallback((post) => {
+    if (!post?._id) return;
+    addLivePosts([post], { prepend: true, silent: true });
+    setNewPosts(0);
+    currentApiPageRef.current = 1;
+    fetchingNextPageRef.current = false;
+    invalidateScoreCache();
+    startTransition(() => setResetSig(k => k + 1));
+  }, [addLivePosts]);
 
   const PTR=72;
   useEffect(()=>{
@@ -2239,10 +2432,21 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
   const apiObsFnRef=useRef(null);
   const apiObsFn=useCallback((entries)=>{
-    if(!entries[0].isIntersecting||loadingRef.current||isRefreshing)return;
-    startPageTrans(()=>{
-      if(hasMoreRef.current){fetchNextPageRef2.current?.();setApiPages(p=>p+1);currentApiPageRef.current++;}
-    });
+    if(!entries[0].isIntersecting||loadingRef.current||isRefreshing||fetchingNextPageRef.current)return;
+    if(!hasMoreRef.current||typeof fetchNextPageRef2.current!=="function")return;
+    fetchingNextPageRef.current=true;
+    (async()=>{
+      try{
+        const result=await fetchNextPageRef2.current?.();
+        if(result?.success){
+          const nextPage=result.page||currentApiPageRef.current+1;
+          currentApiPageRef.current=nextPage;
+          startPageTrans(()=>setApiPages(nextPage));
+        }
+      }finally{
+        fetchingNextPageRef.current=false;
+      }
+    })();
   },[isRefreshing]);
   useEffect(()=>{apiObsFnRef.current=apiObsFn;},[apiObsFn]);
   useEffect(()=>{
@@ -2272,6 +2476,37 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
     window.addEventListener("feed:interaction",h);
     return()=>window.removeEventListener("feed:interaction",h);
   },[]);
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // 🧹 CLEANUP HOOK — Prévenir les leaks de state lors de la navigation
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  useEffect(() => {
+    return () => {
+      console.log("🧹 [Home] Component unmount - nettoyage du feed");
+      // Nettoyer les refs locales
+      livePostsRef.current = [];
+      persistedSeenIdsRef.current = new Set();
+      latestId.current = null;
+      currentApiPageRef.current = 1;
+      fetchingNextPageRef.current = false;
+      prefetchTriggeredRef.current = false;
+      fallbackFetchedRef.current = false;
+      initialRefreshRef.current = { userId: null, promise: null };
+      pageOneRefreshRef.current = { inFlight: false, lastAt: 0 };
+      silentFetchingRef.current = false;
+      silentLastFetchRef.current = 0;
+      pullDistRef.current = 0;
+      isPulling.current = false;
+      canPull.current = true;
+      touchStartY.current = 0;
+      scrollIdleTimerRef.current = null;
+      saveSeenIdsTimer.current = null;
+      clearPersistedFeed();
+      invalidateScoreCache();
+      // Nettoyer le cache des posts du profil pour éviter les leaks
+      clearProfilePostsCache();
+    };
+  }, []);
 
   const bg=isDarkMode?"bg-black":"bg-white";
   const border=isDarkMode?"border-gray-800":"border-gray-200";
@@ -2309,6 +2544,14 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
                 isDarkMode={isDarkMode}
               />
             </div>
+
+            {user && (
+              <CreatePost
+                user={user}
+                showToast={showToast}
+                onPostCreated={handleHomePostCreated}
+              />
+            )}
 
             {/* feed tabs hidden per user request */}
 

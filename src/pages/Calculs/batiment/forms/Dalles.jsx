@@ -3,15 +3,18 @@ import { Doughnut } from "react-chartjs-2";
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
 import {
   Square, Ruler, Save, History, Anchor, Droplets, Layers, Info, Target, Link,
+  ChevronDown,
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
 const STORAGE_KEY = "dalles-history-pro";
 
 const TYPES_DALLES = {
-  TERRE_PLEIN: { label: "Dallage sol (Terre-plein)", acier: 40, icon: "🚜", desc: "Ferraillage léger (Treillis)" },
-  ETAGE:       { label: "Dalle pleine (Étage)",      acier: 80, icon: "🏗️", desc: "Ferraillage structurel suspendu" },
+  TERRE_PLEIN: { label: "Dallage terre-plein", acier: 40, icon: "🚜", desc: "Béton sur sol, treillis léger" },
+  ETAGE:       { label: "Dalle pleine",        acier: 80, icon: "🏗️", desc: "Dalle BA coulée pleine" },
+  HOURDIS:     { label: "Plancher poutrelles-hourdis", acier: 25, icon: "▦", desc: "Hourdis + dalle de compression" },
 };
 
 const DOSAGE = {
@@ -32,13 +35,17 @@ export default function Dalles({
   projectResults,   // ✅ nouveau
 }) {
 
-  const [typeDalle, setTypeDalle] = useState("ETAGE");
-  const [inputs, setInputs] = useState({
+  const [typeDalle, setTypeDalle] = usePersistentState("elevations:dalles:typeDalle", "ETAGE");
+  const [inputs, setInputs] = usePersistentState("elevations:dalles:inputs", {
+    nombre:         "1",
     longueur:       "",
     largeur:        "",
     epaisseur:      "0.15",
+    epaisseurCompression: "0.05",
+    entraxePoutrelles:    "0.60",
     hauteurNiveau:  "",   // ✅ hauteur entre niveaux — transmise aux Escaliers
     prixUnitaire:   "",
+    prixPlancherM2: "",
     coutMainOeuvre: "",
     marge:          "5",
   });
@@ -49,12 +56,21 @@ export default function Dalles({
   const results = useMemo(() => {
     const L = parseFloat(inputs.longueur)  || 0;
     const l = parseFloat(inputs.largeur)   || 0;
-    const e = parseFloat(inputs.epaisseur) || 0;
+    const e = typeDalle === "HOURDIS"
+      ? parseFloat(inputs.epaisseurCompression) || 0
+      : parseFloat(inputs.epaisseur) || 0;
+    const nb = parseFloat(inputs.nombre) || 1;
+    const entraxe = parseFloat(inputs.entraxePoutrelles) || 0;
     const margeCoef = 1 + (parseFloat(inputs.marge) || 0) / 100;
 
-    const surface     = L * l;
+    const surfaceUnitaire = L * l;
+    const surface     = surfaceUnitaire * nb;
     const volumeGeo   = surface * e;
     const volumeFinal = volumeGeo * margeCoef;
+    const perimetreUnitaire = 2 * (L + l);
+    const surfaceCoffrage = typeDalle === "TERRE_PLEIN"
+      ? perimetreUnitaire * e * nb
+      : surface;
 
     const ratioAcier = TYPES_DALLES[typeDalle].acier;
     const acierKg    = volumeFinal * ratioAcier;
@@ -67,11 +83,25 @@ export default function Dalles({
     const eauL       = volumeFinal * DOSAGE.eau;
 
     const pu    = parseFloat(inputs.prixUnitaire)   || 0;
+    const prixPlancherM2 = parseFloat(inputs.prixPlancherM2) || 0;
     const mo    = parseFloat(inputs.coutMainOeuvre) || 0;
-    const total = (volumeFinal * pu) + mo;
+    const coutSystemePlancher = typeDalle === "HOURDIS" ? surface * prixPlancherM2 : 0;
+    const total = (volumeFinal * pu) + coutSystemePlancher + mo;
+
+    const nombrePoutrellesUnitaire = typeDalle === "HOURDIS" && l > 0 && entraxe > 0
+      ? Math.ceil(l / entraxe) + 1
+      : 0;
+    const nombrePoutrelles = nombrePoutrellesUnitaire * nb;
+    const lineairePoutrelles = nombrePoutrelles * L;
 
     return {
       surface, volumeGeo, volumeFinal,
+      surfaceUnitaire,
+      nombre: nb,
+      surfaceCoffrage,
+      nombrePoutrelles,
+      lineairePoutrelles,
+      coutSystemePlancher,
       cimentT, cimentSacs, sableT, gravierT, acierT, acierKg, eauL,
       total, mo, ratioAcier,
     };
@@ -83,20 +113,31 @@ export default function Dalles({
     onMateriauxChange?.({
       volume: results.volumeFinal,
       ciment: results.cimentT,
+      sable: results.sableT,
+      gravier: results.gravierT,
+      eau: results.eauL,
       acier:  results.acierT,
+      coffrage: results.surfaceCoffrage,
     });
     // ✅ ÉMISSION résultats → Escaliers (hauteurNiveau), Finitions (surface carrelage)
     onResultsChange?.({
       surface:        results.surface,
+      surfaceUnitaire: results.surfaceUnitaire,
+      nombre:         results.nombre,
+      nombrePoutrelles: results.nombrePoutrelles,
+      lineairePoutrelles: results.lineairePoutrelles,
       volumeFinal:    results.volumeFinal,
-      epaisseur:      parseFloat(inputs.epaisseur)      || 0,
+      surfaceCoffrage: results.surfaceCoffrage,
+      epaisseur:      typeDalle === "HOURDIS"
+        ? parseFloat(inputs.epaisseurCompression) || 0
+        : parseFloat(inputs.epaisseur) || 0,
       hauteurNiveau:  parseFloat(inputs.hauteurNiveau)  || 0,  // pour Escaliers
       typeDalle,
       acierKg:        results.acierKg,
       // La surface de la dalle = surface carrelage potentielle
       surfaceCarrelage: results.surface,
     });
-  }, [results.total, results.surface, results.volumeFinal, inputs.hauteurNiveau]);
+  }, [results.total, results.surface, results.volumeFinal, results.surfaceCoffrage, inputs.hauteurNiveau, typeDalle]);
 
   // ── Historique ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -126,7 +167,7 @@ export default function Dalles({
   };
 
   const chartData = {
-    labels: ["Béton", "Acier"],
+    labels: [typeDalle === "HOURDIS" ? "Béton + hourdis" : "Béton", "Acier"],
     datasets: [{
       data: [results.total - results.mo, (results.acierKg * 500) / 100],
       backgroundColor: ["#f43f5e", "#ef4444"],
@@ -151,7 +192,7 @@ export default function Dalles({
         <div className="flex items-center gap-3">
           <div className="p-2 bg-rose-600/20 rounded-lg text-rose-500"><Square className="w-6 h-6" /></div>
           <div>
-            <h2 className="text-xl font-bold text-white">Élévation : Dalles</h2>
+            <h2 className="text-xl font-bold text-white">Élévation : Dalles / Planchers</h2>
             <p className="text-xs text-gray-400">Planchers pleins & Dallages</p>
           </div>
         </div>
@@ -169,19 +210,26 @@ export default function Dalles({
           {/* ── GAUCHE ── */}
           <div className="lg:col-span-5 flex flex-col gap-5">
 
-            {/* Type de dalle */}
-            <div className="grid grid-cols-2 gap-2 bg-gray-800 p-1.5 rounded-xl border border-gray-700">
-              {Object.entries(TYPES_DALLES).map(([id, t]) => (
-                <button key={id} onClick={() => setTypeDalle(id)}
-                  className={`flex flex-col items-center justify-center py-2 rounded-lg transition-all ${
-                    typeDalle === id
-                      ? "bg-rose-600 text-white shadow-lg"
-                      : "text-gray-400 hover:text-white hover:bg-gray-700"
-                  }`}>
-                  <span className="text-xs font-bold">{t.icon} {t.label}</span>
-                  <span className="text-[9px] opacity-60 tracking-tighter">{t.desc}</span>
-                </button>
-              ))}
+            {/* Type de dalle / plancher */}
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-4 shadow-lg">
+              <label className="block mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+                Type d'ouvrage
+              </label>
+              <div className="relative">
+                <select
+                  value={typeDalle}
+                  onChange={(e) => setTypeDalle(e.target.value)}
+                  className="w-full appearance-none bg-gray-900 border border-gray-600 rounded-xl px-4 py-3 pr-10 text-white focus:border-rose-500 outline-none font-bold text-sm"
+                >
+                  {Object.entries(TYPES_DALLES).map(([id, t]) => (
+                    <option key={id} value={id}>{t.label}</option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+              </div>
+              <p className="mt-2 text-[10px] text-gray-500">
+                {TYPES_DALLES[typeDalle].icon} {TYPES_DALLES[typeDalle].desc}
+              </p>
             </div>
 
             {/* Dimensions */}
@@ -192,7 +240,36 @@ export default function Dalles({
               <div className="grid grid-cols-2 gap-4">
                 <InputGroup label="Longueur" value={inputs.longueur} onChange={(v) => setInputs({ ...inputs, longueur: v })} />
                 <InputGroup label="Largeur"  value={inputs.largeur}  onChange={(v) => setInputs({ ...inputs, largeur: v })} />
-                <InputGroup label="Épaisseur" value={inputs.epaisseur} onChange={(v) => setInputs({ ...inputs, epaisseur: v })} placeholder="Ex: 0.15" full />
+                <InputGroup
+                  label={typeDalle === "HOURDIS" ? "Nombre de planchers" : "Nombre de dalles"}
+                  value={inputs.nombre}
+                  onChange={(v) => setInputs({ ...inputs, nombre: v })}
+                />
+                {typeDalle === "HOURDIS" ? (
+                  <>
+                    <InputGroup
+                      label="Dalle compression (m)"
+                      value={inputs.epaisseurCompression}
+                      onChange={(v) => setInputs({ ...inputs, epaisseurCompression: v })}
+                      placeholder="Ex: 0.05"
+                    />
+                    <InputGroup
+                      label="Entraxe poutrelles (m)"
+                      value={inputs.entraxePoutrelles}
+                      onChange={(v) => setInputs({ ...inputs, entraxePoutrelles: v })}
+                      placeholder="Ex: 0.60"
+                      full
+                    />
+                  </>
+                ) : (
+                  <InputGroup
+                    label="Épaisseur béton (m)"
+                    value={inputs.epaisseur}
+                    onChange={(v) => setInputs({ ...inputs, epaisseur: v })}
+                    placeholder="Ex: 0.15"
+                    full
+                  />
+                )}
               </div>
             </div>
 
@@ -222,10 +299,18 @@ export default function Dalles({
               <div className="grid grid-cols-2 gap-4">
                 <InputGroup label={`PU Béton (${currency}/m³)`} value={inputs.prixUnitaire}   onChange={(v) => setInputs({ ...inputs, prixUnitaire: v })} />
                 <InputGroup label="Pertes (%)"                   value={inputs.marge}          onChange={(v) => setInputs({ ...inputs, marge: v })} />
+                {typeDalle === "HOURDIS" && (
+                  <InputGroup
+                    label={`Poutrelles-hourdis (${currency}/m²)`}
+                    value={inputs.prixPlancherM2}
+                    onChange={(v) => setInputs({ ...inputs, prixPlancherM2: v })}
+                    full
+                  />
+                )}
               </div>
               <button onClick={handleSave}
                 className="w-full mt-6 bg-rose-600 hover:bg-rose-500 text-white py-4 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2">
-                <Save className="w-5 h-5" /> Enregistrer Dalle
+                <Save className="w-5 h-5" /> Enregistrer {typeDalle === "HOURDIS" ? "Plancher" : "Dalle"}
               </button>
             </div>
           </div>
@@ -234,8 +319,16 @@ export default function Dalles({
           <div className="lg:col-span-7 flex flex-col gap-6">
 
             <div className="grid grid-cols-3 gap-4">
-              <ResultCard label="Volume Brut"  value={fmtD(results.volumeFinal)} unit="m³" icon="🧊"                           color="text-rose-400"   bg="bg-rose-500/10" />
-              <ResultCard label="Coffrage"      value={fmtD(results.surface, 1)}  unit="m²" icon={<Layers className="w-4 h-4"/>} color="text-indigo-400" bg="bg-indigo-500/10" border />
+              <ResultCard label={typeDalle === "HOURDIS" ? "Béton compression" : "Volume béton"} value={fmtD(results.volumeFinal)} unit="m³" icon="🧊" color="text-rose-400" bg="bg-rose-500/10" />
+              <ResultCard
+                label={typeDalle === "TERRE_PLEIN" ? "Coffrage rive" : "Coffrage/étaiement"}
+                value={fmtD(results.surfaceCoffrage, 1)}
+                unit="m²"
+                icon={<Layers className="w-4 h-4"/>}
+                color="text-indigo-400"
+                bg="bg-indigo-500/10"
+                border
+              />
               <ResultCard label="Acier (HA/TS)" value={fmtD(results.acierKg, 0)} unit="kg" icon={<Target className="w-4 h-4"/>} color="text-red-400"    bg="bg-red-500/10" />
             </div>
 
@@ -248,7 +341,7 @@ export default function Dalles({
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <span className="text-[10px] bg-rose-500/15 text-rose-300 px-2 py-0.5 rounded font-mono">
-                    → Finitions/Carrelage : {fmtD(results.surface)} m²
+                    → Finitions/Carrelage : {fmtD(results.surface)} m² ({fmtD(results.nombre, 0)} {typeDalle === "HOURDIS" ? "plancher" : "dalle"}{results.nombre > 1 ? "s" : ""})
                   </span>
                   {inputs.hauteurNiveau && (
                     <span className="text-[10px] bg-rose-500/15 text-rose-300 px-2 py-0.5 rounded font-mono">
@@ -273,6 +366,15 @@ export default function Dalles({
                 <MaterialRow label="Ciment (350kg/m³)"       val={`${fmtD(results.cimentT)} t`}     color="bg-rose-500" />
                 <MaterialRow label="Sable (0.6 t/m³)"        val={`${fmtD(results.sableT)} t`}      color="bg-amber-500" />
                 <MaterialRow label="Gravier (0.85 t/m³)"     val={`${fmtD(results.gravierT)} t`}    color="bg-stone-500" />
+                <MaterialRow label={typeDalle === "HOURDIS" ? "Surface totale hourdis" : "Surface totale dalles"} val={`${fmtD(results.surface)} m²`} color="bg-indigo-500" />
+                <MaterialRow label={typeDalle === "TERRE_PLEIN" ? "Coffrage de rive" : "Coffrage / étaiement"} val={`${fmtD(results.surfaceCoffrage, 1)} m²`} color="bg-blue-500" />
+                {typeDalle === "HOURDIS" && (
+                  <>
+                    <MaterialRow label="Nombre poutrelles estimé" val={`${fmtD(results.nombrePoutrelles, 0)} u`} color="bg-cyan-500" />
+                    <MaterialRow label="Linéaire poutrelles" val={`${fmtD(results.lineairePoutrelles)} ml`} color="bg-blue-500" />
+                    <MaterialRow label="Coût système hourdis" val={`${fmt(results.coutSystemePlancher)} ${currency}`} color="bg-emerald-500" />
+                  </>
+                )}
                 <MaterialRow label={`Acier (${results.ratioAcier}kg/m³)`} val={`${fmtD(results.acierKg, 0)} kg`} color="bg-red-500" />
                 <div className="pt-2 border-t border-gray-700 flex justify-between items-center mt-2">
                   <span className="text-xs text-gray-400 flex items-center gap-1">
@@ -283,7 +385,9 @@ export default function Dalles({
                 <div className="flex items-start gap-2 p-3 bg-rose-500/5 rounded-lg border border-rose-500/20">
                   <Info className="w-4 h-4 text-rose-400 mt-0.5" />
                   <p className="text-[10px] text-rose-200/70 leading-relaxed italic">
-                    Pour une dalle d'étage, prévoyez environ 1 étai par m² pour supporter le poids du béton frais.
+                    {typeDalle === "HOURDIS"
+                      ? "Pour un plancher poutrelles-hourdis, le béton calculé correspond à la dalle de compression. Les poutrelles et hourdis sont estimés au m² et en linéaire."
+                      : "Pour une dalle d'étage, prévoyez environ 1 étai par m² pour supporter le poids du béton frais."}
                   </p>
                 </div>
               </div>

@@ -1,141 +1,245 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { Droplets, Save, Trash2, History, Info, Banknote } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Doughnut } from "react-chartjs-2";
+import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
+import { ChevronDown, ChevronUp, Droplets, Plus, Recycle, Trash2 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
+import { useProjectStore } from "../../../../store/useProjectStore";
 
-const STORAGE_KEY = "eau-eco-history";
+ChartJS.register(ArcElement, Tooltip, Legend);
+
+const TYPES_EAU = {
+  consommation: {
+    label: "Consommation chantier",
+    icon: Droplets,
+    sens: "consomme",
+    desc: "Eau potable ou forage consommé sur le chantier.",
+  },
+  pluie: {
+    label: "Récupération eaux pluviales",
+    icon: Recycle,
+    sens: "reemploi",
+    desc: "Volume récupéré et utilisé à la place de l'eau neuve.",
+  },
+  grise: {
+    label: "Réemploi eaux grises",
+    icon: Recycle,
+    sens: "reemploi",
+    desc: "Eaux traitées/réutilisées pour nettoyage, arrosage ou process.",
+  },
+  reduction: {
+    label: "Réduction par équipements",
+    icon: Droplets,
+    sens: "economie",
+    desc: "Économie liée aux équipements hydro-économes.",
+  },
+};
+
+const fmt = (value, decimals = 0) =>
+  Number(value || 0).toLocaleString("fr-FR", { maximumFractionDigits: decimals });
+const fmtD = (value, decimals = 2) => Number(value || 0).toFixed(decimals);
+const num = (value) => Number.parseFloat(value) || 0;
+
+const defaultScenario = (type = "consommation") => ({
+  id: Date.now() + Math.random(),
+  type,
+  label: "",
+  volume: "",
+  prixUnitaire: "",
+  mainOeuvre: "",
+  expanded: true,
+});
+
+const computeScenario = (scenario) => {
+  const config = TYPES_EAU[scenario.type] || TYPES_EAU.consommation;
+  const volume = num(scenario.volume);
+  const total = volume * num(scenario.prixUnitaire) + num(scenario.mainOeuvre);
+  return { ...scenario, config, volume, total };
+};
 
 export default function EauEco({
   currency = "XOF",
   onTotalChange = () => {},
-  onCostChange  = () => {},
+  onCostChange = () => {},
   onMateriauxChange = () => {},
   onMaterialsChange = () => {},
 }) {
-  const [inputs, setInputs] = useState({
-    consommation:   "",
-    prixUnitaire:   "",
-    coutMainOeuvre: "",
-  });
-  const [historique, setHistorique] = useState([]);
-  const [message,    setMessage]    = useState(null);
+  const setGlobalCost = useProjectStore((state) => state.setCost);
+  const setGlobalMaterials = useProjectStore((state) => state.setMaterials);
+  const setGlobalResults = useProjectStore((state) => state.setResults);
+
+  const [scenarios, setScenarios] = usePersistentState("eco:eau:scenarios", [defaultScenario("consommation")]);
+  const [newType, setNewType] = usePersistentState("eco:eau:newType", "consommation");
+  const [activeTab, setActiveTab] = useState("scenarios");
 
   const results = useMemo(() => {
-    const m3    = parseFloat(inputs.consommation)  || 0;
-    const pu    = parseFloat(inputs.prixUnitaire)   || 0;
-    const mo    = parseFloat(inputs.coutMainOeuvre) || 0;
-    const total = m3 * pu + mo;
-    return { m3, total };
-  }, [inputs]);
+    const scenariosCalc = scenarios.map(computeScenario);
+    const eauConsommee = scenariosCalc
+      .filter((item) => item.config.sens === "consomme")
+      .reduce((sum, item) => sum + item.volume, 0);
+    const eauRecyclee = scenariosCalc
+      .filter((item) => item.config.sens === "reemploi")
+      .reduce((sum, item) => sum + item.volume, 0);
+    const eauEconomisee = scenariosCalc
+      .filter((item) => item.config.sens === "economie")
+      .reduce((sum, item) => sum + item.volume, 0);
+    const eauNeuveNette = Math.max(0, eauConsommee - eauRecyclee - eauEconomisee);
+    const tauxReemploi = eauConsommee > 0 ? ((eauRecyclee + eauEconomisee) / eauConsommee) * 100 : 0;
+    const total = scenariosCalc.reduce((sum, item) => sum + item.total, 0);
+
+    return { scenariosCalc, eauConsommee, eauRecyclee, eauEconomisee, eauNeuveNette, tauxReemploi, total };
+  }, [scenarios]);
 
   useEffect(() => {
     onTotalChange(results.total);
     onCostChange(results.total);
-  }, [results.total]);
-
-  useEffect(() => {
-    try { const s = localStorage.getItem(STORAGE_KEY); if (s) setHistorique(JSON.parse(s)); } catch {}
-  }, []);
-
-  const showToast = (msg, type = "success") => {
-    setMessage({ text: msg, type });
-    setTimeout(() => setMessage(null), 3000);
-  };
-
-  const handleSave = () => {
-    if (results.m3 <= 0) return showToast("⚠️ Consommation invalide", "error");
-    const entry = {
-      id:    Date.now(),
-      date:  new Date().toLocaleString("fr-FR"),
-      m3:    results.m3,
-      total: results.total,
+    const materials = {
+      m3: results.eauConsommee,
+      eau: results.eauConsommee * 1000,
+      eauRecyclee: results.eauRecyclee,
+      eauEconomisee: results.eauEconomisee,
+      eauNette: results.eauNeuveNette,
+      tauxReemploiEau: results.tauxReemploi,
     };
-    const next = [entry, ...historique];
-    setHistorique(next);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
-    showToast("✅ Eau enregistrée !");
+    onMateriauxChange(materials);
+    onMaterialsChange(materials);
+    setGlobalCost("ecoEau", results.total);
+    setGlobalMaterials("ecoEau", materials);
+    setGlobalResults("ecoEau", {
+      eauConsommeeM3: results.eauConsommee,
+      eauRecycleeM3: results.eauRecyclee,
+      eauEconomiseeM3: results.eauEconomisee,
+      eauNeuveNetteM3: results.eauNeuveNette,
+      tauxReemploi: results.tauxReemploi,
+      scenarios: results.scenariosCalc.map((item) => ({
+        type: item.type,
+        label: item.label || item.config.label,
+        volume: item.volume,
+        total: item.total,
+      })),
+    });
+  }, [results]);
+
+  const updateScenario = (id, patch) => setScenarios((prev) => prev.map((item) => (
+    item.id === id ? { ...item, ...patch } : item
+  )));
+  const addScenario = () => setScenarios((prev) => [...prev, defaultScenario(newType)]);
+  const removeScenario = (id) => setScenarios((prev) => prev.filter((item) => item.id !== id));
+
+  const chartData = {
+    labels: ["Eau neuve nette", "Réemploi", "Économie"],
+    datasets: [{
+      data: [results.eauNeuveNette, results.eauRecyclee, results.eauEconomisee],
+      backgroundColor: ["#06b6d4", "#22c55e", "#84cc16"],
+      borderColor: "#111827",
+      borderWidth: 2,
+    }],
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
-      {message && (
-        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-bounce ${message.type === "error" ? "bg-red-600" : "bg-cyan-600"}`}>
-          {message.text}
-        </div>
-      )}
-
-      {/* Header */}
-      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+    <div className="w-full h-full flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
+      <div className="flex-shrink-0 px-5 py-3 border-b border-gray-800 flex justify-between items-center bg-gray-900/70">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-cyan-500/20 rounded-lg text-cyan-400"><Droplets className="w-6 h-6"/></div>
+          <div className="p-2 bg-cyan-500/20 rounded-xl text-cyan-300">
+            <Droplets className="w-5 h-5" />
+          </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Eau</h2>
-            <p className="text-xs text-gray-400">Consommation & Gestion durable</p>
+            <h2 className="text-base font-bold text-white leading-tight">Eau & réemploi</h2>
+            <p className="text-[10px] text-gray-500 uppercase tracking-widest font-semibold">
+              Consommation · récupération · réutilisation · économie
+            </p>
           </div>
         </div>
         <div className="text-right">
-          <span className="text-[10px] text-gray-500 uppercase font-bold block">Total</span>
-          <span className="text-2xl font-black text-cyan-400">
-            {results.total.toLocaleString()} <span className="text-sm text-gray-500">{currency}</span>
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Coût total</span>
+          <span className="text-xl font-black text-cyan-300 tracking-tight">
+            {fmt(results.total)} <span className="text-xs text-gray-500 font-normal">{currency}</span>
           </span>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="flex-shrink-0 flex border-b border-gray-800 xl:hidden">
+        {[["scenarios", "Scénarios"], ["synthese", "Synthèse"]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-wider ${
+              activeTab === key ? "text-cyan-300 border-b-2 border-cyan-300" : "text-gray-500"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-          {/* GAUCHE */}
-          <div className="lg:col-span-5 flex flex-col gap-5">
-            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 flex flex-col gap-4">
-              <h3 className="flex items-center gap-2 text-xs font-bold text-cyan-400 uppercase tracking-widest">
-                <Banknote className="w-4 h-4 text-green-400"/> Paramètres
-              </h3>
-              <InputGroup label="Consommation (m³)"            value={inputs.consommation}  onChange={v => setInputs(p => ({...p, consommation: v}))}  />
-              <InputGroup label={`Prix unitaire (${currency}/m³)`}  value={inputs.prixUnitaire} onChange={v => setInputs(p => ({...p, prixUnitaire: v}))} />
-              <InputGroup label={`Main d'œuvre (${currency})`}       value={inputs.coutMainOeuvre} onChange={v => setInputs(p => ({...p, coutMainOeuvre: v}))} />
-              <button onClick={handleSave}
-                className="w-full bg-cyan-600 hover:bg-cyan-500 text-white py-3.5 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-all">
-                <Save className="w-5 h-5"/> Enregistrer
+      <div className="flex-1 overflow-y-auto">
+        <div className="grid grid-cols-1 xl:grid-cols-12 min-h-full">
+          <div className={`xl:col-span-7 p-4 lg:p-5 border-r border-gray-800/50 flex flex-col gap-3 ${activeTab !== "scenarios" ? "hidden xl:flex" : "flex"}`}>
+            {results.scenariosCalc.map((scenario) => (
+              <ScenarioCard
+                key={scenario.id}
+                scenario={scenario}
+                currency={currency}
+                onToggle={() => updateScenario(scenario.id, { expanded: !scenario.expanded })}
+                onRemove={() => removeScenario(scenario.id)}
+                onPatch={(patch) => updateScenario(scenario.id, patch)}
+              />
+            ))}
+
+            <div className="bg-gray-900/40 border border-gray-700/50 rounded-2xl p-4">
+              <p className="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-3">Ajouter un scénario eau</p>
+              <select
+                value={newType}
+                onChange={(event) => setNewType(event.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-sm text-white focus:border-cyan-400"
+              >
+                {Object.entries(TYPES_EAU).map(([key, item]) => (
+                  <option key={key} value={key}>{item.label}</option>
+                ))}
+              </select>
+              <button
+                onClick={addScenario}
+                className="w-full mt-3 flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-500 text-white py-3 rounded-xl font-bold text-sm"
+              >
+                <Plus className="w-4 h-4" /> Ajouter à la synthèse
               </button>
             </div>
           </div>
 
-          {/* DROITE */}
-          <div className="lg:col-span-7 flex flex-col gap-6">
-            <div className="grid grid-cols-2 gap-4">
-              <ResultCard label="Volume"  value={results.m3.toFixed(1)} unit="m³"    icon="💧" color="text-cyan-400"  bg="bg-cyan-500/10" />
-              <ResultCard label="Total"   value={results.total.toLocaleString()} unit={currency} icon="💰" color="text-white" bg="bg-gray-700/40" border />
+          <div className={`xl:col-span-5 p-4 lg:p-5 flex flex-col gap-4 ${activeTab !== "synthese" ? "hidden xl:flex" : "flex"}`}>
+            <div className="grid grid-cols-2 gap-3">
+              <KpiCard label="Eau consommée" value={fmtD(results.eauConsommee)} unit="m³" color="text-cyan-300" />
+              <KpiCard label="Réemploi" value={fmtD(results.eauRecyclee)} unit="m³" color="text-green-300" />
+              <KpiCard label="Économie" value={fmtD(results.eauEconomisee)} unit="m³" color="text-lime-300" />
+              <KpiCard label="Taux évité" value={fmtD(results.tauxReemploi, 1)} unit="%" color="text-emerald-300" />
             </div>
 
-            <div className="bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl">
-              <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2 mb-4">Ventilation</h4>
-              <MaterialRow label="Coût eau"      val={`${(results.m3 * (parseFloat(inputs.prixUnitaire)||0)).toLocaleString()} ${currency}`}  color="bg-cyan-500" />
-              <MaterialRow label="Main d'œuvre"  val={`${(parseFloat(inputs.coutMainOeuvre)||0).toLocaleString()} ${currency}`}               color="bg-gray-500" />
-              <div className="flex items-start gap-2 p-3 bg-cyan-500/5 rounded-lg border border-cyan-500/20 mt-4">
-                <Info className="w-4 h-4 text-cyan-400 mt-0.5 flex-shrink-0"/>
-                <p className="text-[10px] text-cyan-200/60 leading-relaxed italic">
-                  Pensez à intégrer des systèmes de récupération des eaux pluviales pour réduire la consommation de chantier.
-                </p>
+            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4 flex flex-col sm:flex-row items-center gap-5">
+              <div className="relative w-28 h-28 flex-shrink-0">
+                <Doughnut data={chartData} options={{ cutout: "72%", plugins: { legend: { display: false } } }} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span className="text-[9px] text-gray-500 uppercase">Net</span>
+                  <span className="text-[11px] font-bold text-white text-center leading-tight">{fmtD(results.eauNeuveNette)} m³</span>
+                </div>
+              </div>
+              <div className="flex-1 w-full space-y-2">
+                <MaterialRow label="Eau neuve nette" value={`${fmtD(results.eauNeuveNette)} m³`} dot="bg-cyan-500" />
+                <MaterialRow label="Eau réutilisée" value={`${fmtD(results.eauRecyclee)} m³`} dot="bg-green-500" />
+                <MaterialRow label="Économie d'eau" value={`${fmtD(results.eauEconomisee)} m³`} dot="bg-lime-500" />
+                <MaterialRow label="Coût" value={`${fmt(results.total)} ${currency}`} dot="bg-gray-500" />
               </div>
             </div>
 
-            {historique.length > 0 && (
-              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
-                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-2"><History className="w-3 h-3"/> Historique</h4>
-                  <button onClick={() => { setHistorique([]); localStorage.removeItem(STORAGE_KEY); }} className="text-[10px] text-red-400 hover:underline flex items-center gap-1"><Trash2 className="w-3 h-3"/> Vider</button>
-                </div>
-                <div className="max-h-[140px] overflow-y-auto">
-                  {historique.slice(0, 5).map(item => (
-                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30 hover:bg-gray-700/40 transition-colors">
-                      <div className="text-xs">
-                        <span className="text-gray-500 text-[9px] block">{item.date}</span>
-                        <span className="font-medium">{item.m3.toFixed(1)} m³</span>
-                      </div>
-                      <span className="text-sm font-bold text-cyan-400 font-mono">{item.total.toLocaleString()} {currency}</span>
-                    </div>
-                  ))}
-                </div>
+            <div className="bg-gray-900/40 border border-gray-800/50 rounded-2xl overflow-hidden">
+              <div className="px-4 py-2.5 bg-gray-900/70 border-b border-gray-800/50">
+                <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Synthèse eau & réemploi</h4>
               </div>
-            )}
+              <SummaryRow label="Scénarios" value={`${scenarios.length} u`} />
+              <SummaryRow label="Eau consommée" value={`${fmtD(results.eauConsommee)} m³`} />
+              <SummaryRow label="Eau réutilisée" value={`${fmtD(results.eauRecyclee)} m³`} />
+              <SummaryRow label="Économie d'eau" value={`${fmtD(results.eauEconomisee)} m³`} />
+              <SummaryRow label="Eau neuve nette" value={`${fmtD(results.eauNeuveNette)} m³`} />
+              <SummaryRow label="Total" value={`${fmt(results.total)} ${currency}`} strong />
+            </div>
           </div>
         </div>
       </div>
@@ -143,26 +247,92 @@ export default function EauEco({
   );
 }
 
-const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
-  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
-    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase">{label}</label>
-    <input type="number" value={value} onChange={e => onChange(e.target.value)}
-      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono text-sm outline-none"
-      placeholder={placeholder || "0"}/>
-  </div>
-);
-const ResultCard = ({ label, value, unit, icon, color, bg, border }) => (
-  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? "border border-gray-700" : ""}`}>
-    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1">{icon} {label}</span>
-    <span className={`text-xl font-black ${color}`}>{value} <span className="text-xs font-normal text-gray-500">{unit}</span></span>
-  </div>
-);
-const MaterialRow = ({ label, val, color }) => (
-  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
-    <div className="flex items-center gap-2">
-      <div className={`w-1.5 h-1.5 rounded-full ${color}`}/>
-      <span className="text-gray-300 text-xs font-medium">{label}</span>
+function ScenarioCard({ scenario, currency, onToggle, onRemove, onPatch }) {
+  const Icon = scenario.config.icon;
+  return (
+    <div className="border border-cyan-500/25 bg-cyan-500/10 rounded-2xl overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 cursor-pointer" onClick={onToggle}>
+        <div className="p-1.5 rounded-lg bg-gray-900/60 text-cyan-300"><Icon className="w-4 h-4" /></div>
+        <div className="flex-1 min-w-0">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-cyan-300">{scenario.config.label}</span>
+          <p className="text-xs font-bold text-white truncate">{scenario.label || scenario.config.desc}</p>
+        </div>
+        <span className="text-xs font-bold text-white font-mono">{fmtD(scenario.volume)} m³</span>
+        <button onClick={(event) => { event.stopPropagation(); onRemove(); }} className="text-gray-600 hover:text-red-400">
+          <Trash2 className="w-4 h-4" />
+        </button>
+        {scenario.expanded ? <ChevronUp className="w-4 h-4 text-gray-600" /> : <ChevronDown className="w-4 h-4 text-gray-600" />}
+      </div>
+
+      {scenario.expanded && (
+        <div className="px-4 pb-4 grid grid-cols-2 gap-3">
+          <SelectInput label="Type de scénario" value={scenario.type} onChange={(type) => onPatch({ type })} options={TYPES_EAU} full />
+          <TextInput label="Libellé" value={scenario.label} onChange={(label) => onPatch({ label })} text full />
+          <TextInput label="Volume (m³)" value={scenario.volume} onChange={(volume) => onPatch({ volume })} />
+          <TextInput label={`Prix (${currency}/m³)`} value={scenario.prixUnitaire} onChange={(prixUnitaire) => onPatch({ prixUnitaire })} />
+          <TextInput label={`Main d'œuvre (${currency})`} value={scenario.mainOeuvre} onChange={(mainOeuvre) => onPatch({ mainOeuvre })} full />
+          <div className="col-span-2 grid grid-cols-2 gap-2">
+            <MiniResult label="Volume" value={`${fmtD(scenario.volume)} m³`} />
+            <MiniResult label="Coût" value={`${fmt(scenario.total)} ${currency}`} />
+          </div>
+        </div>
+      )}
     </div>
-    <span className="text-xs font-bold text-white font-mono">{val}</span>
+  );
+}
+
+const TextInput = ({ label, value, onChange, full = false, text = false }) => (
+  <label className={`block ${full ? "col-span-2" : ""}`}>
+    <span className="mb-1 block text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</span>
+    <input
+      type={text ? "text" : "number"}
+      value={value ?? ""}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:border-cyan-400"
+      placeholder="0"
+    />
+  </label>
+);
+
+const SelectInput = ({ label, value, onChange, options, full = false }) => (
+  <label className={`block ${full ? "col-span-2" : ""}`}>
+    <span className="mb-1 block text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</span>
+    <select
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:border-cyan-400"
+    >
+      {Object.entries(options).map(([key, option]) => (
+        <option key={key} value={key}>{option.label}</option>
+      ))}
+    </select>
+  </label>
+);
+
+const KpiCard = ({ label, value, unit, color }) => (
+  <div className="rounded-2xl p-4 bg-gray-900/60 border border-gray-800">
+    <p className="text-[10px] text-gray-500 uppercase font-bold">{label}</p>
+    <p className={`text-lg font-black font-mono ${color}`}>{value} <span className="text-xs text-gray-500">{unit}</span></p>
+  </div>
+);
+
+const MaterialRow = ({ label, value, dot }) => (
+  <div className="flex justify-between items-center border-b border-gray-800 pb-2 last:border-0">
+    <span className="text-xs text-gray-400 flex items-center gap-2"><span className={`w-2 h-2 rounded-full ${dot}`} />{label}</span>
+    <span className="text-xs font-bold text-white font-mono">{value}</span>
+  </div>
+);
+
+const MiniResult = ({ label, value }) => (
+  <div className="rounded-xl border border-gray-800 bg-gray-950/70 p-3">
+    <p className="text-[10px] uppercase font-bold text-gray-500">{label}</p>
+    <p className="text-sm font-black text-white font-mono">{value}</p>
+  </div>
+);
+
+const SummaryRow = ({ label, value, strong = false }) => (
+  <div className={`px-4 py-2.5 flex justify-between items-center border-b border-gray-800/30 last:border-0 ${strong ? "bg-cyan-500/10" : ""}`}>
+    <span className={`text-xs font-bold ${strong ? "text-cyan-300" : "text-gray-400"}`}>{label}</span>
+    <span className={`text-xs font-black font-mono ${strong ? "text-cyan-300" : "text-white"}`}>{value}</span>
   </div>
 );

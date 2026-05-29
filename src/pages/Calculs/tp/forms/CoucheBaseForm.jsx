@@ -19,7 +19,7 @@ const COEFF_COMPACTAGE = 1.25; // Ratio entre volume foisonné et compacté
 const PROP_GRAVIER = 0.7; 
 const PROP_SABLE = 0.3;   
 
-export function CoucheBaseForm({ currency = "FCFA", onTotalChange = () => {} }) {
+export function CoucheBaseForm({ currency = "FCFA", onTotalChange = () => {}, onMateriauxChange = () => {} }) {
   const {
     localInputs,
     updateInput,
@@ -91,7 +91,28 @@ export function CoucheBaseForm({ currency = "FCFA", onTotalChange = () => {} }) 
   // Sync parent
   useEffect(() => {
     onTotalChange(results.total);
-  }, [results.total]);
+    onMateriauxChange({
+      surface: results.surface,
+      volume: results.volumeCompacte,
+      volumeCommande: results.volumeCommande,
+      tonnageTotal: results.tonnageTotal,
+      baseT: results.tonnageTotal,
+      gravierT: results.gravierT,
+      sableT: results.sableT,
+      nombreCamions: results.nbCamions,
+    });
+  }, [
+    results.total,
+    results.surface,
+    results.volumeCompacte,
+    results.volumeCommande,
+    results.tonnageTotal,
+    results.gravierT,
+    results.sableT,
+    results.nbCamions,
+    onTotalChange,
+    onMateriauxChange,
+  ]);
 
   // --- ACTIONS ---
   const handleSave = async () => {

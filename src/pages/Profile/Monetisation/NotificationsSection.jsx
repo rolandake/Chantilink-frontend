@@ -1,9 +1,10 @@
 // src/pages/Profile/Monetisation/NotificationsSection.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
-import { getAuthToken, monetisationFetch } from './monetisationApi';
+import { getAuthToken, monetisationFetch, readMonetisationJson } from './monetisationApi';
+import useMonetisationRealtime from './useMonetisationRealtime';
 
 const TYPE_CONFIG = {
   sale:       { icon:'💰', color:'#22c55e', bg:'rgba(34,197,94,0.1)'   },
@@ -24,29 +25,23 @@ export default function NotificationsSection() {
   const text = isDarkMode ? '#f3f4f6' : '#111827';
   const sub  = isDarkMode ? '#6b7280' : '#9ca3af';
 
-  useEffect(() => {
+  const fetchNotifications = useCallback(async ({ background = false } = {}) => {
     if (!user) return;
-    (async () => {
-      setLoading(true);
-      try {
-        const token = await getAuthToken(getToken);
-        const res  = await monetisationFetch('notifications', { token });
-        if (!res.ok) return;
-        const data = await res.json();
-        setNotifs(data.notifications || []);
-      } catch {}
-      finally { setLoading(false); }
-    })();
-  }, [user, getToken]);
+    if (!background) setLoading(true);
+    try {
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('notifications', { token });
+      if (!res.ok) return;
+      const data = await readMonetisationJson(res);
+      setNotifs(data.notifications || []);
+    } catch {}
+    finally {
+      if (!background) setLoading(false);
+    }
+  }, [getToken, user]);
 
-  // Placeholder si pas de données réelles
-  const DEMO = [
-    { _id:'1', type:'sale',       message:'Nouvelle vente : "Pack Premium" — 15 000 FCFA', date: new Date(Date.now()-3600000).toISOString(), read:false },
-    { _id:'2', type:'withdrawal', message:'Votre retrait de 50 000 FCFA a été approuvé',  date: new Date(Date.now()-86400000).toISOString(), read:true  },
-    { _id:'3', type:'info',       message:'Félicitations ! Vous avez atteint 50 ventes',   date: new Date(Date.now()-172800000).toISOString(), read:true  },
-  ];
-
-  const items = notifs.length > 0 ? notifs : (loading ? [] : DEMO);
+  useEffect(() => { fetchNotifications(); }, [fetchNotifications]);
+  useMonetisationRealtime(fetchNotifications, 'notifications');
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, fontFamily:font }}>
@@ -60,9 +55,9 @@ export default function NotificationsSection() {
             </svg>
           </div>
           <span style={{ fontWeight:700, fontSize:15, color:text }}>Notifications</span>
-          {items.filter(n=>!n.read).length > 0 && (
+          {notifs.filter(n=>!n.read).length > 0 && (
             <span style={{ width:20,height:20,borderRadius:'50%',background:'#ef4444',color:'#fff',fontSize:11,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center' }}>
-              {items.filter(n=>!n.read).length}
+              {notifs.filter(n=>!n.read).length}
             </span>
           )}
         </div>
@@ -70,7 +65,7 @@ export default function NotificationsSection() {
 
       {loading ? (
         <div style={{ padding:'24px 0', textAlign:'center', color:sub, fontSize:13 }}>Chargement...</div>
-      ) : items.length === 0 ? (
+      ) : notifs.length === 0 ? (
         <div style={{ padding:'36px 24px', textAlign:'center', borderRadius:16, border:`1px dashed ${bdr}` }}>
           <div style={{ fontSize:40, marginBottom:12 }}>🔔</div>
           <p style={{ fontSize:14, fontWeight:600, color: isDarkMode?'#d1d5db':'#374151', margin:'0 0 6px' }}>Aucune notification</p>
@@ -78,7 +73,7 @@ export default function NotificationsSection() {
         </div>
       ) : (
         <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-          {items.map(({ _id, type, message, date, read }, i) => {
+          {notifs.map(({ _id, type, message, date, read }, i) => {
             const cfg = TYPE_CONFIG[type] || TYPE_CONFIG.info;
             return (
               <motion.div

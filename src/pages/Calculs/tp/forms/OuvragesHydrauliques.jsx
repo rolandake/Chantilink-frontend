@@ -1,269 +1,404 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Doughnut } from "react-chartjs-2";
 import {
   Chart as ChartJS, ArcElement, Tooltip, Legend,
 } from "chart.js";
-import { 
-  Droplets, Waves, Ruler, Banknote, Save, Trash2, History, BoxSelect, Cylinder, Layers, Info, Anchor
+import {
+  Anchor,
+  Banknote,
+  BoxSelect,
+  ChevronDown,
+  ChevronUp,
+  Cylinder,
+  Droplets,
+  Plus,
+  Ruler,
+  Save,
+  Trash2,
+  Waves,
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
+import { useProjectStore } from "../../../../store/useProjectStore";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-const STORAGE_KEYS = {
-  dalot: "tp-dalot-history",
-  caniveau: "tp-caniveau-history",
-  buse: "tp-buse-history"
+const OUVRAGES_CONFIG = {
+  dalot: {
+    label: "Dalot cadre",
+    icon: BoxSelect,
+    color: "text-blue-400",
+    bg: "bg-blue-500/10",
+    border: "border-blue-500/30",
+    dot: "bg-blue-500",
+    ratioAcier: 120,
+    defaultEpaisseur: "0.20",
+  },
+  caniveau: {
+    label: "Caniveau U",
+    icon: Waves,
+    color: "text-cyan-400",
+    bg: "bg-cyan-500/10",
+    border: "border-cyan-500/30",
+    dot: "bg-cyan-500",
+    ratioAcier: 80,
+    defaultEpaisseur: "0.15",
+  },
+  buse: {
+    label: "Buse béton",
+    icon: Cylinder,
+    color: "text-indigo-400",
+    bg: "bg-indigo-500/10",
+    border: "border-indigo-500/30",
+    dot: "bg-indigo-500",
+    ratioAcier: 100,
+    defaultEpaisseur: "0.12",
+  },
 };
 
-const OUVRAGES_CONFIG = {
-  dalot: { label: "Dalot Cadre", icon: <BoxSelect className="w-5 h-5"/>, color: "blue", ratioAcier: 120 },
-  caniveau: { label: "Caniveau U", icon: <Waves className="w-5 h-5"/>, color: "cyan", ratioAcier: 80 },
-  buse: { label: "Buse Béton", icon: <Cylinder className="w-5 h-5"/>, color: "indigo", ratioAcier: 100 },
+const fmt = (value, decimals = 0) =>
+  Number(value || 0).toLocaleString("fr-FR", { maximumFractionDigits: decimals });
+const fmtD = (value) => Number(value || 0).toFixed(2);
+const num = (value) => Number.parseFloat(value) || 0;
+
+const defaultOuvrage = (type = "dalot") => ({
+  id: Date.now() + Math.random(),
+  type,
+  label: "",
+  longueur: "",
+  largeurInt: "",
+  hauteurInt: "",
+  diametreInt: "",
+  epaisseur: OUVRAGES_CONFIG[type]?.defaultEpaisseur || "0.20",
+  prixUnitaire: "",
+  coutMainOeuvre: "",
+  expanded: true,
+});
+
+const normalizeOuvrage = (ouvrage) => {
+  const type = OUVRAGES_CONFIG[ouvrage?.type] ? ouvrage.type : "dalot";
+  return {
+    ...defaultOuvrage(type),
+    ...(ouvrage || {}),
+    type,
+    epaisseur: ouvrage?.epaisseur || OUVRAGES_CONFIG[type].defaultEpaisseur,
+  };
+};
+
+const computeOuvrage = (ouvrage, autoLongueur) => {
+  const config = OUVRAGES_CONFIG[ouvrage.type] || OUVRAGES_CONFIG.dalot;
+  const longueur = num(ouvrage.longueur) || autoLongueur;
+  const ep = num(ouvrage.epaisseur) || num(config.defaultEpaisseur);
+  const largeurInt = num(ouvrage.largeurInt);
+  const hauteurInt = num(ouvrage.hauteurInt);
+  const diametreInt = num(ouvrage.diametreInt);
+  const prixUnitaire = num(ouvrage.prixUnitaire);
+  const coutMainOeuvre = num(ouvrage.coutMainOeuvre);
+
+  let volume = 0;
+  let coffrage = 0;
+
+  if (ouvrage.type === "dalot") {
+    const aireBeton = Math.max(0, ((largeurInt + 2 * ep) * (hauteurInt + 2 * ep)) - (largeurInt * hauteurInt));
+    volume = aireBeton * longueur;
+    coffrage = ((2 * hauteurInt + largeurInt) + 2 * (hauteurInt + 2 * ep)) * longueur;
+  } else if (ouvrage.type === "caniveau") {
+    const aireBeton = Math.max(0, ((largeurInt + 2 * ep) * (hauteurInt + ep)) - (largeurInt * hauteurInt));
+    volume = aireBeton * longueur;
+    coffrage = ((2 * hauteurInt + largeurInt) + 2 * (hauteurInt + ep)) * longueur;
+  } else {
+    const rInt = diametreInt / 2;
+    const rExt = rInt + ep;
+    const aireBeton = Math.max(0, Math.PI * ((rExt ** 2) - (rInt ** 2)));
+    volume = aireBeton * longueur;
+    coffrage = (Math.PI * (diametreInt + 2 * ep) + Math.PI * diametreInt) * longueur;
+  }
+
+  const cimentT = volume * 0.35;
+  const sableT = volume * 0.55;
+  const gravierT = volume * 0.75;
+  const eauL = volume * 180;
+  const acierKg = volume * config.ratioAcier;
+  const acierT = acierKg / 1000;
+  const total = volume * prixUnitaire + coutMainOeuvre;
+
+  return {
+    ...ouvrage,
+    config,
+    longueurEffective: longueur,
+    volume,
+    coffrage,
+    cimentT,
+    cimentSacs: Math.ceil(cimentT * 20),
+    sableT,
+    gravierT,
+    eauL,
+    acierKg,
+    acierT,
+    total,
+  };
 };
 
 export default function OuvragesHydrauliques({ currency = "XOF", onCostChange, onMateriauxChange }) {
-  const [activeTab, setActiveTab] = useState("dalot");
-  const [inputs, setInputs] = useState({
-    longueur: "",
-    largeurInt: "",     // Pour Dalot/Caniveau
-    hauteurInt: "",     // Pour Dalot/Caniveau
-    diametreInt: "",    // Pour Buse
-    epaisseur: "0.20",  // Épaisseur des parois
-    prixUnitaire: "",
-    coutMainOeuvre: ""
-  });
+  const terrassement = useProjectStore((state) => state.subResults.terrassement);
+  const chaussee = useProjectStore((state) => state.subResults.chaussee);
+  const setGlobalResults = useProjectStore((state) => state.setResults);
+  const setGlobalMaterials = useProjectStore((state) => state.setMaterials);
+  const setGlobalCost = useProjectStore((state) => state.setCost);
 
-  const [historique, setHistorique] = useState([]);
+  const [ouvragesRaw, setOuvragesRaw] = usePersistentState("tp:hydraulique:ouvrages", [defaultOuvrage("dalot")]);
+  const [newType, setNewType] = usePersistentState("tp:hydraulique:newType", "dalot");
   const [message, setMessage] = useState(null);
+  const ouvrages = useMemo(() => (
+    Array.isArray(ouvragesRaw) && ouvragesRaw.length ? ouvragesRaw.map(normalizeOuvrage) : [defaultOuvrage("dalot")]
+  ), [ouvragesRaw]);
 
-  // --- MOTEUR DE CALCUL (BUREAU D'ÉTUDES) ---
+  const autoLongueur = useMemo(
+    () => chaussee?.longueur || terrassement?.longueurReference || 0,
+    [chaussee?.longueur, terrassement?.longueurReference]
+  );
+
   const results = useMemo(() => {
-    const L = parseFloat(inputs.longueur) || 0;
-    const ep = parseFloat(inputs.epaisseur) || 0;
-    const pu = parseFloat(inputs.prixUnitaire) || 0;
-    const mo = parseFloat(inputs.coutMainOeuvre) || 0;
+    const ouvragesCalc = ouvrages.map((ouvrage) => computeOuvrage(ouvrage, autoLongueur));
+    return ouvragesCalc.reduce((acc, ouvrage) => ({
+      ouvragesCalc,
+      volume: acc.volume + ouvrage.volume,
+      coffrage: acc.coffrage + ouvrage.coffrage,
+      cimentT: acc.cimentT + ouvrage.cimentT,
+      cimentSacs: acc.cimentSacs + ouvrage.cimentSacs,
+      sableT: acc.sableT + ouvrage.sableT,
+      gravierT: acc.gravierT + ouvrage.gravierT,
+      eauL: acc.eauL + ouvrage.eauL,
+      acierKg: acc.acierKg + ouvrage.acierKg,
+      acierT: acc.acierT + ouvrage.acierT,
+      total: acc.total + ouvrage.total,
+    }), {
+      ouvragesCalc,
+      volume: 0,
+      coffrage: 0,
+      cimentT: 0,
+      cimentSacs: 0,
+      sableT: 0,
+      gravierT: 0,
+      eauL: 0,
+      acierKg: 0,
+      acierT: 0,
+      total: 0,
+    });
+  }, [ouvrages, autoLongueur]);
 
-    let volumeBeton = 0;
-    let surfaceCoffrage = 0;
-
-    if (activeTab === "dalot") {
-      const lint = parseFloat(inputs.largeurInt) || 0;
-      const hint = parseFloat(inputs.hauteurInt) || 0;
-      // Section béton = Aire Ext - Aire Int
-      const aireBeton = ((lint + 2 * ep) * (hint + 2 * ep)) - (lint * hint);
-      volumeBeton = aireBeton * L;
-      // Coffrage = (2 faces intérieures + dalle sup int) + (2 faces extérieures) * L
-      surfaceCoffrage = ((2 * hint + lint) + 2 * (hint + 2 * ep)) * L;
-    } 
-    else if (activeTab === "caniveau") {
-      const lint = parseFloat(inputs.largeurInt) || 0;
-      const hint = parseFloat(inputs.hauteurInt) || 0;
-      // Section U = (lint + 2*ep)*(hint + ep) - (lint*hint) [pas de dalle sup]
-      const aireBeton = ((lint + 2 * ep) * (hint + ep)) - (lint * hint);
-      volumeBeton = aireBeton * L;
-      surfaceCoffrage = ((2 * hint + lint) + 2 * (hint + ep)) * L;
-    } 
-    else if (activeTab === "buse") {
-      const d = parseFloat(inputs.diametreInt) || 0;
-      const rInt = d / 2;
-      const rExt = rInt + ep;
-      const aireBeton = Math.PI * (Math.pow(rExt, 2) - Math.pow(rInt, 2));
-      volumeBeton = aireBeton * L;
-      surfaceCoffrage = (Math.PI * (d + 2 * ep) + Math.PI * d) * L;
-    }
-
-    // Matériaux (Dosage structurel 350kg/m3)
-    const cimentT = volumeBeton * 0.350;
-    const cimentSacs = Math.ceil(cimentT * 20);
-    const acierKg = volumeBeton * OUVRAGES_CONFIG[activeTab].ratioAcier;
-    const acierT = acierKg / 1000;
-    
-    const total = (volumeBeton * pu) + mo;
-
-    return { volume: volumeBeton, coffrage: surfaceCoffrage, cimentT, cimentSacs, acierKg, acierT, total };
-  }, [inputs, activeTab]);
-
-  // --- SYNC PARENT ---
   useEffect(() => {
+    const materials = {
+      nbOuvrages: results.ouvragesCalc.length,
+      volume: results.volume,
+      coffrage: results.coffrage,
+      cimentT: results.cimentT,
+      ciment: results.cimentT,
+      acierT: results.acierT,
+      acier: results.acierT,
+      sableT: results.sableT,
+      gravierT: results.gravierT,
+      eauL: results.eauL,
+    };
+
     onCostChange?.(results.total);
-    onMateriauxChange?.({ volume: results.volume, ciment: results.cimentT, acier: results.acierT });
-  }, [results.total, activeTab]);
+    onMateriauxChange?.(materials);
+    setGlobalCost("ouvragesHydrauliques", results.total);
+    setGlobalMaterials("ouvragesHydrauliques", materials);
+    setGlobalResults("ouvragesHydrauliques", {
+      nbOuvrages: results.ouvragesCalc.length,
+      longueurReference: autoLongueur,
+      volume: results.volume,
+      coffrage: results.coffrage,
+      acierT: results.acierT,
+      cimentT: results.cimentT,
+    });
+  }, [results, autoLongueur, onCostChange, onMateriauxChange, setGlobalCost, setGlobalMaterials, setGlobalResults]);
 
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS[activeTab]);
-    setHistorique(saved ? JSON.parse(saved) : []);
-  }, [activeTab]);
+  const updateOuvrage = (id, patch) => setOuvragesRaw((prev) => (Array.isArray(prev) ? prev : []).map((ouvrage) => (
+    ouvrage.id === id ? { ...ouvrage, ...patch } : ouvrage
+  )));
+  const addOuvrage = () => setOuvragesRaw((prev) => [...(Array.isArray(prev) ? prev : []), defaultOuvrage(newType)]);
+  const removeOuvrage = (id) => setOuvragesRaw((prev) => (Array.isArray(prev) ? prev : []).filter((ouvrage) => ouvrage.id !== id));
 
-  // --- HANDLERS ---
   const showToast = (text, type = "success") => {
     setMessage({ text, type });
-    setTimeout(() => setMessage(null), 3000);
+    setTimeout(() => setMessage(null), 2500);
   };
 
   const handleSave = () => {
-    if (results.volume <= 0) return showToast("⚠️ Dimensions invalides", "error");
-    const newEntry = { id: Date.now(), date: new Date().toLocaleString(), type: activeTab, ...inputs, ...results };
-    const newHist = [newEntry, ...historique];
-    setHistorique(newHist);
-    localStorage.setItem(STORAGE_KEYS[activeTab], JSON.stringify(newHist));
-    showToast("✅ Ouvrage enregistré !");
+    if (results.volume <= 0) return showToast("Dimensions insuffisantes", "error");
+    showToast("Ouvrages hydrauliques ajoutés à la synthèse");
   };
 
   const chartData = {
-    labels: ["Béton / Matériaux", "Main d'œuvre"],
+    labels: ["Ciment", "Sable", "Gravier", "Acier"],
     datasets: [{
-      data: [results.total - (parseFloat(inputs.coutMainOeuvre) || 0), parseFloat(inputs.coutMainOeuvre) || 0],
-      backgroundColor: [activeTab === 'dalot' ? '#3b82f6' : activeTab === 'caniveau' ? '#06b6d4' : '#6366f1', '#374151'],
+      data: [results.cimentT, results.sableT, results.gravierT, results.acierT],
+      backgroundColor: ["#3b82f6", "#fbbf24", "#78716c", "#ef4444"],
       borderColor: "#111827",
       borderWidth: 2,
-    }]
+    }],
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
-      
+    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative font-sans">
       {message && (
-        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-in fade-in slide-in-from-top-2 ${
+        <div className={`fixed top-4 right-4 px-5 py-3 rounded-xl shadow-2xl z-50 font-bold ${
           message.type === "error" ? "bg-red-600" : "bg-blue-600"
         }`}>
           {message.text}
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-blue-500/20 rounded-lg text-blue-400">
             <Droplets className="w-6 h-6" />
           </div>
           <div>
             <h2 className="text-xl font-bold text-white uppercase tracking-tight">Ouvrages Hydrauliques</h2>
-            <p className="text-xs text-gray-400 font-medium italic">Assainissement & Drainage TP</p>
+            <p className="text-xs text-gray-400 font-medium">Dalots, caniveaux et buses</p>
           </div>
         </div>
         <div className="text-right">
-          <span className="text-[10px] text-gray-500 uppercase font-bold block">Estimation Devis</span>
-          <span className={`text-2xl font-black tracking-tighter text-${OUVRAGES_CONFIG[activeTab].color}-400`}>
-            {results.total.toLocaleString()} <span className="text-sm text-gray-500 font-normal">{currency}</span>
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Estimation devis</span>
+          <span className="text-2xl font-black text-blue-400 tracking-tighter">
+            {fmt(results.total)} <span className="text-sm text-gray-500 font-normal">{currency}</span>
           </span>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 lg:p-6 pb-24">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          
-          {/* GAUCHE : CONFIGURATION */}
-          <div className="lg:col-span-5 flex flex-col gap-5">
-            
-            {/* Tab Selector */}
-            <div className="grid grid-cols-3 gap-2 bg-gray-800 p-1.5 rounded-2xl border border-gray-700 shadow-inner">
-              {Object.entries(OUVRAGES_CONFIG).map(([id, cfg]) => (
-                <button
-                  key={id}
-                  onClick={() => setActiveTab(id)}
-                  className={`flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
-                    activeTab === id 
-                      ? `bg-${cfg.color}-600 text-white shadow-lg` 
-                      : "text-gray-500 hover:bg-gray-700"
-                  }`}
-                >
-                  {cfg.icon}
-                  <span className="text-[10px] mt-1 font-bold uppercase">{cfg.label}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="bg-gray-800/50 border border-gray-700 rounded-3xl p-6 space-y-6 shadow-xl">
-              <h3 className={`flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-${OUVRAGES_CONFIG[activeTab].color}-400`}>
-                <Ruler className="w-4 h-4" /> Dimensionnement (m)
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          <div className="xl:col-span-7 space-y-5">
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
+                <Plus className="w-4 h-4" /> Ajouter un ouvrage
               </h3>
-
-              <div className="grid grid-cols-2 gap-4">
-                <InputGroup label="Longueur Totale" value={inputs.longueur} onChange={v => setInputs({...inputs, longueur: v})} />
-                <InputGroup label="Épaisseur Parois" value={inputs.epaisseur} onChange={v => setInputs({...inputs, epaisseur: v})} />
-                
-                {activeTab !== "buse" ? (
-                  <>
-                    <InputGroup label="Largeur Int." value={inputs.largeurInt} onChange={v => setInputs({...inputs, largeurInt: v})} />
-                    <InputGroup label="Hauteur Int." value={inputs.hauteurInt} onChange={v => setInputs({...inputs, hauteurInt: v})} />
-                  </>
-                ) : (
-                  <InputGroup label="Diamètre Int. (Ø)" value={inputs.diametreInt} onChange={v => setInputs({...inputs, diametreInt: v})} full />
-                )}
+              <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+                <select
+                  value={newType}
+                  onChange={(event) => setNewType(event.target.value)}
+                  className="bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:border-blue-500"
+                >
+                  {Object.entries(OUVRAGES_CONFIG).map(([key, config]) => (
+                    <option key={key} value={key}>{config.label}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={addOuvrage}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
+                >
+                  <Plus className="w-4 h-4" /> Ajouter
+                </button>
               </div>
-
-              <div className="pt-4 border-t border-gray-700 grid grid-cols-2 gap-4">
-                <InputGroup label={`PU Béton (${currency}/m³)`} value={inputs.prixUnitaire} onChange={v => setInputs({...inputs, prixUnitaire: v})} />
-                <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={v => setInputs({...inputs, coutMainOeuvre: v})} />
-              </div>
-
-              <button onClick={handleSave} className={`w-full py-4 rounded-2xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 active:scale-95 bg-${OUVRAGES_CONFIG[activeTab].color}-600 hover:bg-${OUVRAGES_CONFIG[activeTab].color}-500`}>
-                <Save className="w-5 h-5" /> Enregistrer l'ouvrage
-              </button>
+              {autoLongueur > 0 && (
+                <p className="mt-3 text-xs text-blue-200/70">
+                  Linéaire repris automatiquement : {fmtD(autoLongueur)} m
+                </p>
+              )}
             </div>
+
+            {results.ouvragesCalc.map((ouvrage) => {
+              const Icon = ouvrage.config.icon;
+              return (
+                <div key={ouvrage.id} className={`border rounded-2xl overflow-hidden ${ouvrage.config.bg} ${ouvrage.config.border}`}>
+                  <div className="p-4 flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => updateOuvrage(ouvrage.id, { expanded: !ouvrage.expanded })}
+                      className="flex items-center gap-3 text-left min-w-0"
+                    >
+                      <div className="p-2 bg-gray-950/50 rounded-xl">
+                        <Icon className={`w-5 h-5 ${ouvrage.config.color}`} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-black text-white truncate">{ouvrage.label || ouvrage.config.label}</p>
+                        <p className="text-xs text-gray-400">
+                          {fmtD(ouvrage.longueurEffective)} m | {fmtD(ouvrage.volume)} m³ | coffrage {fmtD(ouvrage.coffrage)} m²
+                        </p>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => removeOuvrage(ouvrage.id)}
+                        className="p-2 rounded-lg text-red-400 hover:bg-red-500/10"
+                        aria-label="Supprimer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                      {ouvrage.expanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+                    </div>
+                  </div>
+
+                  {ouvrage.expanded && (
+                    <div className="p-4 border-t border-gray-700/60 bg-gray-950/30">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <InputGroup label="Nom / repère" type="text" value={ouvrage.label} onChange={(value) => updateOuvrage(ouvrage.id, { label: value })} />
+                        <InputGroup label="Longueur totale (m)" value={ouvrage.longueur} onChange={(value) => updateOuvrage(ouvrage.id, { longueur: value })} placeholder={autoLongueur ? fmtD(autoLongueur) : "0"} />
+                        <InputGroup label="Épaisseur parois (m)" value={ouvrage.epaisseur} onChange={(value) => updateOuvrage(ouvrage.id, { epaisseur: value })} />
+
+                        {ouvrage.type !== "buse" ? (
+                          <>
+                            <InputGroup label="Largeur intérieure (m)" value={ouvrage.largeurInt} onChange={(value) => updateOuvrage(ouvrage.id, { largeurInt: value })} />
+                            <InputGroup label="Hauteur intérieure (m)" value={ouvrage.hauteurInt} onChange={(value) => updateOuvrage(ouvrage.id, { hauteurInt: value })} />
+                          </>
+                        ) : (
+                          <InputGroup label="Diamètre intérieur (m)" value={ouvrage.diametreInt} onChange={(value) => updateOuvrage(ouvrage.id, { diametreInt: value })} />
+                        )}
+
+                        <InputGroup label={`PU béton (${currency}/m³)`} value={ouvrage.prixUnitaire} onChange={(value) => updateOuvrage(ouvrage.id, { prixUnitaire: value })} />
+                        <InputGroup label={`Main d'œuvre (${currency})`} value={ouvrage.coutMainOeuvre} onChange={(value) => updateOuvrage(ouvrage.id, { coutMainOeuvre: value })} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
-          {/* DROITE : TABLEAU DE BORD */}
-          <div className="lg:col-span-7 flex flex-col gap-6">
-            
-            <div className="grid grid-cols-3 gap-4">
-              <ResultCard label="Volume Béton" value={results.volume.toFixed(2)} unit="m³" icon={<Layers className="w-4 h-4"/>} color={`text-${OUVRAGES_CONFIG[activeTab].color}-400`} bg={`bg-${OUVRAGES_CONFIG[activeTab].color}-500/10`} />
-              <ResultCard label="Coffrage" value={results.coffrage.toFixed(1)} unit="m²" icon={<Ruler className="w-4 h-4"/>} color="text-white" bg="bg-gray-800" border />
-              <ResultCard label="Acier Estimé" value={results.acierKg.toFixed(0)} unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-red-400" bg="bg-red-500/10" />
+          <div className="xl:col-span-5 space-y-5">
+            <div className="grid grid-cols-2 gap-4">
+              <ResultCard label="Volume béton" value={fmt(results.volume, 2)} unit="m³" icon={<BoxSelect className="w-4 h-4" />} accent />
+              <ResultCard label="Coffrage" value={fmt(results.coffrage, 2)} unit="m²" icon={<Ruler className="w-4 h-4" />} />
+              <ResultCard label="Acier" value={fmt(results.acierKg, 0)} unit="kg" icon={<Anchor className="w-4 h-4" />} />
+              <ResultCard label="Eau" value={fmt(results.eauL, 0)} unit="L" icon={<Droplets className="w-4 h-4" />} />
             </div>
 
-            <div className="flex-1 bg-gray-800 rounded-3xl p-8 border border-gray-700 shadow-xl flex flex-col md:flex-row gap-10 items-center relative overflow-hidden">
-               <div className={`absolute -bottom-10 -right-10 w-44 h-44 bg-${OUVRAGES_CONFIG[activeTab].color}-600/10 rounded-full blur-3xl pointer-events-none`} />
-
-               <div className="w-44 h-44 flex-shrink-0 relative">
-                  <Doughnut data={chartData} options={{ cutout: "75%", plugins: { legend: { display: false } } }} />
-                  <div className="absolute inset-0 flex flex-col items-center justify-center">
-                     <span className="text-[10px] text-gray-500 uppercase font-bold text-center">Ciment</span>
-                     <span className="text-sm font-bold text-white">{results.cimentSacs} sacs</span>
-                  </div>
-               </div>
-
-               <div className="flex-1 w-full space-y-4">
-                  <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2 mb-2">Besoins Logistiques</h4>
-                  <MaterialRow label="Ciment (350kg/m³)" val={`${results.cimentT.toFixed(2)} T`} color={`bg-${OUVRAGES_CONFIG[activeTab].color}-500`} />
-                  <MaterialRow label={`Acier (${OUVRAGES_CONFIG[activeTab].ratioAcier}kg/m³)`} val={`${results.acierKg.toFixed(0)} kg`} color="bg-red-500" />
-                  
-                  <div className="pt-2 border-t border-gray-700 flex justify-between items-center">
-                    <span className="text-xs text-gray-400 flex items-center gap-1">
-                      <Droplets className="w-3 h-3 text-blue-400" /> Eau nécessaire
-                    </span>
-                    <span className="text-sm font-bold text-white font-mono">{(results.volume * 180).toFixed(0)} L</span>
-                  </div>
-
-                  <div className="flex items-start gap-2 p-3 bg-blue-500/5 rounded-xl border border-blue-500/20 mt-4">
-                    <Info className="w-4 h-4 text-blue-400 mt-0.5" />
-                    <p className="text-[10px] text-blue-200/70 leading-relaxed italic">
-                      Les volumes sont calculés sur la base de parois de {inputs.epaisseur}m. Le coffrage inclut les faces intérieures et extérieures.
-                    </p>
-                  </div>
-               </div>
-            </div>
-
-            {/* Historique Mini */}
-            {historique.length > 0 && (
-              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
-                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center text-xs">
-                  <h4 className="font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2"><History className="w-3 h-3" /> Historique {activeTab}</h4>
-                  <button onClick={() => {setHistorique([]); localStorage.removeItem(STORAGE_KEYS[activeTab])}} className="text-red-400 hover:underline uppercase text-[10px]">Vider</button>
-                </div>
-                <div className="max-h-[120px] overflow-y-auto">
-                  {historique.slice(0, 5).map((item) => (
-                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30 hover:bg-gray-700/40 transition-colors">
-                      <div className="text-xs">
-                        <span className="text-gray-500 block text-[9px]">{item.date}</span>
-                        <span className="font-medium uppercase">{item.longueur}m x {item.epaisseur}m</span>
-                      </div>
-                      <span className={`text-sm font-bold text-${OUVRAGES_CONFIG[activeTab].color}-400`}>{parseFloat(item.total).toLocaleString()} {currency}</span>
-                    </div>
-                  ))}
+            <div className="bg-gray-800 rounded-3xl p-6 border border-gray-700 shadow-xl">
+              <div className="w-48 h-48 mx-auto relative">
+                <Doughnut data={chartData} options={{ cutout: "72%", plugins: { legend: { display: false } } }} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span className="text-[10px] text-gray-500 uppercase font-bold">Ciment</span>
+                  <span className="text-sm font-bold text-white">{results.cimentSacs} sacs</span>
                 </div>
               </div>
-            )}
+              <div className="mt-6 space-y-3">
+                <MaterialRow label="Ciment 350 kg/m³" value={`${fmt(results.cimentT, 2)} t`} color="bg-blue-500" />
+                <MaterialRow label="Sable" value={`${fmt(results.sableT, 2)} t`} color="bg-amber-400" />
+                <MaterialRow label="Gravier" value={`${fmt(results.gravierT, 2)} t`} color="bg-stone-500" />
+                <MaterialRow label="Acier" value={`${fmt(results.acierT, 3)} t`} color="bg-red-500" />
+              </div>
+            </div>
+
+            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-blue-300 uppercase tracking-widest mb-4">
+                <Banknote className="w-4 h-4" /> Synthèse hydraulique
+              </h3>
+              <SummaryLine label="Ouvrages ajoutés" value={`${results.ouvragesCalc.length} u`} />
+              <SummaryLine label="Volume béton total" value={`${fmt(results.volume, 2)} m³`} />
+              <SummaryLine label="Coffrage total" value={`${fmt(results.coffrage, 2)} m²`} />
+              <div className="mt-4 pt-4 border-t border-blue-500/20 flex items-center justify-between">
+                <span className="text-xs font-black uppercase text-blue-300">Total hydraulique</span>
+                <span className="text-xl font-black text-white">{fmt(results.total)} {currency}</span>
+              </div>
+              <button
+                onClick={handleSave}
+                className="mt-5 w-full bg-blue-600 hover:bg-blue-500 text-white py-4 rounded-xl font-bold shadow-lg transition-all flex justify-center items-center gap-2 active:scale-95"
+              >
+                <Save className="w-5 h-5" /> Valider la synthèse
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -271,36 +406,43 @@ export default function OuvragesHydrauliques({ currency = "XOF", onCostChange, o
   );
 }
 
-// --- SOUS-COMPOSANTS ---
-
-const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
-  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
+const InputGroup = ({ label, value, onChange, placeholder, type = "number" }) => (
+  <div className="flex flex-col">
     <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase tracking-wide">{label}</label>
     <input
-      type="number" value={value || ""} onChange={e => onChange(e.target.value)}
-      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-blue-500 outline-none transition-all font-mono text-sm"
+      type={type}
+      value={value ?? ""}
+      onChange={(event) => onChange(event.target.value)}
+      className="w-full bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-blue-500 outline-none transition-all font-mono text-sm"
       placeholder={placeholder || "0"}
     />
   </div>
 );
 
-const ResultCard = ({ label, value, unit, color, bg, border, icon }) => (
-  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? 'border border-gray-700' : ''}`}>
-    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center gap-1">
+const ResultCard = ({ label, value, unit, icon, accent = false }) => (
+  <div className={`rounded-2xl p-4 text-center border ${accent ? "bg-blue-500/10 border-blue-500/30" : "bg-gray-800/70 border-gray-700"}`}>
+    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center justify-center gap-1">
       {icon} {label}
     </span>
-    <span className={`text-xl font-black ${color}`}>
+    <span className={`text-xl font-black ${accent ? "text-blue-300" : "text-white"}`}>
       {value} <span className="text-xs font-normal text-gray-500 lowercase">{unit}</span>
     </span>
   </div>
 );
 
-const MaterialRow = ({ label, val, color }) => (
-  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
-    <div className="flex items-center gap-2">
-      <div className={`w-1.5 h-1.5 rounded-full ${color}`} />
-      <span className="text-gray-300 text-xs font-medium">{label}</span>
+const MaterialRow = ({ label, value, color }) => (
+  <div className="flex items-center justify-between text-sm">
+    <div className="flex items-center gap-2 min-w-0">
+      <span className={`w-3 h-3 rounded-full ${color}`} />
+      <span className="text-gray-300 truncate">{label}</span>
     </div>
-    <span className="text-xs font-bold text-white font-mono">{val}</span>
+    <span className="font-mono font-bold text-white">{value}</span>
+  </div>
+);
+
+const SummaryLine = ({ label, value }) => (
+  <div className="flex items-center justify-between py-2 text-sm border-b border-gray-700/50 last:border-0">
+    <span className="text-gray-400">{label}</span>
+    <span className="font-mono font-bold text-white">{value}</span>
   </div>
 );

@@ -4,6 +4,7 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
 import {
   ArrowUpRight, Ruler, Save, History, Anchor, Droplets, Info, Activity, Link,
 } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -29,7 +30,7 @@ export default function Escaliers({
   projectResults,   // ✅ nouveau — contient dalles.hauteurNiveau
 }) {
 
-  const [inputs, setInputs] = useState({
+  const [inputs, setInputs] = usePersistentState("elevations:escaliers:inputs", {
     hauteurTotale:  "",
     largeur:        "",
     hauteurMarche:  "0.17",
@@ -78,6 +79,10 @@ export default function Escaliers({
     const volPaillasse  = longueurPente * L * DOSAGE.epaisseurPaillasse;
     const volMarches    = (g * h / 2) * L * nbMarches;
     const volumeTotal   = volPaillasse + volMarches;
+    const surfaceSousFace = longueurPente * L;
+    const surfaceContremarches = nbMarches * h * L;
+    const surfaceJoues = 2 * ((longueurPente * DOSAGE.epaisseurPaillasse) + ((nbMarches * g * H) / 2));
+    const surfaceCoffrage = surfaceSousFace + surfaceContremarches + surfaceJoues;
 
     const cimentT    = volumeTotal * DOSAGE.ciment;
     const cimentSacs = (cimentT * 1000) / 50;
@@ -92,6 +97,7 @@ export default function Escaliers({
 
     return {
       nbMarches, blondel, isConfortable, volumeTotal,
+      surfaceCoffrage,
       cimentT, cimentSacs, sableT, gravierT, acierT, acierKg, eauL,
       coutMateriaux, mo, total,
     };
@@ -103,16 +109,21 @@ export default function Escaliers({
     onMateriauxChange?.({
       volume: results.volumeTotal,
       ciment: results.cimentT,
+      sable: results.sableT,
+      gravier: results.gravierT,
+      eau: results.eauL,
       acier:  results.acierT,
+      coffrage: results.surfaceCoffrage,
     });
     onResultsChange?.({
       nbMarches:    results.nbMarches,
       hauteurTotale: parseFloat(inputs.hauteurTotale) || 0,
       largeur:       parseFloat(inputs.largeur)       || 0,
       volumeTotal:   results.volumeTotal,
+      surfaceCoffrage: results.surfaceCoffrage,
       acierKg:       results.acierKg,
     });
-  }, [results.total, results.volumeTotal, results.nbMarches]);
+  }, [results.total, results.volumeTotal, results.nbMarches, results.surfaceCoffrage]);
 
   // ── Historique ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -261,7 +272,7 @@ export default function Escaliers({
 
             <div className="grid grid-cols-3 gap-4">
               <ResultCard label="Volume Total"       value={fmtD(results.volumeTotal)} unit="m³" icon="🧊"  color="text-yellow-500" bg="bg-yellow-500/10" />
-              <ResultCard label="Nombre de Marches"  value={results.nbMarches}          unit="u"  icon="🪜"  color="text-white"      bg="bg-gray-800" border />
+              <ResultCard label="Coffrage estimé" value={fmtD(results.surfaceCoffrage, 1)} unit="m²" icon="📐" color="text-indigo-400" bg="bg-indigo-500/10" border />
               <ResultCard label="Acier Estimé"       value={fmtD(results.acierKg, 0)}  unit="kg" icon={<Anchor className="w-4 h-4"/>} color="text-red-400" bg="bg-red-500/10" />
             </div>
 
@@ -281,6 +292,7 @@ export default function Escaliers({
                 <MaterialRow label="Sable (Ratio 0.6)" val={`${fmtD(results.sableT)} t`}      color="bg-amber-500" />
                 <MaterialRow label="Gravier (0.85)"    val={`${fmtD(results.gravierT)} t`}    color="bg-stone-500" />
                 <MaterialRow label="Acier (HA8/HA10)"  val={`${fmtD(results.acierKg, 0)} kg`} color="bg-red-500" />
+                <MaterialRow label="Coffrage escalier" val={`${fmtD(results.surfaceCoffrage, 1)} m²`} color="bg-indigo-500" />
                 <div className="pt-2 border-t border-gray-700 flex justify-between items-center">
                   <span className="text-xs text-gray-400 flex items-center gap-1">
                     <Droplets className="w-3 h-3 text-cyan-400" /> Eau nécessaire

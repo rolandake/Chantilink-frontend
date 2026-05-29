@@ -45,6 +45,7 @@ import React, {
 import { AnimatePresence } from "framer-motion";
 import MediaLightbox from "./MediaLightbox";
 import useMediaValidation, { setHeadCache, headCheckCache } from "./useMediaValidation";
+import useTranslatedText from "../../hooks/useTranslatedText";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DEBUG
@@ -136,6 +137,9 @@ const isWebPageUrl = (url) => {
   const clean = url.split("?")[0].toLowerCase();
   const hasMediaExt = /\.(mp4|webm|mov|avi|mkv|flv|m4v|jpg|jpeg|png|gif|webp|avif|svg|m3u8)$/i.test(clean);
   if (hasMediaExt) return false;
+  if (/^https?:\/\/(images\.|media\.|cdn\.|static\.|assets\.)/i.test(url)) return false;
+  if (/\/(image|img|photo|photos|picture|pictures|media|upload|uploads|cdn)\//i.test(clean)) return false;
+  if (/^https?:\/\//i.test(url)) return true;
   if (/@\w+\/\d+/.test(url)) return true;
   if (/\/p\/[\w.]+\/\d+/.test(url)) return true;
   if (/\/web\/statuses\//.test(url)) return true;
@@ -227,6 +231,10 @@ const resolveSlotType = (url, postMediaType = null) => {
 // ─────────────────────────────────────────────────────────────────────────────
 const checkContentType = async (url) => {
   if (headCheckCache.has(url)) return headCheckCache.get(url);
+  if (isWebPageUrl(url)) {
+    setHeadCache(url, "image");
+    return "image";
+  }
   if (/\/(videos?|video[-_]|[-_]video)\//i.test(url)) {
     setHeadCache(url, "video");
     return "video";
@@ -299,8 +307,9 @@ const getCardHeight = (len) => {
 };
 
 export const TextOnlyCard = React.memo(({ content, forceIndex }) => {
+  const { text: translatedText } = useTranslatedText(content);
   if (!content || typeof content !== "string" || !content.trim()) return null;
-  const text       = content.trim();
+  const text       = (translatedText || content).trim();
   const paletteIdx = (typeof forceIndex === "number" && forceIndex >= 0 && forceIndex <= 7)
     ? forceIndex : hashText(text);
   const [from, to, textColor] = TEXT_CARD_PALETTES[paletteIdx];
@@ -707,15 +716,22 @@ VideoItem.displayName = "VideoItem";
 // ─────────────────────────────────────────────────────────────────────────────
 // IMAGE ITEM (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
-const ImageItem = React.memo(({ url, isLCP, onOpenLightbox }) => {
+const ImageItem = React.memo(({ url, isLCP, onOpenLightbox, onImageError }) => {
   const [loaded, setLoaded] = useState(isLCP);
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
   return (
     <div style={{ position: "absolute", inset: 0, background: "#111", cursor: onOpenLightbox ? "zoom-in" : "default" }}
       onClick={onOpenLightbox ? (e) => { e.stopPropagation(); onOpenLightbox(); } : undefined}>
       <img src={url} alt=""
         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", userSelect: "none", opacity: isLCP ? 1 : (loaded ? 1 : 0), transition: isLCP ? "none" : "opacity 0.2s ease" }}
         loading={isLCP ? "eager" : "lazy"} decoding={isLCP ? "sync" : "async"}
-        onLoad={() => setLoaded(true)} onError={() => setLoaded(true)} draggable="false" />
+        onLoad={() => setLoaded(true)}
+        onError={() => {
+          setFailed(true);
+          onImageError?.();
+        }}
+        draggable="false" />
     </div>
   );
 });
@@ -724,7 +740,7 @@ ImageItem.displayName = "ImageItem";
 // ─────────────────────────────────────────────────────────────────────────────
 // MEDIA CELL (identique à v11)
 // ─────────────────────────────────────────────────────────────────────────────
-const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideoEl, slotIndex, showBadge, post, paddingBottom = "75%", overlay = null, wrapperStyle = {}, onVideoError, onOpenLightbox }) => {
+const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideoEl, slotIndex, showBadge, post, paddingBottom = "75%", overlay = null, wrapperStyle = {}, onVideoError, onImageError, onOpenLightbox }) => {
   const embedThumbnail = useMemo(() => post?.thumbnail || getYouTubeThumbnail(url), [post?.thumbnail, url]);
   return (
     <div style={{ position: "relative", paddingBottom, overflow: "hidden", background: "#111", ...wrapperStyle }}>
@@ -734,11 +750,11 @@ const MediaCell = React.memo(({ url, slotType, posterUrl, isLCP, onRegisterVideo
         ) : slotType === "hls" ? (
           <HLSItem thumbnail={post?.thumbnail} externalUrl={post?.sourceUrl} title={post?.content?.substring(0, 60)} />
         ) : slotType === "video" ? (
-          <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} onRegisterVideoEl={onRegisterVideoEl}
-            slotIndex={slotIndex} showBadge={showBadge} onVideoError={onVideoError} onOpenLightbox={onOpenLightbox} />
-        ) : (
-          <ImageItem url={url} isLCP={isLCP} onOpenLightbox={onOpenLightbox} />
-        )}
+        <VideoItem url={url} posterUrl={posterUrl} isLCP={isLCP} onRegisterVideoEl={onRegisterVideoEl}
+          slotIndex={slotIndex} showBadge={showBadge} onVideoError={onVideoError} onOpenLightbox={onOpenLightbox} />
+      ) : (
+          <ImageItem url={url} isLCP={isLCP} onImageError={onImageError} onOpenLightbox={onOpenLightbox} />
+      )}
         {overlay && (
           <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10, cursor: onOpenLightbox ? "zoom-in" : "default" }}
             onClick={onOpenLightbox ? (e) => { e.stopPropagation(); onOpenLightbox(); } : undefined}>
@@ -898,6 +914,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       .filter(({ type, url }) => {
         if (post?.mediaType === "video") return false;
         if (type !== "image") return false;
+        if (isWebPageUrl(url)) return false;
         const hasKnownExt = hasKnownImageExtension(url) || hasKnownVideoExtension(url);
         return !hasKnownExt && (url || "").startsWith("http");
       });
@@ -962,6 +979,7 @@ const PostMedia = React.memo(({ mediaUrls, isFirstPost = false, priority = false
       isLCP: isLCPSlot && i === 0, onRegisterVideoEl,
       slotIndex: activeIndices?.[i] ?? i, showBadge, post,
       onVideoError:   () => markSlotFailed(activeIndices?.[i] ?? i),
+      onImageError:   () => markSlotFailed(activeIndices?.[i] ?? i),
       onOpenLightbox: canLightbox ? () => openLightbox(i) : undefined,
       ...extra,
     };

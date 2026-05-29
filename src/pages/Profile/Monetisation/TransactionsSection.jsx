@@ -1,9 +1,10 @@
 // src/pages/Profile/Monetisation/TransactionsSection.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../../context/AuthContext';
 import { useDarkMode } from '../../../context/DarkModeContext';
-import { getAuthToken, monetisationFetch } from './monetisationApi';
+import { getAuthToken, monetisationFetch, readMonetisationJson } from './monetisationApi';
+import useMonetisationRealtime from './useMonetisationRealtime';
 
 const STATUS_CONFIG = {
   completed: { label:'Complété',  color:'#22c55e', bg:'rgba(34,197,94,0.1)'  },
@@ -25,20 +26,28 @@ export default function TransactionsSection() {
   const text = isDarkMode ? '#f3f4f6' : '#111827';
   const sub  = isDarkMode ? '#6b7280' : '#9ca3af';
 
-  useEffect(() => {
+  const fetchTransactions = useCallback(async ({ background = false } = {}) => {
     if (!user) return;
-    (async () => {
-      setLoading(true); setError('');
-      try {
-        const token = await getAuthToken(getToken);
-        const res  = await monetisationFetch('transactions', { token });
-        if (!res.ok) throw new Error('Erreur chargement transactions');
-        const data = await res.json();
-        setTransactions(data.transactions || []);
-      } catch (e) { setError(e.message); }
-      finally { setLoading(false); }
-    })();
-  }, [user, getToken]);
+    if (!background) {
+      setLoading(true);
+      setError('');
+    }
+    try {
+      const token = await getAuthToken(getToken);
+      const res  = await monetisationFetch('transactions', { token });
+      if (!res.ok) throw new Error('Erreur chargement transactions');
+      const data = await readMonetisationJson(res);
+      setTransactions(data.transactions || []);
+    } catch (e) {
+      if (!background) setError(e.message);
+    }
+    finally {
+      if (!background) setLoading(false);
+    }
+  }, [getToken, user]);
+
+  useEffect(() => { fetchTransactions(); }, [fetchTransactions]);
+  useMonetisationRealtime(fetchTransactions, 'transactions');
 
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:14, fontFamily:font }}>

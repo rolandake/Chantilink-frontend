@@ -1,270 +1,207 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { Truck, Save, Trash2, History, Info, Banknote, Wind, Zap } from "lucide-react";
-
-const STORAGE_KEY = "transport-eco-history";
+import React, { useEffect, useMemo, useState } from "react";
+import { ChevronDown, ChevronUp, Plus, Route, Train, Trash2, Truck } from "lucide-react";
+import usePersistentState from "../../../../hooks/usePersistentState";
+import { useProjectStore } from "../../../../store/useProjectStore";
 
 const MODES_TRANSPORT = {
-  simple:  { label: "Simple",    icon: "🚛", sublabel: "Distance × Quantité × Prix",   color: "text-blue-400"  },
-  carbone: { label: "Carbone",   icon: "🌿", sublabel: "Émissions CO₂ estimées",        color: "text-green-400" },
-  forfait: { label: "Forfaitaire", icon: "💲", sublabel: "Barème par tranches kilométriques", color: "text-purple-400" },
+  camion: { label: "Camion", factor: 0.3, icon: Truck, desc: "Transport routier courant." },
+  train: { label: "Train", factor: 0.05, icon: Train, desc: "Transport bas carbone sur longue distance." },
+  bateau: { label: "Bateau / fluvial", factor: 0.02, icon: Route, desc: "Transport maritime ou fluvial." },
+  electrique: { label: "Camion électrique", factor: 0.08, icon: Truck, desc: "Transport routier électrifié." },
 };
 
-const FACTEUR_EMISSION = {
-  camion: { label: "Camion",  icon: "🚚", co2: 0.30 },
-  train:  { label: "Train",   icon: "🚂", co2: 0.05 },
-  bateau: { label: "Bateau",  icon: "🚢", co2: 0.02 },
-  avion:  { label: "Avion",   icon: "✈️", co2: 0.50 },
-};
+const fmt = (value, decimals = 0) =>
+  Number(value || 0).toLocaleString("fr-FR", { maximumFractionDigits: decimals });
+const fmtD = (value, decimals = 2) => Number(value || 0).toFixed(decimals);
+const num = (value) => Number.parseFloat(value) || 0;
 
-const FORFAITS = [
-  { maxKm: 50,       label: "≤ 50 km",     pu: 1000 },
-  { maxKm: 200,      label: "51–200 km",   pu: 800  },
-  { maxKm: Infinity, label: "> 200 km",    pu: 500  },
-];
+const defaultTrip = (mode = "camion") => ({
+  id: Date.now() + Math.random(),
+  mode,
+  designation: "",
+  distance: "",
+  tonnage: "",
+  prixTkm: "",
+  fraisFixes: "",
+  expanded: true,
+});
+
+const computeTrip = (trip) => {
+  const mode = MODES_TRANSPORT[trip.mode] || MODES_TRANSPORT.camion;
+  const distance = num(trip.distance);
+  const tonnage = num(trip.tonnage);
+  const tonneKm = distance * tonnage;
+  const co2 = tonneKm * mode.factor;
+  const co2RouteRef = tonneKm * MODES_TRANSPORT.camion.factor;
+  const co2Evite = Math.max(0, co2RouteRef - co2);
+  const total = tonneKm * num(trip.prixTkm) + num(trip.fraisFixes);
+  return { ...trip, modeInfo: mode, distance, tonnage, tonneKm, co2, co2Evite, total };
+};
 
 export default function TransportEco({
   currency = "XOF",
   onTotalChange = () => {},
-  onCostChange  = () => {},
+  onCostChange = () => {},
   onMateriauxChange = () => {},
   onMaterialsChange = () => {},
 }) {
-  const [mode, setMode] = useState("simple");
-  const [inputs, setInputs] = useState({
-    distance:       "",
-    quantite:       "",
-    prixUnitaire:   "",
-    typeVehicule:   "camion",
-    prixParKmManuel:"",
-    coutMainOeuvre: "",
-  });
-  const [historique, setHistorique] = useState([]);
-  const [message,    setMessage]    = useState(null);
+  const setGlobalCost = useProjectStore((state) => state.setCost);
+  const setGlobalMaterials = useProjectStore((state) => state.setMaterials);
+  const setGlobalResults = useProjectStore((state) => state.setResults);
 
-  // ── CALCUL ──────────────────────────────────────────────────
+  const [trips, setTrips] = usePersistentState("eco:transport:trips", [defaultTrip("camion")]);
+  const [newMode, setNewMode] = usePersistentState("eco:transport:newMode", "camion");
+  const [activeTab, setActiveTab] = useState("trajets");
+
   const results = useMemo(() => {
-    const dist  = parseFloat(inputs.distance)       || 0;
-    const qte   = parseFloat(inputs.quantite)       || 0;
-    const pu    = parseFloat(inputs.prixUnitaire)   || 0;
-    const mo    = parseFloat(inputs.coutMainOeuvre) || 0;
-    const tkm   = dist * qte;
-
-    let total = 0;
-    let co2   = 0;
-
-    if (mode === "simple") {
-      total = tkm * pu + mo;
-    } else if (mode === "carbone") {
-      const facteur = FACTEUR_EMISSION[inputs.typeVehicule]?.co2 || 0.3;
-      co2   = tkm * facteur;
-      total = mo; // pas de coût monétaire direct dans ce mode
-    } else if (mode === "forfait") {
-      const puManuel = parseFloat(inputs.prixParKmManuel);
-      const tranche  = FORFAITS.find(f => dist <= f.maxKm);
-      const prixKm   = (!isNaN(puManuel) && puManuel > 0) ? puManuel : (tranche?.pu || 0);
-      total = prixKm * dist + mo;
-    }
-
-    return { dist, qte, tkm, co2, total };
-  }, [inputs, mode]);
+    const calc = trips.map(computeTrip);
+    const total = calc.reduce((sum, item) => sum + item.total, 0);
+    const distance = calc.reduce((sum, item) => sum + item.distance, 0);
+    const poids = calc.reduce((sum, item) => sum + item.tonnage, 0);
+    const tonneKm = calc.reduce((sum, item) => sum + item.tonneKm, 0);
+    const co2 = calc.reduce((sum, item) => sum + item.co2, 0);
+    const co2Evite = calc.reduce((sum, item) => sum + item.co2Evite, 0);
+    return { calc, total, distance, poids, tonneKm, co2, co2Evite };
+  }, [trips]);
 
   useEffect(() => {
     onTotalChange(results.total);
     onCostChange(results.total);
-    const mats = { distance: results.dist, co2: results.co2 };
-    onMateriauxChange(mats);
-    onMaterialsChange(mats);
-  }, [results.total]);
-
-  useEffect(() => {
-    try { const s = localStorage.getItem(STORAGE_KEY); if (s) setHistorique(JSON.parse(s)); } catch {}
-  }, []);
-
-  const showToast = (msg, type = "success") => {
-    setMessage({ text: msg, type });
-    setTimeout(() => setMessage(null), 3000);
-  };
-
-  const handleSave = () => {
-    if (results.dist <= 0) return showToast("⚠️ Distance invalide", "error");
-    const entry = {
-      id:    Date.now(),
-      date:  new Date().toLocaleString("fr-FR"),
-      mode:  MODES_TRANSPORT[mode].label,
-      dist:  results.dist,
-      co2:   results.co2,
-      total: results.total,
+    const materials = {
+      distance: results.distance,
+      poids: results.poids,
+      tonneKm: results.tonneKm,
+      co2: results.co2,
+      co2Evite: results.co2Evite,
     };
-    const next = [entry, ...historique];
-    setHistorique(next);
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch {}
-    showToast("✅ Transport enregistré !");
-  };
+    onMateriauxChange(materials);
+    onMaterialsChange(materials);
+    setGlobalCost("ecoTransport", results.total);
+    setGlobalMaterials("ecoTransport", materials);
+    setGlobalResults("ecoTransport", {
+      total: results.total,
+      distanceKm: results.distance,
+      tonneKm: results.tonneKm,
+      co2Kg: results.co2,
+      co2EviteKg: results.co2Evite,
+      trajets: results.calc.map((item) => ({
+        mode: item.mode,
+        designation: item.designation || item.modeInfo.label,
+        distance: item.distance,
+        tonnage: item.tonnage,
+        tonneKm: item.tonneKm,
+        total: item.total,
+      })),
+    });
+  }, [results]);
 
-  const inp = (field, v) => setInputs(p => ({ ...p, [field]: v }));
+  const updateTrip = (id, patch) => setTrips((prev) => prev.map((trip) => (
+    trip.id === id ? { ...trip, ...patch } : trip
+  )));
+  const addTrip = () => setTrips((prev) => [...prev, defaultTrip(newMode)]);
+  const removeTrip = (id) => setTrips((prev) => prev.filter((trip) => trip.id !== id));
 
   return (
-    <div className="w-full h-full flex flex-col bg-gray-900 text-gray-100 overflow-hidden relative">
-      {message && (
-        <div className={`fixed top-4 right-4 px-6 py-3 rounded-xl shadow-2xl z-50 font-bold animate-bounce ${message.type === "error" ? "bg-red-600" : "bg-blue-600"}`}>
-          {message.text}
-        </div>
-      )}
-
-      {/* Header */}
-      <div className="flex-shrink-0 px-6 py-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
+    <div className="w-full h-full flex flex-col bg-gray-950 text-gray-100 overflow-hidden">
+      <div className="flex-shrink-0 px-5 py-3 border-b border-gray-800 flex justify-between items-center bg-gray-900/70">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-500/20 rounded-lg text-blue-400"><Truck className="w-6 h-6"/></div>
+          <div className="p-2 bg-blue-500/20 rounded-xl text-blue-300">
+            <Truck className="w-5 h-5" />
+          </div>
           <div>
-            <h2 className="text-xl font-bold text-white">Transport Éco</h2>
-            <p className="text-xs text-gray-400">Logistique & Émissions CO₂</p>
+            <h2 className="text-base font-bold text-white leading-tight">Transport bas carbone</h2>
+            <p className="text-[10px] text-gray-500 uppercase tracking-widest font-semibold">
+              Trajets · tonnes-kilomètres · émissions cumulées
+            </p>
           </div>
         </div>
         <div className="text-right">
-          <span className="text-[10px] text-gray-500 uppercase font-bold block">Total</span>
-          <span className="text-2xl font-black text-blue-400">
-            {results.total.toLocaleString()} <span className="text-sm text-gray-500">{currency}</span>
+          <span className="text-[10px] text-gray-500 uppercase font-bold block">Coût total</span>
+          <span className="text-xl font-black text-blue-300 tracking-tight">
+            {fmt(results.total)} <span className="text-xs text-gray-500 font-normal">{currency}</span>
           </span>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="flex-shrink-0 flex border-b border-gray-800 xl:hidden">
+        {[["trajets", "Trajets"], ["synthese", "Synthèse"]].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-wider ${
+              activeTab === key ? "text-blue-300 border-b-2 border-blue-300" : "text-gray-500"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-          {/* GAUCHE */}
-          <div className="lg:col-span-5 flex flex-col gap-5">
+      <div className="flex-1 overflow-y-auto">
+        <div className="grid grid-cols-1 xl:grid-cols-12 min-h-full">
+          <div className={`xl:col-span-7 p-4 lg:p-5 border-r border-gray-800/50 flex flex-col gap-3 ${activeTab !== "trajets" ? "hidden xl:flex" : "flex"}`}>
+            {results.calc.map((trip) => (
+              <TripCard
+                key={trip.id}
+                trip={trip}
+                currency={currency}
+                onToggle={() => updateTrip(trip.id, { expanded: !trip.expanded })}
+                onRemove={() => removeTrip(trip.id)}
+                onPatch={(patch) => updateTrip(trip.id, patch)}
+              />
+            ))}
 
-            {/* Sélecteur mode */}
-            <div className="bg-gray-800 p-1.5 rounded-2xl border border-gray-700">
-              <div className="grid grid-cols-3 gap-1.5">
-                {Object.entries(MODES_TRANSPORT).map(([key, m]) => (
-                  <button key={key} onClick={() => setMode(key)}
-                    className={`flex flex-col items-center justify-center py-3 rounded-xl transition-all ${
-                      mode === key ? "bg-blue-600 text-white shadow-lg" : "text-gray-400 hover:text-white hover:bg-gray-700"
-                    }`}>
-                    <span className="text-xl mb-1">{m.icon}</span>
-                    <span className="text-[10px] font-bold uppercase">{m.label}</span>
-                  </button>
+            <div className="bg-gray-900/40 border border-gray-700/50 rounded-2xl p-4">
+              <p className="text-[10px] text-gray-500 uppercase font-bold tracking-widest mb-3">Ajouter un trajet</p>
+              <select
+                value={newMode}
+                onChange={(event) => setNewMode(event.target.value)}
+                className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-3 text-sm text-white focus:border-blue-400"
+              >
+                {Object.entries(MODES_TRANSPORT).map(([key, mode]) => (
+                  <option key={key} value={key}>{mode.label}</option>
                 ))}
-              </div>
-            </div>
-
-            {/* Champs communs */}
-            <div className="bg-gray-800/50 border border-gray-700 rounded-2xl p-5 flex flex-col gap-4">
-              <h3 className="flex items-center gap-2 text-xs font-bold text-blue-400 uppercase tracking-widest">
-                <Truck className="w-4 h-4"/> {MODES_TRANSPORT[mode].sublabel}
-              </h3>
-
-              <InputGroup label="Distance (km)" value={inputs.distance} onChange={v => inp("distance", v)} />
-
-              {mode === "simple" && (
-                <>
-                  <InputGroup label="Quantité transportée (t)" value={inputs.quantite}     onChange={v => inp("quantite", v)}     />
-                  <InputGroup label={`Prix unitaire (${currency}/t·km)`} value={inputs.prixUnitaire} onChange={v => inp("prixUnitaire", v)} />
-                </>
-              )}
-
-              {mode === "carbone" && (
-                <>
-                  <InputGroup label="Quantité (t)" value={inputs.quantite} onChange={v => inp("quantite", v)} />
-                  <div className="flex flex-col">
-                    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase">Type de véhicule</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {Object.entries(FACTEUR_EMISSION).map(([key, v]) => (
-                        <button key={key} onClick={() => inp("typeVehicule", key)}
-                          className={`flex flex-col items-center p-2 rounded-xl border transition-all ${
-                            inputs.typeVehicule === key
-                              ? "border-green-500 bg-green-500/10"
-                              : "border-gray-700 bg-gray-800 hover:border-gray-500"
-                          }`}>
-                          <span className="text-lg">{v.icon}</span>
-                          <span className={`text-[9px] font-bold ${inputs.typeVehicule === key ? "text-green-400" : "text-gray-500"}`}>
-                            {v.label}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {mode === "forfait" && (
-                <>
-                  <div className="bg-gray-900/50 rounded-xl p-3 border border-gray-700">
-                    <p className="text-[10px] font-bold text-gray-400 uppercase mb-2">Barème applicable</p>
-                    {FORFAITS.map((f, i) => (
-                      <div key={i} className={`flex justify-between text-xs py-1 ${i < FORFAITS.length - 1 ? "border-b border-gray-700" : ""} ${
-                        (parseFloat(inputs.distance)||0) <= f.maxKm && (i === 0 || (parseFloat(inputs.distance)||0) > FORFAITS[i-1].maxKm)
-                          ? "text-blue-400 font-bold" : "text-gray-400"
-                      }`}>
-                        <span>{f.label}</span>
-                        <span>{f.pu.toLocaleString()} {currency}/km</span>
-                      </div>
-                    ))}
-                  </div>
-                  <InputGroup label={`Prix /km personnalisé (${currency})`} value={inputs.prixParKmManuel} onChange={v => inp("prixParKmManuel", v)} placeholder="Laisser vide pour barème" />
-                </>
-              )}
-
-              <InputGroup label={`Main d'œuvre (${currency})`} value={inputs.coutMainOeuvre} onChange={v => inp("coutMainOeuvre", v)} />
-
-              <button onClick={handleSave}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3.5 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-all">
-                <Save className="w-5 h-5"/> Enregistrer
+              </select>
+              <button
+                onClick={addTrip}
+                className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"
+              >
+                <Plus className="w-4 h-4" /> Ajouter au calcul
               </button>
             </div>
           </div>
 
-          {/* DROITE */}
-          <div className="lg:col-span-7 flex flex-col gap-6">
-            <div className="grid grid-cols-3 gap-4">
-              <ResultCard label="Distance"  value={results.dist.toFixed(0)}  unit="km"     icon="📍"                          color="text-blue-400"  bg="bg-blue-500/10"  />
-              <ResultCard label="t·km"      value={results.tkm.toFixed(1)}   unit="t·km"   icon={<Truck className="w-4 h-4"/>} color="text-indigo-400" bg="bg-indigo-500/10" border />
-              <ResultCard label="CO₂ est."  value={results.co2.toFixed(2)}   unit="kg"     icon="🌿"                          color="text-green-400" bg="bg-green-500/10" />
+          <div className={`xl:col-span-5 p-4 lg:p-5 bg-gray-900/20 flex flex-col gap-4 ${activeTab !== "synthese" ? "hidden xl:flex" : "flex"}`}>
+            <div className="grid grid-cols-2 gap-3">
+              <ResultCard label="Distance" value={fmt(results.distance)} unit="km" />
+              <ResultCard label="Charge" value={fmtD(results.poids, 2)} unit="t" />
+              <ResultCard label="t.km" value={fmtD(results.tonneKm, 2)} unit="t.km" />
+              <ResultCard label="CO2" value={fmtD(results.co2, 2)} unit="kg" />
             </div>
 
-            <div className="bg-gray-800 rounded-2xl p-6 border border-gray-700 shadow-xl">
-              <h4 className="text-gray-400 text-xs font-bold uppercase tracking-widest border-b border-gray-700 pb-2 mb-4">Analyse Transport</h4>
-              <MaterialRow label="Distance"       val={`${results.dist.toFixed(0)} km`}  color="bg-blue-500"  />
-              <MaterialRow label="Charge totale"  val={`${results.qte.toFixed(1)} t`}    color="bg-indigo-500" />
-              {mode === "carbone" && (
-                <MaterialRow label={`Facteur (${FACTEUR_EMISSION[inputs.typeVehicule]?.label})`}
-                  val={`${FACTEUR_EMISSION[inputs.typeVehicule]?.co2} kg CO₂/t·km`} color="bg-green-500" />
-              )}
-              <MaterialRow label="Émissions CO₂"  val={`${results.co2.toFixed(2)} kg`}  color="bg-emerald-500" />
-
-              <div className="flex items-start gap-2 p-3 bg-blue-500/5 rounded-lg border border-blue-500/20 mt-4">
-                <Info className="w-4 h-4 text-blue-400 mt-0.5 flex-shrink-0"/>
-                <p className="text-[10px] text-blue-200/60 leading-relaxed italic">
-                  {mode === "carbone"
-                    ? `Le ${FACTEUR_EMISSION[inputs.typeVehicule]?.label} émet ${FACTEUR_EMISSION[inputs.typeVehicule]?.co2} kg CO₂/t·km. Le train est 6× moins polluant que le camion.`
-                    : mode === "forfait"
-                    ? "Le barème décroît avec la distance. Saisissez un prix personnalisé pour ignorer le forfait automatique."
-                    : "Le coût total = distance × quantité × prix unitaire + main d'œuvre."}
-                </p>
-              </div>
-            </div>
-
-            {historique.length > 0 && (
-              <div className="bg-gray-800/30 rounded-2xl border border-gray-700/50 overflow-hidden">
-                <div className="px-4 py-2 bg-gray-800/50 border-b border-gray-700/50 flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-gray-500 uppercase flex items-center gap-2"><History className="w-3 h-3"/> Historique</h4>
-                  <button onClick={() => { setHistorique([]); localStorage.removeItem(STORAGE_KEY); }}
-                    className="text-[10px] text-red-400 hover:underline flex items-center gap-1"><Trash2 className="w-3 h-3"/> Vider</button>
-                </div>
-                <div className="max-h-[140px] overflow-y-auto">
-                  {historique.slice(0, 5).map(item => (
-                    <div key={item.id} className="flex justify-between items-center p-3 border-b border-gray-700/30 hover:bg-gray-700/40 transition-colors">
-                      <div className="text-xs">
-                        <span className="text-gray-500 text-[9px] block">{item.date}</span>
-                        <span className="font-medium">{item.mode} — {item.dist.toFixed(0)} km</span>
-                      </div>
-                      <span className="text-sm font-bold text-blue-400 font-mono">{item.total.toLocaleString()} {currency}</span>
+            <div className="bg-gray-900/70 border border-gray-800 rounded-2xl p-4">
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Synthèse interne</h3>
+              <div className="space-y-2">
+                {results.calc.map((trip) => (
+                  <div key={trip.id} className="rounded-xl bg-gray-950/60 border border-gray-800 p-3">
+                    <div className="flex justify-between gap-3 text-sm">
+                      <span className="font-semibold text-white">{trip.designation || trip.modeInfo.label}</span>
+                      <span className="font-black text-blue-300">{fmt(trip.total)} {currency}</span>
                     </div>
-                  ))}
-                </div>
+                    <div className="mt-1 text-[11px] text-gray-400">
+                      {fmt(trip.distance)} km · {fmtD(trip.tonnage, 2)} t · {fmtD(trip.co2, 2)} kg CO2e
+                    </div>
+                  </div>
+                ))}
               </div>
-            )}
+            </div>
+
+            <div className="bg-blue-950/30 border border-blue-800/50 rounded-2xl p-4">
+              <p className="text-[11px] text-blue-100/80 leading-relaxed">
+                Le transport Eco se calcule par trajet. Les modes bas carbone comparent leurs émissions au camion standard
+                et remontent automatiquement la distance, les t.km et le CO2 évité au devis.
+              </p>
+            </div>
           </div>
         </div>
       </div>
@@ -272,26 +209,101 @@ export default function TransportEco({
   );
 }
 
-const InputGroup = ({ label, value, onChange, placeholder, full = false }) => (
-  <div className={`flex flex-col ${full ? "col-span-2" : ""}`}>
-    <label className="mb-1 text-[10px] font-bold text-gray-500 uppercase">{label}</label>
-    <input type="number" value={value} onChange={e => onChange(e.target.value)}
-      className="w-full bg-gray-900 border border-gray-600 rounded-xl px-4 py-2.5 text-white focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-mono text-sm outline-none"
-      placeholder={placeholder || "0"}/>
-  </div>
-);
-const ResultCard = ({ label, value, unit, icon, color, bg, border }) => (
-  <div className={`rounded-2xl p-4 flex flex-col justify-center items-center text-center ${bg} ${border ? "border border-gray-700" : ""}`}>
-    <span className="text-[10px] text-gray-500 uppercase font-bold mb-1 flex items-center gap-1">{icon} {label}</span>
-    <span className={`text-xl font-black ${color}`}>{value} <span className="text-xs font-normal text-gray-500">{unit}</span></span>
-  </div>
-);
-const MaterialRow = ({ label, val, color }) => (
-  <div className="flex justify-between items-center border-b border-gray-700/30 pb-2 last:border-0">
-    <div className="flex items-center gap-2">
-      <div className={`w-1.5 h-1.5 rounded-full ${color}`}/>
-      <span className="text-gray-300 text-xs font-medium">{label}</span>
+function TripCard({ trip, currency, onToggle, onRemove, onPatch }) {
+  const Icon = trip.modeInfo.icon;
+  return (
+    <div className="bg-gray-900/70 border border-gray-800 rounded-2xl overflow-hidden">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full px-4 py-3 flex items-center justify-between gap-3 hover:bg-gray-800/40"
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="w-9 h-9 rounded-xl bg-blue-500/15 text-blue-300 flex items-center justify-center flex-shrink-0">
+            <Icon className="w-4 h-4" />
+          </span>
+          <div className="text-left min-w-0">
+            <h3 className="text-sm font-bold text-white truncate">{trip.designation || trip.modeInfo.label}</h3>
+            <p className="text-[10px] text-gray-500 truncate">{trip.modeInfo.desc}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-black text-blue-300 whitespace-nowrap">{fmt(trip.total)} {currency}</span>
+          {trip.expanded ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+        </div>
+      </button>
+
+      {trip.expanded && (
+        <div className="px-4 pb-4 border-t border-gray-800 grid grid-cols-1 md:grid-cols-2 gap-3 pt-4">
+          <Input label="Mode de transport" as="select" value={trip.mode} onChange={(value) => onPatch({ mode: value })}>
+            {Object.entries(MODES_TRANSPORT).map(([key, mode]) => (
+              <option key={key} value={key}>{mode.label}</option>
+            ))}
+          </Input>
+          <Input label="Désignation" value={trip.designation} onChange={(value) => onPatch({ designation: value })} placeholder={trip.modeInfo.label} />
+          <Input label="Distance (km)" value={trip.distance} onChange={(value) => onPatch({ distance: value })} />
+          <Input label="Charge transportée (t)" value={trip.tonnage} onChange={(value) => onPatch({ tonnage: value })} />
+          <Input label={`Prix (${currency}/t.km)`} value={trip.prixTkm} onChange={(value) => onPatch({ prixTkm: value })} />
+          <Input label={`Frais fixes (${currency})`} value={trip.fraisFixes} onChange={(value) => onPatch({ fraisFixes: value })} />
+          <div className="md:col-span-2 flex flex-wrap gap-2 text-[11px] text-gray-300">
+            <Badge label="t.km" value={fmtD(trip.tonneKm, 2)} />
+            <Badge label="CO2" value={`${fmtD(trip.co2, 2)} kg`} />
+            <Badge label="CO2 évité" value={`${fmtD(trip.co2Evite, 2)} kg`} />
+            <button
+              type="button"
+              onClick={onRemove}
+              className="ml-auto px-3 py-2 rounded-lg bg-red-500/10 text-red-300 hover:bg-red-500/20 flex items-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" /> Retirer
+            </button>
+          </div>
+        </div>
+      )}
     </div>
-    <span className="text-xs font-bold text-white font-mono">{val}</span>
-  </div>
-);
+  );
+}
+
+function Input({ label, value, onChange, placeholder = "0", as, children }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">{label}</span>
+      {as === "select" ? (
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:border-blue-400 outline-none"
+        >
+          {children}
+        </select>
+      ) : (
+        <input
+          type={label === "Désignation" ? "text" : "number"}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          className="w-full bg-gray-950 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white focus:border-blue-400 outline-none"
+        />
+      )}
+    </label>
+  );
+}
+
+function Badge({ label, value }) {
+  return (
+    <span className="px-3 py-2 rounded-lg bg-gray-950 border border-gray-800">
+      <span className="text-gray-500">{label}: </span>
+      <strong className="text-white">{value}</strong>
+    </span>
+  );
+}
+
+function ResultCard({ label, value, unit }) {
+  return (
+    <div className="rounded-2xl border border-blue-800/40 bg-blue-500/10 p-4">
+      <div className="text-[10px] uppercase font-bold tracking-wider text-blue-200/80">{label}</div>
+      <div className="mt-2 text-xl font-black text-white">
+        {value} <span className="text-xs font-normal text-gray-400">{unit}</span>
+      </div>
+    </div>
+  );
+}
