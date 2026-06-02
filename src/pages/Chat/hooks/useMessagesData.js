@@ -84,19 +84,21 @@ export function useMessagesData(token, showToast) {
       console.log(`⏳ [useMessagesData] Attente chargement en cours (${instanceId.current})`);
       
       // Attendre max 3 secondes que l'autre instance finisse
-      const timeout = setTimeout(() => {
-        if (isMounted.current) {
-          setData(prev => ({
-            ...prev,
-            conn: globalCache.conversations,
-            conversations: globalCache.conversations,
-            unread: globalCache.unread
-          }));
-          setUi(prev => ({ ...prev, load: false }));
-        }
-      }, 3000);
-
-      return () => clearTimeout(timeout);
+      await new Promise(resolve => {
+        const timeout = setTimeout(() => {
+          if (isMounted.current) {
+            setData(prev => ({
+              ...prev,
+              conn: globalCache.conversations,
+              conversations: globalCache.conversations,
+              unread: globalCache.unread
+            }));
+            setUi(prev => ({ ...prev, load: false }));
+          }
+          resolve();
+        }, 3000);
+      });
+      return;
     }
 
     setUi(prev => ({ ...prev, load: true }));
@@ -223,7 +225,7 @@ export function useMessagesData(token, showToast) {
       }
       globalCache.isLoading = false;
     }
-  }, [token, showToast]);
+  }, [token]);
 
   /**
    * ✅ CHARGER MESSAGES D'UNE CONVERSATION AVEC CACHE
@@ -337,7 +339,7 @@ export function useMessagesData(token, showToast) {
     return () => { 
       isMounted.current = false; 
     };
-  }, [load]);
+  }, [token]);
 
   /**
    * ✅ NETTOYAGE AUTOMATIQUE (tous les jours)

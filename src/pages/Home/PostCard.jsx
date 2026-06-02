@@ -64,6 +64,19 @@ const getPostViewsCount = (post) => {
   return Number.isFinite(Number(raw)) ? Number(raw) : 0;
 };
 
+const formatCompactCount = (value) => {
+  const count = Number(value) || 0;
+  if (count >= 1_000_000) {
+    const compact = count / 1_000_000;
+    return `${Number(compact.toFixed(compact >= 10 ? 0 : 1))}M`;
+  }
+  if (count >= 1_000) {
+    const compact = count / 1_000;
+    return `${Number(compact.toFixed(compact >= 10 ? 0 : 1))}K`;
+  }
+  return String(count);
+};
+
 const getSessionViewedPosts = () => {
   if (typeof window === "undefined") return VIEWED_POSTS_SESSION;
   if (VIEWED_POSTS_SESSION.size) return VIEWED_POSTS_SESSION;
@@ -732,7 +745,7 @@ const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, viewsCount, 
       </button>
       <div className={`flex items-center gap-2 text-sm font-semibold ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>
         <EyeIcon className="w-5 h-5" />
-        <span>{viewsCount || 0}</span>
+        <span>{formatCompactCount(viewsCount)}</span>
       </div>
     </div>
     <button onClick={onSave} className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-orange-500 transition-colors">
@@ -889,25 +902,28 @@ const FeedbackModal = memo(({
   };
 
   const actionGroups = [
-    [
-      {
-        label: "Masquer cette publication",
-        description: "Vous verrez moins de publications comme celle-ci.",
-        detail: "Cette publication sera retirée de votre fil immédiatement. Chantilink utilisera aussi ce retour pour vous montrer moins de contenus similaires.",
-        confirmLabel: "Masquer la publication",
-        icon: EyeSlashIcon,
-        onConfirm: () => sendFeedback(false, "hide", { hide: true }),
-      },
-      {
-        label: "Signaler cette publication",
-        description: "Signalez un problème avec cette publication.",
-        detail: "Utilisez cette action si le contenu semble abusif, trompeur, dangereux ou contraire aux règles. La publication sera retirée de votre fil et votre signalement sera transmis.",
-        confirmLabel: "Signaler et masquer",
-        icon: ExclamationTriangleIcon,
-        danger: true,
-        onConfirm: () => sendFeedback(false, "report", { hide: true }),
-      },
-    ],
+    // Actions pour les autres publications (masquer/signaler) — non affichées si c'est votre propre post
+    ...(isOwner ? [] : [
+      [
+        {
+          label: "Masquer cette publication",
+          description: "Vous verrez moins de publications comme celle-ci.",
+          detail: "Cette publication sera retirée de votre fil immédiatement. Chantilink utilisera aussi ce retour pour vous montrer moins de contenus similaires.",
+          confirmLabel: "Masquer la publication",
+          icon: EyeSlashIcon,
+          onConfirm: () => sendFeedback(false, "hide", { hide: true }),
+        },
+        {
+          label: "Signaler cette publication",
+          description: "Signalez un problème avec cette publication.",
+          detail: "Utilisez cette action si le contenu semble abusif, trompeur, dangereux ou contraire aux règles. La publication sera retirée de votre fil et votre signalement sera transmis.",
+          confirmLabel: "Signaler et masquer",
+          icon: ExclamationTriangleIcon,
+          danger: true,
+          onConfirm: () => sendFeedback(false, "report", { hide: true }),
+        },
+      ]
+    ]),
     [
       {
         label: "Ça m'intéresse",
@@ -1027,137 +1043,152 @@ const FeedbackModal = memo(({
 
   if (selectedAction) {
     const Icon = selectedAction.icon;
-    return (
+    return createPortal(
       <div
-        className={`absolute right-2 top-12 z-[80] w-[calc(100%-16px)] max-w-[420px] overflow-hidden rounded-2xl border text-left shadow-2xl ${
-          isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
-        }`}
-        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-black/40"
+        onClick={onClose}
       >
-        <div className={`flex items-center gap-2 border-b px-3 py-2.5 ${isDarkMode ? "border-white/10" : "border-gray-100"}`}>
-          <button
-            type="button"
-            onClick={() => setSelectedAction(null)}
-            className={`rounded-full p-2 ${isDarkMode ? "text-gray-200 hover:bg-white/10" : "text-gray-700 hover:bg-gray-100"}`}
-            aria-label="Retour aux actions"
-          >
-            <ArrowLeftIcon className="h-5 w-5" />
-          </button>
-          <div className="min-w-0 flex-1">
-            <p className={`truncate text-sm font-bold ${isDarkMode ? "text-white" : "text-gray-950"}`}>{selectedAction.label}</p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className={`rounded-full p-2 ${isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"}`}
-            aria-label="Fermer"
-          >
-            <XMarkIcon className="h-5 w-5" />
-          </button>
-        </div>
-        <div className="p-4">
-          <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-full ${
-            selectedAction.danger ? "bg-red-500/10 text-red-600" : "bg-orange-500/10 text-orange-600"
-          }`}>
-            <Icon className="h-5 w-5" />
-          </div>
-          <p className={`text-sm leading-6 ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
-            {selectedAction.detail}
-          </p>
-          <div className="mt-4 flex gap-2">
-            {selectedAction.secondaryLabel && (
-              <button
-                type="button"
-                onClick={selectedAction.onSecondary}
-                disabled={loading}
-                className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold ${
-                  isDarkMode ? "bg-white/10 text-white hover:bg-white/15" : "bg-gray-100 text-gray-900 hover:bg-gray-200"
-                }`}
-              >
-                {selectedAction.secondaryLabel}
-              </button>
-            )}
+        <div
+          className={`relative w-full max-w-[420px] rounded-3xl border text-left shadow-2xl flex flex-col ${
+            isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
+          }`}
+          onClick={(e) => e.stopPropagation()}
+          style={{ maxHeight: '88vh' }}
+        >
+          <div className={`flex items-center gap-2 border-b px-3 py-2.5 flex-shrink-0 ${isDarkMode ? "border-white/10" : "border-gray-100"}`}>
             <button
               type="button"
-              onClick={selectedAction.onConfirm}
-              disabled={loading}
-              className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold text-white disabled:opacity-60 ${
-                selectedAction.danger ? "bg-red-600 hover:bg-red-700" : "bg-orange-500 hover:bg-orange-600"
-              }`}
+              onClick={() => setSelectedAction(null)}
+              className={`rounded-full p-2 ${isDarkMode ? "text-gray-200 hover:bg-white/10" : "text-gray-700 hover:bg-gray-100"}`}
+              aria-label="Retour aux actions"
             >
-              {loading ? "Traitement..." : selectedAction.confirmLabel}
+              <ArrowLeftIcon className="h-5 w-5" />
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className={`truncate text-sm font-bold ${isDarkMode ? "text-white" : "text-gray-950"}`}>{selectedAction.label}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className={`rounded-full p-2 ${isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"}`}
+              aria-label="Fermer"
+            >
+              <XMarkIcon className="h-5 w-5" />
             </button>
           </div>
+          <div className="flex-1 overflow-y-auto min-h-0 p-4">
+            <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-full ${
+              selectedAction.danger ? "bg-red-500/10 text-red-600" : "bg-orange-500/10 text-orange-600"
+            }`}>
+              <Icon className="h-5 w-5" />
+            </div>
+            <p className={`text-sm leading-6 ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
+              {selectedAction.detail}
+            </p>
+            <div className="mt-4 flex gap-2">
+              {selectedAction.secondaryLabel && (
+                <button
+                  type="button"
+                  onClick={selectedAction.onSecondary}
+                  disabled={loading}
+                  className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold ${
+                    isDarkMode ? "bg-white/10 text-white hover:bg-white/15" : "bg-gray-100 text-gray-900 hover:bg-gray-200"
+                  }`}
+                >
+                  {selectedAction.secondaryLabel}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={selectedAction.onConfirm}
+                disabled={loading}
+                className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold text-white disabled:opacity-60 ${
+                  selectedAction.danger ? "bg-red-600 hover:bg-red-700" : "bg-orange-500 hover:bg-orange-600"
+                }`}
+              >
+                {loading ? "Traitement..." : selectedAction.confirmLabel}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      </div>,
+      getModalRoot()
     );
   }
 
-  return (
+  return createPortal(
     <div
-      className={`absolute right-2 top-12 z-[80] w-[calc(100%-16px)] max-w-[420px] overflow-hidden rounded-2xl border text-left shadow-2xl ${
-        isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
-      }`}
-      onClick={(e) => e.stopPropagation()}
+      className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-black/40"
+      onClick={onClose}
     >
-      <motion.div
-        initial={{ y: -6, opacity: 0, scale: 0.98 }}
-        animate={{ y: 0, opacity: 1, scale: 1 }}
-        exit={{ y: -6, opacity: 0, scale: 0.98 }}
-        transition={{ duration: 0.16 }}
-        style={{ width: "100%" }}
+      <div
+        className={`relative w-full max-w-[420px] rounded-3xl border text-left shadow-2xl flex flex-col ${
+          isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
+        }`}
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxHeight: '88vh' }}
       >
-        <button type="button" onClick={onClose}
-          className={`absolute top-2.5 right-2.5 rounded-full p-2 transition-colors ${
-            isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"
-          }`}
-          aria-label="Fermer les actions">
-          <XMarkIcon className="w-5 h-5" />
-        </button>
+        <motion.div
+          initial={{ y: -6, opacity: 0, scale: 0.98 }}
+          animate={{ y: 0, opacity: 1, scale: 1 }}
+          exit={{ y: -6, opacity: 0, scale: 0.98 }}
+          transition={{ duration: 0.16 }}
+          style={{ width: "100%" }}
+          className="flex flex-col h-full"
+        >
+          <button type="button" onClick={onClose}
+            className={`absolute top-2.5 right-2.5 rounded-full p-2 transition-colors z-10 ${
+              isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"
+            }`}
+            aria-label="Fermer les actions">
+            <XMarkIcon className="w-5 h-5" />
+          </button>
 
-        <div className={`px-4 pt-4 pb-3 ${isDarkMode ? "border-white/10" : "border-gray-100"} border-b`}>
-          <h3 className={`text-base font-bold pr-10 ${isDarkMode ? "text-white" : "text-gray-950"}`}>
-            Actions sur la publication
-          </h3>
-        </div>
+          <div className={`px-4 pt-4 pb-3 ${isDarkMode ? "border-white/10" : "border-gray-100"} border-b flex-shrink-0`}>
+            <h3 className={`text-base font-bold pr-10 ${isDarkMode ? "text-white" : "text-gray-950"}`}>
+              Actions sur la publication
+            </h3>
+          </div>
 
-        <div className="max-h-[78vh] overflow-y-auto">
-          {actionGroups.map((group, groupIndex) => (
-            <div
-              key={groupIndex}
-              className={`${groupIndex > 0 ? (isDarkMode ? "border-t border-white/10" : "border-t border-gray-200") : ""} py-1`}
-            >
-              {group.map((action) => {
-                const Icon = action.icon;
-                return (
-                  <button
-                    key={action.label}
-                    type="button"
-                    onClick={() => handleActionClick(action)}
-                    disabled={loading}
-                    className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors disabled:opacity-60 ${
-                      isDarkMode ? "hover:bg-white/[0.08]" : "hover:bg-gray-50"
-                    } ${action.danger ? "text-red-600" : (isDarkMode ? "text-gray-100" : "text-gray-950")}`}
-                  >
-                    <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center ${
-                      action.danger ? "text-red-600" : (isDarkMode ? "text-gray-200" : "text-gray-900")
-                    }`}>
-                      <Icon className="h-5 w-5" />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold leading-5">{action.label}</span>
-                      <span className={`block text-xs leading-4 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
-                        {action.description}
+          <div className="flex-1 overflow-y-auto min-h-0">
+            {actionGroups.map((group, groupIndex) => (
+              <div
+                key={groupIndex}
+                className={`${groupIndex > 0 ? (isDarkMode ? "border-t border-white/10" : "border-t border-gray-200") : ""} py-1`}
+              >
+                {group.map((action) => {
+                  const Icon = action.icon;
+                  return (
+                    <button
+                      key={action.label}
+                      type="button"
+                      onClick={() => handleActionClick(action)}
+                      disabled={loading}
+                      className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors disabled:opacity-60 ${
+                        isDarkMode ? "hover:bg-white/[0.08]" : "hover:bg-gray-50"
+                      } ${action.danger ? "text-red-600" : (isDarkMode ? "text-gray-100" : "text-gray-950")}`}
+                    >
+                      <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center ${
+                        action.danger ? "text-red-600" : (isDarkMode ? "text-gray-200" : "text-gray-900")
+                      }`}>
+                        <Icon className="h-5 w-5" />
                       </span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-      </motion.div>
-    </div>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold leading-5">{action.label}</span>
+                        <span className={`block text-xs leading-4 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+                          {action.description}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      </div>
+    </div>,
+    getModalRoot()
   );
 });
 FeedbackModal.displayName = "FeedbackModal";
@@ -1681,7 +1712,7 @@ const PostCardInner = forwardRef(({
           onOpenComments={handleOpenComments} onOpenShare={handleOpenShare} onSave={handleSave}
         />
 
-        {showFeedbackModal && (
+        {showFeedbackModal && createPortal(
           <ErrorBoundary>
             <FeedbackModal
               postId={post._id}
@@ -1699,7 +1730,8 @@ const PostCardInner = forwardRef(({
               saved={saved}
               post={post}
             />
-          </ErrorBoundary>
+          </ErrorBoundary>,
+          getModalRoot()
         )}
 
       </div>

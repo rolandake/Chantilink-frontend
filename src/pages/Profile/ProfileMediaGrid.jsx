@@ -156,8 +156,8 @@ const isTextCard = (post) => {
 
 const formatCount = (n) => {
   if (!n) return "0";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+  if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`;
+  if (n >= 1_000)     return `${Number((n / 1_000).toFixed(n >= 10_000 ? 0 : 1))}K`;
   return String(n);
 };
 
