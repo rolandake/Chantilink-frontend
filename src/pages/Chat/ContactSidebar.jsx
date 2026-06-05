@@ -13,46 +13,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '../../context/ToastContext';
-
-// ─────────────────────────────────────────────
-// HELPERS localStorage — ✅ CLÉS PAR USERID
-// ─────────────────────────────────────────────
-
-/** Retourne la clé localStorage propre à cet utilisateur */
-const getStorageKey = (userId) =>
-  userId ? `onAppContacts_${userId}` : null;
-
-/** Lit les contacts depuis le localStorage de CET utilisateur uniquement */
-const readOnAppContacts = (userId) => {
-  const key = getStorageKey(userId);
-  if (!key) return [];
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-};
-
-/** Sauvegarde un contact dans le localStorage de CET utilisateur */
-const saveContactToOnApp = (contact, userId) => {
-  const key = getStorageKey(userId);
-  if (!contact?.id || !key) return;
-  try {
-    const existing = readOnAppContacts(userId);
-    const updated = [contact, ...existing.filter((c) => c.id !== contact.id)];
-    localStorage.setItem(key, JSON.stringify(updated));
-  } catch {}
-};
-
-/**
- * ✅ À appeler lors du logout pour vider le cache de l'utilisateur
- * Exporter et appeler dans AuthContext / logout handler
- */
-export const clearContactsCache = (userId) => {
-  const key = getStorageKey(userId);
-  if (key) {
-    localStorage.removeItem(key);
-  }
-};
+import { readOnAppContacts, saveContactToOnApp } from '../../utils/contactsCache';
 
 // ─────────────────────────────────────────────
 // API

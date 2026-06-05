@@ -59,7 +59,7 @@ import StoryContainer       from "./StoryContainer.jsx";
 import CreatePost           from "./CreatePost";
 import SuggestedAccounts    from "./SuggestedAccounts";
 import SuggestedPostPreview from "./SuggestedPostPreview";
-import PostCard, { GlobalModalManager } from "./PostCard";
+import PostCard from "./PostCard";
 import VirtualFeed          from "./VirtualFeed";
 import { readAllCachedProfilePosts, clearProfilePostsCache } from "../Profile/ProfilePage";
 
@@ -1040,7 +1040,7 @@ const urlCR = (k)=>{try{const r=sessionStorage.getItem(URL_CACHE_PREFIX+k);if(!r
 const urlCW = (k,url)=>{try{sessionStorage.setItem(URL_CACHE_PREFIX+k,JSON.stringify({url,exp:Date.now()+URL_CACHE_TTL}));}catch{}};
 const EXPIRABLE=[
   {name:"pexels",  test:(u)=>u.includes("videos.pexels.com/video-files/"), extractId:(u)=>u.match(/video-files\/(\d+)\//)?.[1]||null, resolve:async()=>null},
-  {name:"pixabay", test:(u)=>/cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\//.test(u), extractId:(u)=>u.match(/\/(\d+)-\d+_/)?.[1]||null, resolve:async(id)=>{const r=await axiosClient.get(`/api/proxy/video?id=${id}&source=pixabay`);return r.data?.url||r.data?.videoUrl||null;}},
+  {name:"pixabay", test:(u)=>/cdn\.pixabay\.com\/video\/\d{4}\/\d{2}\/\d{2}\//.test(u), extractId:(u)=>u.match(/\/(\d+)-\d+_/)?.[1]||null, resolve:async(id)=>{const r=await axiosClient.get(`/proxy/video?id=${id}&source=pixabay`);return r.data?.url||r.data?.videoUrl||null;}},
 ];
 const DEAD_HOSTS    = ["youtube.com/watch","youtu.be/","dailymotion.com/video","tiktok.com/@"];
 const expSrc        = (u)=>typeof u==="string"?EXPIRABLE.find(s=>s.test(u))||null:null;
@@ -2615,8 +2615,6 @@ const Home = ({ openStoryViewer: openStoryViewerProp, searchQuery="" }) => {
 
         </div>
       </div>
-
-      <GlobalModalManager />
 
       <AnimatePresence>
         {showScrollTop && (

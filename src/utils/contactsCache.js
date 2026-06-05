@@ -18,10 +18,12 @@ export const readOnAppContacts = (userId) => {
 
 export const saveContactToOnApp = (contact, userId) => {
   const key = getStorageKey(userId);
-  if (!contact?.id || !key) return;
+  const id = contact?.id || contact?._id;
+  if (!id || !key) return;
   try {
     const existing = readOnAppContacts(userId);
-    const updated = [contact, ...existing.filter((c) => c.id !== contact.id)];
+    const normalized = { ...contact, id };
+    const updated = [normalized, ...existing.filter((c) => (c.id || c._id) !== id)];
     localStorage.setItem(key, JSON.stringify(updated));
   } catch {}
 };

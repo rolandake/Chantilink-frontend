@@ -346,12 +346,16 @@ body.modal-open {
   height: 100%;
 }
 
-/* Fix pour les modales sur mobile */
+/* Fix pour les modales */
+.modal-container {
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 @media (max-width: 640px) {
   .modal-container {
     max-height: calc(100vh - 2rem);
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
   }
 }
 

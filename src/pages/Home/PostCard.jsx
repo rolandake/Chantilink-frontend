@@ -1,15 +1,11 @@
 // src/pages/Home/PostCard.jsx
-// v27.1 — FIX handleFollow : endpoint et authentification alignés sur le backend
+// v28 — FIX double createPortal sur FeedbackModal
 //
-// CHANGEMENTS v27.1 :
-//   - handleFollow utilisait axiosClient.post("/follow/follow/:id") et
-//     axiosClient.post("/follow/unfollow/:id") -> endpoints inexistants (404)
-//   - Le backend expose UN SEUL endpoint toggle : POST /api/users/:id/follow
-//     (si deja suivi -> unfollow, sinon -> follow)
-//   - Fix : axiosClient.post("/users/" + id + "/follow") pour les deux actions
-//   - Le token est injecte par axiosClient (intercepteur) depuis AuthContext
-//
-// Tout le reste de v27 est conserve a l'identique.
+// CHANGEMENT v28 :
+//   - Dans PostCardInner, le FeedbackModal était wrappé dans un createPortal externe
+//     EN PLUS de son propre createPortal interne → double portal → events React cassés
+//   - Fix : supprimer le createPortal externe, FeedbackModal gère son propre portal
+//   - Tout le reste est identique à v27.1
 
 import React, {
   forwardRef, useState, useEffect, useLayoutEffect,
@@ -111,51 +107,24 @@ const setSavedPostPreference = (postId, enabled) => {
   try { window.localStorage?.setItem(SAVED_POSTS_KEY, JSON.stringify([...ids].slice(-1000))); } catch {}
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Detection appareil
-// ─────────────────────────────────────────────────────────────────────────────
 const IS_LOW_END_DEVICE = typeof navigator !== "undefined" && (
   (navigator.hardwareConcurrency || 4) <= 2 ||
   (navigator.deviceMemory || 4) <= 2
 );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Debug system
-// ─────────────────────────────────────────────────────────────────────────────
 const _initDebug = () => {
   if (typeof window === "undefined") return false;
   try {
     if (new URLSearchParams(window.location.search).get("postcard_debug") === "1") {
       window.localStorage?.setItem("POSTCARD_DEBUG", "1");
-      console.info("%c[PostCard DEBUG] Auto-active via ?postcard_debug=1", "color:#f97316;font-weight:bold");
       return true;
     }
   } catch {}
   return window.localStorage?.getItem("POSTCARD_DEBUG") === "1";
 };
-
 const _DEBUG_CACHED = _initDebug();
-
 const dbgPC   = _DEBUG_CACHED ? (...a) => console.log("%c[PostCard]",  "color:#f97316;font-weight:bold", ...a) : () => {};
 const dbgWarn = _DEBUG_CACHED ? (...a) => console.warn("%c[PostCard]", "color:#ef4444;font-weight:bold", ...a) : () => {};
-
-const dbgInspectEl = _DEBUG_CACHED
-  ? (label, el) => {
-      if (!el) return;
-      const style = window.getComputedStyle(el);
-      const rect  = el.getBoundingClientRect();
-      const inBody = document.body.contains(el);
-      console.groupCollapsed(`%c[PostCard DOM] ${label}`, "color:#a855f7;font-weight:bold");
-      console.log("element:", el);
-      console.log("in document.body:", inBody);
-      console.log("computed display:", style.display);
-      console.log("computed visibility:", style.visibility);
-      console.log("computed opacity:", style.opacity);
-      console.log("computed z-index:", style.zIndex);
-      console.log("BoundingRect:", `top=${rect.top} left=${rect.left} w=${rect.width} h=${rect.height}`);
-      console.groupEnd();
-    }
-  : () => {};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getModalRoot
@@ -172,9 +141,6 @@ const getModalRoot = () => {
   return el;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 const toStr = (v) => {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") return String(v._id ?? v.id ?? "");
@@ -382,7 +348,6 @@ SkeletonPostCard.displayName = "SkeletonPostCard";
 const MODAL_EVENT = "postcard:openModal";
 
 const emitModalEvent = (action, post, extra = {}) => {
-  dbgPC(`emitModalEvent action="${action}" postId="${post?._id}"`);
   window.dispatchEvent(new CustomEvent(MODAL_EVENT, {
     detail: { action, post, ...extra },
     bubbles: false,
@@ -394,20 +359,17 @@ const emitModalEvent = (action, post, extra = {}) => {
 // ─────────────────────────────────────────────────────────────────────────────
 const DeleteModal = memo(({ isDarkMode, isDeleting, onConfirm, onCancel }) => {
   const isClosingRef = useRef(false);
-
   const safeCancel = (e) => {
     e?.stopPropagation();
     if (isDeleting || isClosingRef.current) return;
     isClosingRef.current = true;
     onCancel();
   };
-
   const safeConfirm = (e) => {
     e?.stopPropagation();
     if (isDeleting || isClosingRef.current) return;
     onConfirm();
   };
-
   return (
     <div
       style={{
@@ -492,19 +454,14 @@ const BoostPaymentForm = memo(({ isDarkMode, postId, onClose, onBoosted, showToa
     setError("");
     try {
       const { data } = await axiosClient.post("/boost/create", {
-        contentType: "Post",
-        contentId: postId,
-        duration: plan.duration,
+        contentType: "Post", contentId: postId, duration: plan.duration,
       });
-
       const card = elements.getElement(CardElement);
       const result = await stripe.confirmCardPayment(data.clientSecret, {
         payment_method: { card },
       });
-
       if (result.error) throw new Error(result.error.message || "Paiement refuse");
       if (result.paymentIntent?.status !== "succeeded") throw new Error("Paiement non confirme");
-
       await axiosClient.post(`/boost/${data.boostId}/confirm`);
       onBoosted?.();
       showToast?.("Boost active avec succes", "success");
@@ -541,7 +498,6 @@ const BoostPaymentForm = memo(({ isDarkMode, postId, onClose, onBoosted, showToa
           );
         })}
       </div>
-
       <div style={{
         padding: 12, borderRadius: 12, marginBottom: 12,
         background: isDarkMode ? "#0f172a" : "#f9fafb",
@@ -555,9 +511,7 @@ const BoostPaymentForm = memo(({ isDarkMode, postId, onClose, onBoosted, showToa
           },
         }} />
       </div>
-
       {error && <p style={{ color: "#ef4444", fontSize: 13, margin: "0 0 12px" }}>{error}</p>}
-
       <button type="button" onClick={pay} disabled={!stripe || loading}
         style={{
           width: "100%", padding: "12px 0", borderRadius: 12, fontWeight: 700,
@@ -575,14 +529,12 @@ BoostPaymentForm.displayName = "BoostPaymentForm";
 
 const BoostModal = memo(({ isDarkMode, postId, onClose, onBoosted, showToast }) => {
   const isClosingRef = useRef(false);
-
   const safeClose = (e) => {
     e?.stopPropagation();
     if (isClosingRef.current) return;
     isClosingRef.current = true;
     onClose();
   };
-
   return (
     <div
       style={{
@@ -631,11 +583,8 @@ const BoostModal = memo(({ isDarkMode, postId, onClose, onBoosted, showToast }) 
         ) : (
           <Elements stripe={stripePromise}>
             <BoostPaymentForm
-              isDarkMode={isDarkMode}
-              postId={postId}
-              onClose={safeClose}
-              onBoosted={onBoosted}
-              showToast={showToast}
+              isDarkMode={isDarkMode} postId={postId}
+              onClose={safeClose} onBoosted={onBoosted} showToast={showToast}
             />
           </Elements>
         )}
@@ -644,8 +593,7 @@ const BoostModal = memo(({ isDarkMode, postId, onClose, onBoosted, showToast }) 
             width: "100%", padding: "10px 0", borderRadius: 12, fontWeight: 700,
             fontSize: 14, border: "none", cursor: "pointer", marginTop: 10,
             background: isDarkMode ? "#1f2937" : "#f3f4f6",
-            color: isDarkMode ? "#ffffff" : "#111827",
-            pointerEvents: "auto",
+            color: isDarkMode ? "#ffffff" : "#111827", pointerEvents: "auto",
           }}>
           Annuler
         </button>
@@ -705,14 +653,8 @@ const GlobalModalManagerBase = () => {
           onConfirm={handleDeletePost} onCancel={close} />
       )}
       {modalState.action === "boost" && (
-        <BoostModal
-          key="boost"
-          isDarkMode={isDarkMode}
-          postId={modalState.post?._id}
-          onClose={close}
-          onBoosted={modalState.onBoosted}
-          showToast={modalState.showToast}
-        />
+        <BoostModal key="boost" isDarkMode={isDarkMode} postId={modalState.post?._id}
+          onClose={close} onBoosted={modalState.onBoosted} showToast={modalState.showToast} />
       )}
     </AnimatePresence>,
     getModalRoot()
@@ -759,12 +701,11 @@ const ActionsBar = memo(({ liked, likesCount, saved, commentsCount, viewsCount, 
 ActionsBar.displayName = "ActionsBar";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FeedbackBar — petit composant d'interaction "Ce contenu vous plaît ?"
+// FeedbackBar
 // ─────────────────────────────────────────────────────────────────────────────
 const FeedbackBar = memo(({ postId, isDarkMode, showToast }) => {
   const [given, setGiven] = useState(() => !!(typeof window !== 'undefined' && window.localStorage?.getItem(`feedback_given_${postId}`)));
   const [loading, setLoading] = useState(false);
-
   const sendFeedback = async (liked) => {
     if (given || loading) return;
     setLoading(true);
@@ -774,13 +715,9 @@ const FeedbackBar = memo(({ postId, isDarkMode, showToast }) => {
       try { window.localStorage?.setItem(`feedback_given_${postId}`, '1'); } catch {}
       showToast?.(liked ? "Merci — contenu apprécié" : "Merci pour votre retour", "success");
     } catch (err) {
-      const msg = err?.response?.data?.message || err.message || "Erreur";
-      showToast?.(msg, "error");
-    } finally {
-      setLoading(false);
-    }
+      showToast?.(err?.response?.data?.message || err.message || "Erreur", "error");
+    } finally { setLoading(false); }
   };
-
   return (
     <div className="px-3 py-2 border-t flex items-center justify-between">
       <div className={`text-sm ${isDarkMode ? "text-gray-300" : "text-gray-700"}`}>Ce contenu vous plaît ?</div>
@@ -801,33 +738,21 @@ const FeedbackBar = memo(({ postId, isDarkMode, showToast }) => {
 });
 FeedbackBar.displayName = "FeedbackBar";
 
-// ────────────────────────────────────────────────────────────────────────────
-// FeedbackModal — menu d'actions de publication
-// ────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// FeedbackModal v3
+// FIX : gère son propre createPortal → NE PAS wrapper dans un portal externe
+// ─────────────────────────────────────────────────────────────────────────────
 const FeedbackModal = memo(({
-  postId,
-  isDarkMode,
-  showToast,
-  onClose,
-  onOpenShare,
-  onOpenDelete,
-  onOpenBoost,
-  onToggleSave,
-  onHideLocal,
-  isOwner = false,
-  isBoosted = false,
-  isTempPost = false,
-  saved = false,
-  post = null,
+  postId, isDarkMode, showToast, onClose,
+  onOpenShare, onOpenDelete, onOpenBoost, onToggleSave, onHideLocal,
+  isOwner = false, isBoosted = false, isTempPost = false, saved = false, post = null,
 }) => {
   const [loading, setLoading] = useState(false);
   const [selectedAction, setSelectedAction] = useState(null);
   const author = useMemo(() => getPostAuthor(post), [post]);
   const [notificationsOn, setNotificationsOn] = useState(() => isAuthorNotificationEnabled(author.id));
 
-  useEffect(() => {
-    setNotificationsOn(isAuthorNotificationEnabled(author.id));
-  }, [author.id]);
+  useEffect(() => { setNotificationsOn(isAuthorNotificationEnabled(author.id)); }, [author.id]);
 
   const emitInteraction = (action) => {
     window.dispatchEvent(new CustomEvent("feed:interaction", {
@@ -843,8 +768,7 @@ const FeedbackModal = memo(({
       try { window.localStorage?.setItem(`feedback_given_${postId}`, '1'); } catch {}
       showToast?.("Retour enregistré", "success");
     } catch (err) {
-      const msg = err?.response?.data?.message || err.message || "Erreur";
-      showToast?.(msg, "error");
+      showToast?.(err?.response?.data?.message || err.message || "Erreur", "error");
     } finally {
       setLoading(false);
       emitInteraction(reason);
@@ -857,14 +781,11 @@ const FeedbackModal = memo(({
     }
   };
 
-  const closeThen = (fn) => {
-    onClose?.();
-    setTimeout(() => fn?.(), 0);
-  };
+  const closeThen = (fn) => { onClose?.(); setTimeout(() => fn?.(), 0); };
 
   const copyText = async (text, successMessage) => {
     try {
-      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      if (!navigator.clipboard) throw new Error("no clipboard");
       await navigator.clipboard.writeText(text);
       showToast?.(successMessage, "success");
     } catch {
@@ -873,239 +794,226 @@ const FeedbackModal = memo(({
     onClose?.();
   };
 
-  const copyPostLink = () => {
+  const copyPostLink = () =>
     copyText(`${window.location.origin}/posts/${postId}`, "Lien de la publication copié");
-  };
 
   const toggleNotifications = () => {
-    if (!author.id) {
-      showToast?.("Auteur introuvable pour cette publication", "error");
-      onClose?.();
-      return;
-    }
+    if (!author.id) { showToast?.("Auteur introuvable", "error"); onClose?.(); return; }
     const next = !notificationsOn;
     setNotificationsOn(next);
     setAuthorNotificationEnabled(author.id, next);
     if (next && "Notification" in window && Notification.permission === "default") {
-      try {
-        const request = Notification.requestPermission();
-        request?.catch?.(() => {});
-      } catch {}
+      try { Notification.requestPermission()?.catch?.(() => {}); } catch {}
     }
     showToast?.(
-      next
-        ? `Notifications activées pour les publications de ${author.name}`
-        : `Notifications désactivées pour ${author.name}`,
+      next ? `Notifications activées pour ${author.name}` : `Notifications désactivées pour ${author.name}`,
       "success"
     );
     onClose?.();
   };
 
-  const actionGroups = [
-    // Actions pour les autres publications (masquer/signaler) — non affichées si c'est votre propre post
-    ...(isOwner ? [] : [
-      [
-        {
-          label: "Masquer cette publication",
-          description: "Vous verrez moins de publications comme celle-ci.",
-          detail: "Cette publication sera retirée de votre fil immédiatement. Chantilink utilisera aussi ce retour pour vous montrer moins de contenus similaires.",
-          confirmLabel: "Masquer la publication",
-          icon: EyeSlashIcon,
-          onConfirm: () => sendFeedback(false, "hide", { hide: true }),
-        },
-        {
-          label: "Signaler cette publication",
-          description: "Signalez un problème avec cette publication.",
-          detail: "Utilisez cette action si le contenu semble abusif, trompeur, dangereux ou contraire aux règles. La publication sera retirée de votre fil et votre signalement sera transmis.",
-          confirmLabel: "Signaler et masquer",
-          icon: ExclamationTriangleIcon,
-          danger: true,
-          onConfirm: () => sendFeedback(false, "report", { hide: true }),
-        },
-      ]
-    ]),
-    [
-      {
-        label: "Ça m'intéresse",
-        description: "Vous verrez plus de publications de ce type.",
-        detail: "Cette action aide le fil à comprendre que ce sujet, cet auteur ou ce format vous plaît. Elle augmente les chances de voir des contenus proches.",
-        confirmLabel: "Voir plus comme ça",
-        icon: PlusCircleIcon,
-        onConfirm: () => sendFeedback(true, "interested"),
-      },
-      {
-        label: "Ça ne m'intéresse pas",
-        description: "Vous verrez moins de publications de ce type.",
-        detail: "Cette publication sera masquée et le fil réduira les contenus similaires dans vos prochaines recommandations.",
-        confirmLabel: "Voir moins comme ça",
-        icon: MinusCircleIcon,
-        onConfirm: () => sendFeedback(false, "not_interested", { hide: true }),
-      },
-    ],
-    [
-      {
-        label: notificationsOn ? "Désactiver les notifications" : "Activer les notifications",
-        description: notificationsOn ? "Ne plus recevoir d'alertes pour ce post." : "Recevoir les nouveautés de cette publication.",
-        detail: notificationsOn
-          ? `Vous ne recevrez plus d'alertes spécifiques lorsque ${author.name} publie du nouveau contenu.`
-          : `Vous serez notifié lorsque ${author.name} publie du nouveau contenu. L'app peut aussi vous proposer des publications similaires qui pourraient vous intéresser.`,
-        confirmLabel: notificationsOn ? "Désactiver" : "Activer",
-        icon: BellIcon,
-        onConfirm: toggleNotifications,
-      },
-      {
-        label: saved ? "Retirer des favoris" : "Enregistrer la publication",
-        description: saved ? "Retirer cette publication de vos éléments enregistrés." : "Retrouver cette publication plus tard.",
-        icon: BookmarkIcon,
-        onClick: () => closeThen(onToggleSave),
-      },
-      {
-        label: "Partager la publication",
-        description: "Envoyer cette publication à d'autres personnes.",
-        icon: ShareIcon,
-        onClick: () => {
-          emitInteraction("share");
-          closeThen(onOpenShare);
-        },
-      },
-      {
-        label: "Copier le lien",
-        description: "Copier l'adresse directe de cette publication.",
-        icon: LinkIcon,
-        onClick: copyPostLink,
-      },
-      {
-        label: "Pourquoi je vois cette publication",
-        description: "Voir les signaux utilisés pour vous la proposer.",
-        icon: InformationCircleIcon,
-        detail: "Cette publication peut apparaître selon vos interactions, vos abonnements, les contenus consultés récemment, les sujets du post et parfois des contenus exploratoires pour élargir votre fil.",
-        confirmLabel: "Ça m'intéresse",
-        onConfirm: () => sendFeedback(true, "interested"),
-        secondaryLabel: "Voir moins",
-        onSecondary: () => sendFeedback(false, "not_interested", { hide: true }),
-      },
-      {
-        label: "À propos de cette publication",
-        description: "Afficher les informations disponibles sur ce post.",
-        icon: InformationCircleIcon,
-        detail: `Publication créée sur Chantilink${author.name ? ` par ${author.name}` : ""}. Vous pouvez l'enregistrer, la partager, la masquer ou signaler un problème selon ce que vous souhaitez faire.`,
-        confirmLabel: saved ? "Retirer des favoris" : "Enregistrer",
-        onConfirm: () => closeThen(onToggleSave),
-      },
-      {
-        label: "Intégrer à un site",
-        description: "Copier le code d'intégration de cette publication.",
-        icon: CodeBracketIcon,
-        detail: "Cette action copie un code iframe que vous pourrez coller sur un site compatible pour afficher cette publication.",
-        confirmLabel: "Copier le code",
-        onConfirm: () => copyText(
-          `<iframe src="${window.location.origin}/embed/posts/${postId}"></iframe>`,
-          "Code d'intégration copié"
-        ),
-      },
-    ],
-    [
-      ...(isOwner && !isBoosted && !isTempPost ? [{
-        label: "Booster cette publication",
-        description: "Augmenter la visibilité de votre post.",
-        icon: RocketLaunchIcon,
-        detail: "Le boost lance une mise en avant payante pour donner plus de visibilité à cette publication pendant une durée choisie.",
-        confirmLabel: "Choisir un boost",
-        onConfirm: () => closeThen(onOpenBoost),
-      }] : []),
-      ...(isOwner && !isTempPost ? [{
-        label: "Supprimer cette publication",
-        description: "Retirer définitivement cette publication.",
-        icon: TrashIcon,
-        danger: true,
-        detail: "Cette action ouvre une confirmation de suppression. Si vous confirmez ensuite, la publication sera supprimée définitivement.",
-        confirmLabel: "Continuer",
-        onConfirm: () => closeThen(onOpenDelete),
-      }] : []),
-      ...(!isOwner ? [{
-        label: "Ne plus voir l'auteur",
-        description: "Limiter les publications de ce compte dans votre fil.",
-        icon: NoSymbolIcon,
-        detail: `Cette publication sera masquée et le fil réduira les contenus de ${author.name}.`,
-        confirmLabel: "Limiter cet auteur",
-        onConfirm: () => sendFeedback(false, "mute_author", { hide: true }),
-      }] : []),
-    ].filter(Boolean),
-  ].filter(group => group.length > 0);
+  // ── Groupes d'actions ────────────────────────────────────────────────────
+  const visitorOnlyGroup = !isOwner ? [
+    {
+      label: "Masquer cette publication",
+      description: "Vous verrez moins de publications comme celle-ci.",
+      detail: "Cette publication sera retirée de votre fil immédiatement. Chantilink utilisera ce retour pour affiner vos recommandations.",
+      confirmLabel: "Masquer la publication",
+      icon: EyeSlashIcon,
+      onConfirm: () => sendFeedback(false, "hide", { hide: true }),
+    },
+    {
+      label: "Signaler cette publication",
+      description: "Signalez un problème avec cette publication.",
+      detail: "Utilisez cette action si le contenu semble abusif, trompeur ou dangereux. La publication sera retirée de votre fil et votre signalement transmis.",
+      confirmLabel: "Signaler et masquer",
+      icon: ExclamationTriangleIcon,
+      danger: true,
+      onConfirm: () => sendFeedback(false, "report", { hide: true }),
+    },
+  ] : [];
+
+  const interestGroup = [
+    {
+      label: "Ça m'intéresse",
+      description: "Vous verrez plus de publications de ce type.",
+      detail: "Cette action aide le fil à comprendre que ce sujet, cet auteur ou ce format vous plaît.",
+      confirmLabel: "Voir plus comme ça",
+      icon: PlusCircleIcon,
+      onConfirm: () => sendFeedback(true, "interested"),
+    },
+    {
+      label: "Ça ne m'intéresse pas",
+      description: "Vous verrez moins de publications de ce type.",
+      detail: "Cette publication sera masquée et le fil réduira les contenus similaires.",
+      confirmLabel: "Voir moins comme ça",
+      icon: MinusCircleIcon,
+      onConfirm: () => sendFeedback(false, "not_interested", { hide: true }),
+    },
+  ];
+
+  const utilityGroup = [
+    {
+      label: notificationsOn ? "Désactiver les notifications" : "Activer les notifications",
+      description: notificationsOn ? "Ne plus recevoir d'alertes pour ce post." : "Recevoir les nouveautés de cette publication.",
+      detail: notificationsOn
+        ? `Vous ne recevrez plus d'alertes lorsque ${author.name} publie.`
+        : `Vous serez notifié lorsque ${author.name} publie du nouveau contenu.`,
+      confirmLabel: notificationsOn ? "Désactiver" : "Activer",
+      icon: BellIcon,
+      onConfirm: toggleNotifications,
+    },
+    {
+      label: saved ? "Retirer des favoris" : "Enregistrer la publication",
+      description: saved ? "Retirer cette publication de vos favoris." : "Retrouver cette publication plus tard.",
+      icon: BookmarkIcon,
+      onClick: () => closeThen(onToggleSave),
+    },
+    {
+      label: "Partager la publication",
+      description: "Envoyer cette publication à d'autres personnes.",
+      icon: ShareIcon,
+      onClick: () => { emitInteraction("share"); closeThen(onOpenShare); },
+    },
+    {
+      label: "Copier le lien",
+      description: "Copier l'adresse directe de cette publication.",
+      icon: LinkIcon,
+      onClick: copyPostLink,
+    },
+    {
+      label: "Pourquoi je vois cette publication",
+      description: "Voir les signaux utilisés pour vous la proposer.",
+      icon: InformationCircleIcon,
+      detail: "Cette publication peut apparaître selon vos interactions, vos abonnements et les contenus consultés récemment.",
+      confirmLabel: "Ça m'intéresse",
+      onConfirm: () => sendFeedback(true, "interested"),
+      secondaryLabel: "Voir moins",
+      onSecondary: () => sendFeedback(false, "not_interested", { hide: true }),
+    },
+    {
+      label: "À propos de cette publication",
+      description: "Afficher les informations disponibles sur ce post.",
+      icon: InformationCircleIcon,
+      detail: `Publication créée sur Chantilink${author.name ? ` par ${author.name}` : ""}.`,
+      confirmLabel: saved ? "Retirer des favoris" : "Enregistrer",
+      onConfirm: () => closeThen(onToggleSave),
+    },
+    {
+      label: "Intégrer à un site",
+      description: "Copier le code d'intégration de cette publication.",
+      icon: CodeBracketIcon,
+      detail: "Copie un code iframe que vous pourrez coller sur un site compatible.",
+      confirmLabel: "Copier le code",
+      onConfirm: () => copyText(
+        `<iframe src="${window.location.origin}/embed/posts/${postId}"></iframe>`,
+        "Code d'intégration copié"
+      ),
+    },
+  ];
+
+  const ownerGroup = isOwner && !isTempPost ? [
+    ...(!isBoosted ? [{
+      label: "Booster cette publication",
+      description: "Augmenter la visibilité de votre post.",
+      icon: RocketLaunchIcon,
+      detail: "Le boost lance une mise en avant payante pour donner plus de visibilité à cette publication.",
+      confirmLabel: "Choisir un boost",
+      onConfirm: () => closeThen(onOpenBoost),
+    }] : []),
+    {
+      label: "Supprimer cette publication",
+      description: "Retirer définitivement cette publication.",
+      icon: TrashIcon,
+      danger: true,
+      detail: "Cette action est irréversible. La publication sera définitivement supprimée.",
+      confirmLabel: "Supprimer définitivement",
+      onConfirm: () => closeThen(onOpenDelete),
+    },
+  ] : [];
+
+  const muteAuthorGroup = !isOwner ? [{
+    label: "Ne plus voir l'auteur",
+    description: "Limiter les publications de ce compte dans votre fil.",
+    icon: NoSymbolIcon,
+    detail: `Cette publication sera masquée et le fil réduira les contenus de ${author.name}.`,
+    confirmLabel: "Limiter cet auteur",
+    onConfirm: () => sendFeedback(false, "mute_author", { hide: true }),
+  }] : [];
+
+  const actionGroups = [visitorOnlyGroup, interestGroup, utilityGroup, ownerGroup, muteAuthorGroup]
+    .filter(g => g.length > 0);
 
   const handleActionClick = (action) => {
-    if (action.detail) {
-      setSelectedAction(action);
-      return;
-    }
+    if (action.detail) { setSelectedAction(action); return; }
     action.onClick?.();
   };
 
+  // ── Vue détail
   if (selectedAction) {
     const Icon = selectedAction.icon;
     return createPortal(
       <div
-        className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-black/40"
+        style={{ position: "fixed", inset: 0, zIndex: 9999999, pointerEvents: "auto",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 16, background: "rgba(0,0,0,0.5)" }}
         onClick={onClose}
       >
         <div
-          className={`relative w-full max-w-[420px] rounded-3xl border text-left shadow-2xl flex flex-col ${
-            isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
-          }`}
+          style={{ pointerEvents: "auto", width: "100%", maxWidth: 420, borderRadius: 24,
+            maxHeight: "88vh", overflow: "hidden", display: "flex", flexDirection: "column",
+            background: isDarkMode ? "#111827" : "#ffffff",
+            border: isDarkMode ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(0,0,0,0.08)",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.4)" }}
           onClick={(e) => e.stopPropagation()}
-          style={{ maxHeight: '88vh' }}
         >
-          <div className={`flex items-center gap-2 border-b px-3 py-2.5 flex-shrink-0 ${isDarkMode ? "border-white/10" : "border-gray-100"}`}>
-            <button
-              type="button"
-              onClick={() => setSelectedAction(null)}
-              className={`rounded-full p-2 ${isDarkMode ? "text-gray-200 hover:bg-white/10" : "text-gray-700 hover:bg-gray-100"}`}
-              aria-label="Retour aux actions"
-            >
-              <ArrowLeftIcon className="h-5 w-5" />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px",
+            borderBottom: isDarkMode ? "1px solid rgba(255,255,255,0.1)" : "1px solid #f0f0f0",
+            flexShrink: 0 }}>
+            <button type="button" onClick={() => setSelectedAction(null)}
+              style={{ pointerEvents: "auto", background: "none", border: "none", cursor: "pointer",
+                borderRadius: "50%", padding: 8, color: isDarkMode ? "#e5e7eb" : "#374151" }}>
+              <ArrowLeftIcon style={{ width: 20, height: 20 }} />
             </button>
-            <div className="min-w-0 flex-1">
-              <p className={`truncate text-sm font-bold ${isDarkMode ? "text-white" : "text-gray-950"}`}>{selectedAction.label}</p>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className={`rounded-full p-2 ${isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"}`}
-              aria-label="Fermer"
-            >
-              <XMarkIcon className="h-5 w-5" />
+            <p style={{ flex: 1, fontSize: 14, fontWeight: 700, margin: 0,
+              color: isDarkMode ? "#ffffff" : "#111827", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {selectedAction.label}
+            </p>
+            <button type="button" onClick={onClose}
+              style={{ pointerEvents: "auto", background: "none", border: "none", cursor: "pointer",
+                borderRadius: "50%", padding: 8, color: isDarkMode ? "#9ca3af" : "#6b7280" }}>
+              <XMarkIcon style={{ width: 20, height: 20 }} />
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto min-h-0 p-4">
-            <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-full ${
-              selectedAction.danger ? "bg-red-500/10 text-red-600" : "bg-orange-500/10 text-orange-600"
-            }`}>
-              <Icon className="h-5 w-5" />
+          <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch",
+            padding: 16, pointerEvents: "auto" }}>
+            <div style={{ width: 40, height: 40, borderRadius: "50%", marginBottom: 12,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              background: selectedAction.danger ? "rgba(239,68,68,0.1)" : "rgba(249,115,22,0.1)",
+              color: selectedAction.danger ? "#ef4444" : "#f97316" }}>
+              <Icon style={{ width: 20, height: 20 }} />
             </div>
-            <p className={`text-sm leading-6 ${isDarkMode ? "text-gray-200" : "text-gray-700"}`}>
+            <p style={{ fontSize: 14, lineHeight: 1.6, margin: "0 0 16px",
+              color: isDarkMode ? "#d1d5db" : "#374151" }}>
               {selectedAction.detail}
             </p>
-            <div className="mt-4 flex gap-2">
+            <div style={{ display: "flex", gap: 8 }}>
               {selectedAction.secondaryLabel && (
-                <button
-                  type="button"
-                  onClick={selectedAction.onSecondary}
-                  disabled={loading}
-                  className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold ${
-                    isDarkMode ? "bg-white/10 text-white hover:bg-white/15" : "bg-gray-100 text-gray-900 hover:bg-gray-200"
-                  }`}
-                >
+                <button type="button" onClick={selectedAction.onSecondary} disabled={loading}
+                  style={{ pointerEvents: "auto", flex: 1, padding: "10px 0", borderRadius: 12,
+                    fontWeight: 700, fontSize: 14, border: "none", cursor: loading ? "not-allowed" : "pointer",
+                    opacity: loading ? 0.6 : 1,
+                    background: isDarkMode ? "rgba(255,255,255,0.1)" : "#f3f4f6",
+                    color: isDarkMode ? "#ffffff" : "#111827" }}>
                   {selectedAction.secondaryLabel}
                 </button>
               )}
-              <button
-                type="button"
-                onClick={selectedAction.onConfirm}
-                disabled={loading}
-                className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-bold text-white disabled:opacity-60 ${
-                  selectedAction.danger ? "bg-red-600 hover:bg-red-700" : "bg-orange-500 hover:bg-orange-600"
-                }`}
-              >
+              <button type="button" onClick={selectedAction.onConfirm} disabled={loading}
+                style={{ pointerEvents: "auto", flex: 1, padding: "10px 0", borderRadius: 12,
+                  fontWeight: 700, fontSize: 14, border: "none", cursor: loading ? "not-allowed" : "pointer",
+                  opacity: loading ? 0.6 : 1,
+                  background: selectedAction.danger ? "#ef4444" : "#f97316",
+                  color: "#ffffff" }}>
                 {loading ? "Traitement..." : selectedAction.confirmLabel}
               </button>
             </div>
@@ -1116,76 +1024,87 @@ const FeedbackModal = memo(({
     );
   }
 
+  // ── Vue principale
   return createPortal(
     <div
-      className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-black/40"
+      style={{ position: "fixed", inset: 0, zIndex: 9999999, pointerEvents: "auto",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 16, background: "rgba(0,0,0,0.5)" }}
       onClick={onClose}
     >
       <div
-        className={`relative w-full max-w-[420px] rounded-3xl border text-left shadow-2xl flex flex-col ${
-          isDarkMode ? "border-white/10 bg-gray-900" : "border-gray-200 bg-white"
-        }`}
+        style={{ pointerEvents: "auto", width: "100%", maxWidth: 420, borderRadius: 24,
+          maxHeight: "88vh", overflow: "hidden", display: "flex", flexDirection: "column",
+          background: isDarkMode ? "#111827" : "#ffffff",
+          border: isDarkMode ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(0,0,0,0.08)",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.4)" }}
         onClick={(e) => e.stopPropagation()}
-        style={{ maxHeight: '88vh' }}
       >
-        <motion.div
-          initial={{ y: -6, opacity: 0, scale: 0.98 }}
-          animate={{ y: 0, opacity: 1, scale: 1 }}
-          exit={{ y: -6, opacity: 0, scale: 0.98 }}
-          transition={{ duration: 0.16 }}
-          style={{ width: "100%" }}
-          className="flex flex-col h-full"
-        >
+        {/* Header */}
+        <div style={{ padding: "16px 16px 12px", borderBottom: isDarkMode ? "1px solid rgba(255,255,255,0.1)" : "1px solid #f0f0f0",
+          flexShrink: 0, position: "relative" }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, paddingRight: 36,
+            color: isDarkMode ? "#ffffff" : "#111827" }}>
+            {isOwner ? "Gérer ma publication" : "Actions sur la publication"}
+          </h3>
+          {isOwner && (
+            <p style={{ fontSize: 12, margin: "2px 0 0", color: isDarkMode ? "#6b7280" : "#9ca3af" }}>
+              Vous êtes l'auteur de cette publication
+            </p>
+          )}
           <button type="button" onClick={onClose}
-            className={`absolute top-2.5 right-2.5 rounded-full p-2 transition-colors z-10 ${
-              isDarkMode ? "text-gray-300 hover:bg-white/10" : "text-gray-600 hover:bg-gray-100"
-            }`}
-            aria-label="Fermer les actions">
-            <XMarkIcon className="w-5 h-5" />
+            style={{ pointerEvents: "auto", position: "absolute", top: 12, right: 12,
+              background: "none", border: "none", cursor: "pointer", borderRadius: "50%", padding: 6,
+              color: isDarkMode ? "#9ca3af" : "#6b7280" }}>
+            <XMarkIcon style={{ width: 20, height: 20 }} />
           </button>
+        </div>
 
-          <div className={`px-4 pt-4 pb-3 ${isDarkMode ? "border-white/10" : "border-gray-100"} border-b flex-shrink-0`}>
-            <h3 className={`text-base font-bold pr-10 ${isDarkMode ? "text-white" : "text-gray-950"}`}>
-              Actions sur la publication
-            </h3>
-          </div>
-
-          <div className="flex-1 overflow-y-auto min-h-0">
-            {actionGroups.map((group, groupIndex) => (
-              <div
-                key={groupIndex}
-                className={`${groupIndex > 0 ? (isDarkMode ? "border-t border-white/10" : "border-t border-gray-200") : ""} py-1`}
-              >
-                {group.map((action) => {
-                  const Icon = action.icon;
-                  return (
-                    <button
-                      key={action.label}
-                      type="button"
-                      onClick={() => handleActionClick(action)}
-                      disabled={loading}
-                      className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors disabled:opacity-60 ${
-                        isDarkMode ? "hover:bg-white/[0.08]" : "hover:bg-gray-50"
-                      } ${action.danger ? "text-red-600" : (isDarkMode ? "text-gray-100" : "text-gray-950")}`}
-                    >
-                      <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center ${
-                        action.danger ? "text-red-600" : (isDarkMode ? "text-gray-200" : "text-gray-900")
-                      }`}>
-                        <Icon className="h-5 w-5" />
+        {/* Liste scrollable */}
+        <div style={{ flex: 1, overflowY: "auto", WebkitOverflowScrolling: "touch", pointerEvents: "auto" }}>
+          {actionGroups.map((group, gi) => (
+            <div key={gi} style={{
+              borderTop: gi > 0 ? (isDarkMode ? "1px solid rgba(255,255,255,0.08)" : "1px solid #f0f0f0") : "none",
+              padding: "4px 0",
+            }}>
+              {group.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <button
+                    key={action.label}
+                    type="button"
+                    onClick={() => handleActionClick(action)}
+                    disabled={loading}
+                    style={{
+                      pointerEvents: "auto",
+                      width: "100%", display: "flex", alignItems: "flex-start", gap: 12,
+                      padding: "12px 16px", background: "none", border: "none",
+                      cursor: loading ? "not-allowed" : "pointer", textAlign: "left",
+                      opacity: loading ? 0.6 : 1,
+                      color: action.danger ? "#ef4444" : isDarkMode ? "#f3f4f6" : "#111827",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = isDarkMode ? "rgba(255,255,255,0.05)" : "#f9fafb"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+                  >
+                    <span style={{ marginTop: 2, flexShrink: 0,
+                      color: action.danger ? "#ef4444" : isDarkMode ? "#d1d5db" : "#374151" }}>
+                      <Icon style={{ width: 20, height: 20 }} />
+                    </span>
+                    <span>
+                      <span style={{ display: "block", fontSize: 14, fontWeight: 600, lineHeight: 1.4 }}>
+                        {action.label}
                       </span>
-                      <span className="min-w-0">
-                        <span className="block text-sm font-semibold leading-5">{action.label}</span>
-                        <span className={`block text-xs leading-4 ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
-                          {action.description}
-                        </span>
+                      <span style={{ display: "block", fontSize: 12, lineHeight: 1.4,
+                        color: isDarkMode ? "#6b7280" : "#9ca3af" }}>
+                        {action.description}
                       </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </motion.div>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
       </div>
     </div>,
     getModalRoot()
@@ -1244,8 +1163,8 @@ const PostCardInner = forwardRef(({
   const [showShareModal,    setShowShareModal]    = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [boostedLocal, setBoostedLocal] = useState(() => !!post.isBoosted);
-  const [hiddenLocal, setHiddenLocal] = useState(() => isPostHidden(post));
-  const [isFollowing,   setIsFollowing]   = useState(() => {
+  const [hiddenLocal,  setHiddenLocal]  = useState(() => isPostHidden(post));
+  const [isFollowing,  setIsFollowing]  = useState(() => {
     if (!currentUser || !postUser._id || postUser._id === "unknown") return false;
     if (currentUser._id === postUser._id) return false;
     return (currentUser.following || []).some(id => {
@@ -1275,17 +1194,15 @@ const PostCardInner = forwardRef(({
   useEffect(() => { setCommentsCount(comments.length); }, [comments.length]);
   useEffect(() => { setViewsCount(getPostViewsCount(post)); }, [post._id, post.viewsCount, post.views]);
   useEffect(() => { if (post.isBoosted) setBoostedLocal(true); }, [post.isBoosted]);
-  useEffect(() => {
-    setHiddenLocal(isPostHidden(post));
-  }, [post._id]);
+  useEffect(() => { setHiddenLocal(isPostHidden(post)); }, [post._id]);
+
+  // ── NE PAS fermer le modal quand on clique à l'intérieur
+  // (géré par FeedbackModal lui-même via stopPropagation)
   useEffect(() => {
     if (!showFeedbackModal) return;
-    const closeOnOutsideClick = (e) => {
-      if (!cardRef.current || cardRef.current.contains(e.target)) return;
-      setShowFeedbackModal(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsideClick);
-    return () => document.removeEventListener("pointerdown", closeOnOutsideClick);
+    const onKey = (e) => { if (e.key === "Escape") setShowFeedbackModal(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [showFeedbackModal]);
 
   const isOwner = useMemo(() => {
@@ -1331,89 +1248,57 @@ const PostCardInner = forwardRef(({
       .finally(() => { loadingLikeRef.current = false; });
   }, []);
 
-  // ── handleFollow v27.1 — endpoint aligne sur le backend ──────────────────
-  // Backend : POST /api/users/:id/follow (toggle unique)
-  //   -> si l'utilisateur suit deja : unfollow
-  //   -> sinon : follow
-  // axiosClient envoie automatiquement le token via son intercepteur.
-  // On n'appelle PLUS /follow/follow/:id ni /follow/unfollow/:id (404).
   const handleFollow = useCallback((e) => {
     e?.stopPropagation();
     const { isFollowing, loadingFollow } = stateRef.current;
     const { postUser, currentUser, isMockPost, showToast, updateUserProfile } = postRef.current;
-    if (!currentUser)                          { showToast?.("Connectez-vous", "info"); return; }
-    if (loadingFollow)                         return;
-    if (!postUser._id || postUser._id === "unknown") { showToast?.("Utilisateur introuvable", "error"); return; }
-    if (currentUser._id === postUser._id)      { showToast?.("Vous ne pouvez pas vous suivre", "info"); return; }
-
+    if (!currentUser)                               { showToast?.("Connectez-vous", "info"); return; }
+    if (loadingFollow)                              return;
+    if (!postUser._id || postUser._id === "unknown"){ showToast?.("Utilisateur introuvable", "error"); return; }
+    if (currentUser._id === postUser._id)           { showToast?.("Vous ne pouvez pas vous suivre", "info"); return; }
     const was = isFollowing;
-
-    // Mise a jour optimiste
     setIsFollowing(!was);
     showToast?.(!was ? `Vous suivez ${postUser.fullName}` : `Vous ne suivez plus ${postUser.fullName}`, "success");
-
     if (isMockPost) return;
-
     setLoadingFollow(true);
-
-    // Appel du toggle unique
     axiosClient.post(`/users/${postUser._id}/follow`)
       .then(({ data }) => {
         if (!data.success) throw new Error(data.message || "Echec");
-
-        // Synchroniser le tableau following de l'utilisateur connecte
         const cf = currentUser.following || [];
         const uf = was
-          ? cf.filter(id => {
-              const s = typeof id === "object" ? (id._id || id) : id;
-              return s?.toString() !== postUser._id.toString();
-            })
+          ? cf.filter(id => { const s = typeof id === "object" ? (id._id || id) : id; return s?.toString() !== postUser._id.toString(); })
           : [...cf, postUser._id];
         updateUserProfile?.(currentUser._id, { following: uf });
       })
       .catch(err => {
-        // Rollback optimiste
         setIsFollowing(was);
         const status = err.response?.status;
-        if (status === 401 || status === 403)
-          showToast?.("Non autorise - reconnecte-toi", "error");
-        else if (status === 404)
-          showToast?.("Utilisateur introuvable", "error");
-        else
-          showToast?.(err.response?.data?.message || err.message || "Erreur", "error");
+        if (status === 401 || status === 403) showToast?.("Non autorise - reconnecte-toi", "error");
+        else if (status === 404)              showToast?.("Utilisateur introuvable", "error");
+        else showToast?.(err.response?.data?.message || err.message || "Erreur", "error");
       })
       .finally(() => setLoadingFollow(false));
   }, []);
 
-  // ── Navigation profil ─────────────────────────────────────────────────────
   const handleProfileClick = useCallback((e) => {
     e?.stopPropagation();
     const { postUser, post } = postRef.current;
     const id = postUser._id;
     if (!id || id === "unknown" || id === "null" || id === "undefined") return;
     const rawUser = post.user || post.author || {};
-    const instantUser = {
-      _id:            id,
-      fullName:       postUser.fullName,
-      profilePhoto:   postUser.profilePhoto,
-      isVerified:     postUser.isVerified,
-      isPremium:      postUser.isPremium,
-      username:       rawUser.username       || rawUser.email?.split("@")[0] || "",
-      bio:            rawUser.bio            || "",
-      location:       rawUser.location       || "",
-      website:        rawUser.website        || "",
-      isBot:          rawUser.isBot          || false,
-      followers:      rawUser.followers      || [],
-      following:      rawUser.following      || [],
-      followersCount: rawUser.followersCount || 0,
-      followingCount: rawUser.followingCount || 0,
-      createdAt:      rawUser.createdAt      || null,
-    };
-    navigate(`/profile/${id}`, { state: { instantUser } });
+    navigate(`/profile/${id}`, { state: { instantUser: {
+      _id: id, fullName: postUser.fullName, profilePhoto: postUser.profilePhoto,
+      isVerified: postUser.isVerified, isPremium: postUser.isPremium,
+      username: rawUser.username || rawUser.email?.split("@")[0] || "",
+      bio: rawUser.bio || "", location: rawUser.location || "", website: rawUser.website || "",
+      isBot: rawUser.isBot || false, followers: rawUser.followers || [],
+      following: rawUser.following || [], followersCount: rawUser.followersCount || 0,
+      followingCount: rawUser.followingCount || 0, createdAt: rawUser.createdAt || null,
+    }}});
   }, [navigate]);
 
   const handleOpenComments = useCallback((e) => { e?.stopPropagation(); setShowCommentsModal(true); }, []);
-  const handleOpenShare    = useCallback((e) => { e?.stopPropagation(); setShowShareModal(true);    }, []);
+  const handleOpenShare    = useCallback((e) => { e?.stopPropagation(); setShowShareModal(true); }, []);
   const handleSave         = useCallback(() => {
     setSaved(v => {
       const next = !v;
@@ -1425,8 +1310,8 @@ const PostCardInner = forwardRef(({
       return next;
     });
   }, []);
-  const handleExpand       = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
-  const handleOpenActions  = useCallback((e) => { e?.preventDefault(); e?.stopPropagation(); setShowFeedbackModal(true); }, []);
+  const handleExpand      = useCallback((e) => { e?.stopPropagation(); setExpanded(v => !v); }, []);
+  const handleOpenActions = useCallback((e) => { e?.preventDefault(); e?.stopPropagation(); setShowFeedbackModal(true); }, []);
 
   const openingRef = useRef(false);
 
@@ -1501,11 +1386,7 @@ const PostCardInner = forwardRef(({
     const postId = post?._id;
     if (!el || !postId || isMockPost || isOptimistic || isTempPost || !currentUser) return;
     if (String(postId).startsWith("temp_") || String(postId).startsWith("post_")) return;
-
-    let timer = null;
-    let enteredAt = 0;
-    let cancelled = false;
-
+    let timer = null, enteredAt = 0, cancelled = false;
     const sendView = async (visibleMs = 0) => {
       if (cancelled) return;
       const viewed = getSessionViewedPosts();
@@ -1513,39 +1394,26 @@ const PostCardInner = forwardRef(({
       markSessionViewedPost(postId);
       try {
         const { data } = await axiosClient.post(`/posts/${postId}/view`, {
-          source: "post_card",
-          watchPct: hasVideoMedia ? 55 : 100,
+          source: "post_card", watchPct: hasVideoMedia ? 55 : 100,
           watchTime: Math.max(1, Math.round(visibleMs / 1000)),
-        }, {
-          skipNetworkRetry: true,
-          timeout: 8000,
-        });
+        }, { skipNetworkRetry: true, timeout: 8000 });
         if (typeof data?.viewsCount === "number") setViewsCount(data.viewsCount);
         window.dispatchEvent(new CustomEvent("feed:interaction", {
           detail: { action: "view", post, position: post._displayPosition ?? 0, counted: !!data?.counted },
         }));
       } catch {}
     };
-
     const obs = new IntersectionObserver(([entry]) => {
       const visible = entry.isIntersecting && entry.intersectionRatio >= 0.55;
       if (visible) {
-        enteredAt = Date.now();
-        clearTimeout(timer);
+        enteredAt = Date.now(); clearTimeout(timer);
         timer = setTimeout(() => sendView(Date.now() - enteredAt), hasVideoMedia ? 1800 : 1000);
       } else {
-        clearTimeout(timer);
-        timer = null;
-        enteredAt = 0;
+        clearTimeout(timer); timer = null; enteredAt = 0;
       }
     }, { threshold: [0, 0.25, 0.55, 0.75] });
-
     obs.observe(el);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      obs.disconnect();
-    };
+    return () => { cancelled = true; clearTimeout(timer); obs.disconnect(); };
   }, [post?._id, currentUser?._id, isMockPost, isOptimistic, isTempPost, hasVideoMedia]);
 
   const TEXT_CARD_THRESHOLD = 120;
@@ -1573,34 +1441,8 @@ const PostCardInner = forwardRef(({
 
   const formattedDate = useRelativeTime(post.createdAt || null);
 
-  if (hiddenLocal && !ignoreHidden) {
-    if (import.meta.env?.DEV) {
-      console.warn("[PostCardDebug] hidden post", {
-        postId: post._id,
-        reason: "hidden_local_preference",
-        rawUser: post.user,
-        rawAuthor: post.author,
-        userId: post.userId,
-        content: String(post.content || post.contenu || "").slice(0, 80),
-      });
-    }
-    return null;
-  }
-
-  if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) {
-    if (import.meta.env?.DEV) {
-      console.warn("[PostCardDebug] hidden post", {
-        postId: post._id,
-        reason: postUser.isBannedOrDeleted ? "banned_or_deleted_author" : "invalid_author",
-        postUser,
-        rawUser: post.user,
-        rawAuthor: post.author,
-        userId: post.userId,
-        content: String(post.content || post.contenu || "").slice(0, 80),
-      });
-    }
-    return null;
-  }
+  if (hiddenLocal && !ignoreHidden) return null;
+  if (!isMockPost && !isOptimistic && (postUser.isInvalid || postUser.isBannedOrDeleted)) return null;
 
   return (
     <>
@@ -1630,10 +1472,8 @@ const PostCardInner = forwardRef(({
             </button>
             <div className="flex flex-col">
               <div className="flex items-center gap-1.5">
-                <span
-                  onClick={handleProfileClick}
-                  className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? "text-white" : "text-gray-900"}`}
-                >
+                <span onClick={handleProfileClick}
+                  className={`font-semibold text-sm cursor-pointer hover:opacity-70 truncate max-w-[150px] ${isDarkMode ? "text-white" : "text-gray-900"}`}>
                   {postUser.fullName}
                 </span>
                 {postUser.isVerified && <CheckBadgeIcon className="w-4 h-4 text-orange-500" />}
@@ -1655,7 +1495,6 @@ const PostCardInner = forwardRef(({
                 <RocketLaunchIcon style={{ width: 12, height: 12 }} /> Booster
               </button>
             )}
-
             {canFollow && !isTempPost && (
               <button onClick={handleFollow} disabled={loadingFollow}
                 style={{
@@ -1669,7 +1508,6 @@ const PostCardInner = forwardRef(({
                 {loadingFollow ? "..." : isFollowing ? "Suivi(e)" : "Suivre"}
               </button>
             )}
-
             <button type="button" onClick={handleOpenActions} aria-label="Ouvrir les actions de la publication"
               className="rounded-full border border-gray-200 bg-white/90 p-2 text-gray-700 hover:bg-gray-100 transition-colors"
               style={{ minWidth: 38, minHeight: 38 }}>
@@ -1698,21 +1536,21 @@ const PostCardInner = forwardRef(({
         {/* MEDIA */}
         {hasMedia && (
           <div className="w-full" style={{ position: "relative", zIndex: 1 }}>
-            <PostMedia
-              mediaUrls={mediaUrls}
-              isFirstPost={priority}
-              post={postForMedia}
-            />
+            <PostMedia mediaUrls={mediaUrls} isFirstPost={priority} post={postForMedia} />
           </div>
         )}
 
         <ActionsBar
-          liked={liked} likesCount={likesCount} saved={saved} commentsCount={commentsCount} viewsCount={viewsCount}
+          liked={liked} likesCount={likesCount} saved={saved}
+          commentsCount={commentsCount} viewsCount={viewsCount}
           isDarkMode={isDarkMode} onLike={handleLike}
           onOpenComments={handleOpenComments} onOpenShare={handleOpenShare} onSave={handleSave}
         />
 
-        {showFeedbackModal && createPortal(
+        {/* ✅ FIX v28 — PAS de createPortal externe ici.
+            FeedbackModal gère son propre createPortal en interne.
+            Le double portal cassait la propagation des events React. */}
+        {showFeedbackModal && (
           <ErrorBoundary>
             <FeedbackModal
               postId={post._id}
@@ -1730,10 +1568,8 @@ const PostCardInner = forwardRef(({
               saved={saved}
               post={post}
             />
-          </ErrorBoundary>,
-          getModalRoot()
+          </ErrorBoundary>
         )}
-
       </div>
 
       {showCommentsModal && (
@@ -1764,7 +1600,6 @@ const PostCardInner = forwardRef(({
           </Suspense>
         </ErrorBoundary>
       )}
-
     </>
   );
 });
@@ -1788,29 +1623,20 @@ const PostCard = forwardRef(({ post, onDeleted, showToast, loading = false, mock
   }
   return (
     <PostCardInner
-      ref={ref}
-      post={post}
-      onDeleted={onDeleted}
-      showToast={showToast}
-      mockPost={mockPost}
-      priority={priority}
-      ignoreHidden={ignoreHidden}
+      ref={ref} post={post} onDeleted={onDeleted} showToast={showToast}
+      mockPost={mockPost} priority={priority} ignoreHidden={ignoreHidden}
     />
   );
 });
 PostCard.displayName = "PostCard";
 
 const getPostMediaSignature = (post) => {
-  const media = Array.isArray(post?.media) ? post.media : (post?.media ? [post.media] : []);
+  const media  = Array.isArray(post?.media)  ? post.media  : (post?.media  ? [post.media]  : []);
   const images = Array.isArray(post?.images) ? post.images : (post?.images ? [post.images] : []);
-  const toUrl = (m) => typeof m === "string" ? m : (m?.url || "");
+  const toUrl  = (m) => typeof m === "string" ? m : (m?.url || "");
   return [
-    post?.mediaType || "",
-    post?.videoUrl || "",
-    post?.embedUrl || "",
-    post?.thumbnail || "",
-    ...media.map(toUrl),
-    ...images.map(toUrl),
+    post?.mediaType || "", post?.videoUrl || "", post?.embedUrl || "", post?.thumbnail || "",
+    ...media.map(toUrl), ...images.map(toUrl),
   ].join("|");
 };
 

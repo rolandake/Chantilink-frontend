@@ -17,6 +17,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useSocket } from "../../context/SocketContext";
 import { useToast } from "../../context/ToastContext";
 import { API } from "../../services/apiService";
+import { saveContactToOnApp } from "../../utils/contactsCache";
 import messageCache from "../../utils/messageCache";
 
 import IncomingCallModal from "../../components/IncomingCallModal";
@@ -40,21 +41,6 @@ import {
   vibrateCall,
   stopVibration,
 } from "../../utils/callSounds";
-
-// ─────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────
-const saveContactToOnApp = (contact) => {
-  if (!contact?.id) return;
-  try {
-    const stored = localStorage.getItem("onAppContacts");
-    const existing = stored ? JSON.parse(stored) : [];
-    const updated = [contact, ...existing.filter((c) => c.id !== contact.id)];
-    localStorage.setItem("onAppContacts", JSON.stringify(updated));
-  } catch (e) {
-    console.warn("saveContactToOnApp error:", e);
-  }
-};
 
 const openContactPicker = async () => {
   try {
@@ -82,6 +68,7 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
   const [syncStats, setSyncStats] = useState(null);
   const { token, updateUserProfile } = useAuth();
   const { showToast } = useToast();
+  const onboardingUserId = user?.id || user?._id;
 
   const formatPhone = (value) => {
     let v = value.replace(/[^\d+]/g, "");
@@ -124,7 +111,7 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
         total: picked.length,
         onApp: syncResp.stats?.onApp || syncResp.onChantilink?.length || 0,
       };
-      (syncResp.onChantilink || []).forEach((c) => saveContactToOnApp(c));
+      (syncResp.onChantilink || []).forEach((c) => saveContactToOnApp(c, onboardingUserId));
       setSyncStats(stats);
       setStep("done");
     } catch (err) {
@@ -573,7 +560,7 @@ export default function Messages() {
       if (fresh.length > 0) {
         await messageCache.saveConversations(fresh);
         setConversations(fresh);
-        fresh.forEach((conv) => { if (conv.id) saveContactToOnApp(conv); });
+        fresh.forEach((conv) => { if (conv.id) saveContactToOnApp(conv, currentUserId); });
         const counts = {};
         fresh.forEach((c) => { if (c.unreadCount > 0) counts[c.id] = c.unreadCount; });
         setUnreadCounts(counts);
@@ -584,7 +571,7 @@ export default function Messages() {
     } finally {
       setLoading(false);
     }
-  }, [token, showToast]);
+  }, [token, showToast, currentUserId]);
 
   const sendMediaMessage = useCallback(async (messageData) => {
     if (!selectedContact || !currentUserId) return null;
@@ -640,14 +627,14 @@ export default function Messages() {
       isOnline: contact.isOnline,
       lastSeen: contact.lastSeen,
     };
-    saveContactToOnApp(normalized);
+    saveContactToOnApp(normalized, currentUserId);
     setSelectedContact(normalized);
     setMessages([]);
     loadMessages(normalized.id);
     setView("chat");
     setModal(null);
     setUnreadCounts((prev) => { const n = { ...prev }; delete n[normalized.id]; return n; });
-  }, [loadMessages]);
+  }, [loadMessages, currentUserId]);
 
   const handleInputChange = useCallback((e) => {
     setInput(e.target.value);
@@ -825,14 +812,14 @@ export default function Messages() {
     if (location.state?.selectedContact && location.state?.openChat) {
       const contact = location.state.selectedContact;
       const normalized = { id: contact.id || contact._id, fullName: contact.fullName, username: contact.username, profilePhoto: contact.profilePhoto, isOnline: contact.isOnline, lastSeen: contact.lastSeen };
-      saveContactToOnApp(normalized);
+      saveContactToOnApp(normalized, currentUserId);
       setSelectedContact(normalized);
       setMessages([]);
       loadMessages(normalized.id);
       setView("chat");
       navigate("/messages", { replace: true, state: {} });
     }
-  }, [location.state, navigate, loadMessages]);
+  }, [location.state, navigate, loadMessages, currentUserId]);
 
   useEffect(() => {
     if (!connected) return;

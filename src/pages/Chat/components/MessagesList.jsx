@@ -385,7 +385,7 @@ const DateSeparator = React.memo(({ date }) => {
 });
 
 // === MESSAGE ITEM AVEC SUPPRESSION - CORRIGÉ ===
-const MessageItem = React.memo(({ msg, prevMsg, currentUserId, conversationId, onDelete }) => {
+const MessageItem = React.memo(React.forwardRef(({ msg, prevMsg, currentUserId, conversationId, onDelete }, ref) => {
   const [showMenu, setShowMenu] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
@@ -440,7 +440,7 @@ const MessageItem = React.memo(({ msg, prevMsg, currentUserId, conversationId, o
     return (
       <React.Fragment key={msg._id}>
         {showDate && <DateSeparator date={msg.timestamp} />}
-        <div className={`flex w-full ${isMe ? "justify-end" : "justify-start"} mb-2`}>{renderContent()}</div>
+        <div ref={ref} className={`flex w-full ${isMe ? "justify-end" : "justify-start"} mb-2`}>{renderContent()}</div>
       </React.Fragment>
     );
   }
@@ -449,6 +449,7 @@ const MessageItem = React.memo(({ msg, prevMsg, currentUserId, conversationId, o
     <React.Fragment key={msg._id}>
       {showDate && <DateSeparator date={msg.timestamp} />}
       <motion.div 
+        ref={ref}
         initial={{ opacity: 0, y: 10 }} 
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, x: isMe ? 100 : -100, transition: { duration: 0.2 } }}
@@ -497,7 +498,9 @@ const MessageItem = React.memo(({ msg, prevMsg, currentUserId, conversationId, o
       </AnimatePresence>
     </React.Fragment>
   );
-});
+}));
+
+MessageItem.displayName = "MessageItem";
 
 // === COMPOSANT PRINCIPAL ===
 export const MessagesList = ({ messages = [], loading, currentUserId, endRef, conversationId, onDeleteMessage }) => {
