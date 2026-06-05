@@ -71,7 +71,7 @@ export default function PrivacyAndSafetyPolicy() {
           📧 Pour toute question concernant vos données ou pour demander la
           suppression de votre compte Chantilink, envoyez un email à :{" "}
           <strong>
-            <a href="mailto:akeroland63@gmail.com">akeroland63@gmail.com</a>
+            <a href="mailto:Chantilink6@gmail.com">Chantilink6@gmail.com</a>
           </strong>.
         </p>
         <p>
@@ -117,7 +117,7 @@ export default function PrivacyAndSafetyPolicy() {
         </p>
         <p>
           Vous pouvez également nous contacter à :
-          <strong> akeroland63@gmail.com</strong>
+          <strong> Chantilink6@gmail.com</strong>
         </p>
       </section>
 
