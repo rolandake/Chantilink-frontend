@@ -57,6 +57,12 @@ const openContactPicker = async () => {
   }
 };
 
+const getEntityId = (value) => {
+  if (!value) return "";
+  if (typeof value === "object") return String(value._id || value.id || "");
+  return String(value);
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ONBOARDING
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,7 +74,7 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
   const [syncStats, setSyncStats] = useState(null);
   const { token, updateUserProfile } = useAuth();
   const { showToast } = useToast();
-  const onboardingUserId = user?.id || user?._id;
+  const onboardingUserId = getEntityId(user);
 
   const formatPhone = (value) => {
     let v = value.replace(/[^\d+]/g, "");
@@ -485,7 +491,7 @@ export default function Messages() {
   const [typingUsers, setTypingUsers] = useState([]);
 
   // ── ONBOARDING ──
-  const currentUserId     = user?.id || user?._id;
+  const currentUserId     = getEntityId(user);
   const onboardingKey     = currentUserId ? `chantilink_onboarding_done_${currentUserId}` : null;
   const hasSeenOnboarding = onboardingKey ? !!localStorage.getItem(onboardingKey) : true;
   const needsOnboarding   = !hasSeenOnboarding && !user?.phone;
@@ -620,7 +626,7 @@ export default function Messages() {
 
   const handleContactSelect = useCallback((contact) => {
     const normalized = {
-      id: contact.id || contact._id,
+      id: getEntityId(contact),
       fullName: contact.fullName,
       username: contact.username,
       profilePhoto: contact.profilePhoto,
@@ -832,9 +838,10 @@ export default function Messages() {
     if (!connected || !socket || !currentUserId) return;
 
     const handleReceiveMessage = async (message) => {
-      const senderId = typeof message.sender === "object" ? message.sender._id : message.sender;
-      const recipientId = typeof message.recipient === "object" ? message.recipient._id : message.recipient;
-      const isCurrentChat = selectedContact && (senderId === selectedContact.id || recipientId === selectedContact.id);
+      const senderId = getEntityId(message.sender);
+      const recipientId = getEntityId(message.recipient);
+      const selectedId = getEntityId(selectedContact);
+      const isCurrentChat = !!selectedId && (senderId === selectedId || recipientId === selectedId);
       if (isCurrentChat) {
         if (senderId !== currentUserId) { try { playReceiveSound(); } catch {} }
         try { await messageCache.addMessage(currentUserId, selectedContact.id, message); } catch {}
@@ -844,14 +851,22 @@ export default function Messages() {
           return (exists ? prev : [...filtered, message]).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
         });
         setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
-      } else {
+      } else if (senderId && senderId !== currentUserId) {
         setUnreadCounts((prev) => ({ ...prev, [senderId]: (prev[senderId] || 0) + 1 }));
       }
       loadConversations();
     };
 
     const handleMessageSent = async (message) => {
-      try { if (selectedContact?.id) await messageCache.addMessage(currentUserId, selectedContact.id, message); } catch {}
+      const senderId = getEntityId(message.sender);
+      const recipientId = getEntityId(message.recipient);
+      const selectedId = getEntityId(selectedContact);
+      if (!selectedId || (senderId !== selectedId && recipientId !== selectedId)) {
+        loadConversations();
+        return;
+      }
+
+      try { await messageCache.addMessage(currentUserId, selectedContact.id, message); } catch {}
       setMessages((prev) => {
         if (prev.some((m) => m._id === message._id)) return prev;
         const filtered = prev.filter((m) => m.status !== "sending" || m.content !== message.content);

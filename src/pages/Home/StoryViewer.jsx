@@ -279,7 +279,7 @@ const ViewsModal = ({ storyId, slideIndex, localViewers, onClose, onNavigate }) 
 //    (sans appeler onClose() en plus) → navigation au premier clic
 // ─────────────────────────────────────────────────────────────────
 export default function StoryViewer({ stories = [], currentUser, onClose, onDeleteSlide, onNavigate }) {
-  const { viewSlide } = useStories();
+  const { viewSlide, reactToSlide } = useStories();
   const navigate = useNavigate();
 
   const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
@@ -291,6 +291,9 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
   const [showDeleteConfirm, setShowDeleteConfirm]   = useState(false);
   const [isMuted,           setIsMuted]             = useState(false);
   const [showOptionsMenu,   setShowOptionsMenu]     = useState(false);
+  const [replyText,         setReplyText]           = useState("");
+  const [sendingReaction,   setSendingReaction]     = useState(false);
+  const [reactionFeedback,  setReactionFeedback]    = useState(null);
 
   const [apiViewCount,  setApiViewCount]  = useState(null);
   const viewCacheRef   = useRef({});
@@ -528,6 +531,36 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
     setLoadedSlides(prev => new Set(prev).add(slideKey));
   }, [slideKey]);
 
+  const showReactionFeedback = useCallback((message, type = "success") => {
+    setReactionFeedback({ message, type });
+    window.setTimeout(() => setReactionFeedback(null), 1800);
+  }, []);
+
+  const sendReaction = useCallback(async (reaction, type = "emoji") => {
+    if (!story?._id || !slide || isMyStory || sendingReaction) return;
+    const clean = String(reaction || "").trim();
+    if (!clean) return;
+
+    setSendingReaction(true);
+    setIsPaused(true);
+    try {
+      const result = await reactToSlide?.(story._id, slideIdx, clean, type);
+      if (!result?.success) throw new Error(result?.error || "Réaction impossible");
+      if (type === "text") setReplyText("");
+      showReactionFeedback(type === "text" ? "Message envoyé" : "Réaction envoyée");
+    } catch (err) {
+      showReactionFeedback(err.message || "Envoi impossible", "error");
+    } finally {
+      setSendingReaction(false);
+      setIsPaused(false);
+    }
+  }, [story?._id, slide, isMyStory, sendingReaction, reactToSlide, slideIdx, showReactionFeedback]);
+
+  const handleReplySubmit = useCallback((e) => {
+    e?.preventDefault?.();
+    sendReaction(replyText, "text");
+  }, [replyText, sendReaction]);
+
   if (!slide) return null;
 
   const slideBg   = getSlideBg(slide);
@@ -730,21 +763,57 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
 
         {/* Réponse (autres users) */}
         {!isMyStory && (
-          <div className="absolute bottom-[calc(env(safe-area-inset-bottom)+20px)] left-4 right-4 z-[10001] flex items-center gap-3">
+          <form
+            onSubmit={handleReplySubmit}
+            className="absolute bottom-[calc(env(safe-area-inset-bottom)+20px)] left-4 right-4 z-[10001] flex items-center gap-3"
+          >
             <input
               type="text"
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
               placeholder="Envoyer un message..."
               className="flex-1 px-4 py-3 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white placeholder-white/60 outline-none focus:bg-white/20 transition-all"
               onClick={(e) => e.stopPropagation()}
+              onFocus={() => setIsPaused(true)}
+              onBlur={() => setIsPaused(false)}
+              disabled={sendingReaction}
             />
-            <button className="p-3 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white hover:bg-white/20 active:scale-95 transition-all">
-              <Heart size={20} />
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); sendReaction("❤️", "emoji"); }}
+              disabled={sendingReaction}
+              className="p-3 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white hover:bg-white/20 active:scale-95 transition-all disabled:opacity-50"
+              title="Réagir"
+            >
+              {sendingReaction ? <Loader2 size={20} className="animate-spin" /> : <Heart size={20} />}
             </button>
-            <button className="p-3 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white hover:bg-white/20 active:scale-95 transition-all">
-              <Send size={20} />
+            <button
+              type="submit"
+              disabled={sendingReaction || !replyText.trim()}
+              className="p-3 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white hover:bg-white/20 active:scale-95 transition-all disabled:opacity-50"
+              title="Envoyer"
+            >
+              {sendingReaction ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
             </button>
-          </div>
+          </form>
         )}
+
+        <AnimatePresence>
+          {reactionFeedback && (
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.96 }}
+              className={`absolute left-1/2 -translate-x-1/2 z-[10002] px-4 py-2 rounded-full text-sm font-semibold shadow-xl ${
+                reactionFeedback.type === "error"
+                  ? "bottom-[calc(env(safe-area-inset-bottom)+82px)] bg-red-500 text-white"
+                  : "bottom-[calc(env(safe-area-inset-bottom)+82px)] bg-white text-gray-900"
+              }`}
+            >
+              {reactionFeedback.message}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <div className="absolute bottom-2 text-white/20 text-[9px] font-bold tracking-widest pointer-events-none uppercase">
           Glisser vers le bas pour fermer

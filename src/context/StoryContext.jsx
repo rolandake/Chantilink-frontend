@@ -273,7 +273,11 @@ export function StoryProvider({ children }) {
           const newSlides = [...story.slides];
           if (newSlides[slideIndex]) {
             const currentViews = newSlides[slideIndex].views || [];
-            if (!currentViews.includes(user._id)) {
+            const hasCurrentUserView = currentViews.some((view) => {
+              const viewerId = typeof view === "object" ? (view?._id || view?.id) : view;
+              return String(viewerId) === String(user._id);
+            });
+            if (!hasCurrentUserView) {
                newSlides[slideIndex] = {
                  ...newSlides[slideIndex],
                  views: [...currentViews, user._id]
@@ -300,6 +304,52 @@ export function StoryProvider({ children }) {
       setTimeout(() => viewingRef.current.delete(key), 2000);
     }
   }, [token, user?._id]);
+
+  // ✅ Réagir à une slide : REST pour analytics + socket pour message DM au propriétaire
+  const reactToSlide = useCallback(async (storyId, slideIndex = 0, reaction = "❤️", type = "emoji") => {
+    if (!token || !user?._id) return { success: false, error: "Auth required" };
+    if (!storyId) return { success: false, error: "Story required" };
+
+    const emoji = type === "emoji" ? reaction : "💬";
+
+    try {
+      await axios.post(
+        `${API_URL}/story/${storyId}/slides/${slideIndex}/react`,
+        { emoji },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      setStories(prev => prev.map(story => {
+        if (story._id !== storyId) return story;
+        const slides = [...(story.slides || [])];
+        const slide = slides[slideIndex];
+        if (!slide) return story;
+
+        const reactions = Array.isArray(slide.reactions) ? [...slide.reactions] : [];
+        const existing = reactions.findIndex((item) => {
+          const reactorId = typeof item?.user === "object" ? (item.user?._id || item.user?.id) : item?.user;
+          return String(reactorId) === String(user._id);
+        });
+        const nextReaction = { user: user._id, emoji, createdAt: new Date().toISOString() };
+        if (existing >= 0) reactions[existing] = { ...reactions[existing], ...nextReaction };
+        else reactions.push(nextReaction);
+
+        slides[slideIndex] = { ...slide, reactions };
+        return { ...story, slides };
+      }));
+
+      if (socket?.connected) {
+        socket.emit("storyReaction", { storyId, slideIndex, reaction, type });
+      }
+
+      return { success: true };
+    } catch (err) {
+      const status = err.response?.status;
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message;
+      console.error("❌ [Story] Reaction Error:", { status, error: errorMsg });
+      return { success: false, error: errorMsg, status };
+    }
+  }, [token, user?._id, socket]);
 
   // ✅ Obtenir les analytics
   const getAnalytics = useCallback(async (storyId) => {
@@ -335,8 +385,9 @@ export function StoryProvider({ children }) {
     deleteStory,
     deleteSlide,  // ✅ AJOUTÉ
     viewSlide,
+    reactToSlide,
     getAnalytics
-  }), [stories, myStories, loading, error, uploadProgress, fetchStories, createStory, deleteStory, deleteSlide, viewSlide, getAnalytics]);
+  }), [stories, myStories, loading, error, uploadProgress, fetchStories, createStory, deleteStory, deleteSlide, viewSlide, reactToSlide, getAnalytics]);
 
   return <StoryContext.Provider value={value}>{children}</StoryContext.Provider>;
 }

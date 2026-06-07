@@ -54,6 +54,7 @@ const BOOST_PLANS = [
 const SAVED_POSTS_KEY = "chantilink_saved_posts_v1";
 const VIEWED_POSTS_SESSION_KEY = "chantilink_viewed_posts_session_v1";
 const VIEWED_POSTS_SESSION = new Set();
+const VIEWING_POSTS_SESSION = new Set();
 
 const getPostViewsCount = (post) => {
   const raw = Array.isArray(post?.views) ? post.views.length : (post?.viewsCount ?? post?.views ?? 0);
@@ -1391,17 +1392,22 @@ const PostCardInner = forwardRef(({
       if (cancelled) return;
       const viewed = getSessionViewedPosts();
       if (viewed.has(String(postId))) return;
-      markSessionViewedPost(postId);
+      if (VIEWING_POSTS_SESSION.has(String(postId))) return;
+      VIEWING_POSTS_SESSION.add(String(postId));
       try {
         const { data } = await axiosClient.post(`/posts/${postId}/view`, {
           source: "post_card", watchPct: hasVideoMedia ? 55 : 100,
           watchTime: Math.max(1, Math.round(visibleMs / 1000)),
         }, { skipNetworkRetry: true, timeout: 8000 });
+        markSessionViewedPost(postId);
         if (typeof data?.viewsCount === "number") setViewsCount(data.viewsCount);
         window.dispatchEvent(new CustomEvent("feed:interaction", {
           detail: { action: "view", post, position: post._displayPosition ?? 0, counted: !!data?.counted },
         }));
-      } catch {}
+      } catch {
+      } finally {
+        VIEWING_POSTS_SESSION.delete(String(postId));
+      }
     };
     const obs = new IntersectionObserver(([entry]) => {
       const visible = entry.isIntersecting && entry.intersectionRatio >= 0.55;

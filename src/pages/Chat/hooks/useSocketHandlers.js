@@ -5,6 +5,12 @@
 import { useEffect } from "react";
 import * as Tone from "tone";
 
+const getEntityId = (value) => {
+  if (!value) return "";
+  if (typeof value === "object") return String(value._id || value.id || "");
+  return String(value);
+};
+
 export function useSocketHandlers({
   connected, on, off, getUnreadCounts, markAsRead,
   acceptCall, rejectCall, socketEndCall,
@@ -22,7 +28,8 @@ export function useSocketHandlers({
       return {
         ...raw,
         _id: raw._id || raw.id,
-        senderId: raw.sender?._id || raw.sender,
+        senderId: getEntityId(raw.sender),
+        recipientId: getEntityId(raw.recipient),
         file: fileUrl,
         type: raw.type || (fileUrl ? 'file' : 'text'),
         metadata: raw.metadata || {}, // Pour la taille, durée, etc.
@@ -36,8 +43,10 @@ export function useSocketHandlers({
         const m = normalizeMessage(raw);
         if (processedMessagesRef.current.has(m._id)) return;
 
-        const isOwn = m.senderId === user?.id;
-        const isCurrentChat = sel.friend?.id === m.senderId || (isOwn && sel.friend?.id === m.recipient);
+        const currentUserId = getEntityId(user);
+        const selectedFriendId = getEntityId(sel.friend);
+        const isOwn = m.senderId === currentUserId;
+        const isCurrentChat = selectedFriendId === m.senderId || (isOwn && selectedFriendId === m.recipientId);
 
         if (isCurrentChat) {
           setData(p => {
@@ -142,7 +151,7 @@ export function useSocketHandlers({
     };
   }, [
     connected, sel.friend?.id, data.conn, on, off, getUnreadCounts, 
-    markAsRead, showToast, user?.id, setData, setUi, 
+    markAsRead, showToast, user, setData, setUi, 
     setIncomingCall, processedMessagesRef, cleanupCallRingtone
   ]);
 }

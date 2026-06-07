@@ -17,6 +17,12 @@ import { fr } from "date-fns/locale";
 import { getMessageUrl } from "../../../utils/messageUrlUtils";
 import { localMediaStorage } from "../../../utils/LocalMediaStorage";
 
+const getEntityId = (value) => {
+  if (!value) return "";
+  if (typeof value === "object") return String(value._id || value.id || "");
+  return String(value);
+};
+
 // === DÉTECTION TYPE ===
 const detectFileType = (msg) => {
   if (msg.type === 'missed-call' || msg.type === 'system' || msg.type === 'story_reaction') {
@@ -390,8 +396,8 @@ const MessageItem = React.memo(React.forwardRef(({ msg, prevMsg, currentUserId, 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
   const showDate = !prevMsg || new Date(msg.timestamp).toDateString() !== new Date(prevMsg.timestamp).toDateString();
-  const senderId = typeof msg.sender === 'object' ? msg.sender._id : msg.sender;
-  const isMe = senderId === currentUserId;
+  const senderId = getEntityId(msg.sender);
+  const isMe = senderId === getEntityId(currentUserId);
   const isTemp = msg.status === 'sending' || msg._id?.toString().startsWith('temp-');
   
   const mediaUrl = getMessageUrl(msg);
