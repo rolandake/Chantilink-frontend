@@ -273,8 +273,13 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
   }, [allGroupedStories.length]);
 
   const handleOpenStory = useCallback((group) => {
-    onOpenStory(group.stories, group.owner);
-  }, [onOpenStory]);
+    const startIndex = allGroupedStories.findIndex((item) => item.id === group.id);
+    const orderedGroups = startIndex >= 0
+      ? [...allGroupedStories.slice(startIndex), ...allGroupedStories.slice(0, startIndex)]
+      : [group];
+    const queuedStories = orderedGroups.flatMap((item) => item.stories || []);
+    onOpenStory(queuedStories, group.owner);
+  }, [allGroupedStories, onOpenStory]);
 
   if (loading && stories.length === 0) {
     return (
