@@ -111,7 +111,7 @@ const Highlight = memo(({ text = "", query = "", isDarkMode }) => {
 Highlight.displayName = "Highlight";
 
 // ── Carte résultat ────────────────────────────────────────────────────────────
-const ResultCard = memo(({ profile, query, onClick, isDarkMode, index }) => {
+const ResultCard = memo(React.forwardRef(({ profile, query, onClick, isDarkMode, index }, ref) => {
   const badges = [];
   if (profile.isVerified) badges.push({ label: "Vérifié",  color: "#3b82f6", icon: "✓" });
   if (profile.isPremium)  badges.push({ label: "Premium",  color: "#f59e0b", icon: "★" });
@@ -187,7 +187,7 @@ const ResultCard = memo(({ profile, query, onClick, isDarkMode, index }) => {
       </div>
     </motion.div>
   );
-});
+}));
 ResultCard.displayName = "ResultCard";
 
 const fmtNum = (n = 0) => {
@@ -257,6 +257,7 @@ const SearchPanel = memo(({ isOpen, onClose, isDarkMode, onNavigate }) => {
 
   const [query,       setQuery]       = useState("");
   const [results,     setResults]     = useState([]);
+  const [postResults, setPostResults] = useState([]);
   const [loading,     setLoading]     = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [activeFilter,setActiveFilter]= useState("all");
@@ -317,10 +318,11 @@ const SearchPanel = memo(({ isOpen, onClose, isDarkMode, onNavigate }) => {
   // ── Recherche réseau ──────────────────────────────────────────────────────
   // Recherche par : fullName, username, bio (mots-clés fragmentés)
   // Si plusieurs mots, on recherche chaque mot séparément et on fusionne.
+  // ── Recherche globale (users + posts) ──────────────────────────────────
   const doSearch = useCallback(async (q) => {
     const trimmed = q.trim();
     if (!trimmed || trimmed.length < 2) {
-      setResults([]); setHasSearched(false); return;
+      setResults([]); setPostResults([]); setHasSearched(false); return;
     }
 
     if (abortRef.current) abortRef.current.abort();
@@ -335,33 +337,34 @@ const SearchPanel = memo(({ isOpen, onClose, isDarkMode, onNavigate }) => {
       const headers = { Authorization: `Bearer ${token}` };
       const signal  = abortRef.current.signal;
 
-      // Si la query contient plusieurs mots, on lance une recherche par mot-clé
-      // en plus de la requête globale, pour maximiser les résultats.
-      const words = trimmed.split(/\s+/).filter(w => w.length >= 2);
-      const queries = [trimmed, ...words.filter(w => w !== trimmed)].slice(0, 3);
+      // Recherche globale via la nouvelle route /api/search
+      const { data } = await axios.get(`${API_URL}/api/search?q=${encodeURIComponent(trimmed)}&type=all`, { headers, signal });
 
-      const responses = await Promise.allSettled(
-        queries.map(q =>
-          axios.get(`${API_URL}/users/search?q=${encodeURIComponent(q)}`, { headers, signal })
-        )
-      );
-
-      // Fusion + déduplification par _id
-      const seen = new Set();
-      const merged = [];
-      for (const r of responses) {
-        if (r.status === "fulfilled") {
-          const users = r.value.data?.users || r.value.data?.data || [];
-          for (const u of users) {
-            if (!seen.has(u._id)) { seen.add(u._id); merged.push(u); }
-          }
-        }
-      }
-
-      setResults(merged);
+      setResults(data.users || []);
+      setPostResults(data.posts || []);
     } catch (err) {
       if (err.name !== "CanceledError" && err.code !== "ERR_CANCELED") {
-        setResults([]);
+        // Fallback : essayer l'ancienne route /users/search
+        try {
+          const token = await getToken(activeUserId);
+          const headers = { Authorization: `Bearer ${token}` };
+          const signal  = abortRef.current.signal;
+          const words = trimmed.split(/\s+/).filter(w => w.length >= 2);
+          const queries = [trimmed, ...words.filter(w => w !== trimmed)].slice(0, 3);
+          const responses = await Promise.allSettled(
+            queries.map(q => axios.get(`${API_URL}/users/search?q=${encodeURIComponent(q)}`, { headers, signal }))
+          );
+          const seen = new Set();
+          const merged = [];
+          for (const r of responses) {
+            if (r.status === "fulfilled") {
+              const users = r.value.data?.users || r.value.data?.data || [];
+              for (const u of users) { if (!seen.has(u._id)) { seen.add(u._id); merged.push(u); } }
+            }
+          }
+          setResults(merged);
+          setPostResults([]);
+        } catch { setResults([]); setPostResults([]); }
       }
     } finally {
       setLoading(false);
@@ -380,7 +383,7 @@ const SearchPanel = memo(({ isOpen, onClose, isDarkMode, onNavigate }) => {
   }, [doSearch]);
 
   const handleClear = useCallback(() => {
-    setQuery(""); setResults([]); setHasSearched(false);
+    setQuery(""); setResults([]); setPostResults([]); setHasSearched(false);
     inputRef.current?.focus();
   }, []);
 
@@ -415,8 +418,8 @@ const SearchPanel = memo(({ isOpen, onClose, isDarkMode, onNavigate }) => {
 
   const showHistory  = !query.trim() && history.length > 0;
   const showTrending = !query.trim() && history.length === 0;
-  const showEmpty    = hasSearched && !loading && filteredResults.length === 0 && query.trim();
-  const showFilters  = results.length > 0;
+  const showEmpty    = hasSearched && !loading && filteredResults.length === 0 && postResults.length === 0 && query.trim();
+  const showFilters  = results.length > 0 || postResults.length > 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -623,11 +626,11 @@ const SearchPanel = memo(({ isOpen, onClose, isDarkMode, onNavigate }) => {
           </motion.div>
         )}
 
-        {/* ── RÉSULTATS ── */}
+        {/* ── RÉSULTATS UTILISATEURS ── */}
         {hasSearched && !loading && filteredResults.length > 0 && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             <SectionLabel
-              label={`${filteredResults.length} résultat${filteredResults.length > 1 ? "s" : ""}`}
+              label={`${filteredResults.length} utilisateur${filteredResults.length > 1 ? "s" : ""}`}
               isDarkMode={isDarkMode}
             />
             <AnimatePresence mode="popLayout" initial={false}>
@@ -642,6 +645,75 @@ const SearchPanel = memo(({ isOpen, onClose, isDarkMode, onNavigate }) => {
                 />
               ))}
             </AnimatePresence>
+          </motion.div>
+        )}
+
+        {/* ── RÉSULTATS POSTS ── */}
+        {hasSearched && !loading && postResults.length > 0 && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <SectionLabel
+              label={`${postResults.length} post${postResults.length > 1 ? "s" : ""}`}
+              isDarkMode={isDarkMode}
+            />
+            {postResults.map((post, i) => (
+              <motion.div
+                key={post._id || i}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.18, delay: i * 0.04 }}
+                onClick={() => { onNavigate(`/post/${post._id}`); onClose(); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "12px 20px", cursor: "pointer",
+                  borderBottom: `1px solid ${isDarkMode ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)"}`,
+                  transition: "background 0.15s",
+                }}
+                whileHover={{ backgroundColor: isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.025)" }}
+              >
+                <div style={{
+                  width: 46, height: 46, borderRadius: 12, flexShrink: 0,
+                  background: isDarkMode ? "rgba(255,255,255,0.07)" : "#f3f4f6",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 20, overflow: "hidden",
+                }}>
+                  {post.user?.profilePhoto ? (
+                    <img src={MEDIA_URL(post.user.profilePhoto)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : "📝"}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{
+                    fontSize: 13, fontWeight: 600, marginBottom: 2,
+                    color: isDarkMode ? "#e2e8f0" : "#111827",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>
+                    {post.user?.fullName || post.user?.username || "Utilisateur"}
+                  </p>
+                  <p style={{
+                    fontSize: 12, color: isDarkMode ? "#64748b" : "#6b7280",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical",
+                  }}>
+                    <Highlight text={(post.content || post.title || "").slice(0, 120)} query={query} isDarkMode={isDarkMode} />
+                  </p>
+                  <div style={{ display: "flex", gap: 8, marginTop: 3 }}>
+                    {post.tags?.length > 0 && post.tags.slice(0, 3).map((t, j) => (
+                      <span key={j} style={{
+                        fontSize: 10, fontWeight: 600, color: "#f97316",
+                        background: "rgba(249,115,22,0.1)", padding: "1px 6px", borderRadius: 8,
+                      }}>#{t}</span>
+                    ))}
+                  </div>
+                </div>
+                <div style={{
+                  flexShrink: 0, width: 32, height: 32, borderRadius: "50%",
+                  background: "linear-gradient(135deg, #f97316, #ec4899)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: "#fff",
+                }}>
+                  <ArrowUpRight size={15} />
+                </div>
+              </motion.div>
+            ))}
           </motion.div>
         )}
 

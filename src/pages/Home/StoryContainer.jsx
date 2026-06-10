@@ -1,8 +1,9 @@
-import React, { useMemo, memo, useCallback, useRef, useEffect } from 'react';
+import React, { useMemo, memo, useCallback, useRef, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Plus, Calculator, Zap, Triangle } from 'lucide-react';
 import { useStories } from '../../context/StoryContext';
 import { useAuth } from '../../context/AuthContext';
+import AvatarWithFallback from '../../components/AvatarWithFallback';
 
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api');
 const SERVER_URL = API_URL.replace('/api', '');
@@ -34,13 +35,15 @@ const getSlidePreview = (slide) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// StoryItem — comportement WhatsApp :
-//   • non vue  → taille normale (68px), anneau jaune→bleu vif, nom en gras
-//   • vue      → taille réduite (50px), anneau gris tireté, nom grisé, opacité 0.55
-//   • currentUser → taille normale, anneau jaune→bleu
+// StoryItem — comportement WhatsApp amélioré :
+//   • non vue → taille normale (68px), anneau coloré animé
+//   • vue → taille réduite (50px), anneau gris, opacité réduite
+//   • Gestion fallback avatar avec AvatarWithFallback
+//   • Transition fluide entre les états
 // ─────────────────────────────────────────────────────────────────
 const StoryItem = memo(({ owner, unviewed, latest, slideCount = 0, isDarkMode, onClick, isCurrentUser = false }) => {
   const ownerName = owner?.username || owner?.fullName || 'User';
+  const ownerPhoto = MEDIA_URL(owner?.profilePhoto || owner?.avatar);
   const lastSlide = latest?.slides?.at(-1);
   const preview = useMemo(() => getSlidePreview(lastSlide), [lastSlide]);
   const isTechnical = useMemo(() => latest?.slides?.some(
@@ -51,7 +54,6 @@ const StoryItem = memo(({ owner, unviewed, latest, slideCount = 0, isDarkMode, o
     return new Date(latest?.createdAt) > oneHourAgo;
   }, [latest]);
 
-  // ✅ Style WhatsApp : vue = réduite et atténuée
   const isViewed = !unviewed && !isCurrentUser;
   const avatarSize  = isViewed ? 50 : 68;
   const wrapperSize = isViewed ? 54 : 68;
@@ -65,6 +67,7 @@ const StoryItem = memo(({ owner, unviewed, latest, slideCount = 0, isDarkMode, o
         borderRadius: '50%',
         border: `2px dashed ${isDarkMode ? '#4b5563' : '#d1d5db'}`,
         padding: '2px',
+        transition: 'all 0.3s ease',
       }
     : {
         width: wrapperSize,
@@ -76,13 +79,8 @@ const StoryItem = memo(({ owner, unviewed, latest, slideCount = 0, isDarkMode, o
         boxShadow: isCurrentUser
           ? '0 4px 16px rgba(34,211,238,0.45)'
           : '0 2px 10px rgba(34,211,238,0.3)',
+        transition: 'all 0.3s ease',
       };
-
-  const handleImgError = useCallback((e) => {
-    const profileSrc = MEDIA_URL(owner?.profilePhoto);
-    if (profileSrc && e.target.src !== profileSrc) { e.target.src = profileSrc; }
-    else { e.target.removeAttribute('src'); e.target.style.display = 'none'; }
-  }, [owner?.profilePhoto]);
 
   return (
     <motion.button
@@ -128,25 +126,31 @@ const StoryItem = memo(({ owner, unviewed, latest, slideCount = 0, isDarkMode, o
               className={`w-full h-full object-cover ${isViewed ? 'grayscale-[0.45]' : ''}`}
               loading='lazy'
               decoding='async'
-              onError={handleImgError}
+              onError={(e) => {
+                // Fallback vers le gradient avec initiale si l'image ne charge pas
+                e.target.style.display = 'none';
+                const parent = e.target.parentElement;
+                if (parent) {
+                  const fallback = document.createElement('div');
+                  fallback.className = 'w-full h-full flex items-center justify-center';
+                  fallback.style.background = 'linear-gradient(135deg, #667eea, #764ba2)';
+                  fallback.innerHTML = `<span class="text-white font-black" style="font-size:${isViewed ? 13 : 18}px">${ownerName[0]?.toUpperCase() || '?'}</span>`;
+                  parent.appendChild(fallback);
+                }
+              }}
             />
           ) : (
-            <img
-              src={MEDIA_URL(owner?.profilePhoto)}
-              alt={ownerName}
-              width={avatarSize}
-              height={avatarSize}
-              className={`w-full h-full object-cover ${isViewed ? 'grayscale-[0.45]' : ''}`}
-              loading='lazy'
-              decoding='async'
-              onError={(e) => { e.target.removeAttribute('src'); }}
+            <AvatarWithFallback
+              src={ownerPhoto}
+              name={ownerName}
+              size={avatarSize}
             />
           )}
-          {/* Voile léger pour les stories vues */}
+          {/* Voile pour les vues */}
           {isViewed && <div className='absolute inset-0 bg-black/10 rounded-full' />}
         </div>
 
-        {/* Badges uniquement sur les stories non vues */}
+        {/* Badges */}
         {!isViewed && isTechnical && (
           <div className='absolute -top-1 -right-1 bg-orange-600 text-white p-1 rounded-full shadow-lg border-2 border-white dark:border-[#0b0d10]'>
             <Calculator size={10} strokeWidth={3} />
@@ -190,9 +194,7 @@ const StoryItem = memo(({ owner, unviewed, latest, slideCount = 0, isDarkMode, o
 });
 StoryItem.displayName = 'StoryItem';
 
-// ─────────────────────────────────────────────────────────────────
-// Skeleton
-// ─────────────────────────────────────────────────────────────────
+// ─── Skeleton moderne ──────────────────────────────────────────────────────
 const StoriesSkeleton = memo(({ isDarkMode }) => (
   <div className='flex gap-3 px-4 pt-3 pb-2' style={{ height: STORY_CONTAINER_HEIGHT, alignItems: 'center' }}>
     {[...Array(6)].map((_, i) => (
@@ -208,15 +210,52 @@ const StoriesSkeleton = memo(({ isDarkMode }) => (
 ));
 StoriesSkeleton.displayName = 'StoriesSkeleton';
 
-// ─────────────────────────────────────────────────────────────────
-// StoryContainer principal
-// ─────────────────────────────────────────────────────────────────
+// ─── Bouton flottant Univers ──────────────────────────────────────────────
+const UniverseButton = memo(({ unviewedCount, onClick, isDarkMode }) => (
+  <AnimatePresence>
+    {unviewedCount > 0 && (
+      <motion.button
+        initial={{ y: 50, opacity: 0, scale: 0.8 }}
+        animate={{ y: 0, opacity: 1, scale: 1 }}
+        exit={{ y: 50, opacity: 0, scale: 0.8 }}
+        whileHover={{ scale: 1.05 }}
+        whileTap={{ scale: 0.95 }}
+        onClick={onClick}
+        className='absolute top-1/2 -translate-y-1/2 right-2 z-[100] px-3 py-2 rounded-full flex items-center gap-2 transition-all'
+        style={{
+          background: 'linear-gradient(135deg,#facc15,#22d3ee,#3b82f6)',
+          boxShadow: '0 8px 24px rgba(34,211,238,0.35)',
+          border: '1px solid rgba(255,255,255,0.3)',
+        }}
+        aria-label="Voir l'univers des stories"
+      >
+        <div className='relative'>
+          <Triangle size={12} className='text-white fill-white rotate-180' />
+          <motion.div
+            animate={{ scale: [1, 1.4, 1], opacity: [0.6, 0, 0.6] }}
+            transition={{ duration: 2, repeat: Infinity }}
+            className='absolute inset-0 bg-white rounded-full blur-sm'
+          />
+        </div>
+        <span className='text-white text-[10px] font-black tracking-wide uppercase hidden sm:inline'>Univers</span>
+        <div className='bg-white/20 backdrop-blur-sm rounded-full px-1.5 py-0.5 min-w-[18px] flex items-center justify-center'>
+          <span className='text-white text-[10px] font-black'>{unviewedCount}</span>
+        </div>
+      </motion.button>
+    )}
+  </AnimatePresence>
+));
+UniverseButton.displayName = 'UniverseButton';
+
+// ─── StoryContainer principal ─────────────────────────────────────────────
 function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode }) {
   const { stories = [], loading = false } = useStories();
   const { user } = useAuth();
   const uid = user?._id || user?.id;
+  const [isScrolling, setIsScrolling] = useState(false);
 
   const scrollContainerRef = useRef(null);
+  const scrollTimerRef = useRef(null);
 
   const allGroupedStories = useMemo(() => {
     if (!stories || stories.length === 0) return [];
@@ -250,7 +289,6 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
         slideCount: slides.length,
       };
     }).sort((a, b) => {
-      // Tri WhatsApp : currentUser → non vues (récentes d'abord) → vues (récentes d'abord)
       if (a.isCurrentUser) return -1;
       if (b.isCurrentUser) return 1;
       if (a.unviewed !== b.unviewed) return b.unviewed - a.unviewed;
@@ -263,7 +301,7 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
     [allGroupedStories]
   );
 
-  // Toujours repositionner au début — les non vues sont déjà devant
+  // Scroll fluide vers le début à l'ouverture
   useEffect(() => {
     if (!scrollContainerRef.current || !allGroupedStories.length) return;
     const timer = setTimeout(() => {
@@ -271,6 +309,13 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
     }, 150);
     return () => clearTimeout(timer);
   }, [allGroupedStories.length]);
+
+  // Détection de scroll pour optimiser les performances
+  const handleScroll = useCallback(() => {
+    setIsScrolling(true);
+    clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => setIsScrolling(false), 150);
+  }, []);
 
   const handleOpenStory = useCallback((group) => {
     const startIndex = allGroupedStories.findIndex((item) => item.id === group.id);
@@ -293,6 +338,7 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
     <div className='relative w-full overflow-hidden pb-2' style={{ height: STORY_CONTAINER_HEIGHT, contain: 'layout size' }}>
       <div
         ref={scrollContainerRef}
+        onScroll={handleScroll}
         className='flex gap-3 px-4 pt-3 pb-2 overflow-x-auto scrollbar-hide snap-x snap-mandatory h-full'
         style={{ alignItems: 'center' }}
       >
@@ -301,6 +347,7 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
           onClick={onOpenCreator}
           className='flex flex-col items-center flex-shrink-0 snap-start active:scale-95 transition-transform'
           style={{ WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation', width: 72 }}
+          aria-label="Créer une story"
         >
           <div
             className='relative rounded-full flex items-center justify-center'
@@ -314,17 +361,12 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
               border: `2px dashed ${isDarkMode ? 'rgba(255,255,255,0.2)' : '#d1d5db'}`,
             }}
           >
-            {user?.profilePhoto && (
-              <img
-                src={MEDIA_URL(user.profilePhoto)}
-                className='w-full h-full rounded-full object-cover opacity-40'
-                width={68}
-                height={68}
-                alt=''
-                loading='eager'
-                onError={(e) => { e.target.removeAttribute('src'); }}
-              />
-            )}
+            <AvatarWithFallback
+              src={MEDIA_URL(user?.profilePhoto)}
+              name={user?.fullName || user?.username || 'U'}
+              size={68}
+              style={{ opacity: 0.4, position: 'absolute', inset: 0 }}
+            />
             <div
               className='absolute rounded-full p-1.5 border-[3px] shadow-lg'
               style={{
@@ -342,7 +384,7 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
           </p>
         </button>
 
-        {/* ─── Stories : non vues grandes, vues petites ─── */}
+        {/* ─── Stories ─── */}
         {allGroupedStories.map((group) => (
           <div key={group.id} className='snap-start relative flex-shrink-0'>
             <StoryItem
@@ -361,37 +403,11 @@ function StoryContainer({ onOpenStory, onOpenCreator, onOpenPyramid, isDarkMode 
       </div>
 
       {/* ─── Bouton Univers ─── */}
-      <AnimatePresence>
-        {unviewedCount > 0 && (
-          <motion.button
-            initial={{ y: 50, opacity: 0, scale: 0.8 }}
-            animate={{ y: 0, opacity: 1, scale: 1 }}
-            exit={{ y: 50, opacity: 0, scale: 0.8 }}
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={onOpenPyramid}
-            className='absolute top-1/2 -translate-y-1/2 right-2 z-[100] px-3 py-2 rounded-full flex items-center gap-2 transition-all'
-            style={{
-              background: 'linear-gradient(135deg,#facc15,#22d3ee,#3b82f6)',
-              boxShadow: '0 8px 24px rgba(34,211,238,0.35)',
-              border: '1px solid rgba(255,255,255,0.3)',
-            }}
-          >
-            <div className='relative'>
-              <Triangle size={12} className='text-white fill-white rotate-180' />
-              <motion.div
-                animate={{ scale: [1, 1.4, 1], opacity: [0.6, 0, 0.6] }}
-                transition={{ duration: 2, repeat: Infinity }}
-                className='absolute inset-0 bg-white rounded-full blur-sm'
-              />
-            </div>
-            <span className='text-white text-[10px] font-black tracking-wide uppercase hidden sm:inline'>Univers</span>
-            <div className='bg-white/20 backdrop-blur-sm rounded-full px-1.5 py-0.5 min-w-[18px] flex items-center justify-center'>
-              <span className='text-white text-[10px] font-black'>{unviewedCount}</span>
-            </div>
-          </motion.button>
-        )}
-      </AnimatePresence>
+      <UniverseButton
+        unviewedCount={unviewedCount}
+        onClick={onOpenPyramid}
+        isDarkMode={isDarkMode}
+      />
     </div>
   );
 }
