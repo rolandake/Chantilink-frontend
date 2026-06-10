@@ -10,7 +10,8 @@
 //      après redéploiement (ex: Home-C93V4j8a.js → 404)
 //   6. lightboxOpen state — masque FloatingBackButton quand lightbox ProfileMediaGrid ouverte
 //   7. showBackButton refactorisé — exclut toutes les pages ayant leur propre bouton retour :
-//      /calculs (FormHeader), /chat, /profile/*, /admin/*, /about, lightbox, /videos, /messages
+//      /calculs (FormHeader), /chat, /profile/*, /admin/*, /opportunities, lightbox, /videos, /messages
+//   8. ✅ Onglet "À propos" remplacé par "Opportunités" (route /opportunities)
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -45,9 +46,9 @@ import {
   ResetPasswordPage, AuthCallbackPage
 } from "./imports/importsPages.js";
 
-import About          from "./pages/About";
-import AdminDashboard from "./pages/Admin/AdminDashboard.jsx";
-import StoryViewer    from "./pages/Home/StoryViewer";
+import AdminDashboard    from "./pages/Admin/AdminDashboard.jsx";
+import StoryViewer       from "./pages/Home/StoryViewer";
+import OpportunitiesPage from "./pages/Opportunities/OpportunitiesPage";
 import { GlobalModalManager } from "./pages/Home/PostCard";
 import {
   markPostNotified,
@@ -75,9 +76,6 @@ const preloadPages = () => {
 
 // ============================================
 // ✅ CHUNK ERROR BOUNDARY
-// Intercepte les erreurs "Failed to fetch dynamically imported module"
-// causées par les anciens hash de chunks après un redéploiement Vercel.
-// Déclenche un rechargement silencieux pour récupérer la nouvelle version.
 // ============================================
 class ChunkErrorBoundary extends React.Component {
   constructor(props) {
@@ -97,13 +95,11 @@ class ChunkErrorBoundary extends React.Component {
 
   componentDidCatch(error) {
     if (error?.message?.includes("Failed to fetch dynamically imported module")) {
-      // Recharge la page pour récupérer le nouvel index.html et les nouveaux chunks
       window.location.reload();
     }
   }
 
   render() {
-    // hasError = true → reload en cours, on rend null pour éviter un flash d'erreur
     if (this.state.hasError) return null;
     return this.props.children;
   }
@@ -198,13 +194,19 @@ const NAV_ICON_CONFIGS = {
       </svg>
     ),
   },
-  about: {
-    gradient: "linear-gradient(145deg, #8b5cf6 0%, #6366f1 100%)",
-    shadow: "#7c3aed",
+  // ✅ "about" remplacé par "opportunities"
+  opportunities: {
+    gradient: "linear-gradient(145deg, #f59e0b 0%, #f97316 100%)",
+    shadow: "#f59e0b",
     icon: (size) => (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
-        <circle cx="12" cy="12" r="10" fill="rgba(255,255,255,0.95)" />
-        <path d="M12 8.5a1 1 0 100 2 1 1 0 000-2zM12 11.5v4" stroke="rgba(99,102,241,0.9)" strokeWidth="2" strokeLinecap="round" />
+        <rect x="2" y="7" width="20" height="14" rx="2" fill="rgba(255,255,255,0.95)" />
+        <path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"
+          stroke="rgba(255,255,255,0.7)" strokeWidth="2" />
+        <line x1="12" y1="12" x2="12" y2="16"
+          stroke="rgba(245,158,11,0.7)" strokeWidth="2" strokeLinecap="round" />
+        <line x1="10" y1="14" x2="14" y2="14"
+          stroke="rgba(245,158,11,0.7)" strokeWidth="2" strokeLinecap="round" />
       </svg>
     ),
   },
@@ -506,9 +508,6 @@ function AppContent() {
   const [storyViewerData, setStoryViewerData] = useState({ stories: [], owner: null });
   const [liveNotifications, setLiveNotifications] = useState([]);
 
-  // ✅ FIX 6 — masque le FloatingBackButton quand la lightbox ProfileMediaGrid est ouverte.
-  // Sans ça, le bouton "Retour" de App.jsx (z-[60]) se superpose au bouton "Retour" de
-  // la lightbox (z-30). ProfileMediaGrid émet "lightbox:open" / "lightbox:close".
   const [lightboxOpen, setLightboxOpen] = useState(false);
   useEffect(() => {
     const onOpen  = () => setLightboxOpen(true);
@@ -521,7 +520,6 @@ function AppContent() {
     };
   }, []);
 
-  // ✅ On ne récupère que navbarVisible — le header n'utilise plus headerVisible
   const { navbarVisible } = useSmartScroll();
 
   useEffect(() => {
@@ -678,22 +676,21 @@ function AppContent() {
     }
   }, [location.pathname, navigate]);
 
-  const isHome     = location.pathname === "/";
-  const isAuth     = location.pathname === "/auth";
-  const isVideos   = location.pathname === "/videos";
-  const isMessages = location.pathname === "/messages";
-  const isCalculs  = location.pathname === "/calculs";
-  const isChat     = location.pathname === "/chat";
-  const isProfile  = location.pathname.startsWith("/profile");
-  const isAdminPage= location.pathname.startsWith("/admin");
-  const isAbout    = location.pathname === "/about";
-  const isAdmin    = user?.role === "admin" || user?.role === "superadmin";
+  const isHome          = location.pathname === "/";
+  const isAuth          = location.pathname === "/auth";
+  const isVideos        = location.pathname === "/videos";
+  const isMessages      = location.pathname === "/messages";
+  const isCalculs       = location.pathname === "/calculs";
+  const isChat          = location.pathname === "/chat";
+  const isProfile       = location.pathname.startsWith("/profile");
+  const isAdminPage     = location.pathname.startsWith("/admin");
+  // ✅ isAbout remplacé par isOpportunities
+  const isOpportunities = location.pathname === "/opportunities";
+  const isAdmin         = user?.role === "admin" || user?.role === "superadmin";
 
   const showNav    = !!user && !isAuth && !storyViewerOpen && isHome;
   const showHeader = !!user && !isAuth && !storyViewerOpen && isHome;
 
-  // ✅ Pages secondaires sont immersives : on masque les barres de navigation et on garde
-  //    un seul bouton de retour global pour revenir vers l'écran d'accueil.
   const showBackButton = !!user
     && !isAuth
     && !isHome
@@ -703,7 +700,7 @@ function AppContent() {
     && !isChat
     && !isProfile
     && !isAdminPage
-    && !isAbout
+    && !isOpportunities   // ✅ remplace !isAbout
     && !storyViewerOpen
     && !lightboxOpen;
 
@@ -711,7 +708,6 @@ function AppContent() {
     navigate("/", { replace: true });
   }, [navigate]);
 
-  // ✅ Header toujours fixe à 72px quand showHeader=true.
   const mainStyle = useMemo(() => ({
     top: showHeader ? 72 : 0,
     bottom: showNav
@@ -741,7 +737,7 @@ function AppContent() {
 
       <SmartLanguagePrompt user={user} isDarkMode={isDarkMode} />
 
-      {/* ✅ HEADER — toujours visible, pas de transform/hide */}
+      {/* HEADER */}
       {showHeader && (
         <div
           className="fixed top-0 right-0 z-40 lg:left-[260px] left-0"
@@ -776,10 +772,6 @@ function AppContent() {
       {/* CONTENU PRINCIPAL */}
       <main className="absolute left-0 right-0 z-10" style={mainStyle}>
         <div className={`${showNav ? "lg:ml-[260px]" : ""} ${isHome ? "h-full" : ""}`}>
-          {/* ✅ ChunkErrorBoundary — attrape les erreurs "Failed to fetch dynamically
-              imported module" et recharge la page pour récupérer les nouveaux chunks
-              après un redéploiement Vercel. Double protection avec le handler
-              vite:preloadError dans index.html. */}
           <ChunkErrorBoundary>
             <Suspense fallback={<LoadingSpinner />}>
               <Routes location={location}>
@@ -815,15 +807,20 @@ function AppContent() {
                     <ProtectedAdminRoute><AdminDashboard /></ProtectedAdminRoute>
                   </AuthRoute>
                 } />
-                <Route path="/about" element={<About />} />
-                <Route path="*"      element={<Navigate to={user ? "/" : "/auth"} replace />} />
+                {/* ✅ /about remplacé par /opportunities */}
+                <Route path="/opportunities" element={
+                  <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
+                    <OpportunitiesPage />
+                  </AuthRoute>
+                } />
+                <Route path="*" element={<Navigate to={user ? "/" : "/auth"} replace />} />
               </Routes>
             </Suspense>
           </ChunkErrorBoundary>
         </div>
       </main>
 
-      {/* NAVBAR MOBILE — garde le comportement intelligent (navbarVisible) */}
+      {/* NAVBAR MOBILE */}
       {showNav && (
         <div
           className="fixed bottom-0 left-0 right-0 z-50"
@@ -988,36 +985,33 @@ NavItemDesktop.displayName = "NavItemDesktop";
 
 // ============================================
 // SIDEBAR DESKTOP
-// ✅ FIX — goProfile utilise currentUser._id (passé en prop depuis AppContent)
 // ============================================
 const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeClick, currentUser }) => {
   const { t }    = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const isActive   = useCallback((path) => location.pathname === path, [location.pathname]);
-  const goChat     = useCallback(() => navigate("/chat"),    [navigate]);
-  const goVideos   = useCallback(() => navigate("/videos"),  [navigate]);
-  const goCalculs  = useCallback(() => navigate("/calculs"), [navigate]);
-  const goMessages = useCallback(() => navigate("/messages"),[navigate]);
-  const goAdmin    = useCallback(() => navigate("/admin"),   [navigate]);
+  const isActive        = useCallback((path) => location.pathname === path, [location.pathname]);
+  const goChat          = useCallback(() => navigate("/chat"),          [navigate]);
+  const goVideos        = useCallback(() => navigate("/videos"),        [navigate]);
+  const goCalculs       = useCallback(() => navigate("/calculs"),       [navigate]);
+  const goMessages      = useCallback(() => navigate("/messages"),      [navigate]);
+  const goAdmin         = useCallback(() => navigate("/admin"),         [navigate]);
+  const goOpportunities = useCallback(() => navigate("/opportunities"), [navigate]); // ✅ remplace goAbout
 
-  // ✅ FIX — on utilise currentUser._id directement, jamais location.state
-  const goProfile  = useCallback(() => {
+  const goProfile = useCallback(() => {
     if (currentUser?._id) navigate(`/profile/${currentUser._id}`);
   }, [navigate, currentUser?._id]);
 
-  const goAbout = useCallback(() => navigate("/about"), [navigate]);
-
   const NAV_ITEMS = useMemo(() => [
-    { key: "home",     label: t("navbar.home"),     onClick: onHomeClick, path: "/" },
-    { key: "chat",     label: t("navbar.chat"),     onClick: goChat,      path: "/chat" },
-    { key: "videos",   label: t("videos.title"),    onClick: goVideos,    path: "/videos" },
-    { key: "calculs",  label: t("navbar.calculs"),  onClick: goCalculs,   path: "/calculs" },
-    { key: "messages", label: t("navbar.messages"), onClick: goMessages,  path: "/messages", badge: unreadCount },
-    { key: "about",    label: "À propos",           onClick: goAbout,     path: "/about" },
-    { key: "profile",  label: t("navbar.profile"),  onClick: goProfile,   path: "/profile" },
-  ], [t, onHomeClick, goChat, goVideos, goCalculs, goMessages, goProfile, goAbout, unreadCount]);
+    { key: "home",          label: t("navbar.home"),     onClick: onHomeClick,    path: "/" },
+    { key: "chat",          label: t("navbar.chat"),     onClick: goChat,         path: "/chat" },
+    { key: "videos",        label: t("videos.title"),    onClick: goVideos,       path: "/videos" },
+    { key: "calculs",       label: t("navbar.calculs"),  onClick: goCalculs,      path: "/calculs" },
+    { key: "messages",      label: t("navbar.messages"), onClick: goMessages,     path: "/messages", badge: unreadCount },
+    { key: "opportunities", label: "Opportunités",       onClick: goOpportunities, path: "/opportunities" }, // ✅ remplace about
+    { key: "profile",       label: t("navbar.profile"),  onClick: goProfile,      path: "/profile" },
+  ], [t, onHomeClick, goChat, goVideos, goCalculs, goMessages, goProfile, goOpportunities, unreadCount]);
 
   return (
     <aside
@@ -1038,7 +1032,13 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
             {NAV_ITEMS.map((item) => (
               <NavItemDesktop key={item.key} iconKey={item.key} label={item.label} onClick={item.onClick}
                 isDarkMode={isDarkMode}
-                active={item.path === "/" ? isActive("/") : item.path === "/profile" ? location.pathname.includes("/profile") : isActive(item.path)}
+                active={
+                  item.path === "/"
+                    ? isActive("/")
+                    : item.path === "/profile"
+                      ? location.pathname.includes("/profile")
+                      : isActive(item.path)
+                }
                 badge={item.badge}
               />
             ))}
@@ -1067,10 +1067,10 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
   const navigate = useNavigate();
   const items = useMemo(() => {
     const base = [
-      { label: t("navbar.profile"),  iconKey: "profile",  path: `/profile/${user?._id}` },
-      { label: "À propos",          iconKey: "about",    path: "/about" },
-      { label: t("navbar.calculs"),  iconKey: "calculs",  path: "/calculs" },
-      { label: t("navbar.messages"), iconKey: "messages", path: "/messages", badge: unreadCount },
+      { label: t("navbar.profile"),  iconKey: "profile",       path: `/profile/${user?._id}` },
+      { label: "Opportunités",       iconKey: "opportunities", path: "/opportunities" }, // ✅ remplace À propos
+      { label: t("navbar.calculs"),  iconKey: "calculs",       path: "/calculs" },
+      { label: t("navbar.messages"), iconKey: "messages",      path: "/messages", badge: unreadCount },
     ];
     if (isAdminUser) base.push({ label: "Admin", iconKey: "admin", path: "/admin" });
     return base;

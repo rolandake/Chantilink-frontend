@@ -18,12 +18,20 @@ export const readOnAppContacts = (userId) => {
 
 export const saveContactToOnApp = (contact, userId) => {
   const key = getStorageKey(userId);
-  const id = contact?.id || contact?._id;
-  if (!id || !key) return;
+  const rawId = contact?.id || contact?._id;
+  if (!rawId || !key) return;
   try {
+    // ✅ Normaliser l'ID : toujours utiliser 'id' comme clé
+    const id = String(rawId);
     const existing = readOnAppContacts(userId);
-    const normalized = { ...contact, id };
-    const updated = [normalized, ...existing.filter((c) => (c.id || c._id) !== id)];
+    const normalized = { ...contact, id, _id: id };
+    
+    // ✅ Déduplication : filtrer tous les doublons (id OU _id)
+    const updated = [normalized, ...existing.filter((c) => {
+      const cId = String(c.id || c._id || '');
+      return cId !== id;
+    })];
+    
     localStorage.setItem(key, JSON.stringify(updated));
   } catch {}
 };

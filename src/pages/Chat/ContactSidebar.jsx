@@ -459,7 +459,30 @@ export const ContactSidebar = ({
   const [onAppContacts, setOnAppContacts] = useState([]);
   const [searchQuery,   setSearchQuery]   = useState('');
   const [modal, setModal] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
   const { showToast } = useToast();
+
+  // ✅ Supprimer un contact
+  const handleDeleteContact = useCallback(async (contactId) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${BASE_URL}/contacts/${contactId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || 'Erreur suppression');
+      
+      // Mettre à jour le cache local
+      const updated = onAppContacts.filter((c) => (c.id || c._id) !== contactId);
+      localStorage.setItem(`onAppContacts_${userId}`, JSON.stringify(updated));
+      setOnAppContacts(updated);
+      setDeleteConfirm(null);
+      showToast('Contact supprimé', 'success');
+    } catch (err) {
+      showToast(err.message || 'Erreur lors de la suppression', 'error');
+    }
+  }, [token, onAppContacts, userId, showToast]);
 
   // ✅ Toujours lire depuis la clé de CET utilisateur
   const reloadOnAppContacts = useCallback(() => {
@@ -597,6 +620,7 @@ export const ContactSidebar = ({
                     <ContactItem
                       user={u}
                       unread={unreadCounts[u.id || u._id]}
+                      onDelete={handleDeleteContact}
                       onClick={() => onContactSelect({
                         id:           u.id || u._id,
                         fullName:     u.fullName,
@@ -667,34 +691,74 @@ export const ContactSidebar = ({
 // ─────────────────────────────────────────────
 // SOUS-COMPOSANTS
 // ─────────────────────────────────────────────
-const ContactItem = ({ user, unread, onClick }) => (
-  <button
-    onClick={onClick}
-    className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all rounded-xl group"
-  >
-    <div className="relative flex-shrink-0">
-      <div className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-base border border-white/5 bg-gradient-to-br from-blue-600 to-indigo-700 overflow-hidden">
-        {user.profilePhoto
-          ? <img src={user.profilePhoto} alt="" className="w-full h-full object-cover" />
-          : (user.fullName?.[0]?.toUpperCase() || '?')}
-      </div>
-      {user.isOnline && (
-        <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-[#0b0d10]" />
-      )}
+const ContactItem = ({ user, unread, onClick, onDelete }) => {
+  const [showDelete, setShowDelete] = useState(false);
+  return (
+    <div className="group relative">
+      <button
+        onClick={onClick}
+        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all rounded-xl"
+      >
+        <div className="relative flex-shrink-0">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-base border border-white/5 bg-gradient-to-br from-blue-600 to-indigo-700 overflow-hidden">
+            {user.profilePhoto
+              ? <img src={user.profilePhoto} alt="" className="w-full h-full object-cover" />
+              : (user.fullName?.[0]?.toUpperCase() || '?')}
+          </div>
+          {user.isOnline && (
+            <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-[#0b0d10]" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0 text-left">
+          <p className="text-sm font-bold text-gray-100 truncate group-hover:text-white">{user.fullName}</p>
+          <p className="text-[11px] text-gray-600 truncate">
+            {user.username ? `@${user.username}` : 'Disponible'}
+          </p>
+        </div>
+        {unread > 0 && (
+          <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md flex-shrink-0">
+            {unread}
+          </span>
+        )}
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); setShowDelete(true); }}
+        className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-red-500/10 opacity-0 group-hover:opacity-100 hover:bg-red-500/30 transition-all"
+        title="Supprimer ce contact"
+      >
+        <X size={12} className="text-red-400" />
+      </button>
+      <AnimatePresence>
+        {showDelete && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="absolute right-2 top-0 z-20 bg-[#1c2026] rounded-xl shadow-2xl border border-red-500/30 p-4 min-w-[200px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-xs font-bold text-white mb-2">Supprimer {user.fullName} ?</p>
+            <p className="text-[10px] text-gray-500 mb-3">La conversation sera aussi supprimée.</p>
+            <div className="flex gap-2">
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowDelete(false); }}
+                className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-bold text-gray-300 transition-colors"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); if (onDelete) onDelete(user.id || user._id); setShowDelete(false); }}
+                className="flex-1 py-2 bg-red-500 hover:bg-red-600 rounded-lg text-xs font-bold text-white transition-colors"
+              >
+                Supprimer
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
-    <div className="flex-1 min-w-0 text-left">
-      <p className="text-sm font-bold text-gray-100 truncate group-hover:text-white">{user.fullName}</p>
-      <p className="text-[11px] text-gray-600 truncate">
-        {user.username ? `@${user.username}` : 'Disponible'}
-      </p>
-    </div>
-    {unread > 0 && (
-      <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md flex-shrink-0">
-        {unread}
-      </span>
-    )}
-  </button>
-);
+  );
+};
 
 const EmptyState = ({ onAdd }) => (
   <div className="flex flex-col items-center justify-center py-10 px-4 text-center">

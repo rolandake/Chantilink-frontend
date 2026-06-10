@@ -5,10 +5,9 @@ import { Phone, Video, Mic, MicOff, Camera, CameraOff, X, PhoneOff } from "lucid
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 
-const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo }) => {
+const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) => {
   
-  // ✅ Récupération du socket stable depuis AuthContext
-  const { socket } = useAuth();
+  // ✅ Socket passé en prop depuis Messages.jsx (namespace /messages)
   const { showToast } = useToast();
   
   const [stream, setStream] = useState(null);

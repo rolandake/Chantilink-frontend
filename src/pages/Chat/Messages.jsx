@@ -1047,6 +1047,7 @@ export default function Messages() {
           call={call} onEndCall={endCall}
           onToggleMute={() => setCall((p) => ({ ...p, mute: !p.mute }))}
           onToggleVideo={() => setCall((p) => ({ ...p, video: !p.video }))}
+          socket={socket}
         />
       )}
       {incomingCall && (
