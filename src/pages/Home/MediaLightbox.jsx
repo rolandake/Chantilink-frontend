@@ -1,105 +1,8 @@
 // 📁 src/pages/Home/MediaLightbox.jsx
 // ✅ PATCH v26 — CORRECTION PASSIVE WHEEL EVENT
-//
-// PROBLÈME :
-//   onWheel={e => e.preventDefault()} sur un élément React déclenche :
-//   "Unable to preventDefault inside passive event listener invocation"
-//   → Chrome ignore l'appel et le scroll natif n'est pas bloqué (jank sur mobile).
-//
-// CAUSE :
-//   React attache tous les événements wheel/touch en mode { passive: true }
-//   depuis React 17+ pour améliorer les performances de scroll.
-//   e.preventDefault() dans un listener passif est silencieusement ignoré.
-//
-// FIX :
-//   Remplacer onWheel={} par un addEventListener impératif avec { passive: false }
-//   dans un useEffect sur la ref du container.
-//
-// INSTRUCTIONS D'INTÉGRATION :
-//   1. Ouvrir votre MediaLightbox.jsx existant
-//   2. Localiser la div principale du lightbox (celle avec onWheel)
-//   3. Appliquer les 3 changements décrits ci-dessous
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// CHANGEMENT 1 — Ajouter un ref sur la div principale
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// AVANT :
-//   const MyLightbox = () => {
-//     return (
-//       <div
-//         onWheel={e => { e.preventDefault(); /* ... */ }}
-//         ...
-//       >
-//
-// APRÈS :
-//   const containerRef = useRef(null);   // ← AJOUTER ce ref
-//
-//   return (
-//     <div
-//       ref={containerRef}               // ← AJOUTER ref={containerRef}
-//       // onWheel supprimé              // ← SUPPRIMER onWheel={}
-//       ...
-//     >
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// CHANGEMENT 2 — Remplacer onWheel par addEventListener impératif
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// AJOUTER ce useEffect dans le composant MediaLightbox
-// (adapter "handleWheel" à votre logique existante — zoom, navigation, etc.) :
-
-/*
-  const containerRef = useRef(null);
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    // ✅ { passive: false } permet d'appeler e.preventDefault()
-    // sans le warning "Unable to preventDefault inside passive event listener"
-    const handleWheel = (e) => {
-      e.preventDefault();
-
-      // Collez ici votre logique onWheel existante.
-      // Exemple : zoom
-      // setZoom(z => Math.max(1, Math.min(5, z - e.deltaY * 0.001)));
-    };
-
-    el.addEventListener("wheel", handleWheel, { passive: false });
-    return () => el.removeEventListener("wheel", handleWheel);
-  }, []);  // deps vides : l'effet ne tourne qu'une fois au mount
-*/
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CHANGEMENT 3 — Même correction pour les events touch si présents
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Si vous avez aussi des onTouchMove={e => e.preventDefault()} :
-//
-// AVANT :
-//   <div onTouchMove={e => { e.preventDefault(); handlePinch(e); }}>
-//
-// APRÈS (dans le même useEffect) :
-/*
-    const handleTouchMove = (e) => {
-      if (e.touches.length > 1) {
-        // Pinch-to-zoom → bloquer le scroll natif
-        e.preventDefault();
-        handlePinch(e);
-      }
-    };
-
-    el.addEventListener("touchmove", handleTouchMove, { passive: false });
-    return () => {
-      el.removeEventListener("wheel",     handleWheel);
-      el.removeEventListener("touchmove", handleTouchMove);
-    };
-*/
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXEMPLE COMPLET — MediaLightbox minimal avec le patch appliqué
-// Adaptez à votre implémentation réelle.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -115,6 +18,10 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
 
   // ✅ Ref sur la div principale (remplace l'attribut onWheel)
   const containerRef = useRef(null);
+  const touchStartXRef = useRef(0);
+  const touchStartYRef = useRef(0);
+  const touchDraggingRef = useRef(false);
+  const [swipeOffset, setSwipeOffset] = useState(0);
 
   // ✅ FIX — addEventListener impératif avec { passive: false }
   // Permet e.preventDefault() sans warning Chrome/Firefox.
@@ -151,12 +58,14 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
     setIndex(i => (i - 1 + urls.length) % urls.length);
     setZoom(1);
     setOffset({ x: 0, y: 0 });
+    setSwipeOffset(0);
   }, [urls.length]);
 
   const next = useCallback(() => {
     setIndex(i => (i + 1) % urls.length);
     setZoom(1);
     setOffset({ x: 0, y: 0 });
+    setSwipeOffset(0);
   }, [urls.length]);
 
   const handleKeyDown = useCallback((e) => {
@@ -169,6 +78,37 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
+
+  // ✅ Swipe tactile pour défiler les médias
+  const handleTouchStart = useCallback((e) => {
+    if (e.touches.length !== 1 || zoom > 1) return;
+    touchStartXRef.current = e.touches[0].clientX;
+    touchStartYRef.current = e.touches[0].clientY;
+    touchDraggingRef.current = true;
+  }, [zoom]);
+
+  const handleTouchMove = useCallback((e) => {
+    if (!touchDraggingRef.current || e.touches.length !== 1 || zoom > 1) return;
+    const dx = e.touches[0].clientX - touchStartXRef.current;
+    const dy = e.touches[0].clientY - touchStartYRef.current;
+    // Si le mouvement est plus horizontal que vertical, on swype
+    if (Math.abs(dx) > Math.abs(dy)) {
+      e.preventDefault();
+      setSwipeOffset(dx);
+    }
+  }, [zoom]);
+
+  const handleTouchEnd = useCallback(() => {
+    if (!touchDraggingRef.current) return;
+    touchDraggingRef.current = false;
+    const threshold = 60;
+    if (swipeOffset < -threshold) {
+      next();
+    } else if (swipeOffset > threshold) {
+      prev();
+    }
+    setSwipeOffset(0);
+  }, [swipeOffset, next, prev]);
 
   const currentUrl = urls[index] || "";
   const isVideo    = /\.(mp4|webm|mov)(\?|$)/i.test(currentUrl);
@@ -191,6 +131,9 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
         // Note : PAS de onWheel ici — géré par addEventListener en useEffect
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
     >
       {/* Bouton fermer */}
       <button
@@ -229,8 +172,8 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
       {/* Média */}
       <div
         style={{
-          transform: `scale(${zoom}) translate(${offset.x}px, ${offset.y}px)`,
-          transition: zoom === 1 ? "transform 0.2s ease" : "none",
+          transform: `scale(${zoom}) translate(${offset.x + (zoom === 1 ? swipeOffset : 0)}px, ${offset.y}px)`,
+          transition: (zoom === 1 && swipeOffset === 0) ? "transform 0.25s ease" : "none",
           maxWidth: "90vw",
           maxHeight: "90vh",
           userSelect: "none",

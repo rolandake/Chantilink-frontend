@@ -20,6 +20,7 @@ import {
   TrashIcon, HeartIcon, ChatBubbleLeftIcon, ShareIcon, BookmarkIcon, EllipsisHorizontalIcon,
   XMarkIcon, EyeSlashIcon, ExclamationTriangleIcon, PlusCircleIcon, MinusCircleIcon,
   BellIcon, InformationCircleIcon, CodeBracketIcon, LinkIcon, NoSymbolIcon, ArrowLeftIcon, EyeIcon,
+  MapPinIcon,
 } from "@heroicons/react/24/outline";
 import {
   HeartIcon as HeartSolid, CheckBadgeIcon, RocketLaunchIcon, BookmarkIcon as BookmarkSolid
@@ -1536,6 +1537,16 @@ const PostCardInner = forwardRef(({
                 {expanded ? "voir moins" : "voir plus"}
               </button>
             )}
+          </div>
+        )}
+
+        {/* LOCALISATION */}
+        {post.location && (
+          <div className="px-3 pb-2 flex items-center gap-1.5">
+            <MapPinIcon className={`w-4 h-4 flex-shrink-0 ${isDarkMode ? "text-orange-400" : "text-orange-500"}`} />
+            <span className={`text-xs font-medium ${isDarkMode ? "text-gray-400" : "text-gray-500"}`}>
+              {post.location}
+            </span>
           </div>
         )}
 
