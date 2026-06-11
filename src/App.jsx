@@ -12,6 +12,7 @@
 //   7. showBackButton refactorisé — exclut toutes les pages ayant leur propre bouton retour :
 //      /calculs (FormHeader), /chat, /profile/*, /admin/*, /opportunities, lightbox, /videos, /messages
 //   8. ✅ Onglet "À propos" remplacé par "Opportunités" (route /opportunities)
+//   9. ✅ Texte "Chantilink" supprimé de la sidebar desktop (logo seul)
 
 import React, {
   useState, Suspense, useEffect, useMemo, useCallback, memo, useRef
@@ -194,7 +195,6 @@ const NAV_ICON_CONFIGS = {
       </svg>
     ),
   },
-  // ✅ "about" remplacé par "opportunities"
   opportunities: {
     gradient: "linear-gradient(145deg, #f59e0b 0%, #f97316 100%)",
     shadow: "#f59e0b",
@@ -684,7 +684,6 @@ function AppContent() {
   const isChat          = location.pathname === "/chat";
   const isProfile       = location.pathname.startsWith("/profile");
   const isAdminPage     = location.pathname.startsWith("/admin");
-  // ✅ isAbout remplacé par isOpportunities
   const isOpportunities = location.pathname === "/opportunities";
   const isAdmin         = user?.role === "admin" || user?.role === "superadmin";
 
@@ -700,7 +699,7 @@ function AppContent() {
     && !isChat
     && !isProfile
     && !isAdminPage
-    && !isOpportunities   // ✅ remplace !isAbout
+    && !isOpportunities
     && !storyViewerOpen
     && !lightboxOpen;
 
@@ -807,7 +806,6 @@ function AppContent() {
                     <ProtectedAdminRoute><AdminDashboard /></ProtectedAdminRoute>
                   </AuthRoute>
                 } />
-                {/* ✅ /about remplacé par /opportunities */}
                 <Route path="/opportunities" element={
                   <AuthRoute authReady={authReady} isDarkMode={isDarkMode}>
                     <OpportunitiesPage />
@@ -997,7 +995,7 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
   const goCalculs       = useCallback(() => navigate("/calculs"),       [navigate]);
   const goMessages      = useCallback(() => navigate("/messages"),      [navigate]);
   const goAdmin         = useCallback(() => navigate("/admin"),         [navigate]);
-  const goOpportunities = useCallback(() => navigate("/opportunities"), [navigate]); // ✅ remplace goAbout
+  const goOpportunities = useCallback(() => navigate("/opportunities"), [navigate]);
 
   const goProfile = useCallback(() => {
     if (currentUser?._id) navigate(`/profile/${currentUser._id}`);
@@ -1009,7 +1007,7 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
     { key: "videos",        label: t("videos.title"),    onClick: goVideos,       path: "/videos" },
     { key: "calculs",       label: t("navbar.calculs"),  onClick: goCalculs,      path: "/calculs" },
     { key: "messages",      label: t("navbar.messages"), onClick: goMessages,     path: "/messages", badge: unreadCount },
-    { key: "opportunities", label: "Opportunités",       onClick: goOpportunities, path: "/opportunities" }, // ✅ remplace about
+    { key: "opportunities", label: "Opportunités",       onClick: goOpportunities, path: "/opportunities" },
     { key: "profile",       label: t("navbar.profile"),  onClick: goProfile,      path: "/profile" },
   ], [t, onHomeClick, goChat, goVideos, goCalculs, goMessages, goProfile, goOpportunities, unreadCount]);
 
@@ -1018,14 +1016,7 @@ const SidebarDesktopMemo = memo(({ isDarkMode, isAdminUser, unreadCount, onHomeC
       className={`hidden lg:flex fixed left-0 top-0 bottom-0 w-[260px] flex-col z-30 border-r ${isDarkMode ? "border-gray-800/50" : "border-gray-200/80"}`}
       style={{ background: isDarkMode ? "linear-gradient(180deg, #0d0d0f 0%, #111115 100%)" : "linear-gradient(180deg, #ffffff 0%, #f9f9fb 100%)" }}
     >
-      <div className={`flex items-center gap-3 px-5 flex-shrink-0 border-b ${isDarkMode ? "border-gray-800/60" : "border-gray-100"}`} style={{ height: 72 }}>
-        <div className="w-10 h-10 rounded-2xl flex items-center justify-center text-white text-lg font-black flex-shrink-0 relative overflow-hidden"
-          style={{ background: "linear-gradient(145deg, #f97316 0%, #ec4899 100%)", boxShadow: "0 4px 16px rgba(249,115,22,0.45), inset 0 1px 0 rgba(255,255,255,0.3)" }}>
-          <span className="absolute top-0 left-0 right-0 h-1/2 rounded-t-2xl"
-            style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, transparent 100%)" }} />C
-        </div>
-        <span className={`text-[22px] font-black ${isDarkMode ? "text-white" : "text-gray-900"}`} style={{ letterSpacing: "-0.045em" }}>Chantilink</span>
-      </div>
+
       <nav className="flex flex-col px-3 py-4 flex-1 overflow-hidden">
         <div className="flex flex-col justify-between h-full">
           <div className="flex flex-col gap-1.5">
@@ -1068,7 +1059,7 @@ const MenuOverlay = memo(({ user, isAdminUser, isDarkMode, onClose, unreadCount 
   const items = useMemo(() => {
     const base = [
       { label: t("navbar.profile"),  iconKey: "profile",       path: `/profile/${user?._id}` },
-      { label: "Opportunités",       iconKey: "opportunities", path: "/opportunities" }, // ✅ remplace À propos
+      { label: "Opportunités",       iconKey: "opportunities", path: "/opportunities" },
       { label: t("navbar.calculs"),  iconKey: "calculs",       path: "/calculs" },
       { label: t("navbar.messages"), iconKey: "messages",      path: "/messages", badge: unreadCount },
     ];

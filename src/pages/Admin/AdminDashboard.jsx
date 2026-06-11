@@ -524,16 +524,18 @@ const UserCard = memo(({ user, onAction, navigate }) => {
 UserCard.displayName = 'UserCard';
 
 // ==========================================
-// 🚀 DASHBOARD PRINCIPAL
+// 🚀 DASHBOARD PRINCIPAL — VERSION PAGINÉE
+// ✅ FIX : pagination côté serveur pour supporter des milliers d'utilisateurs
+// ✅ FIX : stats via /admin/stats (aggregations MongoDB, pas de chargement complet)
+// ✅ FIX : recherche côté serveur avec debounce
 // ==========================================
 export default function AdminDashboard() {
   const { user, token } = useAuth();
-  const navigate         = useNavigate();          // ✅ Hook navigation
+  const navigate         = useNavigate();
   const { request }      = useSecureRequest(token);
   
   const [users,           setUsers]           = useState([]);
   const [reportedUsers,   setReportedUsers]   = useState([]);
-  const [contentActions,  setContentActions]  = useState({ summary: { total: 0 }, actions: [] });
   const [loading,         setLoading]         = useState(true);
   const [searchQuery,     setSearchQuery]     = useState('');
   const [toasts,          setToasts]          = useState([]);
@@ -542,19 +544,45 @@ export default function AdminDashboard() {
   const [reportsModal,    setReportsModal]    = useState({ show: false, user: null });
   const [activeTab,       setActiveTab]       = useState('all');
 
+  // ✅ Pagination côté serveur
+  const [currentPage,     setCurrentPage]     = useState(1);
+  const [totalPages,      setTotalPages]      = useState(1);
+  const [totalUsers,      setTotalUsers]      = useState(0);
+  const [serverStats,     setServerStats]     = useState({ total: 0, premium: 0, verified: 0, banned: 0, reported: 0, followers: 0 });
+  const PAGE_SIZE = 50;
+  const searchTimeoutRef = React.useRef(null);
+
   const addToast = (message, type = 'info') => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
 
-  const loadUsers = useCallback(async () => {
+  // ✅ Stats depuis le serveur (aggregations MongoDB, pas de calcul côté client)
+  const loadStats = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await request('/admin/stats');
+      if (data.success && data.stats) setServerStats(data.stats);
+    } catch (err) {
+      console.warn('Stats admin indisponibles:', err.message);
+    }
+  }, [request, token]);
+
+  // ✅ Utilisateurs paginés depuis le serveur
+  const loadUsers = useCallback(async (page = 1, search = '') => {
     if (!token) { addToast("Non connecté - Reconnectez-vous", "error"); return; }
     setLoading(true);
     try {
-      const data = await request('/admin/users');
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+      if (search.trim()) params.set('search', search.trim());
+      const data = await request(`/admin/users?${params}`);
       if (data.success && Array.isArray(data.users)) {
         setUsers(data.users);
+        setTotalPages(data.totalPages || 1);
+        setTotalUsers(data.total || 0);
+        setCurrentPage(data.page || 1);
+        // Reported users: on garde uniquement ceux de la page courante (filtrage rapide)
         const reported = data.users
           .filter(u => u.moderation?.reportCount > 0 || u.moderation?.strikes > 0)
           .sort((a, b) => (b.moderation?.reportCount || 0) - (a.moderation?.reportCount || 0));
@@ -567,34 +595,21 @@ export default function AdminDashboard() {
     }
   }, [request, token]);
 
-  const loadContentActions = useCallback(async () => {
-    if (!token) return;
-    try {
-      const data = await request('/admin/content-actions?limit=30');
-      if (data.success) {
-        setContentActions({ summary: data.summary || { total: 0 }, actions: data.actions || [] });
-      }
-    } catch (err) {
-      console.warn('Impossible de charger la traçabilité contenu:', err.message || err);
-    }
-  }, [request, token]);
-
   useEffect(() => {
     if (token && ['admin', 'superadmin', 'moderator'].includes(user?.role)) {
-      loadUsers();
-      loadContentActions();
+      loadUsers(1, '');
+      loadStats();
     }
-  }, [token, user, loadUsers, loadContentActions]);
+  }, [token, user, loadUsers, loadStats]);
 
   const stats = useMemo(() => ({
-    total:    users.length,
-    premium:  users.filter(u => u.isPremium).length,
-    verified: users.filter(u => u.isVerified).length,
-    banned:   users.filter(u => u.isBanned).length,
-    reported: reportedUsers.length,
-    actions:  contentActions.summary?.total || 0,
-    followers: users.reduce((sum, u) => sum + getFollowersCount(u), 0),
-  }), [users, reportedUsers, contentActions]);
+    total:    serverStats.total,
+    premium:  serverStats.premium,
+    verified: serverStats.verified,
+    banned:   serverStats.banned,
+    reported: serverStats.reported,
+    followers: serverStats.followers,
+  }), [serverStats]);
 
   const handleUserAction = useCallback(async (action, targetUser) => {
     if (action === 'notify') { setNotificationModal({ show: true, targetUser }); return; }
@@ -613,26 +628,34 @@ export default function AdminDashboard() {
         try {
           await request(config.endpoint, { method: config.method, body: config.body ? JSON.stringify(config.body) : undefined });
           addToast('Action effectuée', 'success');
-          loadUsers();
+          loadUsers(currentPage, searchQuery);
+          loadStats();
         } catch (err) { addToast(err.message || 'Erreur', 'error'); }
         setConfirmModal({ show: false });
       }
     });
-  }, [request, loadUsers]);
+  }, [request, loadUsers, loadStats, currentPage, searchQuery]);
 
-  const filteredUsers = useMemo(() => 
-    users.filter(u => 
-      (u.fullName || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
-      u.email.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  , [users, searchQuery]);
+  // ✅ Recherche côté serveur avec debounce 300ms
+  const handleSearchChange = useCallback((e) => {
+    const val = e.target.value;
+    setSearchQuery(val);
+    clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => {
+      setCurrentPage(1);
+      loadUsers(1, val);
+    }, 300);
+  }, [loadUsers]);
 
-  const filteredReportedUsers = useMemo(() => 
-    reportedUsers.filter(u => 
-      (u.fullName || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
-      u.email.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  , [reportedUsers, searchQuery]);
+  const handlePageChange = useCallback((newPage) => {
+    if (newPage < 1 || newPage > totalPages) return;
+    setCurrentPage(newPage);
+    loadUsers(newPage, searchQuery);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [totalPages, loadUsers, searchQuery]);
+
+  // ✅ La recherche est maintenant côté serveur, pas besoin de filteredUsers/filterReportedUsers
+  // On utilise directement users/reportedUsers qui sont déjà filtrés par le backend
 
   if (!user || !token) {
     return <div className="p-20 text-center"><p className="text-gray-600">⏳ Chargement...</p></div>;
@@ -659,7 +682,7 @@ export default function AdminDashboard() {
             <h1 className="text-xl md:text-2xl font-black text-blue-600">ADMIN DASHBOARD</h1>
             <p className="text-xs text-gray-400 font-semibold">Utilisateurs, contenu, signalements et traçabilité en temps réel</p>
           </div>
-          <button onClick={() => { loadUsers(); loadContentActions(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
+          <button onClick={() => { loadUsers(currentPage, searchQuery); loadStats(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
             <RotateCw size={18}/>
           </button>
         </div>
@@ -668,7 +691,7 @@ export default function AdminDashboard() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
             <input 
               type="text" value={searchQuery} 
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchChange}
               placeholder="Rechercher..." 
               className="w-full pl-9 pr-4 py-3 bg-gray-100 rounded-2xl text-sm outline-none focus:ring-2 ring-blue-500"
             />
@@ -686,11 +709,6 @@ export default function AdminDashboard() {
         <div className="bg-orange-500 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Élite</p><p className="text-3xl font-black">{stats.premium}</p></div>
         <div className="bg-green-600  p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Vérifiés</p><p className="text-3xl font-black">{stats.verified}</p></div>
         <div className="bg-red-600    p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Signalés</p><p className="text-3xl font-black">{stats.reported}</p></div>
-        <div className="bg-slate-800 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Actions</p><p className="text-3xl font-black">{stats.actions}</p></div>
-      </div>
-
-      <div className="max-w-[1600px] mx-auto px-4 mb-6">
-        <ContentActionsPanel actions={contentActions.actions} summary={contentActions.summary} />
       </div>
 
       {/* TABS */}
@@ -700,13 +718,13 @@ export default function AdminDashboard() {
             onClick={() => setActiveTab('all')}
             className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${activeTab === 'all' ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
           >
-            <Users size={16} className="inline mr-2" /> Tous ({filteredUsers.length})
+            <Users size={16} className="inline mr-2" /> Tous ({totalUsers})
           </button>
           <button
             onClick={() => setActiveTab('reported')}
             className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${activeTab === 'reported' ? 'bg-red-600 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
           >
-            <Flag size={16} className="inline mr-2" /> Signalés ({filteredReportedUsers.length})
+            <Flag size={16} className="inline mr-2" /> Signalés ({reportedUsers.length})
           </button>
         </div>
       </div>
@@ -716,7 +734,7 @@ export default function AdminDashboard() {
         <div className="bg-white rounded-[32px] shadow-sm border overflow-hidden">
           <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
             <span className="text-[10px] font-black text-gray-500 uppercase">
-              {activeTab === 'all' ? `Registre (${filteredUsers.length})` : `Signalements (${filteredReportedUsers.length})`}
+              {activeTab === 'all' ? `Registre (${users.length}/${totalUsers})` : `Signalements (${reportedUsers.length})`}
             </span>
             <Activity size={14} className="text-gray-400" />
           </div>
@@ -724,21 +742,45 @@ export default function AdminDashboard() {
           {loading ? (
             <div className="p-20 text-center"><RotateCw className="animate-spin mx-auto text-blue-500" /></div>
           ) : activeTab === 'all' ? (
-            filteredUsers.length === 0
+            users.length === 0
               ? <div className="p-20 text-center text-gray-400 font-bold">Aucun résultat</div>
               : (
-                <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3">
-                  {filteredUsers.map(u => (
-                    <UserCard key={u._id} user={u} onAction={handleUserAction} navigate={navigate} />
-                  ))}
-                </div>
+                <>
+                  <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3">
+                    {users.map(u => (
+                      <UserCard key={u._id} user={u} onAction={handleUserAction} navigate={navigate} />
+                    ))}
+                  </div>
+                  {/* PAGINATION */}
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-center gap-2 p-6 border-t border-gray-100">
+                      <button
+                        onClick={() => handlePageChange(currentPage - 1)}
+                        disabled={currentPage <= 1}
+                        className="px-4 py-2 rounded-xl text-sm font-bold bg-gray-100 text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+                      >
+                        ← Précédent
+                      </button>
+                      <span className="text-sm font-bold text-gray-500 px-3">
+                        Page {currentPage} / {totalPages}
+                      </span>
+                      <button
+                        onClick={() => handlePageChange(currentPage + 1)}
+                        disabled={currentPage >= totalPages}
+                        className="px-4 py-2 rounded-xl text-sm font-bold bg-gray-100 text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+                      >
+                        Suivant →
+                      </button>
+                    </div>
+                  )}
+                </>
               )
           ) : (
-            filteredReportedUsers.length === 0
+            reportedUsers.length === 0
               ? <div className="p-20 text-center text-gray-400 font-bold"><Flag size={48} className="mx-auto mb-4 opacity-50" />Aucun utilisateur signalé</div>
               : (
                 <div className="grid grid-cols-1 xl:grid-cols-2">
-                  {filteredReportedUsers.map(u => (
+                  {reportedUsers.map(u => (
                     <ReportedUserCard 
                       key={u._id} user={u} 
                       onAction={handleUserAction}

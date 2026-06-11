@@ -1,7 +1,7 @@
 /**
  * OpportunitiesPage.jsx
  * Onglet Opportunités — Chantilink
- * UI v3 — robuste avec skeleton, cache localStorage, retry auto
+ * UI v3 — hook extrait dans useOpportunities.js
  */
 
 import React, {
@@ -9,19 +9,14 @@ import React, {
 } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Briefcase, GraduationCap, FileText, MapPin, ExternalLink,
-  Search, RefreshCw, Clock, X, ArrowUpRight, SlidersHorizontal,
-  Building2, CalendarClock, Sparkles, TrendingUp, Award,
+  Briefcase, GraduationCap, FileText, MapPin,
+  Search, RefreshCw, Clock, X, ArrowUpRight,
+  Building2, CalendarClock, Sparkles,
 } from "lucide-react";
 import { useDarkMode } from "../../context/DarkModeContext";
-import axiosClient from "../../api/axiosClientGlobal";
+import { useOpportunities } from "./useOpportunities";
 
-// ─── Constantes ──────────────────────────────────────────────────────────────
-const LIMIT = 20;
-const CACHE_KEY = "chantilink_opportunities_cache";
-const CACHE_STATS_KEY = "chantilink_opportunities_stats";
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
+// ─── Constantes ───────────────────────────────────────────────────────────────
 const TYPE_CONFIG = {
   emploi: {
     label:   "Emploi",
@@ -54,26 +49,6 @@ const TYPE_CONFIG = {
 
 const CITIES = ["Abidjan", "Bouaké", "Yamoussoukro", "Korhogo", "San Pedro", "Daloa"];
 
-// ─── Cache helpers ───────────────────────────────────────────────────────────
-function getCached(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const { data, timestamp } = JSON.parse(raw);
-    if (Date.now() - timestamp > CACHE_TTL) {
-      localStorage.removeItem(key);
-      return null;
-    }
-    return data;
-  } catch { return null; }
-}
-
-function setCache(key, data) {
-  try {
-    localStorage.setItem(key, JSON.stringify({ data, timestamp: Date.now() }));
-  } catch { /* localStorage plein, ignore */ }
-}
-
 // ─── Utils ────────────────────────────────────────────────────────────────────
 function timeAgo(dateStr) {
   if (!dateStr) return "";
@@ -95,121 +70,10 @@ function formatExpiry(dateStr) {
   if (!dateStr) return null;
   const d = new Date(dateStr);
   if (d < new Date()) return "Clôturé";
-  return `${d.toLocaleDateString("fr-CI", { day: "numeric", month: "short" })}`;
+  return d.toLocaleDateString("fr-CI", { day: "numeric", month: "short" });
 }
 
-// ─── Hook fetch avec cache + retry ──────────────────────────────────────────
-function useOpportunities({ type, location, search }) {
-  const [items,      setItems]      = useState(() => getCached(CACHE_KEY) || []);
-  const [stats,      setStats]      = useState(() => getCached(CACHE_STATS_KEY) || null);
-  const [page,       setPage]       = useState(1);
-  const [hasMore,    setHasMore]    = useState(true);
-  const [loading,    setLoading]    = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error,      setError]      = useState(null);
-  const abortRef = useRef(null);
-  const retryCountRef = useRef(0);
-  const isFirstLoad = useRef(true);
-
-  const fetchStats = useCallback(async () => {
-    try {
-      const { data } = await axiosClient.get("/opportunities/stats");
-      setStats(data);
-      setCache(CACHE_STATS_KEY, data);
-    } catch {}
-  }, []);
-
-  const fetchPage = useCallback(async (pageNum, append = false) => {
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-    setLoading(true);
-    setError(null);
-
-    const attemptFetch = async (retries = 2) => {
-      try {
-        const params = new URLSearchParams({ page: pageNum, limit: LIMIT });
-        if (type)     params.set("type", type);
-        if (location) params.set("location", location);
-        if (search)   params.set("search", search);
-
-        const { data } = await axiosClient.get(`/opportunities?${params}`, {
-          signal: abortRef.current.signal,
-        });
-
-        setItems((prev) => {
-          const newItems = append ? [...prev, ...data.opportunities] : data.opportunities;
-          setCache(CACHE_KEY, newItems);
-          return newItems;
-        });
-        setHasMore(data.pagination.hasMore);
-        retryCountRef.current = 0;
-      } catch (err) {
-        if (err.name === "CanceledError" || err.code === "ERR_CANCELED") return;
-        
-        if (retries > 0) {
-          // Retry après un délai exponentiel
-          await new Promise(r => setTimeout(r, (3 - retries) * 1000));
-          return attemptFetch(retries - 1);
-        }
-        
-        setError("Impossible de charger les opportunités.");
-        // Restaurer depuis le cache si perte de connexion
-        const cached = getCached(CACHE_KEY);
-        if (cached && !append) setItems(cached);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    await attemptFetch();
-  }, [type, location, search]);
-
-  // Chargement initial
-  useEffect(() => {
-    if (isFirstLoad.current && items.length > 0) {
-      // Déjà chargé depuis le cache
-      isFirstLoad.current = false;
-      fetchStats();
-      return;
-    }
-    isFirstLoad.current = false;
-    setPage(1);
-    setItems([]);
-    fetchPage(1, false);
-    fetchStats();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Re-fetch quand les filtres changent
-  useEffect(() => {
-    if (!isFirstLoad.current) {
-      setPage(1);
-      setItems(getCached(CACHE_KEY) || []);
-      fetchPage(1, false);
-    }
-  }, [type, location, search]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const loadMore = useCallback(() => {
-    if (!hasMore || loading) return;
-    const next = page + 1;
-    setPage(next);
-    fetchPage(next, true);
-  }, [hasMore, loading, page, fetchPage]);
-
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    try { await axiosClient.post("/opportunities/admin/sync"); } catch {}
-    localStorage.removeItem(CACHE_KEY);
-    localStorage.removeItem(CACHE_STATS_KEY);
-    setPage(1);
-    await fetchPage(1, false);
-    await fetchStats();
-    setRefreshing(false);
-  }, [fetchPage, fetchStats]);
-
-  return { items, stats, loading, refreshing, hasMore, error, loadMore, refresh };
-}
-
-// ─── Skeleton Loader ─────────────────────────────────────────────────────────
+// ─── Skeleton Loader ──────────────────────────────────────────────────────────
 const SkeletonCard = memo(({ isDarkMode }) => (
   <div style={{
     background: isDarkMode ? "rgba(255,255,255,0.04)" : "#ffffff",
@@ -219,99 +83,76 @@ const SkeletonCard = memo(({ isDarkMode }) => (
     position: "relative",
     overflow: "hidden",
   }}>
-    {/* Accent bar */}
     <div style={{
       position: "absolute", left: 0, top: 0, bottom: 0, width: 3,
       background: "linear-gradient(135deg, #1d4ed8, #3b82f6)",
       borderRadius: "20px 0 0 20px",
     }} />
     <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-      {/* Icon skeleton */}
       <div style={{
         width: 40, height: 40, borderRadius: 14, flexShrink: 0,
         background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
         animation: "skeleton-pulse 1.5s ease-in-out infinite",
       }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        {/* Badges skeleton */}
         <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-          <div style={{
-            width: 60, height: 18, borderRadius: 99,
-            background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
-            animation: "skeleton-pulse 1.5s ease-in-out infinite",
-          }} />
-          <div style={{
-            width: 80, height: 18, borderRadius: 99,
-            background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
-            animation: "skeleton-pulse 1.5s ease-in-out infinite",
-          }} />
+          {[60, 80].map((w) => (
+            <div key={w} style={{
+              width: w, height: 18, borderRadius: 99,
+              background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
+              animation: "skeleton-pulse 1.5s ease-in-out infinite",
+            }} />
+          ))}
         </div>
-        {/* Title skeleton */}
         <div style={{
           width: "70%", height: 18, borderRadius: 6, marginBottom: 8,
           background: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
           animation: "skeleton-pulse 1.5s ease-in-out infinite",
         }} />
-        {/* Company skeleton */}
         <div style={{
           width: "40%", height: 14, borderRadius: 6, marginBottom: 10,
           background: isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)",
           animation: "skeleton-pulse 1.5s ease-in-out infinite",
         }} />
-        {/* Pills skeleton */}
         <div style={{ display: "flex", gap: 6 }}>
-          <div style={{
-            width: 80, height: 26, borderRadius: 99,
-            background: isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)",
-            animation: "skeleton-pulse 1.5s ease-in-out infinite",
-          }} />
-          <div style={{
-            width: 60, height: 26, borderRadius: 99,
-            background: isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)",
-            animation: "skeleton-pulse 1.5s ease-in-out infinite",
-          }} />
+          {[80, 60].map((w) => (
+            <div key={w} style={{
+              width: w, height: 26, borderRadius: 99,
+              background: isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)",
+              animation: "skeleton-pulse 1.5s ease-in-out infinite",
+            }} />
+          ))}
         </div>
       </div>
     </div>
-    <style>{`
-      @keyframes skeleton-pulse {
-        0%, 100% { opacity: 0.6; }
-        50% { opacity: 1; }
-      }
-    `}</style>
   </div>
 ));
 SkeletonCard.displayName = "SkeletonCard";
 
-// ─── TypeIcon — conteneur icône moderne ──────────────────────────────────────
+// ─── TypeIcon ─────────────────────────────────────────────────────────────────
 const TypeIcon = memo(({ type, size = 32 }) => {
   const cfg = TYPE_CONFIG[type] || TYPE_CONFIG.emploi;
   const Icon = cfg.Icon;
   return (
-    <div
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size * 0.34,
-        background: cfg.grad,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexShrink: 0,
-        boxShadow: `0 4px 12px ${cfg.color}40`,
-      }}
-    >
+    <div style={{
+      width: size, height: size,
+      borderRadius: size * 0.34,
+      background: cfg.grad,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      flexShrink: 0,
+      boxShadow: `0 4px 12px ${cfg.color}40`,
+    }}>
       <Icon size={size * 0.52} color="#fff" strokeWidth={2} />
     </div>
   );
 });
 TypeIcon.displayName = "TypeIcon";
 
-// ─── OppCard ─────────────────────────────────────────────────────────────────
+// ─── OppCard ──────────────────────────────────────────────────────────────────
 const OppCard = memo(({ opp, isDarkMode }) => {
-  const cfg    = TYPE_CONFIG[opp.type] || TYPE_CONFIG.emploi;
-  const expiry = formatExpiry(opp.expiresAt);
-  const fresh  = isNew(opp.postedAt);
+  const cfg      = TYPE_CONFIG[opp.type] || TYPE_CONFIG.emploi;
+  const expiry   = formatExpiry(opp.expiresAt);
+  const fresh    = isNew(opp.postedAt);
   const isClosed = expiry === "Clôturé";
 
   return (
@@ -320,16 +161,14 @@ const OppCard = memo(({ opp, isDarkMode }) => {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
       style={{
-        background: isDarkMode
-          ? "rgba(255,255,255,0.04)"
-          : "#ffffff",
+        background: isDarkMode ? "rgba(255,255,255,0.04)" : "#ffffff",
         border: `1px solid ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)"}`,
         borderRadius: 20,
         overflow: "hidden",
         position: "relative",
       }}
     >
-      {/* Accent bar gauche */}
+      {/* Accent bar */}
       <div style={{
         position: "absolute", left: 0, top: 0, bottom: 0, width: 3,
         background: cfg.grad, borderRadius: "20px 0 0 20px",
@@ -343,7 +182,6 @@ const OppCard = memo(({ opp, isDarkMode }) => {
           <div style={{ flex: 1, minWidth: 0 }}>
             {/* Meta row */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
-              {/* Badge type */}
               <span style={{
                 fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
                 padding: "2px 8px", borderRadius: 99,
@@ -354,21 +192,18 @@ const OppCard = memo(({ opp, isDarkMode }) => {
                 {cfg.label}
               </span>
 
-              {/* Badge nouveau */}
               {fresh && (
                 <span style={{
                   display: "inline-flex", alignItems: "center", gap: 3,
                   fontSize: 10, fontWeight: 700,
                   padding: "2px 7px", borderRadius: 99,
                   background: "rgba(249,115,22,0.15)", color: "#f97316",
-                  "aria-hidden": "true",
                 }}>
                   <Sparkles size={9} strokeWidth={2.5} />
                   Nouveau
                 </span>
               )}
 
-              {/* Time ago */}
               <span style={{
                 fontSize: 11, marginLeft: "auto",
                 color: isDarkMode ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.3)",
@@ -401,7 +236,6 @@ const OppCard = memo(({ opp, isDarkMode }) => {
 
         {/* Pills row */}
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10, alignItems: "center" }}>
-          {/* Ville */}
           <span style={{
             display: "inline-flex", alignItems: "center", gap: 4,
             fontSize: 11, fontWeight: 500, padding: "4px 9px", borderRadius: 99,
@@ -412,7 +246,6 @@ const OppCard = memo(({ opp, isDarkMode }) => {
             {opp.location}
           </span>
 
-          {/* Tags */}
           {opp.tags?.slice(0, 2).map((tag) => (
             <span key={tag} style={{
               fontSize: 11, fontWeight: 500, padding: "4px 9px", borderRadius: 99,
@@ -423,7 +256,6 @@ const OppCard = memo(({ opp, isDarkMode }) => {
             </span>
           ))}
 
-          {/* Expiry */}
           {expiry && (
             <span style={{
               display: "inline-flex", alignItems: "center", gap: 3,
@@ -436,7 +268,6 @@ const OppCard = memo(({ opp, isDarkMode }) => {
             </span>
           )}
 
-          {/* CTA */}
           <a
             href={opp.sourceUrl}
             target="_blank"
@@ -473,7 +304,7 @@ OppCard.displayName = "OppCard";
 
 // ─── StatBadge ────────────────────────────────────────────────────────────────
 const StatBadge = memo(({ label, count, type, isDarkMode }) => {
-  const cfg = TYPE_CONFIG[type];
+  const cfg  = TYPE_CONFIG[type];
   const Icon = cfg.Icon;
   return (
     <div style={{
@@ -482,7 +313,6 @@ const StatBadge = memo(({ label, count, type, isDarkMode }) => {
       border: `1px solid ${isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)"}`,
       display: "flex", flexDirection: "column", gap: 8, minWidth: 0,
     }}>
-      {/* Icon container */}
       <div style={{
         width: 36, height: 36, borderRadius: 12,
         background: cfg.grad,
@@ -491,10 +321,7 @@ const StatBadge = memo(({ label, count, type, isDarkMode }) => {
       }}>
         <Icon size={17} color="#fff" strokeWidth={2} />
       </div>
-      <p style={{
-        fontSize: 24, fontWeight: 900, lineHeight: 1,
-        color: isDarkMode ? "#f1f5f9" : "#0f172a",
-      }}>
+      <p style={{ fontSize: 24, fontWeight: 900, lineHeight: 1, color: isDarkMode ? "#f1f5f9" : "#0f172a" }}>
         {count ?? "—"}
       </p>
       <p style={{
@@ -522,9 +349,7 @@ const FilterPill = memo(({ label, active, onClick, isDarkMode }) => (
       background: active
         ? "linear-gradient(135deg, #ea580c, #f97316)"
         : isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
-      color: active
-        ? "#fff"
-        : isDarkMode ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.55)",
+      color: active ? "#fff" : isDarkMode ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.55)",
       boxShadow: active ? "0 2px 8px rgba(249,115,22,0.30)" : "none",
     }}
   >
@@ -552,6 +377,7 @@ export default function OpportunitiesPage() {
   const { items, stats, loading, refreshing, hasMore, error, loadMore, refresh } =
     useOpportunities({ type: filterType, location: filterLocation, search });
 
+  // Infinite scroll
   const sentinelRef = useRef(null);
   useEffect(() => {
     if (!sentinelRef.current) return;
@@ -577,7 +403,7 @@ export default function OpportunitiesPage() {
 
   const hasActiveFilters = filterType || filterLocation || search;
 
-  const bg = isDarkMode ? "#0d0f12" : "#f6f7f9";
+  const bg  = isDarkMode ? "#0d0f12" : "#f6f7f9";
   const txt = isDarkMode ? "#f1f5f9" : "#0f172a";
 
   return (
@@ -588,10 +414,13 @@ export default function OpportunitiesPage() {
       >
         <div style={{ maxWidth: 640, margin: "0 auto", padding: "20px 16px 96px" }}>
 
-          {/* ── Header ───────────────────────────────────────────────────── */}
+          {/* ── Header ──────────────────────────────────────────────────── */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
             <div>
-              <p style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: "#f97316", marginBottom: 2 }}>
+              <p style={{
+                fontSize: 10, fontWeight: 800, letterSpacing: "0.12em",
+                textTransform: "uppercase", color: "#f97316", marginBottom: 2,
+              }}>
                 Chantilink
               </p>
               <h1 style={{ fontSize: 26, fontWeight: 900, letterSpacing: "-0.02em", display: "flex", alignItems: "center", gap: 8 }}>
@@ -606,7 +435,6 @@ export default function OpportunitiesPage() {
               </h1>
             </div>
 
-            {/* Refresh */}
             <button
               onClick={refresh}
               disabled={refreshing}
@@ -617,6 +445,7 @@ export default function OpportunitiesPage() {
                 background: isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
                 color: isDarkMode ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.45)",
                 fontSize: 12, fontWeight: 600,
+                opacity: refreshing ? 0.6 : 1,
               }}
             >
               <RefreshCw
@@ -628,14 +457,14 @@ export default function OpportunitiesPage() {
             </button>
           </div>
 
-          {/* ── Stats ────────────────────────────────────────────────────── */}
+          {/* ── Stats ───────────────────────────────────────────────────── */}
           <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-            <StatBadge label="Emplois"      count={stats?.emploi}       type="emploi"      isDarkMode={isDarkMode} />
-            <StatBadge label="Stages"       count={stats?.stage}        type="stage"       isDarkMode={isDarkMode} />
-            <StatBadge label="Appels d'offres" count={stats?.appel_offre} type="appel_offre" isDarkMode={isDarkMode} />
+            <StatBadge label="Emplois"         count={stats?.emploi}       type="emploi"      isDarkMode={isDarkMode} />
+            <StatBadge label="Stages"          count={stats?.stage}        type="stage"       isDarkMode={isDarkMode} />
+            <StatBadge label="Appels d'offres" count={stats?.appel_offre}  type="appel_offre" isDarkMode={isDarkMode} />
           </div>
 
-          {/* ── Recherche ────────────────────────────────────────────────── */}
+          {/* ── Recherche ───────────────────────────────────────────────── */}
           <div style={{ position: "relative", marginBottom: 12 }}>
             <Search size={15} aria-hidden="true" style={{
               position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)",
@@ -675,18 +504,30 @@ export default function OpportunitiesPage() {
           </div>
 
           {/* ── Filtres type ─────────────────────────────────────────────── */}
-          <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8, marginBottom: 6 }} className="no-scrollbar" role="tablist" aria-label="Filtrer par type">
-            <FilterPill label="Tout"              active={!filterType}                onClick={() => setFilterType("")}                             isDarkMode={isDarkMode} />
-            <FilterPill label="💼 Emplois"        active={filterType === "emploi"}    onClick={() => setFilterType(filterType === "emploi"    ? "" : "emploi")}    isDarkMode={isDarkMode} />
-            <FilterPill label="🎓 Stages"         active={filterType === "stage"}     onClick={() => setFilterType(filterType === "stage"     ? "" : "stage")}     isDarkMode={isDarkMode} />
-            <FilterPill label="📋 Appels d'offres" active={filterType === "appel_offre"} onClick={() => setFilterType(filterType === "appel_offre" ? "" : "appel_offre")} isDarkMode={isDarkMode} />
+          <div
+            style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8, marginBottom: 6 }}
+            className="no-scrollbar"
+            role="tablist"
+            aria-label="Filtrer par type"
+          >
+            <FilterPill label="Tout"               active={!filterType}                   onClick={() => setFilterType("")}                                          isDarkMode={isDarkMode} />
+            <FilterPill label="💼 Emplois"         active={filterType === "emploi"}        onClick={() => setFilterType(filterType === "emploi"      ? "" : "emploi")}       isDarkMode={isDarkMode} />
+            <FilterPill label="🎓 Stages"          active={filterType === "stage"}         onClick={() => setFilterType(filterType === "stage"       ? "" : "stage")}        isDarkMode={isDarkMode} />
+            <FilterPill label="📋 Appels d'offres" active={filterType === "appel_offre"}   onClick={() => setFilterType(filterType === "appel_offre" ? "" : "appel_offre")}  isDarkMode={isDarkMode} />
           </div>
 
-          {/* ── Filtres ville ─────────────────────────────────────────────── */}
-          <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 12, marginBottom: 4 }} className="no-scrollbar" role="tablist" aria-label="Filtrer par ville">
+          {/* ── Filtres ville ────────────────────────────────────────────── */}
+          <div
+            style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 12, marginBottom: 4 }}
+            className="no-scrollbar"
+            role="tablist"
+            aria-label="Filtrer par ville"
+          >
             <FilterPill label="📍 Tout CI" active={!filterLocation} onClick={() => setFilterLocation("")} isDarkMode={isDarkMode} />
             {CITIES.map((city) => (
-              <FilterPill key={city} label={city}
+              <FilterPill
+                key={city}
+                label={city}
                 active={filterLocation === city}
                 onClick={() => setFilterLocation(filterLocation === city ? "" : city)}
                 isDarkMode={isDarkMode}
@@ -694,7 +535,7 @@ export default function OpportunitiesPage() {
             ))}
           </div>
 
-          {/* Reset */}
+          {/* Reset filtres */}
           {hasActiveFilters && (
             <button
               onClick={clearFilters}
@@ -709,29 +550,30 @@ export default function OpportunitiesPage() {
             </button>
           )}
 
-          {/* ── Erreur ───────────────────────────────────────────────────── */}
+          {/* ── Erreur ──────────────────────────────────────────────────── */}
           {error && (
             <div style={{
               borderRadius: 16, padding: "14px 16px", marginBottom: 16, textAlign: "center",
               background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.18)",
             }}>
               <p style={{ fontSize: 14, color: "#ef4444", fontWeight: 500 }}>{error}</p>
-              <button onClick={refresh} style={{ marginTop: 6, fontSize: 13, color: "#f87171", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>
+              <button
+                onClick={refresh}
+                style={{ marginTop: 6, fontSize: 13, color: "#f87171", background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}
+              >
                 Réessayer
               </button>
             </div>
           )}
 
-          {/* ── Skeleton loaders (première charge) ──────────────────────────── */}
+          {/* ── Skeletons (première charge) ─────────────────────────────── */}
           {loading && items.length === 0 && !error && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {[1, 2, 3].map((i) => (
-                <SkeletonCard key={i} isDarkMode={isDarkMode} />
-              ))}
+              {[1, 2, 3].map((i) => <SkeletonCard key={i} isDarkMode={isDarkMode} />)}
             </div>
           )}
 
-          {/* ── Liste ────────────────────────────────────────────────────── */}
+          {/* ── Liste ───────────────────────────────────────────────────── */}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <AnimatePresence initial={false}>
               {items.map((opp) => (
@@ -740,9 +582,12 @@ export default function OpportunitiesPage() {
             </AnimatePresence>
           </div>
 
-          {/* Empty state */}
+          {/* ── Empty state ─────────────────────────────────────────────── */}
           {!loading && !error && items.length === 0 && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 0", gap: 10, textAlign: "center" }}>
+            <div style={{
+              display: "flex", flexDirection: "column", alignItems: "center",
+              justifyContent: "center", padding: "60px 0", gap: 10, textAlign: "center",
+            }}>
               <div style={{
                 width: 64, height: 64, borderRadius: 20,
                 background: isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)",
@@ -753,14 +598,17 @@ export default function OpportunitiesPage() {
                 Essaie d'autres filtres ou reviens plus tard.
               </p>
               {hasActiveFilters && (
-                <button onClick={clearFilters} style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#f97316", background: "none", border: "none", cursor: "pointer" }}>
+                <button
+                  onClick={clearFilters}
+                  style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#f97316", background: "none", border: "none", cursor: "pointer" }}
+                >
                   Effacer les filtres
                 </button>
               )}
             </div>
           )}
 
-          {/* Loader (pagination) */}
+          {/* ── Loader pagination ───────────────────────────────────────── */}
           {loading && items.length > 0 && (
             <div style={{ display: "flex", justifyContent: "center", padding: "20px 0" }}>
               <div style={{
@@ -772,13 +620,19 @@ export default function OpportunitiesPage() {
             </div>
           )}
 
+          {/* Sentinel infinite scroll */}
           {hasMore && !loading && <div ref={sentinelRef} style={{ height: 32 }} />}
 
+          {/* Footer count */}
           {!hasMore && items.length > 0 && (
-            <p style={{ textAlign: "center", fontSize: 12, padding: "20px 0", color: isDarkMode ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.25)" }}>
+            <p style={{
+              textAlign: "center", fontSize: 12, padding: "20px 0",
+              color: isDarkMode ? "rgba(255,255,255,0.22)" : "rgba(0,0,0,0.25)",
+            }}>
               {items.length} opportunité{items.length > 1 ? "s" : ""} chargée{items.length > 1 ? "s" : ""}
             </p>
           )}
+
         </div>
       </div>
 
@@ -788,7 +642,7 @@ export default function OpportunitiesPage() {
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes skeleton-pulse {
           0%, 100% { opacity: 0.6; }
-          50% { opacity: 1; }
+          50%       { opacity: 1; }
         }
       `}</style>
     </div>
