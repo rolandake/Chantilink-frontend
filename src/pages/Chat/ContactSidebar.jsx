@@ -1,758 +1,561 @@
 // ============================================
-// 📁 src/Pages/chat/ContactSidebar.jsx
-// ✅ FIX CRITIQUE : localStorage isolé par userId
-//    → chaque utilisateur a sa propre clé "onAppContacts_<userId>"
-//    → plus de fuite de contacts entre utilisateurs
-// ✅ FIX : bouton Ajouter toujours visible (fallback formulaire manuel)
+// 📁 src/Pages/chat/ContactSidebar.jsx  v3
+//
+// CORRECTIONS :
+//   1. Doublons → déduplication par normalizeId() sur conversations + contacts
+//   2. Suppression contact → DELETE /contacts/by-user/:userId (pas l'ID MongoDB du doc Contact)
+//   3. Flèche retour → toujours rendue si onBack fourni
+//   4. IDs normalisés partout (String, trim, lowercase)
+//   5. removeContactFromCache() utilisé à la suppression
+//   6. mergedList : conversations ET contacts dédupliqués par clé canonique
 // ============================================
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, {
+  useState, useEffect, useMemo, useCallback,
+} from "react";
 import {
-  ShieldCheck, UserCheck, Search, Users, MessageSquare,
-  UserPlus, Loader, ArrowLeft, X, Bell, ChevronRight,
-  Clock, CheckCircle2, XCircle
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { useToast } from '../../context/ToastContext';
-import { readOnAppContacts, saveContactToOnApp } from '../../utils/contactsCache';
+  Search, UserPlus, ArrowLeft, X, Users,
+  ChevronRight, Loader, CheckCircle2, XCircle,
+  PhoneMissed, Smartphone, PenLine, Trash2,
+} from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { useToast } from "../../context/ToastContext";
+import {
+  readOnAppContacts,
+  saveContactToOnApp,
+  removeContactFromCache,
+  normalizeId,
+} from "../../utils/contactsCache";
 
-// ─────────────────────────────────────────────
-// API
-// ─────────────────────────────────────────────
-const BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api');
+const BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD
+    ? "https://chantilink-backend.onrender.com/api"
+    : "http://localhost:5000/api");
 
+// ─── API ─────────────────────────────────────────────────────────────────────
 const syncContactsAPI = async (token, contacts) => {
   const res = await fetch(`${BASE_URL}/contacts/sync`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ contacts }),
+    method:  "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body:    JSON.stringify({ contacts }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
   return data;
 };
 
-const addContactManualAPI = async (token, { phoneNumber, fullName }) => {
-  const res = await fetch(`${BASE_URL}/contacts/sync`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ contacts: [{ phone: phoneNumber, name: fullName }] }),
+/**
+ * Supprime le lien contact entre l'utilisateur courant et un userId cible.
+ * Utilise DELETE /contacts/by-user/:targetUserId
+ * (pas l'ID MongoDB du document Contact, mais l'ID de l'utilisateur cible)
+ */
+const deleteContactByUserIdAPI = async (token, targetUserId) => {
+  const res = await fetch(`${BASE_URL}/contacts/by-user/${targetUserId}`, {
+    method:  "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
   });
-  const data = await res.json();
+  // 404 = déjà supprimé → on accepte silencieusement
+  if (res.status === 404) return { success: true };
+  const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
   return data;
 };
 
-// ─────────────────────────────────────────────
-// Contact Picker natif (mobile uniquement)
-// ─────────────────────────────────────────────
 const openContactPicker = async () => {
   try {
-    if (!('contacts' in navigator && 'ContactsManager' in window)) return null;
-    const props = ['name', 'tel'];
-    const opts  = { multiple: true };
-    const raw   = await navigator.contacts.select(props, opts);
+    if (!("contacts" in navigator && "ContactsManager" in window)) return null;
+    const raw = await navigator.contacts.select(["name", "tel"], { multiple: true });
     return raw.flatMap((c) =>
-      (c.tel || []).map((phone) => ({ name: c.name?.[0] || 'Inconnu', phone }))
+      (c.tel || []).map((phone) => ({ name: c.name?.[0] || "Inconnu", phone }))
     );
   } catch (err) {
-    console.info('Contact Picker annulé:', err.message);
+    console.info("Contact Picker annulé:", err.message);
     return null;
   }
 };
 
-const isContactPickerSupported = () =>
-  typeof window !== 'undefined' &&
-  'contacts' in navigator &&
-  'ContactsManager' in window;
+const isPickerSupported = () =>
+  typeof window !== "undefined" &&
+  "contacts" in navigator &&
+  "ContactsManager" in window;
 
-// ─────────────────────────────────────────────
-// OVERLAY MODALE — conteneur réutilisable
-// ─────────────────────────────────────────────
-const ModalOverlay = ({ children, onClose }) => (
-  <motion.div
-    initial={{ opacity: 0 }}
-    animate={{ opacity: 1 }}
-    exit={{ opacity: 0 }}
-    className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
-    onClick={onClose}
-  >
-    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-    <motion.div
-      initial={{ y: 60, opacity: 0 }}
-      animate={{ y: 0, opacity: 1 }}
-      exit={{ y: 60, opacity: 0 }}
-      transition={{ type: 'spring', damping: 28, stiffness: 300 }}
-      className="relative z-10 w-full max-w-md bg-[#13161c] border border-white/10 rounded-t-3xl sm:rounded-3xl shadow-2xl overflow-hidden"
-      onClick={(e) => e.stopPropagation()}
-    >
-      {children}
-    </motion.div>
-  </motion.div>
-);
-
-// ─────────────────────────────────────────────
-// MODALE — Ajouter un contact
-// ✅ Affiche le Contact Picker si supporté, sinon un formulaire manuel
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// MODALE AJOUTER — double action (répertoire OU manuel)
+// ─────────────────────────────────────────────────────────────────────────────
 const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
+  const [mode,    setMode]    = useState(null);
+  const [form,    setForm]    = useState({ name: "", phone: "" });
   const [loading, setLoading] = useState(false);
-  const [result, setResult]   = useState(null);
-  const [step, setStep]       = useState('idle');
-  const [manualForm, setManualForm] = useState({ name: '', phone: '' });
-  const [formError, setFormError]   = useState('');
+  const [result,  setResult]  = useState(null);
+  const [error,   setError]   = useState("");
   const { showToast } = useToast();
-  const pickerSupported = isContactPickerSupported();
+  const pickerOk = isPickerSupported();
 
-  // ── Contact Picker (mobile) ──
-  const handlePick = async () => {
-    setLoading(true);
-    setStep('picking');
+  const fmtPhone = (v) => {
+    let c = v.replace(/[^\d+]/g, "");
+    if (!c.startsWith("+")) c = "+" + c;
+    if (c.length > 16) c = c.slice(0, 16);
+    if (c.length > 4) {
+      const prefix = c.slice(0, 4);
+      const groups = c.slice(4).match(/.{1,2}/g) || [];
+      return prefix + " " + groups.join(" ");
+    }
+    return c;
+  };
+
+  const handlePicker = async () => {
+    setLoading(true); setError("");
     try {
       const picked = await openContactPicker();
-      if (picked === null) { setStep('idle'); setLoading(false); return; }
-      if (picked.length === 0) {
-        showToast('Aucun contact sélectionné', 'info');
-        setStep('idle'); setLoading(false); return;
-      }
-      const data = await syncContactsAPI(token, picked);
+      if (!picked) { setLoading(false); return; }
+      if (!picked.length) { showToast("Aucun contact sélectionné", "info"); setLoading(false); return; }
+      const data  = await syncContactsAPI(token, picked);
       const found = data.onChantilink || [];
       found.forEach((c) => saveContactToOnApp(c, userId));
       setResult({ found, total: picked.length });
-      setStep('done');
-      if (onPickerSync) onPickerSync(found);
-    } catch (err) {
-      showToast(err.message || 'Erreur lors de la vérification', 'error');
-      setStep('idle');
-    } finally {
-      setLoading(false);
-    }
+      onPickerSync?.(found);
+    } catch (e) { setError(e.message || "Erreur de synchronisation"); }
+    finally { setLoading(false); }
   };
 
-  // ── Formulaire manuel (desktop / iOS / Firefox) ──
-  const formatPhone = (value) => {
-    let cleaned = value.replace(/[^\d+]/g, '');
-    if (!cleaned.startsWith('+')) cleaned = '+' + cleaned.replace(/^\+/, '');
-    if (cleaned.length > 16) cleaned = cleaned.slice(0, 16);
-    if (cleaned.length > 4) {
-      const prefix = cleaned.slice(0, 4);
-      const rest   = cleaned.slice(4);
-      const groups = rest.match(/.{1,2}/g);
-      return prefix + (groups ? ' ' + groups.join(' ') : '');
-    }
-    return cleaned;
-  };
-
-  const handleManualSubmit = async (e) => {
-    e.preventDefault();
-    setFormError('');
-    const cleanPhone = manualForm.phone.replace(/\s/g, '');
-    if (!manualForm.name.trim()) return setFormError('Le nom est requis');
-    if (cleanPhone.length < 10)  return setFormError('Numéro trop court (min. 10 chiffres)');
-
+  const handleManual = async (e) => {
+    e.preventDefault(); setError("");
+    const clean = form.phone.replace(/\s/g, "");
+    if (!form.name.trim()) return setError("Le nom est requis");
+    if (clean.length < 10)  return setError("Numéro trop court (min 10 chiffres)");
     setLoading(true);
     try {
-      const data = await addContactManualAPI(token, {
-        phoneNumber: cleanPhone,
-        fullName: manualForm.name.trim(),
-      });
+      const data  = await syncContactsAPI(token, [{ phone: clean, name: form.name.trim() }]);
       const found = data.onChantilink || [];
       found.forEach((c) => saveContactToOnApp(c, userId));
       setResult({ found, total: 1 });
-      setStep('done');
-      if (onPickerSync) onPickerSync(found);
-    } catch (err) {
-      setFormError(err.message || "Impossible de trouver ce contact");
-    } finally {
-      setLoading(false);
-    }
+      onPickerSync?.(found);
+    } catch (e) { setError(e.message || "Contact introuvable"); }
+    finally { setLoading(false); }
   };
 
   return (
-    <ModalOverlay onClose={onClose}>
-      {/* Header */}
-      <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-white/5">
-        {step === 'done' && (
-          <button onClick={() => setStep('idle')} className="p-1.5 hover:bg-white/5 rounded-xl transition-colors">
-            <ArrowLeft size={18} className="text-gray-400" />
-          </button>
-        )}
-        <div className="flex-1">
-          <h2 className="text-base font-black text-white">
-            {step === 'done' ? 'Résultats' : 'Ajouter des contacts'}
-          </h2>
-          <p className="text-[11px] text-gray-500">
-            {step === 'done'
-              ? `${result?.total} contact(s) vérifiés`
-              : pickerSupported ? 'Sélectionnez depuis votre téléphone' : 'Entrez un numéro manuellement'}
-          </p>
-        </div>
-        <button onClick={onClose} className="p-1.5 hover:bg-white/5 rounded-xl transition-colors">
-          <X size={18} className="text-gray-400" />
-        </button>
-      </div>
-
-      <div className="p-5">
-        <AnimatePresence mode="wait">
-
-          {/* ÉTAT IDLE — picker disponible */}
-          {step === 'idle' && pickerSupported && (
-            <motion.div key="picker" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <div className="bg-blue-500/8 border border-blue-500/15 rounded-2xl p-4 mb-5 space-y-2">
-                {[
-                  'Un sélecteur de contacts s\'ouvre',
-                  'Vous choisissez qui vérifier',
-                  'Numéros hachés SHA-256 en local',
-                  'Comparaison sécurisée avec la base',
-                ].map((s, i) => (
-                  <div key={i} className="flex items-center gap-2.5 text-xs text-gray-400">
-                    <span className="w-5 h-5 rounded-full bg-blue-600/20 text-blue-400 flex items-center justify-center text-[10px] font-bold flex-shrink-0">{i + 1}</span>
-                    {s}
-                  </div>
-                ))}
-              </div>
-              <button
-                onClick={handlePick}
-                disabled={loading}
-                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-all text-sm"
-              >
-                {loading
-                  ? <><Loader size={16} className="animate-spin" /> Recherche…</>
-                  : <><UserPlus size={16} /> Sélectionner mes contacts</>}
-              </button>
-              {/* Option manuel en bas */}
-              <button
-                onClick={() => setStep('manual')}
-                className="w-full mt-3 py-2.5 text-xs text-gray-500 hover:text-gray-300 transition-colors font-medium"
-              >
-                Entrer un numéro manuellement →
-              </button>
-            </motion.div>
-          )}
-
-          {/* ÉTAT IDLE — pas de picker (desktop / iOS / Firefox) → formulaire direct */}
-          {step === 'idle' && !pickerSupported && (
-            <motion.div key="manual-direct" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <ManualForm
-                form={manualForm}
-                setForm={setManualForm}
-                formatPhone={formatPhone}
-                error={formError}
-                loading={loading}
-                onSubmit={handleManualSubmit}
-              />
-            </motion.div>
-          )}
-
-          {/* ÉTAT MANUAL — formulaire depuis le picker */}
-          {step === 'manual' && (
-            <motion.div key="manual-from-picker" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
-              <button onClick={() => setStep('idle')} className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 mb-4 transition-colors">
-                <ArrowLeft size={12} /> Retour au sélecteur
-              </button>
-              <ManualForm
-                form={manualForm}
-                setForm={setManualForm}
-                formatPhone={formatPhone}
-                error={formError}
-                loading={loading}
-                onSubmit={handleManualSubmit}
-              />
-            </motion.div>
-          )}
-
-          {/* ÉTAT DONE */}
-          {step === 'done' && result && (
-            <motion.div key="done" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-              {result.found.length > 0 ? (
-                <>
-                  <div className="flex items-center gap-3 mb-4 p-3 bg-green-500/8 border border-green-500/15 rounded-2xl">
-                    <CheckCircle2 size={20} className="text-green-400 flex-shrink-0" />
-                    <p className="text-sm text-gray-300">
-                      <span className="text-white font-black">{result.found.length}</span> ami(s) trouvés sur Chantilink
-                    </p>
-                  </div>
-                  <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-                    {result.found.map((c) => (
-                      <div key={c.id || c._id} className="flex items-center gap-3 p-3 bg-white/[0.03] rounded-xl border border-white/5">
-                        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-sm font-black overflow-hidden">
-                          {c.profilePhoto
-                            ? <img src={c.profilePhoto} alt="" className="w-full h-full object-cover" />
-                            : c.fullName?.[0]?.toUpperCase() || '?'}
-                        </div>
-                        <div>
-                          <p className="text-sm font-bold text-white">{c.fullName}</p>
-                          {c.username && <p className="text-xs text-gray-500">@{c.username}</p>}
-                        </div>
-                        <CheckCircle2 size={14} className="text-green-400 ml-auto flex-shrink-0" />
-                      </div>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div className="text-center py-6">
-                  <XCircle size={36} className="text-gray-600 mx-auto mb-3" />
-                  <p className="text-sm font-bold text-gray-300 mb-1">Aucun ami trouvé</p>
-                  <p className="text-xs text-gray-500">
-                    Aucun de vos {result.total} contact(s) n'utilise encore Chantilink.
-                  </p>
-                </div>
-              )}
-              <button
-                onClick={onClose}
-                className="w-full mt-4 py-3 bg-white/5 hover:bg-white/10 text-gray-300 font-bold rounded-2xl text-sm transition-all"
-              >
-                Fermer
-              </button>
-            </motion.div>
-          )}
-
-        </AnimatePresence>
-      </div>
-    </ModalOverlay>
-  );
-};
-
-// Sous-composant formulaire manuel réutilisable
-const ManualForm = ({ form, setForm, formatPhone, error, loading, onSubmit }) => (
-  <form onSubmit={onSubmit} className="space-y-4">
-    <div>
-      <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Nom</label>
-      <input
-        type="text"
-        value={form.name}
-        onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
-        placeholder="Ex: Marc Koffi"
-        className="w-full px-4 py-3.5 bg-[#0f1115] text-white rounded-2xl border border-white/5 focus:border-blue-500 outline-none transition-all placeholder:text-gray-700 font-bold text-sm"
-        autoFocus
-      />
-    </div>
-    <div>
-      <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2 ml-1">Numéro de téléphone</label>
-      <input
-        type="tel"
-        value={form.phone}
-        onChange={(e) => setForm((p) => ({ ...p, phone: formatPhone(e.target.value) }))}
-        placeholder="+225 00 00 00 00 00"
-        className="w-full px-4 py-3.5 bg-[#0f1115] text-white rounded-2xl border border-white/5 focus:border-blue-500 outline-none transition-all placeholder:text-gray-700 font-mono text-sm"
-      />
-    </div>
-    {error && (
-      <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">
-        {error}
-      </p>
-    )}
-    <button
-      type="submit"
-      disabled={loading || !form.name.trim() || !form.phone.trim()}
-      className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-all text-sm"
-    >
-      {loading ? <><Loader size={16} className="animate-spin" /> Recherche…</> : <><UserPlus size={16} /> Vérifier sur Chantilink</>}
-    </button>
-  </form>
-);
-
-// ─────────────────────────────────────────────
-// MODALE — Liste des contacts (recherche)
-// ─────────────────────────────────────────────
-const ContactsModal = ({ contacts, unreadCounts, onContactSelect, onClose, onAddContact }) => {
-  const [search, setSearch] = useState('');
-
-  const filtered = useMemo(() =>
-    contacts.filter((c) =>
-      (c.fullName || c.name || '').toLowerCase().includes(search.toLowerCase())
-    ), [contacts, search]);
-
-  return (
-    <ModalOverlay onClose={onClose}>
-      <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-white/5">
-        <ShieldCheck size={18} className="text-blue-500 flex-shrink-0" />
-        <div className="flex-1">
-          <h2 className="text-base font-black text-white">Sur Chantilink</h2>
-          <p className="text-[11px] text-gray-500">{contacts.length} contact(s)</p>
-        </div>
-        <button
-          onClick={onAddContact}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-xl text-xs font-bold border border-blue-500/20 transition-all"
-        >
-          <UserPlus size={12} /> Ajouter
-        </button>
-        <button onClick={onClose} className="p-1.5 hover:bg-white/5 rounded-xl transition-colors ml-1">
-          <X size={18} className="text-gray-400" />
-        </button>
-      </div>
-
-      <div className="px-5 pt-4 pb-2">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={14} />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Rechercher un contact…"
-            className="w-full bg-white/[0.04] border border-white/8 rounded-xl py-2.5 pl-9 pr-4 text-sm outline-none focus:border-blue-500/50 transition-all text-white placeholder:text-gray-600"
-            autoFocus
-          />
-        </div>
-      </div>
-
-      <div className="overflow-y-auto max-h-[50vh] custom-scrollbar px-2 pb-5">
-        {filtered.length > 0 ? (
-          filtered.map((u) => (
-            <button
-              key={u.id || u._id}
-              onClick={() => { onContactSelect(u); onClose(); }}
-              className="w-full flex items-center gap-3 p-3 hover:bg-white/[0.04] rounded-xl transition-all group"
-            >
-              <div className="relative flex-shrink-0">
-                <div className="w-11 h-11 rounded-xl flex items-center justify-center font-black text-base border border-white/5 bg-gradient-to-br from-blue-600 to-indigo-700 overflow-hidden">
-                  {u.profilePhoto
-                    ? <img src={u.profilePhoto} alt="" className="w-full h-full object-cover" />
-                    : (u.fullName?.[0]?.toUpperCase() || '?')}
-                </div>
-                {u.isOnline && (
-                  <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-[#13161c]" />
-                )}
-              </div>
-              <div className="flex-1 min-w-0 text-left">
-                <p className="text-sm font-bold text-gray-100 truncate">{u.fullName}</p>
-                <p className="text-[11px] text-gray-500 truncate">
-                  {u.username ? `@${u.username}` : 'Disponible'}
-                </p>
-              </div>
-              {unreadCounts?.[u.id || u._id] > 0 && (
-                <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md flex-shrink-0">
-                  {unreadCounts[u.id || u._id]}
-                </span>
-              )}
-              <ChevronRight size={14} className="text-gray-600 group-hover:text-gray-400 transition-colors flex-shrink-0" />
+    <div className="fixed inset-0 z-[300] flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-md" />
+      <motion.div
+        initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+        transition={{ type: "spring", damping: 26, stiffness: 280 }}
+        onClick={(e) => e.stopPropagation()}
+        className="relative z-10 w-full sm:max-w-md bg-[#0f1218] border-t sm:border border-white/10 rounded-t-3xl sm:rounded-2xl shadow-2xl overflow-hidden"
+      >
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-white/5">
+          {(mode || result) && (
+            <button onClick={() => { setMode(null); setResult(null); setError(""); }} className="p-1.5 hover:bg-white/5 rounded-xl">
+              <ArrowLeft size={16} className="text-gray-400" />
             </button>
-          ))
-        ) : (
-          <div className="text-center py-10">
-            <Users size={36} className="text-gray-700 mx-auto mb-3" />
-            <p className="text-sm text-gray-500">Aucun contact trouvé</p>
+          )}
+          <div className="flex-1">
+            <h2 className="text-base font-black text-white">
+              {result ? "Résultats" : mode === "manual" ? "Saisie manuelle" : "Ajouter un contact"}
+            </h2>
+            <p className="text-[11px] text-gray-500">
+              {result ? `${result.total} vérifié(s)` : "Chantilink Secure"}
+            </p>
           </div>
-        )}
-      </div>
-    </ModalOverlay>
+          <button onClick={onClose} className="p-1.5 hover:bg-white/5 rounded-xl">
+            <X size={16} className="text-gray-400" />
+          </button>
+        </div>
+
+        <div className="p-5">
+          <AnimatePresence mode="wait">
+
+            {/* CHOIX */}
+            {!mode && !result && (
+              <motion.div key="choice" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-3">
+                {/* Répertoire */}
+                <button
+                  onClick={pickerOk ? handlePicker : () => setMode("manual")}
+                  disabled={loading}
+                  className="w-full flex items-center gap-4 p-4 bg-blue-600/10 hover:bg-blue-600/20 border border-blue-500/20 rounded-2xl transition-all group"
+                >
+                  <div className="w-11 h-11 rounded-xl bg-blue-600/20 flex items-center justify-center flex-shrink-0">
+                    {loading ? <Loader size={20} className="text-blue-400 animate-spin" /> : <Smartphone size={20} className="text-blue-400" />}
+                  </div>
+                  <div className="text-left flex-1">
+                    <p className="text-sm font-black text-white">Depuis mon répertoire</p>
+                    <p className="text-xs text-gray-500">{pickerOk ? "Sélectionnez vos contacts téléphone" : "Non disponible sur cet appareil"}</p>
+                  </div>
+                  <ChevronRight size={14} className="text-gray-600 group-hover:text-gray-400" />
+                </button>
+
+                {/* Manuel */}
+                <button
+                  onClick={() => setMode("manual")}
+                  className="w-full flex items-center gap-4 p-4 bg-white/[0.03] hover:bg-white/[0.06] border border-white/8 rounded-2xl transition-all group"
+                >
+                  <div className="w-11 h-11 rounded-xl bg-white/5 flex items-center justify-center flex-shrink-0">
+                    <PenLine size={20} className="text-gray-400" />
+                  </div>
+                  <div className="text-left flex-1">
+                    <p className="text-sm font-black text-white">Saisie manuelle</p>
+                    <p className="text-xs text-gray-500">Entrez un nom et un numéro</p>
+                  </div>
+                  <ChevronRight size={14} className="text-gray-600 group-hover:text-gray-400" />
+                </button>
+                <p className="text-center text-[10px] text-gray-600 pt-1">🔒 Numéros hachés SHA-256</p>
+              </motion.div>
+            )}
+
+            {/* FORMULAIRE MANUEL */}
+            {mode === "manual" && !result && (
+              <motion.div key="manual" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
+                <form onSubmit={handleManual} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">Nom</label>
+                    <input type="text" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))}
+                      placeholder="Ex: Marc Koffi" autoFocus
+                      className="w-full px-4 py-3.5 bg-white/[0.04] text-white rounded-2xl border border-white/8 focus:border-blue-500/60 outline-none placeholder:text-gray-700 font-bold text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">Téléphone</label>
+                    <input type="tel" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: fmtPhone(e.target.value) }))}
+                      placeholder="+225 07 00 00 00 00"
+                      className="w-full px-4 py-3.5 bg-white/[0.04] text-white rounded-2xl border border-white/8 focus:border-blue-500/60 outline-none placeholder:text-gray-700 font-mono text-sm" />
+                  </div>
+                  {error && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">{error}</p>}
+                  <button type="submit" disabled={loading || !form.name.trim() || form.phone.replace(/\s/g, "").length < 10}
+                    className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 disabled:opacity-40 text-white font-bold rounded-2xl flex items-center justify-center gap-2 text-sm">
+                    {loading ? <Loader size={16} className="animate-spin" /> : <UserPlus size={16} />}
+                    {loading ? "Recherche…" : "Vérifier sur Chantilink"}
+                  </button>
+                </form>
+              </motion.div>
+            )}
+
+            {/* RÉSULTAT */}
+            {result && (
+              <motion.div key="result" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+                {result.found.length > 0 ? (
+                  <>
+                    <div className="flex items-center gap-3 mb-4 p-3 bg-green-500/8 border border-green-500/15 rounded-2xl">
+                      <CheckCircle2 size={20} className="text-green-400 flex-shrink-0" />
+                      <p className="text-sm text-gray-300"><span className="text-white font-black">{result.found.length}</span> ami(s) trouvés sur Chantilink</p>
+                    </div>
+                    <div className="space-y-2 max-h-44 overflow-y-auto">
+                      {result.found.map((c) => (
+                        <div key={normalizeId(c.id || c._id)} className="flex items-center gap-3 p-3 bg-white/[0.03] rounded-xl border border-white/5">
+                          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-sm font-black text-white overflow-hidden">
+                            {c.profilePhoto ? <img src={c.profilePhoto} alt="" className="w-full h-full object-cover" /> : c.fullName?.[0]?.toUpperCase() || "?"}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold text-white truncate">{c.fullName}</p>
+                            {c.username && <p className="text-xs text-gray-500">@{c.username}</p>}
+                          </div>
+                          <CheckCircle2 size={14} className="text-green-400 flex-shrink-0" />
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center py-6">
+                    <XCircle size={36} className="text-gray-600 mx-auto mb-3" />
+                    <p className="text-sm font-bold text-gray-300 mb-1">Aucun ami trouvé</p>
+                    <p className="text-xs text-gray-500">Aucun de vos contacts n'utilise encore Chantilink.</p>
+                  </div>
+                )}
+                <button onClick={onClose} className="w-full mt-4 py-3 bg-white/5 hover:bg-white/10 text-gray-300 font-bold rounded-2xl text-sm">Fermer</button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </motion.div>
+    </div>
   );
 };
 
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 // COMPOSANT PRINCIPAL
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 export const ContactSidebar = ({
   token,
+  contacts      = [],
+  conversations = [],
+  selectedContact,
+  unreadCounts  = {},
+  onlineUsers   = [],
+  user,
   onContactSelect,
-  contacts = [],
-  unreadCounts = {},
-  user,          // ✅ REQUIS pour isoler le localStorage
   onPickerSync,
   onShowPending,
-  conversations = [],
-  onShowConversations,
-  totalUnread = 0,
+  onShowMissedCalls,
+  missedCallsCount = 0,
   onBack,
 }) => {
-  const userId = user?.id || user?._id;
-
-  const [onAppContacts, setOnAppContacts] = useState([]);
-  const [searchQuery,   setSearchQuery]   = useState('');
-  const [modal, setModal] = useState(null);
-  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const userId = normalizeId(user?.id || user?._id);
   const { showToast } = useToast();
 
-  // ✅ Supprimer un contact
-  const handleDeleteContact = useCallback(async (contactId) => {
-    if (!token) return;
-    try {
-      const res = await fetch(`${BASE_URL}/contacts/${contactId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || 'Erreur suppression');
-      
-      // Mettre à jour le cache local
-      const updated = onAppContacts.filter((c) => (c.id || c._id) !== contactId);
-      localStorage.setItem(`onAppContacts_${userId}`, JSON.stringify(updated));
-      setOnAppContacts(updated);
-      setDeleteConfirm(null);
-      showToast('Contact supprimé', 'success');
-    } catch (err) {
-      showToast(err.message || 'Erreur lors de la suppression', 'error');
-    }
-  }, [token, onAppContacts, userId, showToast]);
+  const [onAppContacts, setOnAppContacts] = useState([]);
+  const [search,        setSearch]        = useState("");
+  const [showAdd,       setShowAdd]       = useState(false);
+  const [deletingId,    setDeletingId]    = useState(null);
 
-  // ✅ Toujours lire depuis la clé de CET utilisateur
-  const reloadOnAppContacts = useCallback(() => {
-    setOnAppContacts(readOnAppContacts(userId));
+  // ── Charger + recharger contacts locaux ──────────────────────────────────
+  const reloadLocal = useCallback(() => {
+    if (userId) setOnAppContacts(readOnAppContacts(userId));
   }, [userId]);
 
-  // ✅ Reset complet si userId change (changement de compte)
   useEffect(() => {
     setOnAppContacts([]);
-    if (userId) reloadOnAppContacts();
-  }, [userId, reloadOnAppContacts]);
+    if (userId) reloadLocal();
+  }, [userId, reloadLocal]);
 
   useEffect(() => {
-    window.addEventListener('focus', reloadOnAppContacts);
-    return () => window.removeEventListener('focus', reloadOnAppContacts);
-  }, [reloadOnAppContacts]);
+    window.addEventListener("focus", reloadLocal);
+    return () => window.removeEventListener("focus", reloadLocal);
+  }, [reloadLocal]);
 
-  // ✅ Sync les contacts reçus via prop dans le localStorage de CET utilisateur
+  // ── Sync contacts prop → cache local (sans écraser les existants) ─────────
   useEffect(() => {
     if (!userId || contacts.length === 0) return;
     contacts.forEach((c) => {
-      if (c.id || c._id) {
-        saveContactToOnApp({
-          id:           c.id || c._id,
-          fullName:     c.fullName,
-          username:     c.username,
-          profilePhoto: c.profilePhoto,
-          isOnline:     c.isOnline,
-          lastSeen:     c.lastSeen,
-        }, userId);
+      const id = normalizeId(c.id || c._id);
+      if (id) saveContactToOnApp({ ...c, id }, userId);
+    });
+    reloadLocal();
+  }, [contacts, userId, reloadLocal]);
+
+  // ── Fusion sans doublons : conversations + contacts ───────────────────────
+  // Clé canonique = normalizeId pour les deux sources
+  const mergedList = useMemo(() => {
+    const map = new Map();
+
+    // 1. Conversations (priorité, ont un lastMessage)
+    conversations.forEach((conv) => {
+      const id = normalizeId(conv.id || conv._id);
+      if (id) map.set(id, { ...conv, id, _hasConv: true });
+    });
+
+    // 2. Contacts locaux (uniquement si pas déjà dans map)
+    onAppContacts.forEach((c) => {
+      const id = normalizeId(c.id || c._id);
+      if (id && !map.has(id)) {
+        map.set(id, { ...c, id, _hasConv: false });
       }
     });
-    reloadOnAppContacts();
-  }, [contacts, userId, reloadOnAppContacts]);
 
-  const filteredContacts = useMemo(() =>
-    onAppContacts.filter((c) =>
-      (c.fullName || c.name || '').toLowerCase().includes(searchQuery.toLowerCase())
-    ), [onAppContacts, searchQuery]);
+    return Array.from(map.values()).sort((a, b) => {
+      if (a._hasConv && !b._hasConv) return -1;
+      if (!a._hasConv && b._hasConv) return 1;
+      const tA = a.lastMessageTime ? new Date(a.lastMessageTime).getTime() : 0;
+      const tB = b.lastMessageTime ? new Date(b.lastMessageTime).getTime() : 0;
+      return tB - tA;
+    });
+  }, [conversations, onAppContacts]);
 
-  const handlePickerSync = useCallback((newContacts) => {
-    newContacts.forEach((c) => saveContactToOnApp(c, userId));
-    reloadOnAppContacts();
-    if (onPickerSync) onPickerSync(newContacts);
-    setModal(null);
-  }, [userId, onPickerSync, reloadOnAppContacts]);
+  const filtered = useMemo(() =>
+    mergedList.filter((c) =>
+      (c.fullName || c.name || "").toLowerCase().includes(search.toLowerCase())
+    ), [mergedList, search]);
 
-  const handleBack = useCallback(() => {
-    if (onBack) onBack();
-    else window.history.back();
-  }, [onBack]);
+  // ── Suppression contact ───────────────────────────────────────────────────
+  // On passe l'ID de l'utilisateur cible (pas l'ID doc Contact MongoDB)
+  const handleDelete = useCallback(async (targetUserId) => {
+    const id = normalizeId(targetUserId);
+    setDeletingId(id);
+    try {
+      await deleteContactByUserIdAPI(token, id);
+      // Supprimer du cache local
+      removeContactFromCache(id, userId);
+      setOnAppContacts((prev) => prev.filter((c) => normalizeId(c.id) !== id));
+      showToast("Contact supprimé", "success");
+    } catch (err) {
+      showToast(err.message || "Impossible de supprimer", "error");
+    } finally {
+      setDeletingId(null);
+    }
+  }, [token, userId, showToast]);
+
+  const handlePickerSync = useCallback((found) => {
+    found.forEach((c) => saveContactToOnApp(c, userId));
+    reloadLocal();
+    onPickerSync?.(found);
+    setShowAdd(false);
+  }, [userId, onPickerSync, reloadLocal]);
 
   return (
     <>
-      <div className="flex flex-col h-full bg-[#0b0d10] border-r border-white/5">
+      <div className="flex flex-col h-full bg-[#0b0d10]">
 
-        {/* ══ HEADER ══ */}
-        <div className="px-4 py-3 bg-[#12151a]/80 backdrop-blur-xl border-b border-white/5">
-          <div className="flex items-center gap-2">
-            <motion.button
-              whileTap={{ scale: 0.9 }}
-              onClick={handleBack}
-              className="w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] hover:bg-white/[0.10] transition-all flex-shrink-0"
-              title="Retour"
-            >
-              <ArrowLeft size={15} strokeWidth={2.5} className="text-white/60" />
-            </motion.button>
+        {/* ── HEADER ── */}
+        <div className="px-4 py-3 bg-[#0f1218]/90 backdrop-blur-xl border-b border-white/5">
+          <div className="flex items-center gap-2 mb-3">
 
-            <span className="text-sm font-black tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent flex-1 text-center">
-              Mes Contacts
+            {/* ✅ Flèche retour — toujours visible si onBack fourni */}
+            {onBack && (
+              <motion.button whileTap={{ scale: 0.9 }} onClick={onBack}
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] hover:bg-white/[0.10] flex-shrink-0"
+                aria-label="Retour"
+              >
+                <ArrowLeft size={15} className="text-white/70" />
+              </motion.button>
+            )}
+
+            <span className="text-sm font-black tracking-tight text-white flex-1 text-center">
+              Messages
             </span>
 
-            {onShowConversations && (
-              <motion.button
-                whileTap={{ scale: 0.9 }}
-                onClick={onShowConversations}
-                className="relative flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-600/15 hover:bg-purple-600/25 text-purple-400 rounded-lg transition-all text-[11px] font-bold border border-purple-500/20"
+            {/* Appels manqués */}
+            {onShowMissedCalls && (
+              <motion.button whileTap={{ scale: 0.9 }} onClick={onShowMissedCalls}
+                className="relative flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-[11px] font-bold border border-red-500/15 transition-all"
               >
-                <MessageSquare size={12} />
-                Conv.
-                {totalUnread > 0 && (
+                <PhoneMissed size={12} /> Manqués
+                {missedCallsCount > 0 && (
                   <span className="absolute -top-1.5 -right-1.5 min-w-[15px] h-[15px] bg-red-500 text-white text-[9px] font-black px-1 rounded-full flex items-center justify-center">
-                    {totalUnread > 99 ? '99+' : totalUnread}
+                    {missedCallsCount > 9 ? "9+" : missedCallsCount}
                   </span>
                 )}
               </motion.button>
             )}
 
-            {/* ✅ Bouton Ajouter TOUJOURS visible */}
-            <motion.button
-              whileTap={{ scale: 0.9 }}
-              onClick={() => setModal('add')}
-              className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 rounded-lg transition-all text-[11px] font-bold border border-blue-500/20"
-              title="Ajouter des contacts"
+            {/* Ajouter contact */}
+            <motion.button whileTap={{ scale: 0.9 }} onClick={() => setShowAdd(true)}
+              className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 rounded-lg text-[11px] font-bold border border-blue-500/20 transition-all"
             >
-              <UserPlus size={12} />
-              Ajouter
+              <UserPlus size={12} /> Ajouter
             </motion.button>
           </div>
 
-          <div className="relative mt-3">
+          <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600" size={13} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+            <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
               placeholder="Rechercher…"
-              className="w-full bg-white/[0.04] border border-white/5 rounded-xl py-2 pl-9 pr-4 text-xs outline-none focus:border-blue-500/40 transition-all text-white placeholder:text-gray-600"
-            />
+              className="w-full bg-white/[0.04] border border-white/5 rounded-xl py-2 pl-9 pr-4 text-xs outline-none focus:border-blue-500/40 text-white placeholder:text-gray-600" />
           </div>
         </div>
 
-        {/* LISTE */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
-          <button
-            onClick={() => setModal('contacts')}
-            className="w-full flex items-center justify-between px-3 mb-2 group"
-          >
-            <p className="text-[10px] font-black text-blue-500 uppercase tracking-[0.2em] flex items-center gap-1.5">
-              <Users size={11} />
-              Sur Chantilink ({filteredContacts.length})
-            </p>
-            <ChevronRight size={12} className="text-blue-500/40 group-hover:text-blue-500 transition-colors" />
-          </button>
-
-          <AnimatePresence>
-            {filteredContacts.length > 0
-              ? filteredContacts.slice(0, 8).map((u) => (
-                  <motion.div
-                    key={u.id || u._id}
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                  >
-                    <ContactItem
-                      user={u}
-                      unread={unreadCounts[u.id || u._id]}
-                      onDelete={handleDeleteContact}
-                      onClick={() => onContactSelect({
-                        id:           u.id || u._id,
-                        fullName:     u.fullName,
-                        username:     u.username,
-                        profilePhoto: u.profilePhoto,
-                        isOnline:     u.isOnline,
-                        lastSeen:     u.lastSeen,
-                      })}
-                    />
-                  </motion.div>
-                ))
-              : <EmptyState onAdd={() => setModal('add')} />
-            }
-          </AnimatePresence>
-
-          {filteredContacts.length > 8 && (
-            <button
-              onClick={() => setModal('contacts')}
-              className="w-full mt-1 py-2 text-xs text-blue-500/60 hover:text-blue-400 transition-colors font-bold"
-            >
-              Voir tous ({filteredContacts.length - 8} de plus)
-            </button>
+        {/* ── LISTE ── */}
+        <div className="flex-1 overflow-y-auto">
+          {filtered.length === 0 ? (
+            <EmptyState onAdd={() => setShowAdd(true)} />
+          ) : (
+            filtered.map((item) => {
+              const id      = normalizeId(item.id || item._id);
+              const unread  = unreadCounts[id] || item.unreadCount || 0;
+              const online  = onlineUsers.includes(id) || item.isOnline;
+              return (
+                <ConversationRow
+                  key={id}
+                  item={{ ...item, id }}
+                  unread={unread}
+                  online={online}
+                  isSelected={normalizeId(selectedContact?.id) === id}
+                  isDeleting={deletingId === id}
+                  onSelect={() => onContactSelect({
+                    id,
+                    fullName:     item.fullName,
+                    username:     item.username,
+                    profilePhoto: item.profilePhoto,
+                    isOnline:     online,
+                    lastSeen:     item.lastSeen,
+                  })}
+                  onDelete={() => handleDelete(id)}
+                />
+              );
+            })
           )}
         </div>
 
+        {/* ── Demandes ── */}
         {onShowPending && (
           <div className="px-3 pb-3 pt-2 border-t border-white/5">
-            <button
-              onClick={onShowPending}
-              className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-white/[0.04] rounded-xl transition-all group"
-            >
-              <div className="flex items-center gap-2 text-xs text-gray-500 group-hover:text-gray-300 transition-colors">
-                <Bell size={13} />
-                Demandes de messages
-              </div>
+            <button onClick={onShowPending}
+              className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-white/[0.04] rounded-xl group">
+              <span className="text-xs text-gray-500 group-hover:text-gray-300 transition-colors">Demandes de messages</span>
               <ChevronRight size={12} className="text-gray-700 group-hover:text-gray-500" />
             </button>
           </div>
         )}
       </div>
 
-      {/* ── MODALES ── */}
       <AnimatePresence>
-        {modal === 'add' && (
-          <AddContactModal
-            key="modal-add"
-            token={token}
-            userId={userId}
-            onClose={() => setModal(null)}
-            onPickerSync={handlePickerSync}
-          />
-        )}
-        {modal === 'contacts' && (
-          <ContactsModal
-            key="modal-contacts"
-            contacts={onAppContacts}
-            unreadCounts={unreadCounts}
-            onContactSelect={onContactSelect}
-            onClose={() => setModal(null)}
-            onAddContact={() => setModal('add')}
-          />
+        {showAdd && (
+          <AddContactModal key="add" token={token} userId={userId} onClose={() => setShowAdd(false)} onPickerSync={handlePickerSync} />
         )}
       </AnimatePresence>
     </>
   );
 };
 
-// ─────────────────────────────────────────────
-// SOUS-COMPOSANTS
-// ─────────────────────────────────────────────
-const ContactItem = ({ user, unread, onClick, onDelete }) => {
-  const [showDelete, setShowDelete] = useState(false);
+// ─── Ligne conversation (style WhatsApp) ─────────────────────────────────────
+const ConversationRow = ({ item, unread, online, isSelected, isDeleting, onSelect, onDelete }) => {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const lastTime = item.lastMessageTime
+    ? new Date(item.lastMessageTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "";
+
   return (
-    <div className="group relative">
-      <button
-        onClick={onClick}
-        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/[0.03] active:bg-white/[0.05] cursor-pointer transition-all rounded-xl"
-      >
+    <div className={`group relative border-b border-white/[0.03] transition-colors ${isSelected ? "bg-white/[0.07]" : "hover:bg-white/[0.03]"}`}>
+      <button onClick={onSelect} className="w-full flex items-center gap-3 px-4 py-3.5">
+        {/* Avatar */}
         <div className="relative flex-shrink-0">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-base border border-white/5 bg-gradient-to-br from-blue-600 to-indigo-700 overflow-hidden">
-            {user.profilePhoto
-              ? <img src={user.profilePhoto} alt="" className="w-full h-full object-cover" />
-              : (user.fullName?.[0]?.toUpperCase() || '?')}
+          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center font-black text-lg text-white overflow-hidden border border-white/5">
+            {item.profilePhoto
+              ? <img src={item.profilePhoto} alt="" className="w-full h-full object-cover" />
+              : (item.fullName?.[0] || "?").toUpperCase()}
           </div>
-          {user.isOnline && (
-            <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 rounded-full border-2 border-[#0b0d10]" />
-          )}
+          {online && <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-[#0b0d10]" />}
         </div>
+
+        {/* Infos */}
         <div className="flex-1 min-w-0 text-left">
-          <p className="text-sm font-bold text-gray-100 truncate group-hover:text-white">{user.fullName}</p>
-          <p className="text-[11px] text-gray-600 truncate">
-            {user.username ? `@${user.username}` : 'Disponible'}
+          <div className="flex items-center justify-between mb-0.5">
+            <h3 className="text-sm font-bold text-white truncate">{item.fullName || "Inconnu"}</h3>
+            <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+              {lastTime && <span className="text-[10px] text-gray-500">{lastTime}</span>}
+              {unread > 0 && (
+                <span className="bg-green-500 text-white text-[9px] font-black min-w-[18px] h-[18px] rounded-full flex items-center justify-center px-1">
+                  {unread > 99 ? "99" : unread}
+                </span>
+              )}
+            </div>
+          </div>
+          <p className="text-xs text-gray-500 truncate">
+            {item.lastMessage || (online ? "En ligne" : item.username ? `@${item.username}` : "Disponible")}
           </p>
         </div>
-        {unread > 0 && (
-          <span className="bg-blue-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded-md flex-shrink-0">
-            {unread}
-          </span>
-        )}
       </button>
-      <button
-        onClick={(e) => { e.stopPropagation(); setShowDelete(true); }}
-        className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-red-500/10 opacity-0 group-hover:opacity-100 hover:bg-red-500/30 transition-all"
-        title="Supprimer ce contact"
-      >
-        <X size={12} className="text-red-400" />
-      </button>
+
+      {/* Bouton supprimer */}
+      {!confirmDelete && (
+        <button
+          onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
+          className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/25 text-red-400 opacity-0 group-hover:opacity-100 transition-all"
+          aria-label="Supprimer le contact"
+        >
+          <Trash2 size={13} />
+        </button>
+      )}
+
+      {/* Confirmation suppression */}
       <AnimatePresence>
-        {showDelete && (
+        {confirmDelete && (
           <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            className="absolute right-2 top-0 z-20 bg-[#1c2026] rounded-xl shadow-2xl border border-red-500/30 p-4 min-w-[200px]"
+            initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 4 }}
+            className="absolute inset-x-3 top-1.5 bottom-1.5 z-10 flex items-center gap-2 bg-[#1a1f2a] border border-red-500/20 rounded-xl px-3 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="text-xs font-bold text-white mb-2">Supprimer {user.fullName} ?</p>
-            <p className="text-[10px] text-gray-500 mb-3">La conversation sera aussi supprimée.</p>
-            <div className="flex gap-2">
-              <button
-                onClick={(e) => { e.stopPropagation(); setShowDelete(false); }}
-                className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-bold text-gray-300 transition-colors"
-              >
-                Annuler
-              </button>
-              <button
-                onClick={(e) => { e.stopPropagation(); if (onDelete) onDelete(user.id || user._id); setShowDelete(false); }}
-                className="flex-1 py-2 bg-red-500 hover:bg-red-600 rounded-lg text-xs font-bold text-white transition-colors"
-              >
-                Supprimer
-              </button>
-            </div>
+            <p className="text-xs text-white flex-1 font-semibold truncate">Supprimer {item.fullName} ?</p>
+            <button onClick={() => setConfirmDelete(false)}
+              className="px-2.5 py-1.5 text-[10px] font-bold text-gray-400 hover:text-white transition-colors flex-shrink-0">
+              Annuler
+            </button>
+            <button
+              onClick={() => { setConfirmDelete(false); onDelete(); }}
+              disabled={isDeleting}
+              className="px-3 py-1.5 bg-red-500 hover:bg-red-400 disabled:opacity-50 text-white text-[10px] font-black rounded-lg transition-all flex-shrink-0 flex items-center gap-1"
+            >
+              {isDeleting ? <Loader size={11} className="animate-spin" /> : <Trash2 size={11} />}
+              {isDeleting ? "…" : "Supprimer"}
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -761,17 +564,14 @@ const ContactItem = ({ user, unread, onClick, onDelete }) => {
 };
 
 const EmptyState = ({ onAdd }) => (
-  <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
-    <div className="w-12 h-12 rounded-2xl bg-blue-600/8 flex items-center justify-center mb-3">
-      <Users size={24} className="text-blue-500/30" />
+  <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
+    <div className="w-14 h-14 rounded-2xl bg-blue-600/8 flex items-center justify-center mb-4">
+      <Users size={26} className="text-blue-500/30" />
     </div>
-    <p className="text-xs font-bold text-gray-500 mb-1">Aucun contact</p>
-    <button
-      onClick={onAdd}
-      className="mt-3 flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-all"
-    >
-      <UserPlus size={13} />
-      Ajouter des contacts
+    <p className="text-sm font-bold text-gray-500 mb-1">Aucun contact</p>
+    <p className="text-xs text-gray-600 mb-4">Ajoutez des contacts pour discuter</p>
+    <button onClick={onAdd} className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-all">
+      <UserPlus size={14} /> Ajouter un contact
     </button>
   </div>
 );

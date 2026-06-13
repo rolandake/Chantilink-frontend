@@ -1,179 +1,201 @@
 // ============================================
-// 📁 src/pages/Chat/components/IncomingCallModal.jsx
-// ✅ PHASE 5 — Modale d'appel entrant (audio/vidéo)
-//    - Avatar du caller animé
-//    - Boutons Accepter / Refuser
-//    - Sonnerie Tone.js (gérée par le parent via cleanupCallRingtone)
-//    - Auto-refuse après 30s
+// 📁 src/components/IncomingCallModal.jsx  v2
+// ─ Notification push si onglet en arrière-plan (Page Visibility API)
+// ─ Compte à rebours visuel 30 s
+// ─ Sonnerie CallRingtone sur le destinataire
+// ─ Animation d'avatar pulsante
+// ─ Boutons Décrocher / Refuser accessibles
 // ============================================
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Phone, PhoneOff, Video, PhoneIncoming } from "lucide-react";
-import { useTranslation } from "react-i18next";
+import { Phone, PhoneOff, Video, VideoOff } from "lucide-react";
+import {
+  CallRingtone,
+  vibrateCall,
+  stopVibration,
+  startTabCallAlert,
+  stopTabCallAlert,
+} from "../utils/callSounds";
 
-export default function IncomingCallModal({
-  open,
-  caller,
-  callType = "audio",
-  onAccept,
-  onReject,
-  timeoutMs = 30000,
-}) {
-  const { t } = useTranslation();
-  const [secondsLeft, setSecondsLeft] = useState(Math.floor(timeoutMs / 1000));
+const RING_DURATION_S = 30;
 
+export default function IncomingCallModal({ caller, callType, onAccept, onReject }) {
+  const [remaining, setRemaining] = useState(RING_DURATION_S);
+  const ringRef     = useRef(null);
+  const timerRef    = useRef(null);
+  const countRef    = useRef(null);
+
+  // ── Démarrer sonnerie + vibration + alerte onglet ──────────────────────
   useEffect(() => {
-    if (!open) return;
-    setSecondsLeft(Math.floor(timeoutMs / 1000));
-    const interval = setInterval(() => {
-      setSecondsLeft((s) => {
-        if (s <= 1) {
-          clearInterval(interval);
-          onReject?.("timeout");
+    if (!caller) return;
+
+    // Sonnerie
+    ringRef.current = new CallRingtone();
+    ringRef.current.start();
+
+    // Vibration
+    try { vibrateCall(); } catch {}
+
+    // Alerte onglet arrière-plan
+    startTabCallAlert(caller.fullName || "Inconnu");
+
+    // Notification browser (si autorisé)
+    if (Notification.permission === "granted") {
+      try {
+        new Notification(`📞 Appel ${callType === "video" ? "vidéo" : "audio"}`, {
+          body:    `${caller.fullName || "Quelqu'un"} vous appelle`,
+          icon:    caller.profilePhoto || "/icon-192.png",
+          tag:     "incoming-call",
+          renotify: true,
+          requireInteraction: true,
+        });
+      } catch {}
+    } else if (Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+
+    // Compte à rebours
+    setRemaining(RING_DURATION_S);
+    countRef.current = setInterval(() => {
+      setRemaining((r) => {
+        if (r <= 1) {
+          clearInterval(countRef.current);
           return 0;
         }
-        return s - 1;
+        return r - 1;
       });
     }, 1000);
-    return () => clearInterval(interval);
-  }, [open, timeoutMs, onReject]);
+
+    // Auto-rejet après RING_DURATION_S
+    timerRef.current = setTimeout(() => {
+      cleanup();
+      onReject?.();
+    }, RING_DURATION_S * 1000);
+
+    return cleanup;
+  }, [caller?.id]); // eslint-disable-line
+
+  const cleanup = useCallback(() => {
+    ringRef.current?.stop();
+    ringRef.current = null;
+    stopVibration();
+    stopTabCallAlert();
+    if (timerRef.current)  { clearTimeout(timerRef.current);   timerRef.current  = null; }
+    if (countRef.current)  { clearInterval(countRef.current);  countRef.current  = null; }
+  }, []);
+
+  const handleAccept = useCallback(() => {
+    cleanup();
+    onAccept?.();
+  }, [cleanup, onAccept]);
+
+  const handleReject = useCallback(() => {
+    cleanup();
+    onReject?.();
+  }, [cleanup, onReject]);
+
+  if (!caller) return null;
+
+  const progress = (remaining / RING_DURATION_S) * 100;
+  const isVideo  = callType === "video";
 
   return (
-    <AnimatePresence>
-      {open && caller && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
-          style={{ background: "rgba(8,12,20,0.85)", backdropFilter: "blur(12px)" }}
-        >
+    <div className="fixed inset-0 z-[400] flex items-end sm:items-center justify-center p-0 sm:p-4 pointer-events-none">
+      {/* Backdrop semi-transparent (ne bloque pas l'UI derrière) */}
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-md pointer-events-auto" />
+
+      <motion.div
+        initial={{ y: 80, opacity: 0, scale: 0.95 }}
+        animate={{ y: 0,  opacity: 1, scale: 1 }}
+        exit={{   y: 80, opacity: 0, scale: 0.95 }}
+        transition={{ type: "spring", damping: 24, stiffness: 280 }}
+        className="relative pointer-events-auto w-full sm:max-w-sm bg-gradient-to-b from-[#0f1520] to-[#0a0f1a] rounded-t-3xl sm:rounded-3xl border border-white/10 shadow-2xl overflow-hidden"
+      >
+        {/* Barre de progression 30 s */}
+        <div className="h-0.5 bg-white/5 relative">
           <motion.div
-            initial={{ scale: 0.85, y: 30 }}
-            animate={{ scale: 1, y: 0 }}
-            exit={{ scale: 0.85, y: 30 }}
-            transition={{ type: "spring", damping: 22, stiffness: 280 }}
-            className="relative w-full max-w-sm overflow-hidden rounded-[32px] shadow-2xl"
-            style={{
-              background: "linear-gradient(165deg, #1a1f2e 0%, #0d1117 100%)",
-              border: "1px solid rgba(255,255,255,0.08)",
-            }}
-          >
-            {/* Pulse animation ring */}
-            <div className="relative flex flex-col items-center pt-10 pb-8">
-              <div className="relative mb-6">
-                <motion.div
-                  animate={{ scale: [1, 1.15, 1], opacity: [0.4, 0.15, 0.4] }}
-                  transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
-                  className="absolute inset-0 rounded-full"
-                  style={{
-                    background: callType === "video"
-                      ? "linear-gradient(135deg, #3b82f6, #8b5cf6)"
-                      : "linear-gradient(135deg, #10b981, #14b8a6)",
-                  }}
-                />
-                <motion.div
-                  animate={{ scale: [1, 1.08, 1], opacity: [0.6, 0.3, 0.6] }}
-                  transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut", delay: 0.3 }}
-                  className="absolute -inset-2 rounded-full"
-                  style={{
-                    background: callType === "video"
-                      ? "linear-gradient(135deg, #3b82f6, #8b5cf6)"
-                      : "linear-gradient(135deg, #10b981, #14b8a6)",
-                    filter: "blur(8px)",
-                  }}
-                />
-                <div
-                  className="relative w-28 h-28 rounded-full flex items-center justify-center overflow-hidden border-4"
-                  style={{
-                    background: callType === "video"
-                      ? "linear-gradient(135deg, #3b82f6, #8b5cf6)"
-                      : "linear-gradient(135deg, #10b981, #14b8a6)",
-                    borderColor: "rgba(255,255,255,0.15)",
-                  }}
-                >
-                  {caller.profilePhoto ? (
-                    <img src={caller.profilePhoto} alt="" className="w-full h-full object-cover" />
-                  ) : (
-                    <span className="text-3xl font-black text-white">
-                      {(caller.fullName || caller.username || "?")[0]?.toUpperCase()}
-                    </span>
-                  )}
-                </div>
-              </div>
+            className="absolute inset-y-0 left-0 bg-gradient-to-r from-blue-500 to-indigo-400"
+            initial={{ width: "100%" }}
+            animate={{ width: `${progress}%` }}
+            transition={{ duration: 0.9, ease: "linear" }}
+          />
+        </div>
 
-              {/* Type icon */}
-              <div className="flex items-center gap-2 mb-3 px-3 py-1 rounded-full" style={{ background: "rgba(255,255,255,0.06)" }}>
-                {callType === "video" ? (
-                  <Video size={13} className="text-blue-400" />
-                ) : (
-                  <PhoneIncoming size={13} className="text-emerald-400" />
-                )}
-                <span className="text-[10px] font-black uppercase tracking-wider text-white/70">
-                  {callType === "video" ? t("call.video") : t("call.audio")}
-                </span>
-              </div>
+        <div className="px-6 pt-8 pb-10 flex flex-col items-center gap-6">
 
-              <h2 className="text-2xl font-black text-white tracking-tight mb-1">
-                {caller.fullName || caller.username || "Utilisateur"}
-              </h2>
-              <p className="text-sm text-white/60 mb-1">
-                {t("call.incoming")}
-              </p>
-              <p className="text-xs font-mono text-amber-400/80">
-                {t("call.timeoutIn", { seconds: secondsLeft })}
-              </p>
+          {/* Type d'appel */}
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 rounded-full border border-blue-500/20">
+            {isVideo
+              ? <Video    size={14} className="text-blue-400" />
+              : <Phone    size={14} className="text-blue-400" />
+            }
+            <span className="text-[11px] font-black text-blue-300 uppercase tracking-widest">
+              Appel {isVideo ? "vidéo" : "audio"} entrant
+            </span>
+          </div>
+
+          {/* Avatar pulsant */}
+          <div className="relative flex items-center justify-center">
+            {/* Anneaux de pulsation */}
+            {[1, 2, 3].map((i) => (
+              <motion.div
+                key={i}
+                className="absolute rounded-full border border-blue-400/30"
+                style={{ width: 80 + i * 28, height: 80 + i * 28 }}
+                animate={{ scale: [1, 1.12, 1], opacity: [0.4, 0, 0.4] }}
+                transition={{ duration: 2, repeat: Infinity, delay: i * 0.4, ease: "easeOut" }}
+              />
+            ))}
+            <div className="relative z-10 w-20 h-20 rounded-full border-2 border-blue-400/50 overflow-hidden bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center shadow-xl shadow-blue-900/50">
+              {caller.profilePhoto
+                ? <img src={caller.profilePhoto} alt="" className="w-full h-full object-cover" />
+                : <span className="text-3xl font-black text-white">
+                    {(caller.fullName?.[0] || "?").toUpperCase()}
+                  </span>
+              }
+            </div>
+          </div>
+
+          {/* Infos appelant */}
+          <div className="text-center">
+            <h2 className="text-xl font-black text-white mb-1">{caller.fullName || "Inconnu"}</h2>
+            <p className="text-sm text-gray-400 animate-pulse">Appel en cours…</p>
+            <p className="text-xs text-gray-600 mt-1">{remaining}s</p>
+          </div>
+
+          {/* Boutons */}
+          <div className="flex items-center justify-center gap-10 mt-2">
+            {/* Refuser */}
+            <div className="flex flex-col items-center gap-2">
+              <motion.button
+                whileTap={{ scale: 0.9 }}
+                onClick={handleReject}
+                className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-400 active:bg-red-600 flex items-center justify-center shadow-xl shadow-red-900/40 transition-colors"
+                aria-label="Refuser l'appel"
+              >
+                <PhoneOff size={26} className="text-white" />
+              </motion.button>
+              <span className="text-[11px] text-gray-500 font-bold">Refuser</span>
             </div>
 
-            {/* Action buttons */}
-            <div className="flex justify-around items-center px-8 pb-8 pt-2">
+            {/* Décrocher */}
+            <div className="flex flex-col items-center gap-2">
               <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={() => onReject?.("user")}
-                className="flex flex-col items-center gap-2"
+                whileTap={{ scale: 0.9 }}
+                onClick={handleAccept}
+                className="w-16 h-16 rounded-full bg-green-500 hover:bg-green-400 active:bg-green-600 flex items-center justify-center shadow-xl shadow-green-900/40 transition-colors"
+                aria-label="Décrocher"
               >
-                <div
-                  className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg"
-                  style={{
-                    background: "linear-gradient(135deg, #ef4444, #dc2626)",
-                    boxShadow: "0 8px 24px rgba(239,68,68,0.4)",
-                  }}
-                >
-                  <PhoneOff size={26} className="text-white" strokeWidth={2.5} />
-                </div>
-                <span className="text-[11px] font-bold text-white/70">
-                  {t("call.decline")}
-                </span>
+                {isVideo
+                  ? <Video  size={26} className="text-white" />
+                  : <Phone  size={26} className="text-white" />
+                }
               </motion.button>
-
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                onClick={onAccept}
-                className="flex flex-col items-center gap-2"
-              >
-                <motion.div
-                  animate={{ scale: [1, 1.05, 1] }}
-                  transition={{ duration: 1.5, repeat: Infinity }}
-                  className="w-16 h-16 rounded-full flex items-center justify-center shadow-lg"
-                  style={{
-                    background: "linear-gradient(135deg, #10b981, #059669)",
-                    boxShadow: "0 8px 24px rgba(16,185,129,0.4)",
-                  }}
-                >
-                  {callType === "video" ? (
-                    <Video size={26} className="text-white" strokeWidth={2.5} />
-                  ) : (
-                    <Phone size={26} className="text-white" strokeWidth={2.5} />
-                  )}
-                </motion.div>
-                <span className="text-[11px] font-bold text-white/70">
-                  {t("call.accept")}
-                </span>
-              </motion.button>
+              <span className="text-[11px] text-gray-500 font-bold">Décrocher</span>
             </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+          </div>
+        </div>
+      </motion.div>
+    </div>
   );
 }

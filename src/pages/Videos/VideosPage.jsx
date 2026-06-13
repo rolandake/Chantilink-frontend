@@ -1227,10 +1227,28 @@ const VideosPage = () => {
   const displayItems=useMemo(()=>{
     if (!searchQuery.trim()) return feedItems;
     const q=searchQuery.toLowerCase();
+    const searchTerms=q.split(/\s+/).filter(t=>t.length>=1);
+    const hashtags=q.match(/#[\p{L}\p{N}_-]+/gu)?.map(h=>h.replace('#','').toLowerCase())||[];
     return feedItems.filter(item=>{
       if (item.type==='ad') return false;
       const d=item.data;
-      return ['title','description','channelName','username'].some(k=>(d[k]||'').toLowerCase().includes(q));
+      // Construire un texte de recherche complet
+      const searchText=[
+        d.title||'',
+        d.description||'',
+        d.channelName||'',
+        d.username||'',
+        d.category||'',
+        ...(Array.isArray(d.hashtags)?d.hashtags:[]),
+        ...(Array.isArray(d.tags)?d.tags:[]),
+      ].join(' ').toLowerCase();
+      // Vérifier que tous les termes de recherche sont présents
+      const hasAllTerms=searchTerms.every(term=>searchText.includes(term));
+      // Vérifier les hashtags
+      const hasAllHashtags=hashtags.every(h=>searchText.includes(h));
+      // Vérifier aussi dans les champs directs
+      const hasDirectMatch=['title','description','channelName','username','category'].some(k=>(d[k]||'').toLowerCase().includes(q));
+      return hasDirectMatch||(hasAllTerms&&hasAllHashtags);
     });
   },[feedItems,searchQuery]);
 

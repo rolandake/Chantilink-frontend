@@ -189,7 +189,7 @@ const SeekBar = memo(({ progress, getVideoEl, duration = 0 }) => {
 });
 SeekBar.displayName = 'SeekBar';
 
-// ── ChantilinkSignature ───────────────────────────────────────────────────────
+// ── ChantilinkSignature (end-of-video signature) ─────────────────────────────
 const ChantilinkSignature = memo(({ visible }) => (
   <AnimatePresence>
     {visible && (
@@ -222,6 +222,39 @@ const ChantilinkSignature = memo(({ visible }) => (
   </AnimatePresence>
 ));
 ChantilinkSignature.displayName = 'ChantilinkSignature';
+
+// ── PersistentWatermark (persistent watermark on video) ───────────────────────
+const PersistentWatermark = memo(({ username, visible = true }) => {
+  if (!visible) return null;
+  return (
+    <div className="absolute top-4 left-4 z-25 pointer-events-none flex items-center gap-1.5"
+      style={{
+        background:'rgba(0,0,0,0.35)',
+        backdropFilter:'blur(8px)',
+        borderRadius:999,
+        padding:'4px 10px 4px 6px',
+        border:'1px solid rgba(255,255,255,0.1)',
+        opacity:0.7,
+      }}>
+      <svg width="18" height="18" viewBox="0 0 32 32" fill="none" style={{flexShrink:0}}>
+        <circle cx="16" cy="16" r="16" fill="#f97316" fillOpacity="0.18"/>
+        <circle cx="16" cy="16" r="16" fill="url(#wm1)" fillOpacity="0.85"/>
+        <text x="16" y="21" textAnchor="middle" fontSize="16" fontWeight="900" fontFamily="Arial, sans-serif" fill="white">C</text>
+        <defs><radialGradient id="wm1" cx="40%" cy="30%" r="70%"><stop offset="0%" stopColor="#fb923c"/><stop offset="100%" stopColor="#ea580c"/></radialGradient></defs>
+      </svg>
+      <span style={{
+        color:'rgba(255,255,255,0.85)',
+        fontFamily:'Arial, sans-serif',
+        fontWeight:700,
+        fontSize:10,
+        letterSpacing:'0.2px',
+      }}>
+        {username || 'Chantilink'}
+      </span>
+    </div>
+  );
+});
+PersistentWatermark.displayName = 'PersistentWatermark';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // VideoCard v3
@@ -498,6 +531,7 @@ const VideoCard = ({ video, isActive, isAutoPost = false, onModalChange, onVideo
 
       <SeekBar progress={progress} getVideoEl={() => player.videoEl} duration={duration} />
       <ChantilinkSignature visible={showSignature} />
+      <PersistentWatermark username={authorName} visible={true} />
 
       {isPaused && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">

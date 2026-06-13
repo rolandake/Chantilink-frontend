@@ -23,8 +23,11 @@ import {
   EllipsisHorizontalIcon,
   EyeIcon,
 } from "@heroicons/react/24/solid";
+import { FaTrash, FaRocket, FaEllipsisV } from "react-icons/fa";
 import { useAuth } from "../../context/AuthContext";
+import { useVideos } from "../../context/VideoContext";
 import { profileApiPath } from "./profileApi";
+import VideoBoostModal from "../Videos/VideoBoostModal";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -683,7 +686,7 @@ SortTabs.displayName = "SortTabs";
 // ─────────────────────────────────────────────────────────────────────────────
 // LIGHTBOX FULLSCREEN — style TikTok
 // ─────────────────────────────────────────────────────────────────────────────
-const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
+const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode, isOwner = false, onDeletePost, onBoostPost, currentUser }) => {
   const [currentIndex, setCurrentIndex] = useState(startIndex);
   const touchStartY = useRef(null);
   const touchStartX = useRef(null);
@@ -793,11 +796,38 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
           <span style={{ color: "white", fontWeight: 700, fontSize: 14 }}>{username}</span>
         </div>
 
-        <button style={{
-          background: "none", border: "none", cursor: "pointer", marginLeft: 8, color: "white",
-        }}>
-          <EllipsisHorizontalIcon style={{ width: 22, height: 22 }} />
-        </button>
+        {/* Owner actions */}
+        {isOwner && (
+          <div style={{ display: "flex", gap: 8, marginLeft: 8 }}>
+            <button
+              onClick={(e) => { e.stopPropagation(); onBoostPost?.(post, e); }}
+              style={{
+                background: "rgba(249,115,22,0.25)", border: "1px solid rgba(249,115,22,0.5)",
+                borderRadius: 999, padding: "6px 10px", cursor: "pointer", color: "#f97316",
+                display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700,
+              }}
+            >
+              <FaRocket size={12} /> Boost
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDeletePost?.(post); }}
+              style={{
+                background: "rgba(239,68,68,0.2)", border: "1px solid rgba(239,68,68,0.4)",
+                borderRadius: 999, padding: "6px 10px", cursor: "pointer", color: "#ef4444",
+                display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700,
+              }}
+            >
+              <FaTrash size={11} /> Supprimer
+            </button>
+          </div>
+        )}
+        {!isOwner && (
+          <button style={{
+            background: "none", border: "none", cursor: "pointer", marginLeft: 8, color: "white",
+          }}>
+            <EllipsisHorizontalIcon style={{ width: 22, height: 22 }} />
+          </button>
+        )}
       </div>
 
       {/* ── MÉDIA FULLSCREEN ── */}
@@ -879,7 +909,19 @@ const PostLightbox = memo(({ allPosts, startIndex, onClose, isDarkMode }) => {
             <EyeIcon style={{ width: 20, height: 20 }} />
             <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCount(viewsCount)}</span>
           </div>
-          <div style={{ marginLeft: "auto" }}>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
+            {isOwner && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDeletePost?.(post); }}
+                style={{
+                  background: "rgba(239,68,68,0.25)", border: "1px solid rgba(239,68,68,0.5)",
+                  borderRadius: 999, padding: "6px 10px", cursor: "pointer", color: "#ef4444",
+                  display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 700,
+                }}
+              >
+                <FaTrash size={12} /> Supprimer
+              </button>
+            )}
             <BookmarkIcon style={{ width: 22, height: 22, color: "rgba(255,255,255,0.8)" }} />
           </div>
         </div>
@@ -951,12 +993,52 @@ const ProfileMediaGrid = ({
   isOwner = false,
   pinnedPostIds = [],
 }) => {
-  const { getToken } = useAuth();
+  const { user: currentUser, getToken } = useAuth();
+  const { deleteVideo } = useVideos();
   const [lightboxIndex, setLightboxIndex] = useState(null);
   const [sortKey,       setSortKey]       = useState("recent");
   const [viewOverrides, setViewOverrides] = useState({});
+  const [boostVideo,    setBoostVideo]    = useState(null);
   const sentinelRef = useRef(null);
   const trackedViewsRef = useRef(new Set());
+
+  // ── Delete handler ─────────────────────────────────────────────────────
+  const handleDeletePost = useCallback(async (post) => {
+    if (!post?._id) return;
+    if (!window.confirm("Supprimer cette publication définitivement ?")) return;
+    try {
+      // If it's a video (has videoUrl), use the video deletion API
+      if (post.videoUrl && deleteVideo) {
+        await deleteVideo(post._id);
+      } else {
+        // Otherwise, use the generic post deletion
+        const token = await getToken?.();
+        await fetch(profileApiPath(`posts/${post._id}`), {
+          method: "DELETE",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        });
+      }
+      // Close lightbox if open
+      setLightboxIndex(null);
+    } catch (err) {
+      console.error("Erreur suppression:", err);
+      alert("Impossible de supprimer cette publication.");
+    }
+  }, [deleteVideo, getToken]);
+
+  // ── Boost handler ──────────────────────────────────────────────────────
+  const handleOpenBoost = useCallback((post, e) => {
+    e?.stopPropagation();
+    setBoostVideo(post);
+  }, []);
+
+  const handleCloseBoost = useCallback(() => {
+    setBoostVideo(null);
+  }, []);
 
   useEffect(() => {
     if (!sentinelRef.current || !onLoadMore || !hasMore) return;
@@ -1102,9 +1184,22 @@ const ProfileMediaGrid = ({
             startIndex={lightboxIndex}
             onClose={handleCloseLightbox}
             isDarkMode={isDarkMode}
+            isOwner={isOwner}
+            onDeletePost={handleDeletePost}
+            onBoostPost={handleOpenBoost}
+            currentUser={currentUser}
           />
         )}
       </AnimatePresence>
+
+      {boostVideo && (
+        <VideoBoostModal
+          video={boostVideo}
+          show={!!boostVideo}
+          onClose={handleCloseBoost}
+          onBoostSuccess={handleCloseBoost}
+        />
+      )}
     </>
   );
 };
