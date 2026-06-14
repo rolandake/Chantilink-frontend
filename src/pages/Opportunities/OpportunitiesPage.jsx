@@ -11,7 +11,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Briefcase, GraduationCap, FileText, MapPin,
   Search, RefreshCw, Clock, X, ArrowUpRight,
-  Building2, CalendarClock, Sparkles,
+  Building2, CalendarClock, Sparkles, Zap, ArrowDownWideNarrow,
 } from "lucide-react";
 import { useDarkMode } from "../../context/DarkModeContext";
 import { useOpportunities } from "./useOpportunities";
@@ -48,7 +48,6 @@ const TYPE_CONFIG = {
   },
 };
 
-const CITIES = ["Abidjan", "Bouaké", "Yamoussoukro", "Korhogo", "San Pedro", "Daloa"];
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 function timeAgo(dateStr) {
@@ -63,8 +62,9 @@ function timeAgo(dateStr) {
   return `il y a ${Math.floor(d / 7)} sem.`;
 }
 
-function isNew(dateStr) {
-  return dateStr && Date.now() - new Date(dateStr).getTime() < 48 * 3_600_000;
+function isNew(opp) {
+  if (typeof opp?.isNew === "boolean") return opp.isNew;
+  return opp?.postedAt && Date.now() - new Date(opp.postedAt).getTime() < 48 * 3_600_000;
 }
 
 function formatExpiry(dateStr) {
@@ -137,7 +137,7 @@ TypeIcon.displayName = "TypeIcon";
 const OppCard = memo(({ opp, isDarkMode, onOpen }) => {
   const cfg      = TYPE_CONFIG[opp.type] || TYPE_CONFIG.emploi;
   const expiry   = formatExpiry(opp.expiresAt);
-  const fresh    = isNew(opp.postedAt);
+  const fresh    = isNew(opp);
   const isClosed = expiry === "Clôturé";
 
   return (
@@ -346,9 +346,10 @@ export default function OpportunitiesPage() {
   const { isDarkMode } = useDarkMode();
 
   const [filterType,     setFilterType]     = useState("");
-  const [filterLocation, setFilterLocation] = useState("");
   const [searchInput,    setSearchInput]    = useState("");
   const [search,         setSearch]         = useState("");
+  const [sortBy,         setSortBy]         = useState("recent");
+  const [onlyNew,        setOnlyNew]        = useState(false);
 
   // ── Modal state ──────────────────────────────────────────────────────────────
   const [selectedOpp, setSelectedOpp] = useState(null);
@@ -362,8 +363,8 @@ export default function OpportunitiesPage() {
     debounceRef.current = setTimeout(() => setSearch(val), 350);
   }, []);
 
-  const { items, stats, loading, refreshing, hasMore, error, loadMore, refresh } =
-    useOpportunities({ type: filterType, location: filterLocation, search });
+  const { items, stats, loading, refreshing, hasMore, error, searchMode, loadMore, refresh } =
+    useOpportunities({ type: filterType, location: "", search, sortBy, onlyNew });
 
   const sentinelRef = useRef(null);
   useEffect(() => {
@@ -382,11 +383,12 @@ export default function OpportunitiesPage() {
   }, [stats?.lastSync]);
 
   const clearFilters = useCallback(() => {
-    setFilterType(""); setFilterLocation("");
+    setFilterType("");
     setSearchInput(""); setSearch("");
+    setSortBy("recent"); setOnlyNew(false);
   }, []);
 
-  const hasActiveFilters = filterType || filterLocation || search;
+  const hasActiveFilters = filterType || search || onlyNew || sortBy !== "recent";
   const bg  = isDarkMode ? "#0d0f12" : "#f6f7f9";
   const txt = isDarkMode ? "#f1f5f9" : "#0f172a";
 
@@ -470,6 +472,65 @@ export default function OpportunitiesPage() {
               )}
             </div>
 
+            {/* ── Toggle Récentes + Tri ─────────────────────────────── */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+              {/* Toggle "Récentes uniquement" */}
+              <button
+                onClick={() => setOnlyNew((v) => !v)}
+                aria-pressed={onlyNew}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  padding: "7px 13px", borderRadius: 99, border: "none", cursor: "pointer",
+                  fontSize: 12, fontWeight: 700, flexShrink: 0, transition: "all 0.15s",
+                  background: onlyNew
+                    ? "linear-gradient(135deg, #ea580c, #f97316)"
+                    : isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
+                  color: onlyNew ? "#fff" : isDarkMode ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.55)",
+                  boxShadow: onlyNew ? "0 2px 8px rgba(249,115,22,0.30)" : "none",
+                }}
+              >
+                <Zap size={12} strokeWidth={2.5} />
+                Récentes (7j)
+                {stats?.newCount > 0 && (
+                  <span style={{
+                    fontSize: 10, fontWeight: 800,
+                    padding: "1px 6px", borderRadius: 99,
+                    background: onlyNew ? "rgba(255,255,255,0.25)" : "rgba(249,115,22,0.18)",
+                    color: onlyNew ? "#fff" : "#f97316",
+                  }}>
+                    {stats.newCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Sélecteur de tri */}
+              <div style={{ position: "relative", marginLeft: "auto" }}>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  aria-label="Trier par"
+                  style={{
+                    appearance: "none",
+                    display: "inline-flex", alignItems: "center",
+                    padding: "7px 30px 7px 30px",
+                    borderRadius: 99, border: "none", cursor: "pointer",
+                    fontSize: 12, fontWeight: 600,
+                    background: isDarkMode ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
+                    color: isDarkMode ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.55)",
+                  }}
+                >
+                  <option value="recent">Plus récentes</option>
+                  <option value="expiring">Clôture proche</option>
+                  {search && <option value="relevance">Pertinence</option>}
+                </select>
+                <ArrowDownWideNarrow size={12} style={{
+                  position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)",
+                  color: isDarkMode ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.4)",
+                  pointerEvents: "none",
+                }} />
+              </div>
+            </div>
+
             {/* ── Filtres type ──────────────────────────────────────── */}
             <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 8, marginBottom: 6 }} className="no-scrollbar" role="tablist" aria-label="Filtrer par type">
               <FilterPill label="Tout"               active={!filterType}                   onClick={() => setFilterType("")}                                          isDarkMode={isDarkMode} />
@@ -478,17 +539,6 @@ export default function OpportunitiesPage() {
               <FilterPill label="📋 Appels d'offres" active={filterType === "appel_offre"}   onClick={() => setFilterType(filterType === "appel_offre" ? "" : "appel_offre")}  isDarkMode={isDarkMode} />
             </div>
 
-            {/* ── Filtres ville ─────────────────────────────────────── */}
-            <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 12, marginBottom: 4 }} className="no-scrollbar" role="tablist" aria-label="Filtrer par ville">
-              <FilterPill label="📍 Tout CI" active={!filterLocation} onClick={() => setFilterLocation("")} isDarkMode={isDarkMode} />
-              {CITIES.map((city) => (
-                <FilterPill key={city} label={city}
-                  active={filterLocation === city}
-                  onClick={() => setFilterLocation(filterLocation === city ? "" : city)}
-                  isDarkMode={isDarkMode}
-                />
-              ))}
-            </div>
 
             {/* Reset */}
             {hasActiveFilters && (
@@ -500,6 +550,16 @@ export default function OpportunitiesPage() {
                 <X size={12} strokeWidth={2.5} />
                 Effacer les filtres
               </button>
+            )}
+
+            {/* Indication recherche élargie */}
+            {search && searchMode === "regex" && items.length > 0 && (
+              <p style={{
+                fontSize: 12, marginBottom: 12,
+                color: isDarkMode ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.35)",
+              }}>
+                Résultats élargis pour "{search}"
+              </p>
             )}
 
             {/* ── Erreur ────────────────────────────────────────────── */}
@@ -537,7 +597,9 @@ export default function OpportunitiesPage() {
                 <div style={{ width: 64, height: 64, borderRadius: 20, background: isDarkMode ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.04)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28 }} aria-hidden="true">🏗️</div>
                 <p style={{ fontSize: 16, fontWeight: 800, marginTop: 4 }}>Aucune opportunité</p>
                 <p style={{ fontSize: 13, color: isDarkMode ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.4)" }}>
-                  Essaie d'autres filtres ou reviens plus tard.
+                  {onlyNew
+                    ? "Aucune offre publiée ces 7 derniers jours pour ces filtres."
+                    : "Essaie d'autres filtres ou reviens plus tard."}
                 </p>
                 {hasActiveFilters && (
                   <button onClick={clearFilters} style={{ marginTop: 4, fontSize: 13, fontWeight: 700, color: "#f97316", background: "none", border: "none", cursor: "pointer" }}>

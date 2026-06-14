@@ -1,11 +1,11 @@
 /**
- * useOpportunities.js — Hook extrait depuis OpportunitiesPage.jsx
+ * useOpportunities.js
  *
- * Corrections :
- *  - Au changement de filtre : vider les items (setItems([])) au lieu de
- *    remettre le cache non-filtré → évite le flash visuel "mauvais résultats"
- *  - Annulation propre de la requête en cours lors d'un changement de filtre
- *  - isFirstLoad géré correctement avec useRef pour éviter le double-fetch
+ * v2 — recherche robuste + tri orienté "récent"
+ *  - sortBy passé au backend ("recent" | "expiring" | "relevance")
+ *  - onlyNew : filtre offres < 7 jours (toggle UI)
+ *  - debounce déjà géré côté page (search arrive stable ici)
+ *  - cache localStorage uniquement pour la vue "Tout" sans filtre
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -35,9 +35,9 @@ function setCache(key, data) {
   } catch { /* localStorage plein, ignore */ }
 }
 
-export function useOpportunities({ type, location, search }) {
-  // Au premier rendu : charger depuis le cache si dispo (sans filtre actif)
-  const hasFilters = type || location || search;
+export function useOpportunities({ type, location = "", search, sortBy = "recent", onlyNew = false }) {
+  const hasFilters = type || search || onlyNew || sortBy !== "recent";
+
   const [items,      setItems]      = useState(() => hasFilters ? [] : (getCached(CACHE_KEY) || []));
   const [stats,      setStats]      = useState(() => getCached(CACHE_STATS_KEY) || null);
   const [page,       setPage]       = useState(1);
@@ -45,14 +45,12 @@ export function useOpportunities({ type, location, search }) {
   const [loading,    setLoading]    = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error,      setError]      = useState(null);
+  const [searchMode, setSearchMode] = useState("none"); // "text" | "regex" | "none"
 
-  const abortRef      = useRef(null);
-  const isFirstLoad   = useRef(true);
-  // Référence stable aux filtres pour le fetchPage
-  const filtersRef    = useRef({ type, location, search });
-
-  // Mettre à jour la ref à chaque rendu
-  filtersRef.current = { type, location, search };
+  const abortRef    = useRef(null);
+  const isFirstLoad = useRef(true);
+  const filtersRef  = useRef({ type, location, search, sortBy, onlyNew });
+  filtersRef.current = { type, location, search, sortBy, onlyNew };
 
   const fetchStats = useCallback(async () => {
     try {
@@ -63,7 +61,6 @@ export function useOpportunities({ type, location, search }) {
   }, []);
 
   const fetchPage = useCallback(async (pageNum, append = false) => {
-    // Annuler la requête précédente
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
 
@@ -72,11 +69,12 @@ export function useOpportunities({ type, location, search }) {
 
     const attemptFetch = async (retries = 2) => {
       try {
-        const { type: t, location: l, search: s } = filtersRef.current;
-        const params = new URLSearchParams({ page: pageNum, limit: LIMIT });
-        if (t) params.set("type", t);
-        if (l) params.set("location", l);
-        if (s) params.set("search", s);
+        const { type: t, location: l, search: s, sortBy: sb, onlyNew: on } = filtersRef.current;
+        const params = new URLSearchParams({ page: pageNum, limit: LIMIT, sort: sb || "recent" });
+        if (t)  params.set("type", t);
+        if (l)  params.set("location", l);
+        if (s)  params.set("search", s);
+        if (on) params.set("onlyNew", "true");
 
         const { data } = await axiosClient.get(`/opportunities?${params}`, {
           signal: abortRef.current.signal,
@@ -84,14 +82,15 @@ export function useOpportunities({ type, location, search }) {
 
         setItems((prev) => {
           const newItems = append ? [...prev, ...data.opportunities] : data.opportunities;
-          // Mettre en cache seulement si pas de filtre actif (cache = état "tout")
-          const { type: ct, location: cl, search: cs } = filtersRef.current;
-          if (!ct && !cl && !cs && !append) {
+          const { type: ct, location: cl, search: cs, sortBy: csb, onlyNew: con } = filtersRef.current;
+          const isDefaultView = !ct && !cs && !con && (csb || "recent") === "recent";
+          if (isDefaultView && !append) {
             setCache(CACHE_KEY, newItems);
           }
           return newItems;
         });
         setHasMore(data.pagination.hasMore);
+        setSearchMode(data.meta?.searchMode || "none");
       } catch (err) {
         if (err.name === "CanceledError" || err.code === "ERR_CANCELED") return;
 
@@ -101,8 +100,8 @@ export function useOpportunities({ type, location, search }) {
         }
 
         setError("Impossible de charger les opportunités.");
-        // Restaurer depuis le cache uniquement si pas de filtre et pas en pagination
-        if (!append && !filtersRef.current.type && !filtersRef.current.location && !filtersRef.current.search) {
+        const { type: ct, search: cs, onlyNew: con } = filtersRef.current;
+        if (!append && !ct && !cs && !con) {
           const cached = getCached(CACHE_KEY);
           if (cached) setItems(cached);
         }
@@ -112,11 +111,10 @@ export function useOpportunities({ type, location, search }) {
     };
 
     await attemptFetch();
-  }, []); // pas de dépendances → stable, les filtres passent via filtersRef
+  }, []);
 
   // ── Chargement initial ──────────────────────────────────────────────────────
   useEffect(() => {
-    // Si cache dispo et pas de filtre actif → afficher cache et rafraîchir stats
     if (isFirstLoad.current && !hasFilters && items.length > 0) {
       isFirstLoad.current = false;
       fetchStats();
@@ -128,17 +126,15 @@ export function useOpportunities({ type, location, search }) {
     fetchStats();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Re-fetch quand les filtres changent ─────────────────────────────────────
+  // ── Re-fetch quand les filtres/tri/recherche changent ───────────────────────
   useEffect(() => {
-    if (isFirstLoad.current) return; // Éviter le double-fetch au montage
+    if (isFirstLoad.current) return;
 
     setPage(1);
-    // ✅ Correction : toujours vider avant de fetcher avec un filtre
-    //    (ne pas remettre le cache non-filtré)
     setItems([]);
     setHasMore(true);
     fetchPage(1, false);
-  }, [type, location, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [type, search, sortBy, onlyNew]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Infinite scroll ─────────────────────────────────────────────────────────
   const loadMore = useCallback(() => {
@@ -148,7 +144,7 @@ export function useOpportunities({ type, location, search }) {
     fetchPage(next, true);
   }, [hasMore, loading, page, fetchPage]);
 
-  // ── Refresh manuel (force re-scraping + invalidation cache) ────────────────
+  // ── Refresh manuel ────────────────────────────────────────────────────────
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try { await axiosClient.post("/opportunities/admin/sync"); } catch { /* ignore */ }
@@ -161,5 +157,5 @@ export function useOpportunities({ type, location, search }) {
     setRefreshing(false);
   }, [fetchPage, fetchStats]);
 
-  return { items, stats, loading, refreshing, hasMore, error, loadMore, refresh };
+  return { items, stats, loading, refreshing, hasMore, error, searchMode, loadMore, refresh };
 }
