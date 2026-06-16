@@ -1,5 +1,14 @@
 // src/context/AuthContext.jsx
-// VERSION SIMPLIFIÉE — robuste, sans deadlock sessionLoading
+// VERSION PERSISTANCE ROBUSTE v2.1
+//
+// CORRECTIONS vs version précédente :
+//   ✅ getToken() attend readyRef avant de répondre (plus jamais de null prématuré)
+//   ✅ File d'attente refresh dans AuthContext ET axiosClientGlobal (0 doublon)
+//   ✅ Écoute l'event "auth:token-refreshed" émis par axiosClientGlobal
+//   ✅ Cache sessionStorage : survit aux rechargements (F5, navigation)
+//   ✅ Erreur réseau ≠ déconnexion (seul 401 = logout silencieux)
+//   ✅ Refresh au retour d'onglet + retour réseau
+//   ✅ Sync déconnexion entre onglets via localStorage event
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -38,46 +47,80 @@ export const useAuth = () => {
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const isProd = import.meta.env.PROD;
 
-const API_URL = isProd
-  ? (import.meta.env.VITE_API_URL_PROD     || "https://chantilink-backend.onrender.com/api")
-  : (import.meta.env.VITE_API_URL_LOCAL    || import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://chantilink-backend.onrender.com/api" : "http://localhost:5000/api"));
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  (isProd
+    ? "https://chantilink-backend.onrender.com/api"
+    : "http://localhost:5000/api");
 
-const BACKEND_URL = API_URL.replace("/api", "");
+const BACKEND_URL = API_URL.replace(/\/api\/?$/, "");
 
 console.log(`🔧 [AuthContext] ${isProd ? "PROD" : "DEV"} — ${API_URL}`);
 
-// ─── AXIOS ────────────────────────────────────────────────────────────────────
+// ─── AXIOS DÉDIÉ AUTH ────────────────────────────────────────────────────────
+// Instance séparée pour les appels auth, sans intercepteurs de retry
+// (évite les boucles infinies)
 const authAxios = axios.create({
   baseURL:         BACKEND_URL,
-  timeout:         10000,
+  timeout:         12000,
   withCredentials: true,
   headers:         { "Content-Type": "application/json" },
 });
 
-// ─── IDB ──────────────────────────────────────────────────────────────────────
+// ─── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const SESSION_TTL = 90 * 24 * 60 * 60 * 1000; // 90 jours
 
-async function saveSession(user) {
+async function saveSession(user, token = null) {
   if (!user?._id) return;
   try {
+    const payload = { user, savedAt: Date.now() };
     await Promise.all([
       idbSet("users", "user_active",  user),
-      idbSet("users", "session_meta", { user, savedAt: Date.now() }),
+      idbSet("users", "session_meta", payload),
     ]);
     localStorage.setItem("cl_user", JSON.stringify(user));
-  } catch {}
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.setItem("cl_user_ss", JSON.stringify(user));
+      // On stocke le token uniquement en sessionStorage (même onglet, pas cross-tab)
+      if (token) sessionStorage.setItem("cl_token_ss", token);
+    }
+  } catch (e) {
+    console.warn("[saveSession]", e);
+  }
 }
 
-async function loadCachedSession() {
+async function loadCachedUser() {
+  // 1. sessionStorage — ultra-rapide, même onglet (survit à F5)
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const raw = sessionStorage.getItem("cl_user_ss");
+      if (raw) {
+        const u = JSON.parse(raw);
+        if (u?._id) {
+          const cachedToken = sessionStorage.getItem("cl_token_ss");
+          return { user: u, token: cachedToken };
+        }
+      }
+    }
+  } catch {}
+
+  // 2. IDB
   try {
     const s = await idbGet("users", "session_meta").catch(() => null);
-    if (s?.user?._id && Date.now() - s.savedAt < SESSION_TTL) return s.user;
+    if (s?.user?._id && Date.now() - s.savedAt < SESSION_TTL) {
+      return { user: s.user, token: null };
+    }
   } catch {}
-  // fallback localStorage
+
+  // 3. localStorage — dernier recours
   try {
     const raw = localStorage.getItem("cl_user");
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const u = JSON.parse(raw);
+      if (u?._id) return { user: u, token: null };
+    }
   } catch {}
+
   return null;
 }
 
@@ -89,6 +132,12 @@ async function clearSession() {
     ]);
   } catch {}
   localStorage.removeItem("cl_user");
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.removeItem("cl_user_ss");
+      sessionStorage.removeItem("cl_token_ss");
+    }
+  } catch {}
 }
 
 // ─── PROVIDER ─────────────────────────────────────────────────────────────────
@@ -101,13 +150,23 @@ export function AuthProvider({ children }) {
   const [sessionLoading, setSessionLoading] = useState(true);
   const [notifications,  setNotifications]  = useState([]);
 
-  const socketRef       = useRef(null);
-  const isMounted       = useRef(true);
-  const isRefreshing    = useRef(false);
-  const currentUserRef  = useRef(null);
-  const getTokenRef     = useRef(null);
+  const socketRef      = useRef(null);
+  const isMounted      = useRef(true);
+  const currentUserRef = useRef(null);
+  const getTokenRef    = useRef(null);
 
-  useEffect(() => { currentUserRef.current = user; }, [user]);
+  // Refs synchrones — toujours à jour même dans les closures
+  const tokenRef        = useRef(null);
+  const tokenExpiresRef = useRef(null);
+  const readyRef        = useRef(false);     // true quand init terminée
+  const isRefreshing    = useRef(false);
+  const refreshQueue    = useRef([]);
+
+  useEffect(() => {
+    currentUserRef.current  = user;
+    tokenRef.current        = token;
+    tokenExpiresRef.current = tokenExpiresAt;
+  }, [user, token, tokenExpiresAt]);
 
   // ─── NOTIFICATIONS ──────────────────────────────────────────────────────────
   const addNotification = useCallback((type, message) => {
@@ -118,11 +177,13 @@ export function AuthProvider({ children }) {
   // ─── APPLIQUER SESSION ──────────────────────────────────────────────────────
   const applySession = useCallback(async ({ token: tk, expiresIn, user: u }) => {
     const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
+    tokenRef.current        = tk;
+    tokenExpiresRef.current = expiresAt;
     setToken(tk);
     setTokenExpiresAt(expiresAt);
     setUser(u);
     if (u?.language) applyLanguage(u.language);
-    await saveSession(u);
+    await saveSession(u, tk);
   }, []);
 
   // ─── LOGOUT ─────────────────────────────────────────────────────────────────
@@ -131,93 +192,192 @@ export function AuthProvider({ children }) {
     if (uid) { try { clearContactsCache(uid); } catch {} }
     try { await authAxios.post("/api/auth/logout").catch(() => {}); } catch {}
     if (socketRef.current) { socketRef.current.disconnect(); socketRef.current = null; }
-    setUser(null); setToken(null); setTokenExpiresAt(null);
+    tokenRef.current        = null;
+    tokenExpiresRef.current = null;
+    setUser(null);
+    setToken(null);
+    setTokenExpiresAt(null);
     await clearSession();
     if (!silent) addNotification("info", "Déconnecté");
   }, [addNotification]);
 
-  // ─── REFRESH TOKEN ──────────────────────────────────────────────────────────
+  // ─── REFRESH TOKEN (avec file d'attente) ────────────────────────────────────
   const refreshAccessToken = useCallback(async () => {
-    if (isRefreshing.current) return false;
+    if (isRefreshing.current) {
+      // On attend que le refresh en cours finisse
+      return new Promise((resolve, reject) => {
+        refreshQueue.current.push({ resolve, reject });
+      });
+    }
+
     isRefreshing.current = true;
+
+    const drainQueue = (token) => {
+      refreshQueue.current.forEach(({ resolve }) => resolve(token));
+      refreshQueue.current = [];
+    };
+    const rejectQueue = (err) => {
+      refreshQueue.current.forEach(({ reject }) => reject(err));
+      refreshQueue.current = [];
+    };
+
     try {
       const res = await authAxios.post("/api/auth/refresh-token");
-      if (!res.data?.success || !res.data?.token) return false;
+      if (!res.data?.success || !res.data?.token) {
+        throw new Error("Réponse refresh invalide");
+      }
       await applySession(res.data);
-      return true;
+      drainQueue(res.data.token);
+      return res.data.token;
     } catch (err) {
-      if (err?.response?.status === 401) await logout(true);
-      return false;
+      rejectQueue(err);
+      if (err?.response?.status === 401 && isMounted.current) {
+        // Cookie révoqué ou expiré → logout silencieux
+        console.info("[AuthContext] Cookie 401 → logout silencieux");
+        setUser(null);
+        setToken(null);
+        tokenRef.current        = null;
+        tokenExpiresRef.current = null;
+        await clearSession();
+      }
+      // Erreurs réseau → on ne déconnecte PAS
+      return null;
     } finally {
       isRefreshing.current = false;
     }
-  }, [applySession, logout]);
+  }, [applySession]);
 
   // ─── GET TOKEN ───────────────────────────────────────────────────────────────
+  // Attend que l'init soit terminée, puis retourne un token valide.
+  // C'est LE point d'entrée unique pour obtenir un token.
   const getToken = useCallback(async () => {
-    if (!token) return null;
-    const timeLeft = (tokenExpiresAt || 0) - Date.now();
-    if (timeLeft < 3 * 60 * 1000) {
-      const ok = await refreshAccessToken();
-      if (!ok) return null;
+    // Attendre la fin de l'init (max 8s)
+    if (!readyRef.current) {
+      await new Promise((resolve) => {
+        const check = setInterval(() => {
+          if (readyRef.current) { clearInterval(check); resolve(); }
+        }, 50);
+        setTimeout(() => { clearInterval(check); resolve(); }, 8000);
+      });
     }
-    return token;
-  }, [token, tokenExpiresAt, refreshAccessToken]);
+
+    const currentToken = tokenRef.current;
+    if (!currentToken) return null;
+
+    const timeLeft = (tokenExpiresRef.current || 0) - Date.now();
+
+    if (timeLeft > 3 * 60 * 1000) return currentToken;   // encore frais
+    if (timeLeft > 0) {
+      // Expire dans moins de 3 min → refresh préventif silencieux
+      refreshAccessToken().catch(() => {});
+      return currentToken; // on retourne l'actuel pendant ce temps
+    }
+
+    // Expiré → refresh bloquant
+    const newToken = await refreshAccessToken();
+    return newToken || currentToken; // fallback si réseau coupé
+  }, [refreshAccessToken]);
 
   useEffect(() => { getTokenRef.current = getToken; }, [getToken]);
 
+  // ─── ÉCOUTE L'EVENT "auth:token-refreshed" (émis par axiosClientGlobal) ─────
+  // axiosClientGlobal fait son propre refresh sur 401 et dispatch cet event
+  // pour que AuthContext reste synchronisé
+  useEffect(() => {
+    const handler = async (e) => {
+      const { token: tk, expiresIn, user: u } = e.detail || {};
+      if (tk && u) {
+        console.log("[AuthContext] 📡 Token reçu via event axiosClient");
+        await applySession({ token: tk, expiresIn, user: u });
+      } else if (tk) {
+        // Pas de user dans l'event → on met juste à jour le token
+        tokenRef.current        = tk;
+        tokenExpiresRef.current = Date.now() + (expiresIn || 3600) * 1000;
+        setToken(tk);
+        setTokenExpiresAt(tokenExpiresRef.current);
+        if (currentUserRef.current) {
+          await saveSession(currentUserRef.current, tk);
+        }
+      }
+    };
+    window.addEventListener("auth:token-refreshed", handler);
+    return () => window.removeEventListener("auth:token-refreshed", handler);
+  }, [applySession]);
+
   // ─── CHARGEMENT INITIAL ──────────────────────────────────────────────────────
-  // ✅ FIX PRINCIPAL :
-  //   1. isMounted.current = true  → réinitialise le flag à chaque montage (React StrictMode
-  //      appelle cleanup + remount, ce qui laissait isMounted=false lors du 2e run)
-  //   2. Safety timer 5 s          → filet de sécurité absolu, débloque le shimmer même si
-  //      le réseau est coupé ou si une edge-case imprévue empêche le finally de setter l'état
   useEffect(() => {
     let cancelled = false;
-
-    // ✅ FIX 1 — réinitialiser isMounted pour le cycle actuel (corrige le bug StrictMode)
     isMounted.current = true;
 
-    // ✅ FIX 2 — safety timer : sessionLoading passe à false dans TOUS les cas sous 5 s max
-    const safetyTimer = setTimeout(() => {
+    const markReady = () => {
       if (!cancelled && isMounted.current) {
-        console.warn("⏱️ [AuthContext] Safety timeout — forcing sessionLoading=false");
+        readyRef.current = true;
         setReady(true);
         setSessionLoading(false);
       }
-    }, 5000);
+    };
+
+    // Filet de sécurité absolu
+    const safetyTimer = setTimeout(() => {
+      console.warn("⏱️ [AuthContext] Safety timeout → forçage sessionLoading=false");
+      markReady();
+    }, 8000);
 
     const init = async () => {
-      // 1. Restaurer depuis cache (instantané, pas de réseau)
+      // ── Étape 1 : cache (instantané, pas de réseau) ─────────────────────────
       try {
-        const cached = await loadCachedSession();
-        if (cached?._id && !cancelled) {
-          setUser(cached);
-          if (cached.language) applyLanguage(cached.language);
-        }
-      } catch {}
+        const cached = await loadCachedUser();
+        if (cached?.user?._id && !cancelled) {
+          setUser(cached.user);
+          if (cached.user.language) applyLanguage(cached.user.language);
 
-      // 2. Valider côté serveur (en background)
+          // Si on a un token en cache, vérifier qu'il n'est pas expiré
+          if (cached.token) {
+            try {
+              const parts = cached.token.split(".");
+              if (parts.length === 3) {
+                const payload = JSON.parse(atob(parts[1]));
+                if (payload.exp && payload.exp * 1000 > Date.now() + 60_000) {
+                  tokenRef.current        = cached.token;
+                  tokenExpiresRef.current = payload.exp * 1000;
+                  setToken(cached.token);
+                  setTokenExpiresAt(payload.exp * 1000);
+                  console.log("✅ [AuthContext] Token cache encore valide — utilisé immédiatement");
+                }
+              }
+            } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn("[AuthContext] Erreur chargement cache:", e);
+      }
+
+      // ── Étape 2 : validation serveur (cookie httpOnly) ───────────────────────
       try {
         const res = await authAxios.post("/api/auth/refresh-token");
         if (!cancelled && res.data?.success && res.data?.token) {
           await applySession(res.data);
+          console.log("✅ [AuthContext] Session validée côté serveur");
         }
       } catch (err) {
-        // 401 = session révoquée → logout silencieux
-        if (err?.response?.status === 401 && !cancelled) {
-          setUser(null);
-          await clearSession();
+        const status = err?.response?.status;
+        if (status === 401) {
+          if (!cancelled) {
+            console.info("[AuthContext] Cookie invalide (401) → nettoyage");
+            setUser(null);
+            setToken(null);
+            tokenRef.current        = null;
+            tokenExpiresRef.current = null;
+            await clearSession();
+          }
+        } else {
+          // Réseau coupé, serveur down, timeout → ON GARDE LE CACHE
+          // L'utilisateur reste "connecté" visuellement
+          console.warn(`[AuthContext] Erreur réseau (${status || err.code || "timeout"}) → cache maintenu`);
         }
-        // Toute autre erreur (réseau, timeout) → on garde le cache
       } finally {
-        // Annule le safety timer : on a terminé normalement
         clearTimeout(safetyTimer);
-        // ✅ TOUJOURS atteint — fin du blocage
-        if (!cancelled && isMounted.current) {
-          setReady(true);
-          setSessionLoading(false);
-        }
+        markReady();
       }
     };
 
@@ -230,23 +390,29 @@ export function AuthProvider({ children }) {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── INJECT AXIOS ────────────────────────────────────────────────────────────
+  // ─── INJECT AXIOS HANDLERS ───────────────────────────────────────────────────
   useEffect(() => {
     const getLanguage = () => {
       try {
         if (user?.language) return user.language;
-        if (typeof window !== 'undefined') {
-          const l = window.localStorage?.getItem('cl_lang');
+        if (typeof window !== "undefined") {
+          const l = window.localStorage?.getItem("cl_lang");
           if (l) return l;
-          const nav = navigator?.language || navigator?.userLanguage || 'fr';
-          return String(nav).split('-')[0];
+          return (navigator?.language || "fr").split("-")[0];
         }
-      } catch (e) {}
-      return 'fr';
+      } catch {}
+      return "fr";
     };
 
-    injectAuthHandlers({ getToken, logout, notify: addNotification, getLanguage });
-  }, [getToken, logout, addNotification, user?.language]);
+    injectAuthHandlers({
+      getToken,
+      logout,
+      notify: addNotification,
+      getLanguage,
+      // Exposé pour que axiosClientGlobal puisse forcer un refresh si besoin
+      refreshTokenForUser: refreshAccessToken,
+    });
+  }, [getToken, logout, addNotification, user?.language, refreshAccessToken]);
 
   // ─── SOCKET ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -255,44 +421,94 @@ export function AuthProvider({ children }) {
       return;
     }
     if (socketRef.current?.connected) return;
+
     const s = io(BACKEND_URL, {
       auth:                 { token },
       transports:           ["websocket", "polling"],
       reconnection:         true,
-      reconnectionAttempts: 5,
-      timeout:              8000,
+      reconnectionAttempts: 10,
+      reconnectionDelay:    1000,
+      reconnectionDelayMax: 5000,
+      timeout:              10000,
     });
+
     s.on("connect",       () => console.log("🔌 Socket connecté:", s.id));
     s.on("connect_error", (e) => console.warn("⚠️ Socket:", e.message));
+    s.on("disconnect",    (reason) => {
+      if (reason === "io server disconnect") {
+        // Déconnexion forcée par le serveur → refresh + reconnexion
+        refreshAccessToken().then((newTk) => {
+          if (newTk) { s.auth = { token: newTk }; s.connect(); }
+        });
+      }
+    });
+
     socketRef.current = s;
     return () => { s.disconnect(); socketRef.current = null; };
-  }, [user?._id, token]);
+  }, [user?._id, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── REFRESH AUTO (heartbeat toutes les 60s) ─────────────────────────────────
+  // ─── HEARTBEAT (refresh préventif toutes les 4 min) ──────────────────────────
   useEffect(() => {
     if (!token) return;
     const id = setInterval(() => {
-      const left = (tokenExpiresAt || 0) - Date.now();
-      if (left > 0 && left < 3 * 60 * 1000) refreshAccessToken();
-    }, 60_000);
+      const left = (tokenExpiresRef.current || 0) - Date.now();
+      if (left > 0 && left < 5 * 60 * 1000) {
+        console.log("[AuthContext] 🔄 Heartbeat refresh");
+        refreshAccessToken();
+      }
+    }, 4 * 60 * 1000);
     return () => clearInterval(id);
-  }, [token, tokenExpiresAt, refreshAccessToken]);
+  }, [token, refreshAccessToken]);
+
+  // ─── RETOUR D'ONGLET ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && tokenRef.current) {
+        const left = (tokenExpiresRef.current || 0) - Date.now();
+        if (left < 5 * 60 * 1000) {
+          console.log("[AuthContext] 🔄 Refresh au retour d'onglet");
+          refreshAccessToken();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshAccessToken]);
 
   // ─── RECOVERY RÉSEAU ─────────────────────────────────────────────────────────
   useEffect(() => {
     const onOnline = () => {
-      if (user?._id) refreshAccessToken();
+      if (currentUserRef.current?._id) {
+        console.log("[AuthContext] 🌐 Réseau rétabli → refresh");
+        refreshAccessToken();
+      }
     };
     window.addEventListener("online", onOnline, { passive: true });
     return () => window.removeEventListener("online", onOnline);
-  }, [user?._id, refreshAccessToken]);
+  }, [refreshAccessToken]);
+
+  // ─── SYNC ENTRE ONGLETS ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === "cl_user" && e.newValue === null && currentUserRef.current) {
+        console.log("[AuthContext] 📡 Déconnexion dans un autre onglet");
+        setUser(null); setToken(null);
+        tokenRef.current = null;
+        tokenExpiresRef.current = null;
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // ─── LOGIN ───────────────────────────────────────────────────────────────────
   const login = useCallback(async (email, password, rememberMe = false) => {
     setLoading(true);
     try {
       const res = await authAxios.post("/api/auth/login", {
-        email: email.trim().toLowerCase(), password: String(password), rememberMe,
+        email: email.trim().toLowerCase(),
+        password: String(password),
+        rememberMe,
       });
       if (!res.data?.success) throw new Error(res.data?.message || "Erreur login");
       await applySession(res.data);
@@ -329,7 +545,7 @@ export function AuthProvider({ children }) {
     }
   }, [applySession, addNotification]);
 
-  // ─── SET AUTH DATA (OAuth/reset password handoff) ────────────────────────────
+  // ─── SET AUTH DATA (OAuth / reset password) ──────────────────────────────────
   const setAuthData = useCallback(async (data) => {
     if (!data?.token || !data?.user) return { success: false };
     await applySession(data);
@@ -342,27 +558,29 @@ export function AuthProvider({ children }) {
     const userId  = typeof userIdOrUpdates === "string" ? userIdOrUpdates : user?._id;
     const updates = typeof userIdOrUpdates === "string" ? maybeUpdates   : userIdOrUpdates;
     if (!updates) return;
+
     setUser(prev => {
       if (!prev) return prev;
       const updated = { ...prev, ...updates };
-      saveSession(updated).catch(() => {});
+      saveSession(updated, tokenRef.current).catch(() => {});
       return updated;
     });
+
     const isPhotoUpdate = !!(updates.profilePhoto || updates.coverPhoto);
     if (!isPhotoUpdate && userId) {
       try {
         const tk = await getTokenRef.current?.();
         if (tk) {
           const res = await axios.put(`${API_URL}/users/${userId}`, updates, {
-            headers: { Authorization: `Bearer ${tk}` },
+            headers:         { Authorization: `Bearer ${tk}` },
             withCredentials: true,
-            timeout: 10000,
+            timeout:         10000,
           });
           if (res.data?.user) {
             setUser(prev => {
               if (!prev) return prev;
               const synced = { ...prev, ...res.data.user };
-              saveSession(synced).catch(() => {});
+              saveSession(synced, tokenRef.current).catch(() => {});
               return synced;
             });
           }
@@ -377,25 +595,37 @@ export function AuthProvider({ children }) {
     if (!tk) return null;
     try {
       const res = await axios.get(`${API_URL}/admin/verify`, {
-        headers: { Authorization: `Bearer ${tk}` }, withCredentials: true, timeout: 8000,
+        headers:         { Authorization: `Bearer ${tk}` },
+        withCredentials: true,
+        timeout:         8000,
       });
       if (res.status === 200 && ["admin","superadmin"].includes(res.data.user?.role)) return tk;
     } catch {}
     return null;
   }, [getToken]);
 
-  // ─── isLockedOut (stub) ───────────────────────────────────────────────────────
   const isLockedOut = useCallback(() => false, []);
 
   // ─── VALEUR CONTEXTE ─────────────────────────────────────────────────────────
   const value = useMemo(() => ({
-    user, token, socket: socketRef.current,
-    loading, ready, sessionLoading,
+    user,
+    token,
+    socket: socketRef.current,
+    loading,
+    ready,
+    sessionLoading,
     isAuthenticated: !!user,
     notifications,
-    login, logout, register, setAuthData, getToken, updateUserProfile,
-    verifyAdminToken, isAdmin: () => ["admin","superadmin"].includes(user?.role),
-    addNotification, isLockedOut,
+    login,
+    logout,
+    register,
+    setAuthData,
+    getToken,
+    updateUserProfile,
+    verifyAdminToken,
+    isAdmin: () => ["admin","superadmin"].includes(user?.role),
+    addNotification,
+    isLockedOut,
   }), [
     user, token, loading, ready, sessionLoading, notifications,
     login, logout, register, setAuthData, getToken, updateUserProfile,
