@@ -9,7 +9,8 @@ import { useTranslation } from "react-i18next";
 import { useCalculation } from "../../context/CalculationContext";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  HardHat, Building2, Leaf, Zap, TrainFront, Coins, ArrowRight, ChevronLeft
+  HardHat, Building2, Leaf, Zap, TrainFront, Coins, ArrowRight, ChevronLeft,
+  Wrench
 } from "lucide-react";
 
 import BatimentForm    from "./batiment/forms/BatimentForm.jsx";
@@ -17,10 +18,11 @@ import TPForm          from "./tp/forms/TPForm.jsx";
 import EcoForm         from "./eco/forms/EcoForm.jsx";
 import EnergieForm     from "./energie/forms/EnergieForm.jsx";
 import FerroviaireForm from "./ferroviaire/FerroviaireForm.jsx";
+import DiversForm      from "./divers/DiversForm.jsx";
 
 const fastTransition = { duration: 0.2, ease: "easeOut" };
 
-const PROJECT_KEYS = ["tp", "batiment", "eco", "energie", "ferroviaire"];
+const PROJECT_KEYS = ["tp", "batiment", "eco", "energie", "ferroviaire", "divers"];
 
 const PROJECT_META = {
   tp:          { icon: HardHat,    color: "from-orange-600 to-amber-700",  bgImage: "https://images.unsplash.com/photo-1541888946425-d81bb19240f5?q=80&w=800&auto=format&fit=crop" },
@@ -28,6 +30,7 @@ const PROJECT_META = {
   eco:         { icon: Leaf,       color: "from-green-600 to-emerald-700", bgImage: "https://images.unsplash.com/photo-1542601906990-b4d3fb7d5b73?q=80&w=800&auto=format&fit=crop" },
   energie:     { icon: Zap,        color: "from-yellow-500 to-orange-600", bgImage: "https://images.unsplash.com/photo-1473341304170-971dccb5ac1e?q=80&w=800&auto=format&fit=crop" },
   ferroviaire: { icon: TrainFront, color: "from-red-600 to-rose-700",      bgImage: "https://images.unsplash.com/photo-1474487548417-781cb71495f3?q=80&w=800&auto=format&fit=crop" },
+  divers:      { icon: Wrench,     color: "from-purple-600 to-violet-700", bgImage: "https://images.unsplash.com/photo-1504917595217-d4dc5ebe6122?q=80&w=800&auto=format&fit=crop" },
 };
 
 const currencies = [
@@ -283,6 +286,7 @@ export default function Calculs() {
       case "eco":         return <EcoForm         currency={currency} />;
       case "energie":     return <EnergieForm     currency={currency} />;
       case "ferroviaire": return <FerroviaireForm currency={currency} />;
+      case "divers":      return <DiversForm      currency={currency} />;
       default:            return null;
     }
   }, [mode, currency]);

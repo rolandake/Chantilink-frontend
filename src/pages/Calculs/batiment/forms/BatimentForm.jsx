@@ -17,6 +17,7 @@ import Fondation     from "./Fondation";
 import Elevations    from "./Elevations";
 import Toiture       from "./Toiture";
 import Finitions     from "./Finitions";
+import Divers        from "./Divers";
 
 // ─── CONFIG ÉTAPES ────────────────────────────────────────────
 const stepsConfig = [
@@ -25,6 +26,7 @@ const stepsConfig = [
   { id: "elevation",    label: "Élévation (Murs)",   component: Elevations,   icon: "🧱", color: "text-blue-500"    },
   { id: "toiture",      label: "Toiture / Charpente",component: Toiture,      icon: "🏠", color: "text-orange-500"  },
   { id: "finitions",    label: "Finitions",          component: Finitions,    icon: "✨", color: "text-purple-500"  },
+  { id: "divers",       label: "Divers / Outils",    component: Divers,       icon: "🧰", color: "text-emerald-500" },
 ];
 
 // ─── HELPERS FORMAT ───────────────────────────────────────────
@@ -148,6 +150,9 @@ const MATERIAL_LABELS = {
   enduit: "Enduit",
   colle: "Colle",
   joint: "Joint",
+  outillage: "Outillage / Matériel",
+  achat: "Achat matériel",
+  location: "Location matériel",
 };
 
 const MATERIAL_UNITS = {
@@ -168,6 +173,9 @@ const MATERIAL_UNITS = {
   enduit: "kg",
   colle: "kg",
   joint: "kg",
+  outillage: "XOF",
+  achat: "XOF",
+  location: "XOF",
 };
 
 const FOUNDATION_LABELS = {
@@ -301,6 +309,41 @@ const buildOuvrageRows = (subResults = {}) => {
         qty("Joint", finitions.joint, "kg"),
       ]),
     });
+  }
+
+  const divers = subResults.divers || {};
+  if (hasMeaningfulValue(divers) || (divers.items && divers.items.length > 0)) {
+    // Si on a le détail des lignes, on les affiche individuellement
+    const lignes = divers.items || [];
+    if (lignes.length > 0) {
+      // Une ligne par outil avec détail complet (Qté, Durée, Prix, Total)
+      lignes.forEach((l, i) => {
+        const nom = l.label || "Outil";
+        const icone = l.icon || "🧰";
+        rows.push({
+          stepId: "divers",
+          label: `${icone} ${nom}`,
+          details: compactQty([
+            qty("Qté", l.quantite, "u", 0),
+            qty("Durée", l.duree, "j", 0),
+            qty("Prix unit.", l.prixUnitaire, "XOF"),
+            qty("Total", l.total, "XOF"),
+            l.commentaire ? qty("Note", l.commentaire, "") : null,
+          ]),
+        });
+      });
+    } else {
+      rows.push({
+        stepId: "divers",
+        label: "Divers / Outils chantier",
+        details: compactQty([
+          qty("Outillage", divers.outillage, "XOF"),
+          qty("Achat", divers.achat, "XOF"),
+          qty("Location", divers.location, "XOF"),
+          qty("Lignes", divers.lignes, "u", 0),
+        ]),
+      });
+    }
   }
 
   return rows;
@@ -996,6 +1039,10 @@ export default function BatimentForm({ currency = "XOF" }) {
         onTotalChange={val  => handleCostChange(step.id, val)}
         onCostChange={val   => handleCostChange(step.id, val)}   // ← alias pour Terrassement / Fondation / Elevations
         onMateriauxChange={mats => handleQuantitesChange(step.id, mats)}
+        onResultsChange={res => {
+          // Pour les composants qui exposent des résultats détaillés (ex: Divers)
+          // Les données sont gérées via useProjectStore.setGlobalResults
+        }}
       />
     );
   };
@@ -1149,7 +1196,7 @@ export default function BatimentForm({ currency = "XOF" }) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-5 gap-3">
+              <div className="grid grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-3">
                 {stepsConfig.map((step) => {
                   const isActive = costs[step.id] > 0;
                   return (

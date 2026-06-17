@@ -150,6 +150,7 @@ const STEP_LABELS = {
   elevation: "Élévation / Structure",
   toiture: "Toiture / Charpente",
   finitions: "Finitions",
+  divers: "Divers / Outils",
 };
 
 const FONDATION_LABELS = {
@@ -294,6 +295,16 @@ const buildClientRows = ({ costs = {}, quantites = {}, subResults = {} }) => {
       q("Enduit", finitions.enduit, "kg"),
       q("Colle", finitions.colle, "kg"),
     ], "finitions", 0, quantites.finitions);
+  }
+
+  const divers = subResults.divers || {};
+  if (hasData(divers)) {
+    add("Divers / Outils", "Outillage & matériel de chantier", [
+      q("Outillage", divers.outillage, "XOF"),
+      q("Achat matériel", divers.achat, "XOF"),
+      q("Location matériel", divers.location, "XOF"),
+      q("Lignes", divers.lignes, "u", 0),
+    ], "divers", 0, quantites.divers);
   }
 
   if (!rows.length) {
