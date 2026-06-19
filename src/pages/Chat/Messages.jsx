@@ -615,9 +615,14 @@ export default function Messages() {
 
   // ── Événements APPEL (incoming uniquement — les autres sont dans CallManager) ──
   useEffect(() => {
-    if (!connected || !socket) return;
+    if (!connected || !socket) {
+      console.log("🔴 [Messages] listener incoming-call SKIP — connected:", connected, "socket:", !!socket);
+      return;
+    }
+    console.log("🟢 [Messages] listener incoming-call ENREGISTRÉ — socket.id:", socket.id);
 
     const handleIncomingCall = ({ callId, from, caller, type }) => {
+      console.log("📞🔥 [Messages] incoming-call REÇU !", { callId, from, caller, type });
       const fromStr = normalizeId(from);
       const friend  = contacts.find((c) => normalizeId(c.id) === fromStr)
         || { id: fromStr, fullName: caller?.fullName || "Anonyme", profilePhoto: caller?.profilePhoto || "" };
@@ -628,6 +633,7 @@ export default function Messages() {
       }
       try { vibrateCall(); } catch {}
       startTabCallAlert(friend.fullName);
+      console.log("📞🔥 [Messages] setIncomingCall appelé avec:", friend);
       setIncomingCall({ callId, friend, type, caller: friend });
     };
 

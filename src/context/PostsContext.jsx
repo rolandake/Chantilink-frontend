@@ -265,6 +265,19 @@ export const PostsProvider = ({ children }) => {
       isBot:         !!(rawUser.isBot || p.isBot),
       isAutoCreated: !!(rawUser.isAutoCreated || p.isAutoCreated),
     };
+    // Filtrer les commentaires des bots : on garde uniquement les commentaires
+    // des vrais utilisateurs pour éviter les commentaires hors-sujet comme
+    // "djo! ce france-senegal" qui n'ont aucun sens sur un post BTP
+    const safeComments = botPost
+      ? []
+      : (Array.isArray(p.comments) ? p.comments : []).filter(c => {
+          // Supprimer les commentaires écrits par des bots
+          if (c.user?.isBot || c.user?.isAutoCreated) return false;
+          // Supprimer les commentaires absurdes (trop courts, sans sens)
+          const text = (c.content || "").trim();
+          if (!text || text.length < 5) return false;
+          return true;
+        });
     return {
       ...p,
       _id:      p._id || p.id,
@@ -273,7 +286,7 @@ export const PostsProvider = ({ children }) => {
       contenu:  botPost ? safeContent : p.contenu,
       user:     normalizedUser,
       likes:    Array.isArray(p.likes)    ? p.likes    : [],
-      comments: Array.isArray(p.comments) ? p.comments : [],
+      comments: safeComments,
       views:    Array.isArray(p.views)    ? p.views    : [],
       shares:   Array.isArray(p.shares)   ? p.shares   : [],
     };

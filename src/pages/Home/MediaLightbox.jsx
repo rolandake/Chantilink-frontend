@@ -1,9 +1,13 @@
 // 📁 src/pages/Home/MediaLightbox.jsx
-// ✅ PATCH v26 — CORRECTION PASSIVE WHEEL EVENT
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EXEMPLE COMPLET — MediaLightbox minimal avec le patch appliqué
-// ─────────────────────────────────────────────────────────────────────────────
+// ✅ PATCH v27 — FIX TDZ "isVideo" + PATCH v26 (CORRECTION PASSIVE WHEEL EVENT) conservé
+//
+// 🔧 FIX : `isVideo` était déclaré tout en bas du composant (après les
+// useCallback handleDoubleClick / handleMouseDown qui le référencent dans
+// leurs tableaux de dépendances et leur corps). Comme c'est un `const`,
+// il est en Temporal Dead Zone tant que sa ligne de déclaration n'est pas
+// passée → "Cannot access 'isVideo' before initialization" au montage.
+// → currentUrl / isVideo sont maintenant calculés en tout début de
+//   composant, avant toute fonction qui les utilise.
 
 import React, {
   useState, useRef, useEffect, useCallback, memo,
@@ -27,6 +31,10 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
   const lastPinchDistRef = useRef(0);
   const isPannedThisDrag = useRef(false);
   const lastTapRef = useRef(0);
+
+  // 🔧 FIX TDZ : déclarés ICI, avant tout callback qui les utilise
+  const currentUrl = urls[index] || "";
+  const isVideo    = /\.(mp4|webm|mov)(\?|$)/i.test(currentUrl);
 
   // ✅ FIX — addEventListener impératif avec { passive: false }
   // Permet e.preventDefault() sans warning Chrome/Firefox.
@@ -199,9 +207,6 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
   }, []);
-
-  const currentUrl = urls[index] || "";
-  const isVideo    = /\.(mp4|webm|mov)(\?|$)/i.test(currentUrl);
 
   return (
     <motion.div

@@ -1,39 +1,101 @@
-// src/components/CallManager.jsx - VERSION FINALE (CORRIGÉE)
-import React, { useState, useRef, useEffect } from "react";
+// src/components/CallManager.jsx - VERSION FINALE CORRIGÉE v2
+// FIXES:
+//  - ✅ BUG PRINCIPAL : `if (!call.on || call.isIncoming) return null;` empêchait
+//    TOUT affichage côté receveur de l'appel. Le composant ne gérait QUE les
+//    appels sortants. Maintenant gère les deux sens.
+//  - ✅ Events alignés sur backend/sockets/callSocket.js : "webrtc-offer",
+//    "webrtc-answer", "ice-candidate" (callId inclus), pas "call-offer"/"call-answer"
+//    qui n'existent pas côté serveur (callSocket.js n'écoute pas ces events).
+//  - ✅ Pour un appel entrant accepté : envoie "accept-call" puis attend l'offer
+//    WebRTC, répond avec "webrtc-answer".
+//  - ✅ Pour un appel sortant : crée l'offer après avoir reçu "call-initiated"
+//    (callId connu), comme attendu par callSocket.js.
+//  - ✅ Guards anti double-déclenchement (hasStartedRef / hasAcceptedRef).
+//  - ✅ Cleanup propre du peerConnection + stream au démontage / fin d'appel.
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Phone, Video, Mic, MicOff, Camera, CameraOff, X, PhoneOff } from "lucide-react";
-import { useAuth } from "../context/AuthContext";
+import { Mic, MicOff, Camera, CameraOff, PhoneOff } from "lucide-react";
 import { useToast } from "../context/ToastContext";
 
 const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) => {
-  
-  // ✅ Socket passé en prop depuis Messages.jsx (namespace /messages)
   const { showToast } = useToast();
-  
+
   const [stream, setStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
-  const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
+  const localVideoRef     = useRef(null);
+  const remoteVideoRef    = useRef(null);
   const peerConnectionRef = useRef(null);
+  const callIdRef         = useRef(call?.callId || null);
+  const pendingCandidatesRef = useRef([]);
+
+  // ✅ Guards anti double-déclenchement
+  const hasStartedRef  = useRef(false);
+  const hasAcceptedRef = useRef(false);
+  const prevCallOnRef  = useRef(false);
 
   const ICE_SERVERS = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-  // Debug : Vérifier si le socket arrive bien
+  // ── Sync callId externe → ref ──────────────────────────────────────────
   useEffect(() => {
-    if (socket && socket.connected) {
-      console.log("✅ [CallManager] Socket global détecté et connecté :", socket.id);
-    }
+    if (call?.callId) callIdRef.current = call.callId;
+  }, [call?.callId]);
+
+  // ── Créer une PeerConnection commune (appelant + appelé) ───────────────
+  const createPeerConnection = useCallback((mediaStream, remoteUserId) => {
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    peerConnectionRef.current = pc;
+
+    mediaStream.getTracks().forEach((t) => pc.addTrack(t, mediaStream));
+
+    pc.ontrack = (e) => {
+      console.log("📡 [CallManager] Flux distant reçu !");
+      setRemoteStream(e.streams[0]);
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
+    };
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate && socket && callIdRef.current && remoteUserId) {
+        socket.emit("ice-candidate", {
+          callId:    callIdRef.current,
+          to:        remoteUserId,
+          candidate: e.candidate,
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log("[CallManager] connectionState:", pc.connectionState);
+    };
+
+    return pc;
   }, [socket]);
 
-  // 1. DÉMARRAGE DE L'APPEL
+  // ════════════════════════════════════════════════════════════════════
+  // 1. DÉMARRAGE — distingue appel SORTANT vs ENTRANT
+  // ════════════════════════════════════════════════════════════════════
   useEffect(() => {
-    // Sécurité : On ne fait rien tant que le socket n'est pas prêt ou qu'on n'est pas en appel
     if (!socket || !socket.connected) return;
-    if (!call.on || call.isIncoming) return;
+    if (!call?.on) {
+      hasStartedRef.current  = false;
+      hasAcceptedRef.current = false;
+      prevCallOnRef.current  = false;
+      return;
+    }
+    // Ne déclencher qu'au passage false → true
+    if (prevCallOnRef.current) return;
+    prevCallOnRef.current = true;
 
-    const startCall = async () => {
+    const friendId = call.friend?.id;
+    if (!friendId) return;
+
+    // ──────────────────────────────────────────────────────────────
+    // ✅ APPEL SORTANT (call.isIncoming === false)
+    // ──────────────────────────────────────────────────────────────
+    const startOutgoingCall = async () => {
+      if (hasStartedRef.current) return;
+      hasStartedRef.current = true;
       try {
-        console.log("📞 [CallManager] Démarrage des médias...");
+        console.log("📞 [CallManager] Démarrage appel sortant vers", friendId);
         const mediaStream = await navigator.mediaDevices.getUserMedia({
           video: call.video,
           audio: true,
@@ -41,162 +103,215 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
         setStream(mediaStream);
         if (localVideoRef.current) localVideoRef.current.srcObject = mediaStream;
 
-        const pc = new RTCPeerConnection(ICE_SERVERS);
-        peerConnectionRef.current = pc;
+        const pc = createPeerConnection(mediaStream, friendId);
 
-        mediaStream.getTracks().forEach(t => pc.addTrack(t, mediaStream));
+        // L'offer ne peut être envoyée qu'une fois le callId connu
+        // (émis par le serveur via "call-initiated" après "initiate-call")
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
 
-        pc.ontrack = e => {
-          console.log("📡 [CallManager] Flux distant reçu !");
-          setRemoteStream(e.streams[0]);
-          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
-        };
-
-        pc.onicecandidate = e => {
-          if (e.candidate && socket) {
-            socket.emit("ice-candidate", { candidate: e.candidate, to: call.friend.id });
-          }
-        };
-
-        if (call.type === "outgoing") {
-          console.log("📤 [CallManager] Création de l'offre...");
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          socket.emit("call-offer", { offer, to: call.friend.id, type: call.video ? "video" : "audio" });
+        // Si callId déjà connu (rare, mais possible), envoyer tout de suite
+        if (callIdRef.current) {
+          socket.emit("webrtc-offer", { callId: callIdRef.current, to: friendId, offer });
+        } else {
+          // Sinon stocker en attente — sera flush par le listener "call-initiated" plus bas
+          pendingOfferRef.current = { offer, to: friendId };
         }
       } catch (err) {
-        console.error('[CallManager] Erreur démarrage appel:', err);
+        console.error("[CallManager] Erreur démarrage appel:", err);
         showToast("Impossible d'accéder à la caméra/micro", "error");
         onEndCall();
       }
     };
 
-    startCall();
+    // ──────────────────────────────────────────────────────────────
+    // ✅ APPEL ENTRANT (call.isIncoming === true)
+    // L'utilisateur a déjà cliqué "Décrocher" dans IncomingCallModal,
+    // qui a émis "accept-call" côté Messages.jsx. Ici on prépare juste
+    // le média + la PeerConnection, prête à recevoir l'offer WebRTC.
+    // ──────────────────────────────────────────────────────────────
+    const startIncomingCall = async () => {
+      if (hasAcceptedRef.current) return;
+      hasAcceptedRef.current = true;
+      try {
+        console.log("📞 [CallManager] Préparation média pour appel entrant de", friendId);
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: call.video,
+          audio: true,
+        });
+        setStream(mediaStream);
+        if (localVideoRef.current) localVideoRef.current.srcObject = mediaStream;
+
+        createPeerConnection(mediaStream, friendId);
+
+        // Si une offer était déjà arrivée avant que le média soit prêt
+        if (pendingOfferRef.current?.offer && pendingOfferRef.current?.from === friendId) {
+          await handleOfferRef.current(pendingOfferRef.current);
+          pendingOfferRef.current = null;
+        }
+      } catch (err) {
+        console.error("[CallManager] Erreur préparation média entrant:", err);
+        showToast("Impossible d'accéder à la caméra/micro", "error");
+        onEndCall();
+      }
+    };
+
+    if (call.isIncoming) {
+      startIncomingCall();
+    } else {
+      startOutgoingCall();
+    }
 
     return () => {
       if (peerConnectionRef.current) {
         peerConnectionRef.current.close();
         peerConnectionRef.current = null;
       }
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-      }
     };
-  }, [call.on, call.friend, call.video, call.type, call.isIncoming, onEndCall, showToast, socket]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [call?.on, socket?.connected]);
 
-  // 2. GESTION DES SIGNAUX WEBRTC
+  // ── Stocker l'offer en attente côté appelant tant que callId inconnu ───
+  const pendingOfferRef = useRef(null);
+  const handleOfferRef  = useRef(null);
+
+  // ════════════════════════════════════════════════════════════════════
+  // 2. "call-initiated" — callId connu côté appelant → flush l'offer
+  // ════════════════════════════════════════════════════════════════════
   useEffect(() => {
     if (!socket) return;
 
-    const handleOffer = async ({ offer, from }) => {
-      if (from !== call.friend.id) return;
-      
+    const handleCallInitiated = ({ callId }) => {
+      console.log("📞 [CallManager] call-initiated reçu, callId:", callId);
+      callIdRef.current = callId;
+      const pending = pendingOfferRef.current;
+      if (pending) {
+        socket.emit("webrtc-offer", { callId, to: pending.to, offer: pending.offer });
+        pendingOfferRef.current = null;
+      }
+    };
+
+    socket.on("call-initiated", handleCallInitiated);
+    return () => socket.off("call-initiated", handleCallInitiated);
+  }, [socket]);
+
+  // ════════════════════════════════════════════════════════════════════
+  // 3. SIGNALING WEBRTC — offer / answer / ice-candidate
+  // ════════════════════════════════════════════════════════════════════
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleOffer = async ({ callId, from, offer }) => {
+      if (call.friend?.id && from !== call.friend.id) return;
+      if (callId) callIdRef.current = callId;
+
       if (!peerConnectionRef.current) {
-        const pc = new RTCPeerConnection(ICE_SERVERS);
-        peerConnectionRef.current = pc;
-        
-        try {
-           const mediaStream = await navigator.mediaDevices.getUserMedia({
-            video: call.video,
-            audio: true,
-          });
-          setStream(mediaStream);
-          if (localVideoRef.current) localVideoRef.current.srcObject = mediaStream;
-          mediaStream.getTracks().forEach(t => pc.addTrack(t, mediaStream));
-          
-          pc.ontrack = e => {
-            setRemoteStream(e.streams[0]);
-            if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0];
-          };
-          
-           pc.onicecandidate = e => {
-            if (e.candidate) {
-              socket.emit("ice-candidate", { candidate: e.candidate, to: from });
-            }
-          };
-        } catch (e) {
-          console.error("Erreur média réponse", e);
-        }
+        // PeerConnection pas encore prête (race condition) → mettre en attente
+        console.warn("[CallManager] handleOffer: PC pas prête, mise en attente");
+        pendingOfferRef.current = { callId, from, offer };
+        return;
       }
 
       const pc = peerConnectionRef.current;
       try {
-        await pc.setRemoteDescription(offer);
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+        // Vider les ICE candidates en attente
+        for (const c of pendingCandidatesRef.current) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch { /* noop */ }
+        }
+        pendingCandidatesRef.current = [];
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        socket.emit("call-answer", { answer, to: from });
+        socket.emit("webrtc-answer", { callId: callIdRef.current, to: from, answer });
+        console.log("📞 [CallManager] answer envoyée à", from);
       } catch (err) {
-        console.error('[CallManager] Erreur handleOffer:', err);
+        console.error("[CallManager] Erreur handleOffer:", err);
       }
     };
+    handleOfferRef.current = handleOffer;
 
     const handleAnswer = async ({ answer }) => {
       const pc = peerConnectionRef.current;
       if (pc && !pc.currentRemoteDescription) {
         try {
-          await pc.setRemoteDescription(answer);
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          console.log("📞 [CallManager] Connexion établie (answer reçue)");
         } catch (err) {
-          console.error('[CallManager] Erreur handleAnswer:', err);
+          console.error("[CallManager] Erreur handleAnswer:", err);
         }
       }
     };
 
     const handleIce = async ({ candidate }) => {
       const pc = peerConnectionRef.current;
-      if (pc) {
-        try {
-          await pc.addIceCandidate(candidate);
-        } catch (err) {
-          console.error('[CallManager] Erreur handleIce:', err);
-        }
+      if (!candidate) return;
+      if (!pc || !pc.remoteDescription) {
+        pendingCandidatesRef.current.push(candidate);
+        return;
+      }
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.warn("[CallManager] Erreur ICE candidate:", err.message);
       }
     };
 
-    const handleEnd = ({ from }) => {
-      if (from === call.friend.id) {
-        onEndCall();
-      }
+    const handleEnd = ({ endedBy }) => {
+      // callSocket.js émet { callId, endedBy, duration } sur "call-ended"
+      console.log("📞 [CallManager] call-ended reçu");
+      onEndCall();
     };
 
-    socket.on("call-offer", handleOffer);
-    socket.on("call-answer", handleAnswer);
+    const handleRejected = () => {
+      showToast("Appel refusé", "info");
+      onEndCall();
+    };
+
+    socket.on("webrtc-offer",  handleOffer);
+    socket.on("webrtc-answer", handleAnswer);
     socket.on("ice-candidate", handleIce);
-    socket.on("call-ended", handleEnd);
+    socket.on("call-ended",    handleEnd);
+    socket.on("call-rejected", handleRejected);
 
     return () => {
-      socket.off("call-offer", handleOffer);
-      socket.off("call-answer", handleAnswer);
+      socket.off("webrtc-offer",  handleOffer);
+      socket.off("webrtc-answer", handleAnswer);
       socket.off("ice-candidate", handleIce);
-      socket.off("call-ended", handleEnd);
+      socket.off("call-ended",    handleEnd);
+      socket.off("call-rejected", handleRejected);
     };
-  }, [call.friend?.id, onEndCall, socket, call.video]);
+  }, [call.friend?.id, onEndCall, socket, showToast]);
 
+  // ════════════════════════════════════════════════════════════════════
+  // Raccrocher manuellement
+  // ════════════════════════════════════════════════════════════════════
   const endCall = () => {
-    console.log('[CallManager] Raccrochage manuel...');
-    
+    console.log("[CallManager] Raccrochage manuel...");
+
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
-    
     if (stream) {
-      stream.getTracks().forEach(t => t.stop());
+      stream.getTracks().forEach((t) => t.stop());
     }
-    
-    // On émet l'événement de fin seulement si le socket est là
-    if (socket && socket.connected) {
-      socket.emit("call-ended", { to: call.friend.id });
+
+    if (socket && socket.connected && callIdRef.current) {
+      socket.emit("end-call", { callId: callIdRef.current });
     }
-    
+
     onEndCall();
   };
 
-  if (!call.on || call.isIncoming) return null;
+  // ✅ FIX PRINCIPAL : ne plus bloquer le rendu pour les appels entrants
+  if (!call?.on) return null;
 
   return (
     <motion.div
-      initial={{ scale: 0.8, opacity: 0 }} 
-      animate={{ scale: 1, opacity: 1 }} 
+      initial={{ scale: 0.8, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.8, opacity: 0 }}
       className="fixed inset-0 bg-black/90 z-[200] flex items-center justify-center p-4"
     >
@@ -204,34 +319,36 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
         {/* Vidéo Distante */}
         <div className="absolute inset-0">
           {remoteStream ? (
-            <video 
-              ref={remoteVideoRef} 
-              autoPlay 
-              playsInline 
-              className="w-full h-full object-cover" 
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full bg-gradient-to-br from-gray-800 to-gray-900">
               <div className="w-32 h-32 rounded-full bg-gradient-to-br from-orange-500 to-pink-500 flex items-center justify-center text-5xl font-bold text-white shadow-lg animate-pulse">
-                {call.friend?.fullName?.[0] || '?'}
+                {call.friend?.fullName?.[0] || "?"}
               </div>
-              <p className="mt-6 text-white text-xl font-medium animate-bounce">Connexion en cours...</p>
+              <p className="mt-6 text-white text-xl font-medium animate-bounce">
+                {call.isIncoming ? "Connexion en cours..." : "Appel en cours..."}
+              </p>
             </div>
           )}
         </div>
 
         {/* Vidéo Locale */}
         {call.video && stream && (
-          <motion.div 
+          <motion.div
             drag
             dragConstraints={{ left: 0, right: 200, top: 0, bottom: 200 }}
             className="absolute top-4 right-4 w-32 sm:w-48 h-24 sm:h-36 rounded-2xl overflow-hidden border-2 border-white/50 shadow-lg bg-black cursor-grab active:cursor-grabbing z-10"
           >
-            <video 
-              ref={localVideoRef} 
-              autoPlay 
-              muted 
-              playsInline 
+            <video
+              ref={localVideoRef}
+              autoPlay
+              muted
+              playsInline
               className="w-full h-full object-cover transform scale-x-[-1]"
             />
           </motion.div>
@@ -241,7 +358,7 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
         <div className="absolute top-0 left-0 right-0 p-6 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
           <div className="text-center">
             <h3 className="text-2xl font-bold text-white drop-shadow-md">
-              {call.friend?.fullName || 'Utilisateur'}
+              {call.friend?.fullName || "Utilisateur"}
             </h3>
             <p className="text-sm text-gray-300 drop-shadow-md">
               {remoteStream ? "En communication" : "Appel en cours..."}
@@ -251,18 +368,18 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
 
         {/* Contrôles */}
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-6 bg-black/60 backdrop-blur-md px-8 py-5 rounded-full border border-white/10 shadow-2xl">
-          <button 
-            onClick={onToggleMute} 
+          <button
+            onClick={onToggleMute}
             className={`p-4 rounded-full transition-all duration-300 ${
               call.mute ? "bg-white text-black" : "bg-gray-700/80 text-white hover:bg-gray-600"
             }`}
           >
             {call.mute ? <MicOff size={24} /> : <Mic size={24} />}
           </button>
-          
+
           {call.video && (
-            <button 
-              onClick={onToggleVideo} 
+            <button
+              onClick={onToggleVideo}
               className={`p-4 rounded-full transition-all duration-300 ${
                 !call.video ? "bg-white text-black" : "bg-gray-700/80 text-white hover:bg-gray-600"
               }`}
@@ -270,9 +387,9 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
               {!call.video ? <CameraOff size={24} /> : <Camera size={24} />}
             </button>
           )}
-          
-          <button 
-            onClick={endCall} 
+
+          <button
+            onClick={endCall}
             className="p-5 bg-red-600 hover:bg-red-700 text-white rounded-full transition-all duration-300 transform hover:scale-110 shadow-lg hover:shadow-red-600/50"
           >
             <PhoneOff size={28} />
