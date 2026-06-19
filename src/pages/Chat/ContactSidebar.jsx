@@ -1,13 +1,13 @@
 // ============================================
-// 📁 src/Pages/chat/ContactSidebar.jsx  v3
-//
-// CORRECTIONS :
-//   1. Doublons → déduplication par normalizeId() sur conversations + contacts
-//   2. Suppression contact → DELETE /contacts/by-user/:userId (pas l'ID MongoDB du doc Contact)
-//   3. Flèche retour → toujours rendue si onBack fourni
-//   4. IDs normalisés partout (String, trim, lowercase)
-//   5. removeContactFromCache() utilisé à la suppression
-//   6. mergedList : conversations ET contacts dédupliqués par clé canonique
+// src/Pages/chat/ContactSidebar.jsx
+// FIXES:
+//  - normalizeId importé depuis contactsCache (même fonction que Messages.jsx)
+//    → clés cache identiques, contacts synchro visibles
+//  - saveContactToOnApp appelé avec userId normalisé
+//  - reloadLocal avec setTimeout(50ms) après save pour laisser le state flush
+//  - deleteContactByUserIdAPI : route correcte DELETE /contacts/:id
+//    (l'id ici est l'ID de l'utilisateur cible, pas du doc Contact)
+//  - mergedList : déduplication robuste par normalizeId
 // ============================================
 import React, {
   useState, useEffect, useMemo, useCallback,
@@ -23,7 +23,7 @@ import {
   readOnAppContacts,
   saveContactToOnApp,
   removeContactFromCache,
-  normalizeId,
+  normalizeId,   // ✅ FIX : même fonction que Messages.jsx
 } from "../../utils/contactsCache";
 
 const BASE_URL =
@@ -46,15 +46,13 @@ const syncContactsAPI = async (token, contacts) => {
 
 /**
  * Supprime le lien contact entre l'utilisateur courant et un userId cible.
- * Utilise DELETE /contacts/by-user/:targetUserId
- * (pas l'ID MongoDB du document Contact, mais l'ID de l'utilisateur cible)
+ * Route : DELETE /contacts/:targetUserId
  */
 const deleteContactByUserIdAPI = async (token, targetUserId) => {
-  const res = await fetch(`${BASE_URL}/contacts/by-user/${targetUserId}`, {
+  const res = await fetch(`${BASE_URL}/contacts/${targetUserId}`, {
     method:  "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });
-  // 404 = déjà supprimé → on accepte silencieusement
   if (res.status === 404) return { success: true };
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
@@ -111,7 +109,11 @@ const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
       if (!picked.length) { showToast("Aucun contact sélectionné", "info"); setLoading(false); return; }
       const data  = await syncContactsAPI(token, picked);
       const found = data.onChantilink || [];
-      found.forEach((c) => saveContactToOnApp(c, userId));
+      // ✅ FIX : sauvegarder avec userId normalisé
+      found.forEach((c) => {
+        const id = normalizeId(c.id || c._id);
+        if (id && userId) saveContactToOnApp({ ...c, id }, userId);
+      });
       setResult({ found, total: picked.length });
       onPickerSync?.(found);
     } catch (e) { setError(e.message || "Erreur de synchronisation"); }
@@ -127,7 +129,10 @@ const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
     try {
       const data  = await syncContactsAPI(token, [{ phone: clean, name: form.name.trim() }]);
       const found = data.onChantilink || [];
-      found.forEach((c) => saveContactToOnApp(c, userId));
+      found.forEach((c) => {
+        const id = normalizeId(c.id || c._id);
+        if (id && userId) saveContactToOnApp({ ...c, id }, userId);
+      });
       setResult({ found, total: 1 });
       onPickerSync?.(found);
     } catch (e) { setError(e.message || "Contact introuvable"); }
@@ -165,11 +170,9 @@ const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
 
         <div className="p-5">
           <AnimatePresence mode="wait">
-
             {/* CHOIX */}
             {!mode && !result && (
               <motion.div key="choice" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="space-y-3">
-                {/* Répertoire */}
                 <button
                   onClick={pickerOk ? handlePicker : () => setMode("manual")}
                   disabled={loading}
@@ -185,7 +188,6 @@ const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
                   <ChevronRight size={14} className="text-gray-600 group-hover:text-gray-400" />
                 </button>
 
-                {/* Manuel */}
                 <button
                   onClick={() => setMode("manual")}
                   className="w-full flex items-center gap-4 p-4 bg-white/[0.03] hover:bg-white/[0.06] border border-white/8 rounded-2xl transition-all group"
@@ -239,18 +241,21 @@ const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
                       <p className="text-sm text-gray-300"><span className="text-white font-black">{result.found.length}</span> ami(s) trouvés sur Chantilink</p>
                     </div>
                     <div className="space-y-2 max-h-44 overflow-y-auto">
-                      {result.found.map((c) => (
-                        <div key={normalizeId(c.id || c._id)} className="flex items-center gap-3 p-3 bg-white/[0.03] rounded-xl border border-white/5">
-                          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-sm font-black text-white overflow-hidden">
-                            {c.profilePhoto ? <img src={c.profilePhoto} alt="" className="w-full h-full object-cover" /> : c.fullName?.[0]?.toUpperCase() || "?"}
+                      {result.found.map((c) => {
+                        const id = normalizeId(c.id || c._id);
+                        return (
+                          <div key={id} className="flex items-center gap-3 p-3 bg-white/[0.03] rounded-xl border border-white/5">
+                            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-sm font-black text-white overflow-hidden">
+                              {c.profilePhoto ? <img src={c.profilePhoto} alt="" className="w-full h-full object-cover" /> : c.fullName?.[0]?.toUpperCase() || "?"}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-bold text-white truncate">{c.fullName}</p>
+                              {c.username && <p className="text-xs text-gray-500">@{c.username}</p>}
+                            </div>
+                            <CheckCircle2 size={14} className="text-green-400 flex-shrink-0" />
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-bold text-white truncate">{c.fullName}</p>
-                            {c.username && <p className="text-xs text-gray-500">@{c.username}</p>}
-                          </div>
-                          <CheckCircle2 size={14} className="text-green-400 flex-shrink-0" />
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </>
                 ) : (
@@ -288,6 +293,7 @@ export const ContactSidebar = ({
   missedCallsCount = 0,
   onBack,
 }) => {
+  // ✅ FIX : normalizeId (même logique que Messages.jsx)
   const userId = normalizeId(user?.id || user?._id);
   const { showToast } = useToast();
 
@@ -296,7 +302,7 @@ export const ContactSidebar = ({
   const [showAdd,       setShowAdd]       = useState(false);
   const [deletingId,    setDeletingId]    = useState(null);
 
-  // ── Charger + recharger contacts locaux ──────────────────────────────────
+  // ── Charger contacts depuis cache local ──────────────────────────────────
   const reloadLocal = useCallback(() => {
     if (userId) setOnAppContacts(readOnAppContacts(userId));
   }, [userId]);
@@ -311,28 +317,26 @@ export const ContactSidebar = ({
     return () => window.removeEventListener("focus", reloadLocal);
   }, [reloadLocal]);
 
-  // ── Sync contacts prop → cache local (sans écraser les existants) ─────────
+  // ── Sync contacts prop → cache local ─────────────────────────────────────
+  // ✅ FIX : setTimeout(50) pour laisser le state IDB flush avant reload
   useEffect(() => {
     if (!userId || contacts.length === 0) return;
     contacts.forEach((c) => {
       const id = normalizeId(c.id || c._id);
       if (id) saveContactToOnApp({ ...c, id }, userId);
     });
-    reloadLocal();
+    setTimeout(() => reloadLocal(), 50);
   }, [contacts, userId, reloadLocal]);
 
   // ── Fusion sans doublons : conversations + contacts ───────────────────────
-  // Clé canonique = normalizeId pour les deux sources
   const mergedList = useMemo(() => {
     const map = new Map();
 
-    // 1. Conversations (priorité, ont un lastMessage)
     conversations.forEach((conv) => {
       const id = normalizeId(conv.id || conv._id);
       if (id) map.set(id, { ...conv, id, _hasConv: true });
     });
 
-    // 2. Contacts locaux (uniquement si pas déjà dans map)
     onAppContacts.forEach((c) => {
       const id = normalizeId(c.id || c._id);
       if (id && !map.has(id)) {
@@ -355,15 +359,13 @@ export const ContactSidebar = ({
     ), [mergedList, search]);
 
   // ── Suppression contact ───────────────────────────────────────────────────
-  // On passe l'ID de l'utilisateur cible (pas l'ID doc Contact MongoDB)
   const handleDelete = useCallback(async (targetUserId) => {
     const id = normalizeId(targetUserId);
     setDeletingId(id);
     try {
       await deleteContactByUserIdAPI(token, id);
-      // Supprimer du cache local
       removeContactFromCache(id, userId);
-      setOnAppContacts((prev) => prev.filter((c) => normalizeId(c.id) !== id));
+      setOnAppContacts((prev) => prev.filter((c) => normalizeId(c.id || c._id) !== id));
       showToast("Contact supprimé", "success");
     } catch (err) {
       showToast(err.message || "Impossible de supprimer", "error");
@@ -372,9 +374,13 @@ export const ContactSidebar = ({
     }
   }, [token, userId, showToast]);
 
+  // ✅ FIX : sauvegarder les contacts trouvés avec userId normalisé
   const handlePickerSync = useCallback((found) => {
-    found.forEach((c) => saveContactToOnApp(c, userId));
-    reloadLocal();
+    found.forEach((c) => {
+      const id = normalizeId(c.id || c._id);
+      if (id && userId) saveContactToOnApp({ ...c, id }, userId);
+    });
+    setTimeout(() => reloadLocal(), 50);
     onPickerSync?.(found);
     setShowAdd(false);
   }, [userId, onPickerSync, reloadLocal]);
@@ -387,7 +393,6 @@ export const ContactSidebar = ({
         <div className="px-4 py-3 bg-[#0f1218]/90 backdrop-blur-xl border-b border-white/5">
           <div className="flex items-center gap-2 mb-3">
 
-            {/* ✅ Flèche retour — toujours visible si onBack fourni */}
             {onBack && (
               <motion.button whileTap={{ scale: 0.9 }} onClick={onBack}
                 className="w-8 h-8 flex items-center justify-center rounded-full bg-white/[0.06] hover:bg-white/[0.10] flex-shrink-0"
@@ -401,7 +406,6 @@ export const ContactSidebar = ({
               Messages
             </span>
 
-            {/* Appels manqués */}
             {onShowMissedCalls && (
               <motion.button whileTap={{ scale: 0.9 }} onClick={onShowMissedCalls}
                 className="relative flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-[11px] font-bold border border-red-500/15 transition-all"
@@ -415,7 +419,6 @@ export const ContactSidebar = ({
               </motion.button>
             )}
 
-            {/* Ajouter contact */}
             <motion.button whileTap={{ scale: 0.9 }} onClick={() => setShowAdd(true)}
               className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 rounded-lg text-[11px] font-bold border border-blue-500/20 transition-all"
             >
@@ -437,9 +440,9 @@ export const ContactSidebar = ({
             <EmptyState onAdd={() => setShowAdd(true)} />
           ) : (
             filtered.map((item) => {
-              const id      = normalizeId(item.id || item._id);
-              const unread  = unreadCounts[id] || item.unreadCount || 0;
-              const online  = onlineUsers.includes(id) || item.isOnline;
+              const id     = normalizeId(item.id || item._id);
+              const unread = unreadCounts[id] || item.unreadCount || 0;
+              const online = onlineUsers.includes(id) || item.isOnline;
               return (
                 <ConversationRow
                   key={id}
@@ -484,7 +487,7 @@ export const ContactSidebar = ({
   );
 };
 
-// ─── Ligne conversation (style WhatsApp) ─────────────────────────────────────
+// ─── Ligne conversation ───────────────────────────────────────────────────────
 const ConversationRow = ({ item, unread, online, isSelected, isDeleting, onSelect, onDelete }) => {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -495,7 +498,6 @@ const ConversationRow = ({ item, unread, online, isSelected, isDeleting, onSelec
   return (
     <div className={`group relative border-b border-white/[0.03] transition-colors ${isSelected ? "bg-white/[0.07]" : "hover:bg-white/[0.03]"}`}>
       <button onClick={onSelect} className="w-full flex items-center gap-3 px-4 py-3.5">
-        {/* Avatar */}
         <div className="relative flex-shrink-0">
           <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center font-black text-lg text-white overflow-hidden border border-white/5">
             {item.profilePhoto
@@ -505,7 +507,6 @@ const ConversationRow = ({ item, unread, online, isSelected, isDeleting, onSelec
           {online && <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-[#0b0d10]" />}
         </div>
 
-        {/* Infos */}
         <div className="flex-1 min-w-0 text-left">
           <div className="flex items-center justify-between mb-0.5">
             <h3 className="text-sm font-bold text-white truncate">{item.fullName || "Inconnu"}</h3>
@@ -524,7 +525,6 @@ const ConversationRow = ({ item, unread, online, isSelected, isDeleting, onSelec
         </div>
       </button>
 
-      {/* Bouton supprimer */}
       {!confirmDelete && (
         <button
           onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }}
@@ -535,7 +535,6 @@ const ConversationRow = ({ item, unread, online, isSelected, isDeleting, onSelec
         </button>
       )}
 
-      {/* Confirmation suppression */}
       <AnimatePresence>
         {confirmDelete && (
           <motion.div

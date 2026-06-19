@@ -1,13 +1,13 @@
 // ============================================
-// 📁 src/Pages/chat/Messages.jsx  v2
-// ─ Sonnerie appelant + appelé + notification onglet arrière-plan
-// ─ Timeout 30 s avec appel manqué automatique
-// ─ Bouton "Appels manqués" remplace "Conversations"
-// ─ ContactSidebar style WhatsApp (pas de doublons)
-// ─ Suppression contact réelle (DELETE API)
-// ─ Ajout contact : répertoire OU manuel
-// ─ Envoi/réception fichiers robuste (image, audio, video, doc)
-// ─ selectedContact via ref pour éviter les stale closures
+// src/Pages/chat/Messages.jsx
+// FIXES:
+//  - currentUserId : utilise normalizeId (même logique que ContactSidebar)
+//    → clés cache identiques, contacts synchro visibles dans la liste
+//  - handlePickerSync : saveContactToOnApp appelé ici AVANT loadContacts()
+//  - handleContactSelect : normalizeId sur tous les IDs
+//  - Événements socket "call-initiated", "call-accepted", "call-rejected",
+//    "call-ended" centralisés dans CallManager (plus dans Messages.jsx)
+//    pour éviter la double écoute
 // ============================================
 import React, {
   useState, useEffect, useRef, useCallback, useMemo,
@@ -23,7 +23,10 @@ import { useAuth }   from "../../context/AuthContext";
 import { useSocket } from "../../context/SocketContext";
 import { useToast }  from "../../context/ToastContext";
 import { API }       from "../../services/apiService";
-import { saveContactToOnApp } from "../../utils/contactsCache";
+import {
+  saveContactToOnApp,
+  normalizeId,           // ✅ FIX : utiliser normalizeId partout (remplace getEntityId pour userId)
+} from "../../utils/contactsCache";
 import messageCache  from "../../utils/messageCache";
 
 import IncomingCallModal   from "../../components/IncomingCallModal";
@@ -52,12 +55,9 @@ import {
   stopTabCallAlert,
 } from "../../utils/callSounds";
 
-const getEntityId = (v) => {
-  if (!v) return "";
-  if (typeof v === "object") return String(v._id || v.id || "");
-  return String(v);
-};
-
+// ──────────────────────────────────────────────────────────────────────────
+// openContactPicker
+// ──────────────────────────────────────────────────────────────────────────
 const openContactPicker = async () => {
   try {
     if (!("contacts" in navigator && "ContactsManager" in window)) return [];
@@ -79,7 +79,8 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
   const [syncStats, setSyncStats] = useState(null);
   const { token, updateUserProfile } = useAuth();
   const { showToast } = useToast();
-  const userId = getEntityId(user);
+  // ✅ FIX : normalizeId pour la clé cache
+  const userId = normalizeId(user?.id || user?._id);
 
   const fmt = (v) => {
     let c = v.replace(/[^\d+]/g, "");
@@ -107,7 +108,11 @@ const OnboardingPhoneScreen = ({ onComplete, user }) => {
       if (!picked.length) { setSyncStats({ total: 0, onApp: 0 }); setStep("done"); return; }
       const r = await API.syncContacts(token, picked);
       const stats = { total: picked.length, onApp: r.stats?.onApp || r.onChantilink?.length || 0 };
-      (r.onChantilink || []).forEach((c) => saveContactToOnApp(c, userId));
+      // ✅ FIX : sauvegarder avec userId normalisé
+      (r.onChantilink || []).forEach((c) => {
+        const id = normalizeId(c.id || c._id);
+        if (id && userId) saveContactToOnApp({ ...c, id }, userId);
+      });
       setSyncStats(stats);
       setStep("done");
     } catch { setSyncStats({ total: 0, onApp: 0 }); setStep("done"); }
@@ -209,36 +214,37 @@ export default function Messages() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const messagesEndRef    = useRef(null);
-  const textareaRef       = useRef(null);
-  const fileInputRef      = useRef(null);
-  const ringtoneRef       = useRef(null);   // sonnerie appelé (CallRingtone)
-  const selectedContactRef = useRef(null);  // ref anti-stale-closure
+  const messagesEndRef     = useRef(null);
+  const textareaRef        = useRef(null);
+  const fileInputRef       = useRef(null);
+  const ringtoneRef        = useRef(null);
+  const selectedContactRef = useRef(null);
 
   const [view,  setView]  = useState("contacts");
-  const [modal, setModal] = useState(null); // null | 'pending' | 'missed'
+  const [modal, setModal] = useState(null);
 
-  const [contacts,      setContacts]      = useState([]);
-  const [conversations, setConversations] = useState([]);
-  const [messages,      setMessages]      = useState([]);
+  const [contacts,        setContacts]        = useState([]);
+  const [conversations,   setConversations]   = useState([]);
+  const [messages,        setMessages]        = useState([]);
   const [selectedContact, setSelectedContact] = useState(null);
-  const [unreadCounts,  setUnreadCounts]  = useState({});
-  const [onlineUsers,   setOnlineUsers]   = useState([]);
-  const [input,         setInput]         = useState("");
-  const [loading,       setLoading]       = useState(false);
-  const [uploading,     setUploading]     = useState(false);
-  const [showEmoji,     setShowEmoji]     = useState(false);
-  const [typingUsers,   setTypingUsers]   = useState([]);
-  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  const [unreadCounts,    setUnreadCounts]    = useState({});
+  const [onlineUsers,     setOnlineUsers]     = useState([]);
+  const [input,           setInput]           = useState("");
+  const [loading,         setLoading]         = useState(false);
+  const [uploading,       setUploading]       = useState(false);
+  const [showEmoji,       setShowEmoji]       = useState(false);
+  const [typingUsers,     setTypingUsers]     = useState([]);
+  const [showPhoneModal,  setShowPhoneModal]  = useState(false);
 
-  const currentUserId = getEntityId(user);
-  const onboardingKey = currentUserId ? `chantilink_onboarding_done_${currentUserId}` : null;
+  // ✅ FIX : normalizeId pour currentUserId → même clé que ContactSidebar
+  const currentUserId = normalizeId(user?.id || user?._id);
+
+  const onboardingKey   = currentUserId ? `chantilink_onboarding_done_${currentUserId}` : null;
   const needsOnboarding = onboardingKey && !localStorage.getItem(onboardingKey) && !user?.phone;
   const [showOnboarding, setShowOnboarding] = useState(needsOnboarding);
 
   const { recording, audioBlob, audioUrl, isPlaying, startRecording, stopRecording, cancelRecording, playPreview, pausePreview } = useAudioRecording(token, showToast);
 
-  // ── Sync selectedContact → ref ──────────────────────────────────────────
   useEffect(() => { selectedContactRef.current = selectedContact; }, [selectedContact]);
 
   // ── Socket callbacks ──────────────────────────────────────────────────────
@@ -277,7 +283,10 @@ export default function Messages() {
       if (cached.length > 0) setContacts(cached);
       const result = await API.getContacts(token);
       const list   = result.contacts || [];
-      if (list.length > 0) { await messageCache.saveContacts(list); setContacts(list); }
+      if (list.length > 0) {
+        await messageCache.saveContacts(list);
+        setContacts(list);
+      }
     } catch (e) { console.error("loadContacts:", e); }
   }, [token]);
 
@@ -289,7 +298,7 @@ export default function Messages() {
       if (cached.length > 0) {
         setConversations(cached);
         const counts = {};
-        cached.forEach((c) => { if (c.unreadCount > 0) counts[c.id] = c.unreadCount; });
+        cached.forEach((c) => { if (c.unreadCount > 0) counts[normalizeId(c.id)] = c.unreadCount; });
         setUnreadCounts((p) => ({ ...p, ...counts }));
       }
       const result = await API.getConversations(token);
@@ -297,9 +306,15 @@ export default function Messages() {
       if (fresh.length > 0) {
         await messageCache.saveConversations(fresh);
         setConversations(fresh);
-        fresh.forEach((c) => { if (c.id) saveContactToOnApp(c, currentUserId); });
+        fresh.forEach((c) => {
+          const id = normalizeId(c.id || c._id);
+          if (id && currentUserId) saveContactToOnApp({ ...c, id }, currentUserId);
+        });
         const counts = {};
-        fresh.forEach((c) => { if (c.unreadCount > 0) counts[c.id] = c.unreadCount; });
+        fresh.forEach((c) => {
+          const id = normalizeId(c.id);
+          if (c.unreadCount > 0 && id) counts[id] = c.unreadCount;
+        });
         setUnreadCounts((p) => ({ ...p, ...counts }));
       }
     } catch (e) { console.error("loadConversations:", e); showToast("Erreur de chargement", "error"); }
@@ -333,11 +348,24 @@ export default function Messages() {
     finally { setLoading(false); }
   }, [token, socket, showToast, currentUserId]);
 
-  // ── Envoi fichier / audio : optimistic + robuste ────────────────────────
+  // ── handlePickerSync ──────────────────────────────────────────────────────
+  // ✅ FIX : sauvegarder immédiatement dans le cache local avec currentUserId normalisé
+  const handlePickerSync = useCallback((found) => {
+    if (currentUserId && found.length > 0) {
+      found.forEach((c) => {
+        const id = normalizeId(c.id || c._id);
+        if (id) saveContactToOnApp({ ...c, id }, currentUserId);
+      });
+    }
+    loadContacts();
+    loadConversations();
+    if (found.length > 0) showToast(`${found.length} ami(s) trouvé(s) !`, "success");
+  }, [loadContacts, loadConversations, showToast, currentUserId]);
+
   const sendMediaMessage = useCallback(async (messageData) => {
     const contact = selectedContactRef.current;
     if (!contact || !currentUserId) return null;
-    const tempId = `temp-${Date.now()}`;
+    const tempId  = `temp-${Date.now()}`;
     const tempMsg = { _id: tempId, sender: currentUserId, recipient: contact.id, ...messageData, status: "sending", timestamp: new Date().toISOString() };
     setMessages((p) => [...p, tempMsg].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)));
 
@@ -357,21 +385,25 @@ export default function Messages() {
     }
   }, [socket, token, currentUserId, loadConversations]);
 
-  const handlePickerSync = useCallback((found) => {
-    loadContacts(); loadConversations();
-    if (found.length > 0) showToast(`${found.length} ami(s) trouvé(s) !`, "success");
-  }, [loadContacts, loadConversations, showToast]);
-
+  // ✅ FIX : normalizeId sur les IDs du contact sélectionné
   const handleContactSelect = useCallback((contact) => {
-    const norm = { id: getEntityId(contact), fullName: contact.fullName, username: contact.username, profilePhoto: contact.profilePhoto, isOnline: contact.isOnline, lastSeen: contact.lastSeen };
-    saveContactToOnApp(norm, currentUserId);
+    const id   = normalizeId(contact.id || contact._id);
+    const norm = {
+      id,
+      fullName:     contact.fullName,
+      username:     contact.username,
+      profilePhoto: contact.profilePhoto,
+      isOnline:     contact.isOnline,
+      lastSeen:     contact.lastSeen,
+    };
+    if (id && currentUserId) saveContactToOnApp(norm, currentUserId);
     setSelectedContact(norm);
     selectedContactRef.current = norm;
     setMessages([]);
-    loadMessages(norm.id);
+    loadMessages(id);
     setView("chat");
     setModal(null);
-    setUnreadCounts((p) => { const n = { ...p }; delete n[norm.id]; return n; });
+    setUnreadCounts((p) => { const n = { ...p }; delete n[id]; return n; });
   }, [loadMessages, currentUserId]);
 
   const handleSendMessage = useCallback(async () => {
@@ -395,13 +427,11 @@ export default function Messages() {
     }
   }, [socket]);
 
-  // ─── Upload fichier amélioré ──────────────────────────────────────────────
   const handleFileUpload = useCallback(async (e) => {
-    const file = e.target.files?.[0];
+    const file    = e.target.files?.[0];
     const contact = selectedContactRef.current;
     if (!file || !contact || !token) { if (!token) showToast("Session expirée", "error"); return; }
 
-    // Vérifications taille
     const maxMb = file.type.startsWith("video/") ? 100 : file.type.startsWith("audio/") ? 25 : 20;
     if (file.size > maxMb * 1024 * 1024) {
       showToast(`Fichier trop volumineux (max ${maxMb} Mo)`, "error");
@@ -415,7 +445,6 @@ export default function Messages() {
       const up = await API.uploadMessageFile(token, file);
       if (!up.success || !up.url) throw new Error(up?.message || "Upload incomplet");
 
-      // Déterminer type
       let msgType = "file";
       if (file.type.startsWith("image/")) msgType = "image";
       else if (file.type.startsWith("audio/")) msgType = "audio";
@@ -458,7 +487,7 @@ export default function Messages() {
 
   const handleEmojiSelect = useCallback((emoji) => { setInput((p) => p + emoji.emoji); setShowEmoji(false); }, []);
 
-  // ─── Appels ───────────────────────────────────────────────────────────────
+  // ── Appels ────────────────────────────────────────────────────────────────
   const handleVideoCall = useCallback(() => {
     const c = selectedContactRef.current;
     if (!c) { showToast("Aucun contact sélectionné", "error"); return; }
@@ -495,7 +524,6 @@ export default function Messages() {
     cleanupCallRingtone();
   }, [incomingCall, socket, sendMissedCallMessage, setIncomingCall, cleanupCallRingtone]);
 
-  // Rappeler depuis la liste des appels manqués
   const handleCallback = useCallback((friend, callType) => {
     if (!friend) return;
     handleContactSelect(friend);
@@ -506,7 +534,9 @@ export default function Messages() {
     setModal(null);
   }, [handleContactSelect, handleVideoCall, handleAudioCall]);
 
-  const handleBack = useCallback(() => { setView("contacts"); setSelectedContact(null); selectedContactRef.current = null; setMessages([]); }, []);
+  const handleBack = useCallback(() => {
+    setView("contacts"); setSelectedContact(null); selectedContactRef.current = null; setMessages([]);
+  }, []);
 
   const handleDeleteMessage = useCallback(async (messageId) => {
     const c = selectedContactRef.current;
@@ -520,7 +550,7 @@ export default function Messages() {
     } catch { showToast("Erreur suppression", "error"); loadMessages(c.id); }
   }, [currentUserId, token, socket, showToast, loadMessages]);
 
-  // ─── Effects socket ───────────────────────────────────────────────────────
+  // ── Effects socket ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!connected || !socket) return;
     const h = (p) => setOnlineUsers(Array.isArray(p) ? p : (p?.users || []));
@@ -532,10 +562,10 @@ export default function Messages() {
     if (!connected || !socket || !currentUserId) return;
 
     const handleReceive = async (message) => {
-      const senderId   = getEntityId(message.sender);
+      const senderId   = normalizeId(message.sender);
       const contact    = selectedContactRef.current;
-      const selectedId = getEntityId(contact);
-      const isCurrent  = !!selectedId && (senderId === selectedId || getEntityId(message.recipient) === selectedId);
+      const selectedId = normalizeId(contact?.id);
+      const isCurrent  = !!selectedId && (senderId === selectedId || normalizeId(message.recipient) === selectedId);
 
       if (isCurrent) {
         if (senderId !== currentUserId) { try { playReceiveSound(); } catch {} }
@@ -554,7 +584,7 @@ export default function Messages() {
 
     const handleSent = async (message) => {
       const contact    = selectedContactRef.current;
-      const selectedId = getEntityId(contact);
+      const selectedId = normalizeId(contact?.id);
       if (!selectedId) { loadConversations(); return; }
       try { await messageCache.addMessage(currentUserId, contact.id, message); } catch {}
       setMessages((p) => {
@@ -583,26 +613,27 @@ export default function Messages() {
     };
   }, [socket, connected, currentUserId, loadConversations]);
 
+  // ── Événements APPEL (incoming uniquement — les autres sont dans CallManager) ──
   useEffect(() => {
     if (!connected || !socket) return;
 
     const handleIncomingCall = ({ callId, from, caller, type }) => {
-      const friend = contacts.find((c) => c.id === from) || { id: from, fullName: caller?.fullName || "Anonyme", profilePhoto: caller?.profilePhoto };
-      // Sonnerie appelé
-      if (!ringtoneRef.current) { ringtoneRef.current = new CallRingtone(); ringtoneRef.current.start(); }
+      const fromStr = normalizeId(from);
+      const friend  = contacts.find((c) => normalizeId(c.id) === fromStr)
+        || { id: fromStr, fullName: caller?.fullName || "Anonyme", profilePhoto: caller?.profilePhoto || "" };
+
+      if (!ringtoneRef.current) {
+        ringtoneRef.current = new CallRingtone();
+        ringtoneRef.current.start();
+      }
       try { vibrateCall(); } catch {}
-      // Notification onglet
       startTabCallAlert(friend.fullName);
       setIncomingCall({ callId, friend, type, caller: friend });
     };
 
-    const handleCallInitiated = ({ callId }) => {
-      // callId connu → mettre à jour + stopper la sonnerie appelant si déjà décroché
-      setCall((p) => ({ ...p, callId }));
-    };
-
+    // ✅ call-accepted géré ici pour mettre à jour l'état de l'appelant
     const handleCallAccepted = ({ callId }) => {
-      onCallAccepted(callId); // stoppe CallerRingtone + joue son connecté
+      onCallAccepted(callId);
     };
 
     const handleCallRejected = () => {
@@ -621,13 +652,12 @@ export default function Messages() {
     };
 
     socket.on("incoming-call",  handleIncomingCall);
-    socket.on("call-initiated", handleCallInitiated);
     socket.on("call-accepted",  handleCallAccepted);
     socket.on("call-rejected",  handleCallRejected);
     socket.on("call-ended",     handleCallEnded);
+
     return () => {
       socket.off("incoming-call",  handleIncomingCall);
-      socket.off("call-initiated", handleCallInitiated);
       socket.off("call-accepted",  handleCallAccepted);
       socket.off("call-rejected",  handleCallRejected);
       socket.off("call-ended",     handleCallEnded);
@@ -638,11 +668,12 @@ export default function Messages() {
 
   useEffect(() => {
     if (location.state?.selectedContact && location.state?.openChat) {
-      const c = location.state.selectedContact;
-      const norm = { id: c.id || c._id, fullName: c.fullName, username: c.username, profilePhoto: c.profilePhoto, isOnline: c.isOnline, lastSeen: c.lastSeen };
-      saveContactToOnApp(norm, currentUserId);
+      const c    = location.state.selectedContact;
+      const id   = normalizeId(c.id || c._id);
+      const norm = { id, fullName: c.fullName, username: c.username, profilePhoto: c.profilePhoto, isOnline: c.isOnline, lastSeen: c.lastSeen };
+      if (id && currentUserId) saveContactToOnApp(norm, currentUserId);
       setSelectedContact(norm); selectedContactRef.current = norm;
-      setMessages([]); loadMessages(norm.id); setView("chat");
+      setMessages([]); loadMessages(id); setView("chat");
       navigate("/messages", { replace: true, state: {} });
     }
   }, [location.state, navigate, loadMessages, currentUserId]);
@@ -714,29 +745,55 @@ export default function Messages() {
       {/* Modales */}
       <AnimatePresence>
         {modal === "pending" && (
-          <PendingMessagesModal key="pending" isOpen onClose={() => setModal(null)} onAccept={async (req) => { await API.acceptMessageRequest(token, req._id); showToast("✅ Demande acceptée", "success"); loadContacts(); loadConversations(); setModal(null); }} onReject={async (id) => { try { await API.rejectMessageRequest(token, id); showToast("Demande rejetée", "info"); loadConversations(); } catch { showToast("Erreur", "error"); } }} onOpenConversation={(req) => { handleContactSelect(req.sender); }} />
+          <PendingMessagesModal key="pending" isOpen onClose={() => setModal(null)}
+            onAccept={async (req) => { await API.acceptMessageRequest(token, req._id); showToast("✅ Demande acceptée", "success"); loadContacts(); loadConversations(); setModal(null); }}
+            onReject={async (id) => { try { await API.rejectMessageRequest(token, id); showToast("Demande rejetée", "info"); loadConversations(); } catch { showToast("Erreur", "error"); } }}
+            onOpenConversation={(req) => { handleContactSelect(req.sender); }}
+          />
         )}
         {modal === "missed" && (
-          <MissedCallsModal key="missed" isOpen missedCalls={missedCalls} onClose={() => setModal(null)} onCallback={handleCallback} onDismiss={dismissMissedCall} onClearAll={clearAllMissedCalls} />
+          <MissedCallsModal key="missed" isOpen missedCalls={missedCalls} onClose={() => setModal(null)}
+            onCallback={handleCallback} onDismiss={dismissMissedCall} onClearAll={clearAllMissedCalls}
+          />
         )}
       </AnimatePresence>
 
-      {showPhoneModal && <PhoneNumberModal isOpen onClose={() => setShowPhoneModal(false)} onSubmit={async (ph) => { const r = await API.updatePhone(token, ph); if (r.success) { if (updateUserProfile) updateUserProfile(currentUserId, r.user); showToast("Numéro enregistré ! 🎉", "success"); setShowPhoneModal(false); }}} canSkip />}
+      {showPhoneModal && (
+        <PhoneNumberModal isOpen onClose={() => setShowPhoneModal(false)}
+          onSubmit={async (ph) => { const r = await API.updatePhone(token, ph); if (r.success) { if (updateUserProfile) updateUserProfile(currentUserId, r.user); showToast("Numéro enregistré ! 🎉", "success"); setShowPhoneModal(false); }}}
+          canSkip
+        />
+      )}
 
       {call.on && (
-        <CallManager call={call} onEndCall={endCall} onToggleMute={() => setCall((p) => ({ ...p, mute: !p.mute }))} onToggleVideo={() => setCall((p) => ({ ...p, video: !p.video }))} socket={socket} />
+        <CallManager
+          call={call}
+          onEndCall={endCall}
+          onToggleMute={() => setCall((p) => ({ ...p, mute: !p.mute }))}
+          onToggleVideo={() => setCall((p) => ({ ...p, video: !p.video }))}
+          socket={socket}
+        />
       )}
 
       <AnimatePresence>
         {incomingCall && (
-          <IncomingCallModal key="incoming" caller={incomingCall.friend || incomingCall.caller} callType={incomingCall.type} onAccept={handleAcceptCall} onReject={handleRejectCall} />
+          <IncomingCallModal key="incoming"
+            caller={incomingCall.friend || incomingCall.caller}
+            callType={incomingCall.type}
+            onAccept={handleAcceptCall}
+            onReject={handleRejectCall}
+          />
         )}
       </AnimatePresence>
 
-      {/* Notification appel manqué passagère */}
+      {/* Notification appel manqué */}
       <AnimatePresence>
         {missedCallNotification && (
-          <motion.div initial={{ opacity: 0, y: 20, x: 20 }} animate={{ opacity: 1, y: 0, x: 0 }} exit={{ opacity: 0, y: 20, x: 20 }} className="fixed bottom-4 right-4 z-[300] flex items-center gap-3 bg-red-600/95 backdrop-blur-sm text-white px-4 py-3 rounded-2xl shadow-2xl border border-red-400/20 cursor-pointer" onClick={() => setModal("missed")}>
+          <motion.div
+            initial={{ opacity: 0, y: 20, x: 20 }} animate={{ opacity: 1, y: 0, x: 0 }} exit={{ opacity: 0, y: 20, x: 20 }}
+            className="fixed bottom-4 right-4 z-[300] flex items-center gap-3 bg-red-600/95 backdrop-blur-sm text-white px-4 py-3 rounded-2xl shadow-2xl border border-red-400/20 cursor-pointer"
+            onClick={() => setModal("missed")}
+          >
             <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0">
               <Phone size={15} className="text-white" />
             </div>

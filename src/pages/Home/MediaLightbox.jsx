@@ -15,6 +15,8 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
   const [index,  setIndex]  = useState(initialIndex);
   const [zoom,   setZoom]   = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
   // ✅ Ref sur la div principale (remplace l'attribut onWheel)
   const containerRef = useRef(null);
@@ -22,6 +24,9 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
   const touchStartYRef = useRef(0);
   const touchDraggingRef = useRef(false);
   const [swipeOffset, setSwipeOffset] = useState(0);
+  const lastPinchDistRef = useRef(0);
+  const isPannedThisDrag = useRef(false);
+  const lastTapRef = useRef(0);
 
   // ✅ FIX — addEventListener impératif avec { passive: false }
   // Permet e.preventDefault() sans warning Chrome/Firefox.
@@ -30,29 +35,38 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
     if (!el) return;
 
     const handleWheel = (e) => {
-      // Empêcher le scroll de la page derrière le lightbox
       e.preventDefault();
-
-      // Zoom au scroll molette
-      const delta = e.deltaY < 0 ? 0.15 : -0.15;
-      setZoom(z => Math.max(1, Math.min(5, z + delta)));
-    };
-
-    const handleTouchMove = (e) => {
-      // Bloquer le scroll natif pendant le pinch-to-zoom
-      if (e.touches.length > 1) {
-        e.preventDefault();
+      // Si Ctrl/Cmd + molette → zoom
+      if (e.ctrlKey || e.metaKey) {
+        const delta = e.deltaY < 0 ? 0.15 : -0.15;
+        setZoom(z => Math.max(1, Math.min(5, z + delta)));
+        if (zoom <= 1 && delta < 0) setOffset({ x: 0, y: 0 });
       }
     };
 
     el.addEventListener("wheel",     handleWheel,     { passive: false });
-    el.addEventListener("touchmove", handleTouchMove, { passive: false });
 
     return () => {
       el.removeEventListener("wheel",     handleWheel);
-      el.removeEventListener("touchmove", handleTouchMove);
     };
-  }, []); // une seule fois au mount
+  }, [zoom]);
+
+  // Double-clic pour zoomer/dézoomer
+  const handleDoubleClick = useCallback((e) => {
+    if (isVideo) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (zoom > 1) {
+      // Dézoomer
+      setZoom(1);
+      setOffset({ x: 0, y: 0 });
+    } else {
+      // Zoomer centré sur le clic
+      setZoom(3);
+      const clickX = ((e.clientX - rect.left) / rect.width - 0.5) * 2;
+      const clickY = ((e.clientY - rect.top) / rect.height - 0.5) * 2;
+      setOffset({ x: -clickX * 300, y: -clickY * 200 });
+    }
+  }, [zoom, isVideo]);
 
   const prev = useCallback(() => {
     setIndex(i => (i - 1 + urls.length) % urls.length);
@@ -79,28 +93,85 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  // ✅ Swipe tactile pour défiler les médias
+  // ✅ Swipe tactile pour défiler les médias + pinch-to-zoom + drag panoramique
   const handleTouchStart = useCallback((e) => {
-    if (e.touches.length !== 1 || zoom > 1) return;
-    touchStartXRef.current = e.touches[0].clientX;
-    touchStartYRef.current = e.touches[0].clientY;
-    touchDraggingRef.current = true;
-  }, [zoom]);
+    if (e.touches.length === 1) {
+      // Simple touch → peut être swipe ou drag panoramique
+      touchStartXRef.current = e.touches[0].clientX;
+      touchStartYRef.current = e.touches[0].clientY;
+      touchDraggingRef.current = true;
+      isPannedThisDrag.current = false;
+      setDragStart({ x: offset.x, y: offset.y });
+    } else if (e.touches.length === 2) {
+      // Pinch start
+      touchDraggingRef.current = false;
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastPinchDistRef.current = Math.sqrt(dx * dx + dy * dy);
+    }
+  }, [offset]);
 
   const handleTouchMove = useCallback((e) => {
-    if (!touchDraggingRef.current || e.touches.length !== 1 || zoom > 1) return;
+    if (e.touches.length === 2) {
+      // Pinch-to-zoom
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (lastPinchDistRef.current > 0) {
+        const scale = dist / lastPinchDistRef.current;
+        setZoom(z => Math.max(1, Math.min(5, z * scale)));
+      }
+      lastPinchDistRef.current = dist;
+      return;
+    }
+    if (!touchDraggingRef.current || e.touches.length !== 1) return;
     const dx = e.touches[0].clientX - touchStartXRef.current;
     const dy = e.touches[0].clientY - touchStartYRef.current;
-    // Si le mouvement est plus horizontal que vertical, on swype
+
+    if (zoom > 1) {
+      // Drag panoramique quand zoomé
+      isPannedThisDrag.current = true;
+      e.preventDefault();
+      setOffset({
+        x: dragStart.x + dx,
+        y: dragStart.y + dy,
+      });
+      return;
+    }
+    // Swipe horizontal pour navigation (seulement si pas zoomé)
     if (Math.abs(dx) > Math.abs(dy)) {
       e.preventDefault();
       setSwipeOffset(dx);
     }
-  }, [zoom]);
+  }, [zoom, dragStart]);
 
   const handleTouchEnd = useCallback(() => {
     if (!touchDraggingRef.current) return;
     touchDraggingRef.current = false;
+    lastPinchDistRef.current = 0;
+
+    if (zoom > 1) {
+      // Ne pas naviguer si on a juste fait un panoramique
+      return;
+    }
+
+    // Détection double-tap pour zoomer
+    const now = Date.now();
+    if (now - lastTapRef.current < 300) {
+      // Double-tap
+      if (zoom > 1) {
+        setZoom(1);
+        setOffset({ x: 0, y: 0 });
+      } else {
+        setZoom(3);
+      }
+      lastTapRef.current = 0;
+      return;
+    }
+    lastTapRef.current = now;
+
+    // Swipe navigation
     const threshold = 60;
     if (swipeOffset < -threshold) {
       next();
@@ -108,7 +179,26 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
       prev();
     }
     setSwipeOffset(0);
-  }, [swipeOffset, next, prev]);
+  }, [swipeOffset, next, prev, zoom]);
+
+  // ✅ Mouse drag pour panoramique quand zoomé
+  const handleMouseDown = useCallback((e) => {
+    if (zoom <= 1 || isVideo) return;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
+  }, [zoom, offset, isVideo]);
+
+  const handleMouseMove = useCallback((e) => {
+    if (!isDragging || zoom <= 1) return;
+    setOffset({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y,
+    });
+  }, [isDragging, zoom, dragStart]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
 
   const currentUrl = urls[index] || "";
   const isVideo    = /\.(mp4|webm|mov)(\?|$)/i.test(currentUrl);
@@ -177,14 +267,20 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
           maxWidth: "90vw",
           maxHeight: "90vh",
           userSelect: "none",
+          cursor: zoom > 1 ? (isDragging ? "grabbing" : "grab") : "default",
         }}
+        onDoubleClick={handleDoubleClick}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
       >
         {isVideo ? (
           <video
             src={currentUrl}
             controls
             autoPlay
-            style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 8 }}
+            style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 8, pointerEvents: "auto" }}
           />
         ) : (
           <img
@@ -193,7 +289,7 @@ const MediaLightbox = memo(({ urls = [], initialIndex = 0, onClose }) => {
             style={{
               maxWidth: "90vw", maxHeight: "90vh",
               objectFit: "contain", borderRadius: 8,
-              cursor: zoom > 1 ? "grab" : "zoom-in",
+              pointerEvents: "none",
             }}
             draggable={false}
           />

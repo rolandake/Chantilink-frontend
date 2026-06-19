@@ -1,124 +1,137 @@
 // ============================================
-// 📁 src/utils/contactsCache.js
-// Système de cache local des contacts avec ID unique garanti.
-//
-// PROBLÈME RÉSOLU :
-//   Les contacts apparaissaient en double car :
-//   1. conversations[] retourne { id: "abc" }
-//   2. contacts[] retourne { _id: "abc" } ou { id: "abc" }
-//   3. onAppContacts localStorage stockait les deux formes
-//   → Map.has() ratait car "abc" !== "abc" (string vs ObjectId)
-//
-// SOLUTION :
-//   - normalizeId() : toujours String, trim, lowercase
-//   - saveContactToOnApp() : clé canonique = normalizeId
-//   - readOnAppContacts() : déduplication par normalizeId au moment de la lecture
-//   - removeContactFromCache() : suppression fiable par normalizeId
+// src/utils/contactsCache.js
+// FIXES:
+//  - normalizeId : gère ObjectId Mongoose, string, objet {id, _id}
+//    uniformément → même résultat que getEntityId dans Messages.jsx
+//  - saveContactToOnApp : vérifie que l'id est normalisé avant save
+//  - readOnAppContacts : filtre les entrées corrompues (sans id)
+//  - removeContactFromCache : supprime par userId normalisé
 // ============================================
 
-/**
- * Normalise n'importe quelle forme d'ID en string lowercase sans espaces.
- * Gère : ObjectId MongoDB, string, { _id }, { id }, null/undefined.
- */
-export const normalizeId = (value) => {
-  if (!value) return "";
-  if (typeof value === "object") {
-    const raw = value._id || value.id || "";
-    return String(raw).trim().toLowerCase();
+// ──────────────────────────────────────────────────────────────────────────
+// ✅ normalizeId — fonction canonique utilisée PARTOUT dans le projet
+// Remplace getEntityId de Messages.jsx pour garantir la cohérence des clés
+// ──────────────────────────────────────────────────────────────────────────
+export const normalizeId = (v) => {
+  if (!v) return "";
+  // ObjectId Mongoose ou objet {_id, id}
+  if (typeof v === "object" && v !== null) {
+    const id = v._id || v.id;
+    return id ? String(id).trim().toLowerCase() : "";
   }
-  return String(value).trim().toLowerCase();
+  return String(v).trim().toLowerCase();
 };
 
-/** Clé localStorage isolée par utilisateur */
-const storageKey = (userId) => `onAppContacts_${normalizeId(userId)}`;
+// ──────────────────────────────────────────────────────────────────────────
+// Clé localStorage par userId propriétaire
+// ──────────────────────────────────────────────────────────────────────────
+const cacheKey = (ownerId) => {
+  const id = normalizeId(ownerId);
+  if (!id) return null;
+  return `chantilink_onapp_contacts_${id}`;
+};
 
-/**
- * Lire les contacts depuis localStorage avec déduplication garantie.
- * @param {string|object} userId
- * @returns {Array} contacts dédupliqués, normalisés
- */
-export const readOnAppContacts = (userId) => {
-  if (!userId) return [];
+// ──────────────────────────────────────────────────────────────────────────
+// Lire les contacts "sur l'app" depuis le cache local
+// ──────────────────────────────────────────────────────────────────────────
+export const readOnAppContacts = (ownerId) => {
+  const key = cacheKey(ownerId);
+  if (!key) return [];
   try {
-    const raw = localStorage.getItem(storageKey(userId));
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-
-    // Déduplication par ID normalisé (au cas où des doublons se seraient glissés)
-    const seen = new Map();
-    for (const c of parsed) {
-      const id = normalizeId(c.id || c._id);
-      if (id && !seen.has(id)) {
-        seen.set(id, { ...c, id }); // normaliser l'id stocké
-      }
-    }
-    return Array.from(seen.values());
+    // ✅ Filtrer les entrées corrompues (sans id valide)
+    return parsed.filter((c) => normalizeId(c.id || c._id));
   } catch {
     return [];
   }
 };
 
-/**
- * Ajouter ou mettre à jour un contact dans le cache.
- * Si un contact avec le même ID normalisé existe déjà, il est remplacé.
- * @param {object} contact - { id|_id, fullName, ... }
- * @param {string|object} userId
- */
-export const saveContactToOnApp = (contact, userId) => {
-  if (!contact || !userId) return;
-  const id = normalizeId(contact.id || contact._id);
-  if (!id) return;
+// ──────────────────────────────────────────────────────────────────────────
+// Sauvegarder / mettre à jour un contact dans le cache local
+// ──────────────────────────────────────────────────────────────────────────
+export const saveContactToOnApp = (contact, ownerId) => {
+  const key = cacheKey(ownerId);
+  if (!key) return;
 
-  const existing = readOnAppContacts(userId);
-  const normalized = {
-    id,
-    fullName:     contact.fullName    || contact.name || "",
-    username:     contact.username    || "",
-    profilePhoto: contact.profilePhoto|| "",
-    isOnline:     contact.isOnline    ?? false,
-    lastSeen:     contact.lastSeen    || null,
-    phone:        contact.phone       || "",
-    savedAt:      Date.now(),
-  };
-
-  // Remplacer si existe, sinon ajouter
-  const idx = existing.findIndex((c) => normalizeId(c.id) === id);
-  if (idx !== -1) {
-    existing[idx] = normalized;
-  } else {
-    existing.push(normalized);
-  }
+  // ✅ Normaliser l'id du contact avant sauvegarde
+  const contactId = normalizeId(contact.id || contact._id);
+  if (!contactId) return;
 
   try {
-    localStorage.setItem(storageKey(userId), JSON.stringify(existing));
-  } catch {
-    // quota exceeded → purger les plus anciens
-    const trimmed = existing.slice(-200);
-    try { localStorage.setItem(storageKey(userId), JSON.stringify(trimmed)); } catch {}
+    const existing = readOnAppContacts(ownerId);
+    const idx      = existing.findIndex(
+      (c) => normalizeId(c.id || c._id) === contactId
+    );
+
+    const entry = {
+      ...contact,
+      id:  contactId,
+      _id: contactId,
+    };
+
+    let updated;
+    if (idx !== -1) {
+      // Mettre à jour en conservant les champs existants
+      updated = [...existing];
+      updated[idx] = { ...existing[idx], ...entry };
+    } else {
+      updated = [...existing, entry];
+    }
+
+    localStorage.setItem(key, JSON.stringify(updated));
+  } catch (e) {
+    console.error("[contactsCache] saveContactToOnApp error:", e);
   }
 };
 
-/**
- * Supprimer un contact du cache local par son ID.
- * @param {string|object} contactId
- * @param {string|object} userId
- */
-export const removeContactFromCache = (contactId, userId) => {
-  if (!contactId || !userId) return;
-  const id = normalizeId(contactId);
-  const existing = readOnAppContacts(userId);
-  const updated  = existing.filter((c) => normalizeId(c.id) !== id);
+// ──────────────────────────────────────────────────────────────────────────
+// Supprimer un contact du cache local
+// ──────────────────────────────────────────────────────────────────────────
+export const removeContactFromCache = (contactId, ownerId) => {
+  const key = cacheKey(ownerId);
+  if (!key) return;
+
+  const normalizedContactId = normalizeId(contactId);
+  if (!normalizedContactId) return;
+
   try {
-    localStorage.setItem(storageKey(userId), JSON.stringify(updated));
-  } catch {}
+    const existing = readOnAppContacts(ownerId);
+    const updated  = existing.filter(
+      (c) => normalizeId(c.id || c._id) !== normalizedContactId
+    );
+    localStorage.setItem(key, JSON.stringify(updated));
+  } catch (e) {
+    console.error("[contactsCache] removeContactFromCache error:", e);
+  }
 };
 
-/**
- * Vider entièrement le cache d'un utilisateur.
- * @param {string|object} userId
- */
-export const clearContactsCache = (userId) => {
-  if (!userId) return;
-  try { localStorage.removeItem(storageKey(userId)); } catch {}
+// ──────────────────────────────────────────────────────────────────────────
+// Vider tous les contacts du cache (déconnexion)
+// ──────────────────────────────────────────────────────────────────────────
+export const clearOnAppContacts = (ownerId) => {
+  const key = cacheKey(ownerId);
+  if (!key) return;
+  try {
+    localStorage.removeItem(key);
+  } catch (e) {
+    console.error("[contactsCache] clearOnAppContacts error:", e);
+  }
+};
+
+// ──────────────────────────────────────────────────────────────────────────
+// ✅ Alias requis par AuthContext.jsx (logout() appelle clearContactsCache)
+// ──────────────────────────────────────────────────────────────────────────
+export const clearContactsCache = clearOnAppContacts;
+
+// ──────────────────────────────────────────────────────────────────────────
+// Vérifie si un contact est déjà dans le cache
+// ──────────────────────────────────────────────────────────────────────────
+export const isContactCached = (contactId, ownerId) => {
+  const normalizedContactId = normalizeId(contactId);
+  if (!normalizedContactId) return false;
+  const existing = readOnAppContacts(ownerId);
+  return existing.some((c) => normalizeId(c.id || c._id) === normalizedContactId);
 };

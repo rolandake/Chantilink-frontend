@@ -1,22 +1,21 @@
 // ============================================
 // 📁 src/components/CallManager.jsx
+// FIXES:
+//  - useEffect call.on : guards hasStartedRef/hasAcceptedRef pour éviter
+//    les doubles appels à rtcStartCall / rtcAcceptCall
+//  - flushPendingOffer : appelé dès que callId devient connu (call-initiated)
+//  - Écoute "webrtc-offer", "webrtc-answer", "ice-candidate" ici
+//  - Cleanup rtcEndCall quand call.on → false (appel terminé extérieur)
 //
 // Wrapper entre Messages.jsx et CallModal.jsx.
-// Gère :
-//   - WebRTC (useWebRTC hook) → localStream, remoteStream, callState
-//   - Signaling socket (webrtc-offer, webrtc-answer, ice-candidate)
-//   - Transmission de l'offer quand callId est connu (call-initiated)
-//   - Contrôles mute / caméra délégués au hook WebRTC
-//   - Rendu via <CallModal />
-//
 // Props reçues depuis Messages.jsx :
 //   call         : { on, type, friend, mute, video, isIncoming, callId }
 //   onEndCall    : () => void
-//   onToggleMute : () => void   (met à jour call.mute dans Messages)
-//   onToggleVideo: () => void   (met à jour call.video dans Messages)
+//   onToggleMute : () => void
+//   onToggleVideo: () => void
 //   socket       : Socket.IO instance
 // ============================================
-import React, { useEffect, useCallback } from "react";
+import React, { useEffect, useRef, useCallback } from "react";
 import { useWebRTC } from "../pages/Chat/hooks/useWebRTC";
 import CallModal     from "../pages/Chat/components/CallModal";
 
@@ -44,47 +43,74 @@ export default function CallManager({
     toggleCamera:       rtcToggleCamera,
     flushPendingOffer,
     setCallId,
-  } = useWebRTC(socket, null /* selfId géré côté serveur */);
+  } = useWebRTC(socket, null);
 
-  const friend    = call?.friend;
-  const callId    = call?.callId;
-  const callType  = call?.type  || "audio";
+  const friend     = call?.friend;
+  const callId     = call?.callId;
+  const callType   = call?.type  || "audio";
   const isIncoming = call?.isIncoming ?? false;
 
+  // ✅ Guards pour éviter les doubles déclenchements WebRTC
+  const hasStartedRef  = useRef(false);
+  const hasAcceptedRef = useRef(false);
+  const prevCallOn     = useRef(false);
+
   // ── Démarrer ou accepter selon le sens de l'appel ──────────────────────
+  // ✅ FIX : guard hasStartedRef/hasAcceptedRef pour éviter les doubles appels
   useEffect(() => {
-    if (!call?.on) return;
+    if (!call?.on) {
+      // Réinitialiser les guards quand l'appel se termine
+      hasStartedRef.current  = false;
+      hasAcceptedRef.current = false;
+      prevCallOn.current     = false;
+      return;
+    }
+
+    // Ne déclencher qu'au passage false → true
+    if (prevCallOn.current) return;
+    prevCallOn.current = true;
 
     if (isIncoming) {
-      // Côté appelé : on a déjà émis accept-call depuis Messages.jsx
-      // → préparer le peer connection en attente de l'offer WebRTC
-      if (callId && friend?.id) {
+      // Côté appelé : préparer la PeerConnection en attente de l'offer WebRTC
+      if (!hasAcceptedRef.current && callId && friend?.id) {
+        hasAcceptedRef.current = true;
         rtcAcceptCall(callId, friend.id, callType).catch(console.error);
       }
     } else {
-      // Côté appelant : lancer getUserMedia + créer l'offer
-      if (friend?.id) {
+      // Côté appelant : getUserMedia + créer l'offer (stockée dans pendingOfferRef)
+      if (!hasStartedRef.current && friend?.id) {
+        hasStartedRef.current = true;
         rtcStartCall(friend.id, callType).catch(console.error);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [call?.on]);
 
-  // ── Quand callId devient connu (call-initiated côté appelant) ──────────
+  // ✅ FIX : côté appelé, si callId arrive après que call.on soit déjà true
+  // (race condition : call.on=true mais callId=null au premier render)
   useEffect(() => {
-    if (callId && !isIncoming) {
-      setCallId(callId);
-      flushPendingOffer(callId); // envoie l'offer qui attendait le callId
-    }
+    if (!call?.on || !isIncoming || !callId || !friend?.id) return;
+    if (hasAcceptedRef.current) return;
+    hasAcceptedRef.current = true;
+    setCallId(callId);
+    rtcAcceptCall(callId, friend.id, callType).catch(console.error);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callId, isIncoming, call?.on]);
+
+  // ✅ FIX PRINCIPAL : quand callId devient connu côté appelant → envoyer l'offer
+  useEffect(() => {
+    if (!callId || isIncoming) return;
+    setCallId(callId);
+    flushPendingOffer(callId);
   }, [callId, isIncoming, setCallId, flushPendingOffer]);
 
   // ── Signaling WebRTC via socket ────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
 
-    const onOffer     = (data) => handleOffer(data);
-    const onAnswer    = (data) => handleAnswer(data);
-    const onIce       = (data) => handleIceCandidate(data);
+    const onOffer  = (data) => handleOffer(data);
+    const onAnswer = (data) => handleAnswer(data);
+    const onIce    = (data) => handleIceCandidate(data);
 
     socket.on("webrtc-offer",  onOffer);
     socket.on("webrtc-answer", onAnswer);
@@ -97,24 +123,6 @@ export default function CallManager({
     };
   }, [socket, handleOffer, handleAnswer, handleIceCandidate]);
 
-  // ── Raccrocher ─────────────────────────────────────────────────────────
-  const handleEnd = useCallback(() => {
-    rtcEndCall();   // ferme PeerConnection + arrête les tracks
-    onEndCall?.();  // met à jour call.on dans Messages.jsx
-  }, [rtcEndCall, onEndCall]);
-
-  // ── Mute (WebRTC track + état UI) ─────────────────────────────────────
-  const handleToggleMute = useCallback(() => {
-    rtcToggleMute();  // active/désactive l'audioTrack
-    onToggleMute?.(); // met à jour call.mute dans Messages.jsx
-  }, [rtcToggleMute, onToggleMute]);
-
-  // ── Caméra ─────────────────────────────────────────────────────────────
-  const handleToggleCamera = useCallback(() => {
-    rtcToggleCamera();  // active/désactive le videoTrack
-    onToggleVideo?.();  // met à jour call.video dans Messages.jsx
-  }, [rtcToggleCamera, onToggleVideo]);
-
   // ── Nettoyage si appel terminé de l'extérieur (call.on → false) ───────
   useEffect(() => {
     if (!call?.on) {
@@ -123,19 +131,37 @@ export default function CallManager({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [call?.on]);
 
+  // ── Raccrocher ─────────────────────────────────────────────────────────
+  const handleEnd = useCallback(() => {
+    rtcEndCall();
+    onEndCall?.();
+  }, [rtcEndCall, onEndCall]);
+
+  // ── Mute ───────────────────────────────────────────────────────────────
+  const handleToggleMute = useCallback(() => {
+    rtcToggleMute();
+    onToggleMute?.();
+  }, [rtcToggleMute, onToggleMute]);
+
+  // ── Caméra ─────────────────────────────────────────────────────────────
+  const handleToggleCamera = useCallback(() => {
+    rtcToggleCamera();
+    onToggleVideo?.();
+  }, [rtcToggleCamera, onToggleVideo]);
+
   if (!call?.on) return null;
 
   return (
     <CallModal
-      open         = {call.on}
-      callType     = {callType}
-      remoteUser   = {friend}
-      callState    = {callState}
-      localStream  = {localStream}
-      remoteStream = {remoteStream}
-      isMuted      = {isMuted}
-      isCameraOff  = {isCameraOff}
-      error        = {error}
+      open           = {call.on}
+      callType       = {callType}
+      remoteUser     = {friend}
+      callState      = {callState}
+      localStream    = {localStream}
+      remoteStream   = {remoteStream}
+      isMuted        = {isMuted}
+      isCameraOff    = {isCameraOff}
+      error          = {error}
       onToggleMute   = {handleToggleMute}
       onToggleCamera = {handleToggleCamera}
       onEnd          = {handleEnd}

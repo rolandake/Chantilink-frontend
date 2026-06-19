@@ -474,8 +474,27 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
   }, [slideIdx, allSlides.length, currentStoryIndex, stories.length, onClose]);
 
   const handleDragEnd = useCallback((_, info) => {
-    if (info.offset.y > 100) onClose();
-  }, [onClose]);
+    const { offset } = info;
+    // Fermeture par swipe vertical vers le bas
+    if (offset.y > 100) { onClose(); return; }
+    // Swipe horizontal gauche → slide suivant
+    if (offset.x < -80) {
+      if (slideIdx < allSlides.length - 1) { setSlideIdx(s => s + 1); setProgress(0); }
+      else if (currentStoryIndex < stories.length - 1) { setCurrentStoryIndex(i => i + 1); setSlideIdx(0); setProgress(0); }
+      else onClose();
+      return;
+    }
+    // Swipe horizontal droit → slide précédent
+    if (offset.x > 80) {
+      if (slideIdx > 0) { setSlideIdx(s => s - 1); setProgress(0); }
+      else if (currentStoryIndex > 0) {
+        setCurrentStoryIndex(i => i - 1);
+        const prevSlides = stories[currentStoryIndex - 1]?.slides?.length || 1;
+        setSlideIdx(prevSlides - 1);
+        setProgress(0);
+      }
+    }
+  }, [onClose, slideIdx, allSlides.length, currentStoryIndex, stories]);
 
   const togglePause = useCallback(() => setIsPaused(p => !p), []);
 
@@ -570,8 +589,9 @@ export default function StoryViewer({ stories = [], currentUser, onClose, onDele
   return (
     <>
       <motion.div
-        drag="y"
-        dragConstraints={{ top: 0, bottom: 0 }}
+        drag
+        dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+        dragElastic={{ left: 0.3, right: 0.3, top: 0.1, bottom: 0.3 }}
         onDragEnd={handleDragEnd}
         initial={{ y: '100%' }}
         animate={{ y: 0 }}

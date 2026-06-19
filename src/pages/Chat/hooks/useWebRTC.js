@@ -1,18 +1,18 @@
 // ============================================
-// 📁 src/pages/Chat/hooks/useWebRTC.js
+// src/pages/Chat/hooks/useWebRTC.js
 // FIXES:
-//  - createPeerConnection n'était pas dans la portée correcte (code tronqué)
-//  - stopLocalStream utilisait le state (stale closure) → utilise la ref
-//  - startCall utilisait setTimeout fragile → callId attendu via event
-//  - pendingCandidates non vidangés à la reconnexion
-//  - cleanup appelait stopLocalStream (state stale) → appelle la ref
-//  - handleOffer retournait tôt si !pcRef sans aucune log
-//  - localStreamRef jamais synchronisé avec localStream state
+//  - flushPendingOffer : envoie l'offer stockée dès que callId est connu
+//    (l'offer est créée dans startCall AVANT que callId arrive via "call-initiated")
+//  - stopLocalStream utilise la ref (pas le state stale)
+//  - pendingCandidates vidangés correctement après setRemoteDescription
+//  - handleOffer : mise en attente si pcRef pas encore prêt (race condition)
+//  - updateLocalStream synchronise ref + state ensemble
+//  - setCallId exposé pour permettre à CallManager de mettre à jour callIdRef
 // ============================================
 import { useEffect, useRef, useState, useCallback } from "react";
 
 const DEFAULT_ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun.l.google.com:19302"  },
   { urls: "stun:stun1.l.google.com:19302" },
   { urls: "stun:stun2.l.google.com:19302" },
   { urls: "stun:stun3.l.google.com:19302" },
@@ -27,24 +27,24 @@ export function useWebRTC(socket, selfId) {
   const [isCameraOff,  setIsCameraOff]  = useState(false);
   const [error,        setError]        = useState(null);
 
-  // ✅ Refs stables
+  // ── Refs stables (anti stale-closure) ────────────────────────────────────
   const localStreamRef       = useRef(null);
   const pcRef                = useRef(null);
   const callIdRef            = useRef(null);
   const remoteIdRef          = useRef(null);
   const pendingCandidatesRef = useRef([]);
-  // ✅ FIX: garder une queue d'offers reçues avant que pcRef soit prêt
+  // ✅ Stocke l'offer en attente du callId
   const pendingOfferRef      = useRef(null);
 
-  // ✅ FIX: synchroniser localStreamRef avec le state
+  // ── Synchroniser ref + state ──────────────────────────────────────────────
   const updateLocalStream = useCallback((stream) => {
     localStreamRef.current = stream;
     setLocalStream(stream);
   }, []);
 
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   // 🔧 CRÉER LA PEER CONNECTION
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   const createPeerConnection = useCallback(() => {
     const pc = new RTCPeerConnection({ iceServers: DEFAULT_ICE_SERVERS });
 
@@ -73,19 +73,19 @@ export function useWebRTC(socket, selfId) {
       }
     };
 
-    // ✅ FIX: écouter iceconnectionstatechange aussi (meilleure compatibilité Safari)
     pc.oniceconnectionstatechange = () => {
-      if (["failed", "disconnected"].includes(pc.iceConnectionState)) {
-        console.warn("[WebRTC] ICE:", pc.iceConnectionState);
+      const s = pc.iceConnectionState;
+      if (["failed", "disconnected"].includes(s)) {
+        console.warn("[WebRTC] ICE:", s);
       }
     };
 
     return pc;
   }, [socket]);
 
-  // ───────────────────────────────────────────────────
-  // ✅ FIX: stopLocalStream utilise la REF (pas le state)
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // ✅ stopLocalStream utilise la REF (pas le state)
+  // ──────────────────────────────────────────────────────────────────────────
   const stopLocalStream = useCallback(() => {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -111,41 +111,44 @@ export function useWebRTC(socket, selfId) {
     remoteIdRef.current          = null;
   }, [stopLocalStream]);
 
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   // 📞 APPEL SORTANT
-  // ───────────────────────────────────────────────────
+  // Crée la PeerConnection + offer, les stocke dans pendingOfferRef.
+  // L'offer ne sera envoyée que quand flushPendingOffer(callId) est appelé.
+  // ──────────────────────────────────────────────────────────────────────────
   const startCall = useCallback(async (remoteId, callType) => {
     try {
       setError(null);
       setCallState("calling");
-      remoteIdRef.current = remoteId;
+      remoteIdRef.current = String(remoteId).trim();
 
-      // 1. Demander micro/caméra
       const constraints = {
         audio: true,
         video: callType === "video"
           ? { width: { ideal: 1280 }, height: { ideal: 720 } }
           : false,
       };
+
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       updateLocalStream(stream);
       setIsCameraOff(callType !== "video");
 
-      // 2. Peer connection + tracks
       const pc = createPeerConnection();
       pcRef.current = pc;
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      // 3. Créer l'offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // 4. Initier via socket — le callId arrivera via "call-initiated"
-      socket?.emit("initiate-call", { receiverId: remoteId, type: callType });
+      // ✅ Stocker l'offer en attente du callId
+      pendingOfferRef.current = { offer, remoteId: remoteIdRef.current };
 
-      // ✅ FIX: stocker l'offer, l'envoyer dès que callId est connu
-      // via le handler "call-initiated" dans useSocketHandlers / Messages.jsx
-      pendingOfferRef.current = { offer, remoteId };
+      console.log("[WebRTC] startCall: offer créée, en attente de callId via call-initiated");
+
+      // L'événement "initiate-call" est émis par CallManager (pas ici)
+      // pour éviter la double émission. Si CallManager veut qu'on l'émette :
+      // socket?.emit("initiate-call", { receiverId: remoteId, type: callType });
+      // → déjà fait dans useCallManager.startCall, donc on n'émet pas ici.
 
     } catch (err) {
       console.error("[WebRTC] startCall error:", err);
@@ -153,31 +156,36 @@ export function useWebRTC(socket, selfId) {
       setCallState("failed");
       cleanup();
     }
-  }, [socket, createPeerConnection, updateLocalStream, cleanup]);
+  }, [createPeerConnection, updateLocalStream, cleanup]);
 
-  // ✅ Méthode pour envoyer l'offer une fois le callId connu
+  // ──────────────────────────────────────────────────────────────────────────
+  // ✅ flushPendingOffer : appelé par CallManager quand "call-initiated" arrive
+  // ──────────────────────────────────────────────────────────────────────────
   const flushPendingOffer = useCallback((callId) => {
-    callIdRef.current = callId;
+    callIdRef.current = String(callId).trim();
     const pending = pendingOfferRef.current;
-    if (pending && pending.remoteId) {
-      socket?.emit("webrtc-offer", {
-        callId,
-        to:    pending.remoteId,
-        offer: pending.offer,
-      });
-      pendingOfferRef.current = null;
+    if (!pending) {
+      console.warn("[WebRTC] flushPendingOffer: aucune offer en attente");
+      return;
     }
+    console.log(`[WebRTC] flushPendingOffer: envoi offer vers ${pending.remoteId} (callId: ${callId})`);
+    socket?.emit("webrtc-offer", {
+      callId:   callIdRef.current,
+      to:       pending.remoteId,
+      offer:    pending.offer,
+    });
+    pendingOfferRef.current = null;
   }, [socket]);
 
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   // 📞 APPEL ENTRANT — ACCEPTATION
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   const acceptIncomingCall = useCallback(async (callId, callerId, callType) => {
     try {
       setError(null);
       setCallState("connecting");
-      callIdRef.current  = callId;
-      remoteIdRef.current = callerId;
+      callIdRef.current   = String(callId).trim();
+      remoteIdRef.current = String(callerId).trim();
 
       const constraints = {
         audio: true,
@@ -185,6 +193,7 @@ export function useWebRTC(socket, selfId) {
           ? { width: { ideal: 1280 }, height: { ideal: 720 } }
           : false,
       };
+
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       updateLocalStream(stream);
       setIsCameraOff(callType !== "video");
@@ -193,13 +202,25 @@ export function useWebRTC(socket, selfId) {
       pcRef.current = pc;
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      socket?.emit("accept-call", { callId });
+      console.log("[WebRTC] acceptIncomingCall: PC prête, en attente de l'offer WebRTC");
 
-      // ✅ FIX: si une offer était déjà en attente, la traiter maintenant
+      // Si une offer était déjà arrivée avant que la PC soit prête
       if (pendingOfferRef.current) {
         const { offer } = pendingOfferRef.current;
         pendingOfferRef.current = null;
-        await handleOffer({ callId, from: callerId, offer });
+        // Traiter l'offer immédiatement
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        for (const c of pendingCandidatesRef.current) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch { /* noop */ }
+        }
+        pendingCandidatesRef.current = [];
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket?.emit("webrtc-answer", {
+          callId: callIdRef.current,
+          to:     remoteIdRef.current,
+          answer,
+        });
       }
 
     } catch (err) {
@@ -208,27 +229,26 @@ export function useWebRTC(socket, selfId) {
       setCallState("failed");
       cleanup();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, createPeerConnection, updateLocalStream, cleanup]);
 
-  // ───────────────────────────────────────────────────
-  // 📨 RECEVOIR UNE OFFER
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // 📨 RECEVOIR UNE OFFER (côté appelé)
+  // ──────────────────────────────────────────────────────────────────────────
   const handleOffer = useCallback(async ({ callId, from, offer }) => {
     try {
-      callIdRef.current  = callId;
-      remoteIdRef.current = from;
+      if (callId) callIdRef.current   = String(callId).trim();
+      if (from)   remoteIdRef.current = String(from).trim();
 
-      // ✅ FIX: si pcRef pas encore prêt (race condition), mettre en attente
+      // ✅ PC pas encore prête (race condition) → stocker pour plus tard
       if (!pcRef.current) {
         console.warn("[WebRTC] handleOffer: pcRef non prêt, mise en attente");
-        pendingOfferRef.current = { offer, remoteId: from };
+        pendingOfferRef.current = { offer, remoteId: remoteIdRef.current };
         return;
       }
 
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
 
-      // Vider les ICE candidats en attente
+      // Vider les candidats en attente
       for (const c of pendingCandidatesRef.current) {
         try {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(c));
@@ -241,8 +261,13 @@ export function useWebRTC(socket, selfId) {
       const answer = await pcRef.current.createAnswer();
       await pcRef.current.setLocalDescription(answer);
 
-      socket?.emit("webrtc-answer", { callId, to: from, answer });
+      socket?.emit("webrtc-answer", {
+        callId: callIdRef.current,
+        to:     remoteIdRef.current,
+        answer,
+      });
 
+      console.log("[WebRTC] handleOffer: answer envoyée");
     } catch (err) {
       console.error("[WebRTC] handleOffer error:", err);
       setError(err.message);
@@ -250,23 +275,24 @@ export function useWebRTC(socket, selfId) {
     }
   }, [socket]);
 
-  // ───────────────────────────────────────────────────
-  // 📨 RECEVOIR UNE ANSWER
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // 📨 RECEVOIR UNE ANSWER (côté appelant)
+  // ──────────────────────────────────────────────────────────────────────────
   const handleAnswer = useCallback(async ({ answer }) => {
     try {
       if (!pcRef.current) return;
       await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
       setCallState("connected");
+      console.log("[WebRTC] handleAnswer: connexion établie");
     } catch (err) {
       console.error("[WebRTC] handleAnswer error:", err);
       setError(err.message);
     }
   }, []);
 
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   // 🧊 RECEVOIR UN ICE CANDIDATE
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   const handleIceCandidate = useCallback(async ({ candidate }) => {
     try {
       if (!candidate) return;
@@ -280,20 +306,19 @@ export function useWebRTC(socket, selfId) {
     }
   }, []);
 
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   // 📴 RACCROCHER
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
   const endCall = useCallback(() => {
     const callId = callIdRef.current;
     if (callId) socket?.emit("end-call", { callId });
     cleanup();
   }, [socket, cleanup]);
 
-  // ───────────────────────────────────────────────────
-  // 🔇 MUTE / 📷 CAMÉRA
-  // ───────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // 🔇 MUTE / 📷 CAMÉRA (utilise la ref, pas le state)
+  // ──────────────────────────────────────────────────────────────────────────
   const toggleMute = useCallback(() => {
-    // ✅ FIX: utiliser la ref
     const stream = localStreamRef.current;
     if (!stream) return;
     stream.getAudioTracks().forEach((t) => { t.enabled = !t.enabled; });
@@ -304,16 +329,13 @@ export function useWebRTC(socket, selfId) {
     const stream = localStreamRef.current;
     if (!stream) return;
     const videoTracks = stream.getVideoTracks();
-    if (videoTracks.length === 0) return;
+    if (!videoTracks.length) return;
     videoTracks.forEach((t) => { t.enabled = !t.enabled; });
     setIsCameraOff((prev) => !prev);
   }, []);
 
-  // Nettoyage au démontage
-  useEffect(() => {
-    return () => { cleanup(); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Cleanup au démontage
+  useEffect(() => () => { cleanup(); }, [cleanup]);
 
   return {
     localStream,
@@ -334,8 +356,9 @@ export function useWebRTC(socket, selfId) {
     toggleCamera,
     cleanup,
     flushPendingOffer,
-    setCallId:    (id) => { callIdRef.current = id; },
-    setRemoteId:  (id) => { remoteIdRef.current = id; },
+    // ✅ Exposés pour CallManager
+    setCallId:    (id) => { callIdRef.current   = String(id).trim(); },
+    setRemoteId:  (id) => { remoteIdRef.current = String(id).trim(); },
     setCallState: (s)  => setCallState(s),
   };
 }

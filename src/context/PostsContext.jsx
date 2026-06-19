@@ -109,13 +109,18 @@ function hasBlockedExternalVideoUrl(post) {
 
 function filterBlockedPosts(posts) {
   const before   = posts.length;
-  const filtered = posts.filter(p => (
-    !hasBlockedExternalVideoUrl(p) &&
-    !isPostHidden(p) &&
-    !(isBotPost(p) && hasPostMedia(p) && p._botCivilRelevant === false)
-  ));
+  const filtered = posts.filter(p => {
+    // Supprimer un post bot si :
+    // 1. URL vidéo externe bloquée OU
+    // 2. Post masqué par l'utilisateur OU
+    // 3. Post bot dont le contenu n'est pas pertinent pour le BTP → incohérent (ex: foot + texte chantier)
+    if (hasBlockedExternalVideoUrl(p)) return false;
+    if (isPostHidden(p)) return false;
+    if (isBotPost(p) && !p._botCivilRelevant) return false;
+    return true;
+  });
   const removed  = before - filtered.length;
-  if (removed > 0) console.log(`🧹 [PostsContext] ${removed} post(s) masqués (URLs bloquées)`);
+  if (removed > 0) console.log(`🧹 [PostsContext] ${removed} post(s) masqués`);
   return filtered;
 }
 
@@ -245,10 +250,10 @@ export const PostsProvider = ({ children }) => {
     const rawUser = p.user || p.author || {};
     const botPost = isBotPost({ ...p, user: rawUser });
     const botCivilRelevant = !botPost || isBtpPost(p);
-    const cleanedContent = botPost ? cleanBotText(p.content || p.contenu || "") : null;
-    const contentIsUsable = cleanedContent && !looksNoisyBotText(cleanedContent) && isBtpPost({ ...p, content: cleanedContent });
+    // Toujours utiliser le texte de remplacement pour les posts bots
+    // pour éviter d'afficher des textes incohérents comme "djo! ce france-sénégal..."
     const safeContent = botPost
-      ? (contentIsUsable ? cleanedContent : BOT_FALLBACK_CONTENT[normalizeLang(languageRef.current)])
+      ? BOT_FALLBACK_CONTENT[normalizeLang(languageRef.current)]
       : p.content;
     const normalizedUser = {
       ...rawUser,
