@@ -373,6 +373,7 @@ export const API = {
   // ✅ Upload média messages — timeout long pour vidéos/docs lourds
   uploadMessageFile: async (token, file) => {
     console.log(`📤 [API.uploadMessageFile] ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
+    // ✅ timeout 120s (uploads volumineux : vidéos 100MB, pièces jointes 20MB)
     return uploadWithTimeout(`${BASE_URL}/messages/upload`, token, file, "file", 120_000);
   },
 

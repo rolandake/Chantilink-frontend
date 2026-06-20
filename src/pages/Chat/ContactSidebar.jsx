@@ -318,12 +318,19 @@ export const ContactSidebar = ({
   }, [reloadLocal]);
 
   // ── Sync contacts prop → cache local ─────────────────────────────────────
-  // ✅ FIX : setTimeout(50) pour laisser le state IDB flush avant reload
+  // ✅ FIX : ne pas écraser les contacts existants dans le cache local
+  //   (les contacts ajoutés manuellement ont la priorité)
   useEffect(() => {
     if (!userId || contacts.length === 0) return;
+    const existingIds = new Set(
+      readOnAppContacts(userId).map((c) => normalizeId(c.id || c._id))
+    );
     contacts.forEach((c) => {
       const id = normalizeId(c.id || c._id);
-      if (id) saveContactToOnApp({ ...c, id }, userId);
+      // Ne sauvegarder que les contacts qui n'existent pas déjà dans le cache
+      if (id && !existingIds.has(id)) {
+        saveContactToOnApp({ ...c, id }, userId);
+      }
     });
     setTimeout(() => reloadLocal(), 50);
   }, [contacts, userId, reloadLocal]);
