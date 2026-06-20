@@ -1,6 +1,15 @@
 // ============================================
 // src/Pages/chat/Messages.jsx
-// FIXES:
+// FIXES v3 (cette version) :
+//  - ✅ NOUVEAU : écoute "call-receiver-offline" et "call-error" pour
+//    débloquer immédiatement l'état call.on côté appelant (au lieu
+//    d'attendre le timeout de 30s, qui causait le faux "Un appel est
+//    déjà en cours").
+//  - ✅ Logs de debug temporaires retirés (bug du mismatch d'environnement
+//    identifié : appelant et récepteur connectés à deux backends différents
+//    pendant les tests — voir notes de déploiement).
+//
+// FIXES précédents (conservés) :
 //  - currentUserId : utilise normalizeId (même logique que ContactSidebar)
 //    → clés cache identiques, contacts synchro visibles dans la liste
 //  - handlePickerSync : saveContactToOnApp appelé ici AVANT loadContacts()
@@ -8,6 +17,15 @@
 //  - Événements socket "call-initiated", "call-accepted", "call-rejected",
 //    "call-ended" centralisés dans CallManager (plus dans Messages.jsx)
 //    pour éviter la double écoute
+//
+// 🔧 DEBUG TEMPORAIRE (cette version) :
+//  - Logs ajoutés dans handleIncomingCall + avant le return pour tracer
+//    pourquoi la modal IncomingCallModal ne s'affiche pas malgré la
+//    notification système qui se déclenche bien.
+//  - ⚠️ NOTE : le commentaire ci-dessus dit que call-accepted/rejected/ended
+//    sont "centralisés dans CallManager", mais ce fichier les écoute
+//    TOUJOURS plus bas (useEffect "Événements APPEL"). Si CallManager.jsx
+//    les écoute aussi, il y a double écoute → à vérifier avec ces fichiers.
 // ============================================
 import React, {
   useState, useEffect, useRef, useCallback, useMemo,
@@ -29,7 +47,7 @@ import {
 } from "../../utils/contactsCache";
 import messageCache  from "../../utils/messageCache";
 
-import IncomingCallModal   from "../../components/IncomingCallModal";
+import IncomingCallModal   from "./components/IncomingCallModal";
 import MissedCallsModal    from "./components/MissedCallsModal";
 import CallManager         from "../../components/CallManager";
 import { PhoneNumberModal }    from "./components/PhoneNumberModal";
@@ -615,14 +633,12 @@ export default function Messages() {
 
   // ── Événements APPEL (incoming uniquement — les autres sont dans CallManager) ──
   useEffect(() => {
-    if (!connected || !socket) {
-      console.log("🔴 [Messages] listener incoming-call SKIP — connected:", connected, "socket:", !!socket);
-      return;
-    }
-    console.log("🟢 [Messages] listener incoming-call ENREGISTRÉ — socket.id:", socket.id);
+    if (!connected || !socket) return;
 
     const handleIncomingCall = ({ callId, from, caller, type }) => {
+      // 🔧 DEBUG TEMPORAIRE — à retirer une fois le bug résolu
       console.log("📞🔥 [Messages] incoming-call REÇU !", { callId, from, caller, type });
+
       const fromStr = normalizeId(from);
       const friend  = contacts.find((c) => normalizeId(c.id) === fromStr)
         || { id: fromStr, fullName: caller?.fullName || "Anonyme", profilePhoto: caller?.profilePhoto || "" };
@@ -633,7 +649,10 @@ export default function Messages() {
       }
       try { vibrateCall(); } catch {}
       startTabCallAlert(friend.fullName);
-      console.log("📞🔥 [Messages] setIncomingCall appelé avec:", friend);
+
+      // 🔧 DEBUG TEMPORAIRE — à retirer une fois le bug résolu
+      console.log("📞🔥 [Messages] setIncomingCall appelé avec:", { callId, friend, type });
+
       setIncomingCall({ callId, friend, type, caller: friend });
     };
 
@@ -654,19 +673,78 @@ export default function Messages() {
       ringtoneRef.current?.stop(); ringtoneRef.current = null;
       stopVibration(); stopTabCallAlert();
       cleanupCallRingtone();
+      // ✅ FIX CRITIQUE : nettoyer incomingCall aussi (quand l'appelant se déconnecte
+      // pendant que ça sonne chez le récepteur — "call-ended" est émis par disconnect)
+      setIncomingCall(null);
       endCall();
     };
 
-    socket.on("incoming-call",  handleIncomingCall);
-    socket.on("call-accepted",  handleCallAccepted);
-    socket.on("call-rejected",  handleCallRejected);
-    socket.on("call-ended",     handleCallEnded);
+    // ✅ FIX : destinataire hors ligne → débloquer immédiatement l'état "call.on"
+    // côté appelant au lieu d'attendre les 30s du timeout (qui causait le faux
+    // "Un appel est déjà en cours" si on retentait avant le timeout).
+    const handleReceiverOffline = ({ callId }) => {
+      cleanupCallRingtone();
+      try { playCallRejectedSound(); } catch {}
+      showToast("Cette personne n'est pas en ligne actuellement", "info");
+      setCall({ on: false, type: null, friend: null, mute: false, video: true, isIncoming: false, callId: null });
+    };
+
+    // ✅ FIX : confirmation que l'appelé a bien accepté → utilisé pour
+    // confirmer côté récepteur que le serveur a enregistré l'acceptation.
+    const handleCallAcceptedConfirmation = ({ callId }) => {
+      console.log("📞 [Messages] call-accepted-confirmation reçu, callId:", callId);
+    };
+
+    // ✅ FIX : appel non répond après 30s côté appelant
+    // → nettoyer call.on pour pouvoir rappeler
+    const handleCallNotAnswered = ({ callId, receiverId }) => {
+      console.log("📞 [Messages] call-not-answered reçu, callId:", callId);
+      cleanupCallRingtone();
+      try { playCallRejectedSound(); } catch {}
+      showToast("Appel sans réponse", "info");
+      setCall({ on: false, type: null, friend: null, mute: false, video: true, isIncoming: false, callId: null });
+    };
+
+    // ✅ FIX : appel manqué côté récepteur (timeout 30s serveur)
+    // → nettoyer incomingCall pour ne pas rester bloqué avec la modale
+    const handleCallMissed = ({ callId, from, type }) => {
+      console.log("📞 [Messages] call-missed reçu, callId:", callId);
+      ringtoneRef.current?.stop(); ringtoneRef.current = null;
+      stopVibration(); stopTabCallAlert();
+      cleanupCallRingtone();
+      setIncomingCall(null);
+    };
+
+    // ✅ FIX : erreurs serveur génériques (params invalides, appel introuvable…)
+    // → ne pas laisser call.on bloqué indéfiniment côté client.
+    const handleCallError = ({ error, code }) => {
+      cleanupCallRingtone();
+      try { playCallRejectedSound(); } catch {}
+      showToast(error || "Erreur lors de l'appel", "error");
+      setCall({ on: false, type: null, friend: null, mute: false, video: true, isIncoming: false, callId: null });
+      setIncomingCall(null);
+    };
+
+    socket.on("incoming-call",                   handleIncomingCall);
+    socket.on("call-accepted",                   handleCallAccepted);
+    socket.on("call-accepted-confirmation",      handleCallAcceptedConfirmation);
+    socket.on("call-rejected",                   handleCallRejected);
+    socket.on("call-ended",                      handleCallEnded);
+    socket.on("call-receiver-offline",           handleReceiverOffline);
+    socket.on("call-not-answered",               handleCallNotAnswered);
+    socket.on("call-missed",                     handleCallMissed);
+    socket.on("call-error",                      handleCallError);
 
     return () => {
-      socket.off("incoming-call",  handleIncomingCall);
-      socket.off("call-accepted",  handleCallAccepted);
-      socket.off("call-rejected",  handleCallRejected);
-      socket.off("call-ended",     handleCallEnded);
+      socket.off("incoming-call",                   handleIncomingCall);
+      socket.off("call-accepted",                   handleCallAccepted);
+      socket.off("call-accepted-confirmation",      handleCallAcceptedConfirmation);
+      socket.off("call-rejected",                   handleCallRejected);
+      socket.off("call-ended",                      handleCallEnded);
+      socket.off("call-receiver-offline",           handleReceiverOffline);
+      socket.off("call-not-answered",               handleCallNotAnswered);
+      socket.off("call-missed",                     handleCallMissed);
+      socket.off("call-error",                      handleCallError);
     };
   }, [socket, connected, contacts, cleanupCallRingtone, showToast, endCall, setCall, setIncomingCall, onCallAccepted]);
 

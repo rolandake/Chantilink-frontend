@@ -1,60 +1,41 @@
 // ============================================
-// 📁 src/components/IncomingCallModal.jsx  v2
-// ─ Notification push si onglet en arrière-plan (Page Visibility API)
-// ─ Compte à rebours visuel 30 s
-// ─ Sonnerie CallRingtone sur le destinataire
-// ─ Animation d'avatar pulsante
-// ─ Boutons Décrocher / Refuser accessibles
+// 📁 src/components/IncomingCallModal.jsx  v3
+// FIXES :
+//  - ✅ BUG CRITIQUE : `Notification.permission` était accédé sans vérifier
+//    que `Notification` existe dans l'environnement. Sur Safari iOS et la
+//    plupart des WebViews mobiles, `Notification` est undefined → ça levait
+//    une ReferenceError EN PLEIN useEffect, après le démarrage de la
+//    sonnerie/vibration mais AVANT l'enregistrement du cleanup et du
+//    timer d'auto-rejet. Résultat : la sonnerie jouait (audible), mais le
+//    composant ne finissait jamais son effet correctement — d'où les
+//    boutons Décrocher/Refuser invisibles ou inertes.
+//  - ✅ Sonnerie/vibration/notification retirées d'ici : Messages.jsx gère
+//    déjà CallRingtone + vibrateCall + startTabCallAlert dans son listener
+//    "incoming-call". Les dupliquer ici causait une double sonnerie non
+//    synchronisée (celle du modal n'était jamais stoppée par
+//    handleAcceptCall/handleRejectCall, qui ne connaissent que la ref de
+//    Messages.jsx).
+//  - Ce composant est maintenant purement présentationnel : affichage +
+//    compte à rebours visuel 30 s + boutons. L'auto-rejet réel après 30 s
+//    est piloté côté serveur (call-missed / call-not-answered, gérés dans
+//    Messages.jsx) ; le timer local sert uniquement de filet de secours
+//    visuel/UX si jamais l'événement serveur tarde.
 // ============================================
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Phone, PhoneOff, Video, VideoOff } from "lucide-react";
-import {
-  CallRingtone,
-  vibrateCall,
-  stopVibration,
-  startTabCallAlert,
-  stopTabCallAlert,
-} from "../utils/callSounds";
+import { motion } from "framer-motion";
+import { Phone, PhoneOff, Video } from "lucide-react";
 
 const RING_DURATION_S = 30;
 
 export default function IncomingCallModal({ caller, callType, onAccept, onReject }) {
   const [remaining, setRemaining] = useState(RING_DURATION_S);
-  const ringRef     = useRef(null);
-  const timerRef    = useRef(null);
-  const countRef    = useRef(null);
+  const timerRef = useRef(null);
+  const countRef = useRef(null);
 
-  // ── Démarrer sonnerie + vibration + alerte onglet ──────────────────────
+  // ── Compte à rebours visuel uniquement (pas de son/vibration ici) ───────
   useEffect(() => {
     if (!caller) return;
 
-    // Sonnerie
-    ringRef.current = new CallRingtone();
-    ringRef.current.start();
-
-    // Vibration
-    try { vibrateCall(); } catch {}
-
-    // Alerte onglet arrière-plan
-    startTabCallAlert(caller.fullName || "Inconnu");
-
-    // Notification browser (si autorisé)
-    if (Notification.permission === "granted") {
-      try {
-        new Notification(`📞 Appel ${callType === "video" ? "vidéo" : "audio"}`, {
-          body:    `${caller.fullName || "Quelqu'un"} vous appelle`,
-          icon:    caller.profilePhoto || "/icon-192.png",
-          tag:     "incoming-call",
-          renotify: true,
-          requireInteraction: true,
-        });
-      } catch {}
-    } else if (Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
-    }
-
-    // Compte à rebours
     setRemaining(RING_DURATION_S);
     countRef.current = setInterval(() => {
       setRemaining((r) => {
@@ -66,22 +47,20 @@ export default function IncomingCallModal({ caller, callType, onAccept, onReject
       });
     }, 1000);
 
-    // Auto-rejet après RING_DURATION_S
+    // Filet de secours local : si rien ne vient du serveur après 30s,
+    // on déclenche quand même onReject côté UI.
     timerRef.current = setTimeout(() => {
       cleanup();
       onReject?.();
     }, RING_DURATION_S * 1000);
 
     return cleanup;
-  }, [caller?.id]); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caller?.id]);
 
   const cleanup = useCallback(() => {
-    ringRef.current?.stop();
-    ringRef.current = null;
-    stopVibration();
-    stopTabCallAlert();
-    if (timerRef.current)  { clearTimeout(timerRef.current);   timerRef.current  = null; }
-    if (countRef.current)  { clearInterval(countRef.current);  countRef.current  = null; }
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    if (countRef.current) { clearInterval(countRef.current); countRef.current = null; }
   }, []);
 
   const handleAccept = useCallback(() => {

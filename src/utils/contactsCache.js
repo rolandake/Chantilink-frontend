@@ -42,7 +42,6 @@ export const readOnAppContacts = (ownerId) => {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    // ✅ Filtrer les entrées corrompues (sans id valide)
     return parsed.filter((c) => normalizeId(c.id || c._id));
   } catch {
     return [];

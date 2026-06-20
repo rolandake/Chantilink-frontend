@@ -22,16 +22,26 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
 
   const [stream, setStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
+  const [callDuration, setCallDuration] = useState(0);
   const localVideoRef     = useRef(null);
   const remoteVideoRef    = useRef(null);
   const peerConnectionRef = useRef(null);
   const callIdRef         = useRef(call?.callId || null);
   const pendingCandidatesRef = useRef([]);
+  const durationTimerRef = useRef(null);
+  const callStartTimeRef = useRef(null);
 
   // ✅ Guards anti double-déclenchement
   const hasStartedRef  = useRef(false);
   const hasAcceptedRef = useRef(false);
   const prevCallOnRef  = useRef(false);
+
+  // ── Format durée en MM:SS ────────────────────────────────────────────────
+  const formatDuration = useCallback((seconds) => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  }, []);
 
   const ICE_SERVERS = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
@@ -290,6 +300,12 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
   const endCall = () => {
     console.log("[CallManager] Raccrochage manuel...");
 
+    // Arrêter le timer de durée
+    if (durationTimerRef.current) {
+      clearInterval(durationTimerRef.current);
+      durationTimerRef.current = null;
+    }
+
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
@@ -302,8 +318,37 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
       socket.emit("end-call", { callId: callIdRef.current });
     }
 
+    setCallDuration(0);
+    callStartTimeRef.current = null;
     onEndCall();
   };
+
+  // ── Timer de durée d'appel ────────────────────────────────────────────────
+  useEffect(() => {
+    if (call?.on && !durationTimerRef.current) {
+      // Démarrer le timer quand l'appel commence
+      callStartTimeRef.current = Date.now();
+      durationTimerRef.current = setInterval(() => {
+        if (callStartTimeRef.current) {
+          const elapsed = Math.floor((Date.now() - callStartTimeRef.current) / 1000);
+          setCallDuration(elapsed);
+        }
+      }, 1000);
+    } else if (!call?.on && durationTimerRef.current) {
+      // Arrêter le timer quand l'appel se termine
+      clearInterval(durationTimerRef.current);
+      durationTimerRef.current = null;
+      setCallDuration(0);
+      callStartTimeRef.current = null;
+    }
+
+    return () => {
+      if (durationTimerRef.current) {
+        clearInterval(durationTimerRef.current);
+        durationTimerRef.current = null;
+      }
+    };
+  }, [call?.on]);
 
   // ✅ FIX PRINCIPAL : ne plus bloquer le rendu pour les appels entrants
   if (!call?.on) return null;
@@ -363,6 +408,11 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
             <p className="text-sm text-gray-300 drop-shadow-md">
               {remoteStream ? "En communication" : "Appel en cours..."}
             </p>
+            {call.on && (
+              <p className="text-lg font-mono font-bold text-green-400 drop-shadow-md mt-1">
+                {formatDuration(callDuration)}
+              </p>
+            )}
           </div>
         </div>
 
