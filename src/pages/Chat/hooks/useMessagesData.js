@@ -2,7 +2,7 @@
 // 📁 src/pages/Chat/hooks/useMessagesData.js
 // VERSION AVEC CACHE IndexedDB + OPTIMISATION ANTI-SPAM
 // ============================================
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { API } from "../../../services/apiService";
 import messageCache from "../../../utils/messageCache";
 
@@ -24,6 +24,15 @@ const GLOBAL_COOLDOWN = 5000;
 let lastGlobalFetch = 0;
 
 export function useMessagesData(token, showToast) {
+  const currentUserId = useMemo(() => {
+    try {
+      const payload = JSON.parse(atob((token || "").split(".")[1] || ""));
+      return String(payload.id || payload._id || payload.userId || payload.sub || "").trim().toLowerCase();
+    } catch {
+      return "";
+    }
+  }, [token]);
+
   const [ui, setUi] = useState({
     load: true,
     up: false,
@@ -111,8 +120,8 @@ export function useMessagesData(token, showToast) {
     try {
       // 1️⃣ Charger d'abord depuis le cache (UX instantanée)
       const [cachedConversations, cachedContacts] = await Promise.all([
-        messageCache.getConversations().catch(() => []),
-        messageCache.getContacts().catch(() => [])
+        messageCache.getConversations(currentUserId).catch(() => []),
+        messageCache.getContacts(currentUserId).catch(() => [])
       ]);
 
       if (isMounted.current && (cachedConversations.length > 0 || cachedContacts.length > 0)) {
@@ -166,8 +175,8 @@ export function useMessagesData(token, showToast) {
       const freshConversations = convRes.conversations || [];
       
       // 3️⃣ Mettre à jour le cache avec les nouvelles données
-      if (freshConversations.length > 0) {
-        await messageCache.saveConversations(freshConversations);
+      if (freshConversations.length > 0 && currentUserId) {
+        await messageCache.saveConversations(currentUserId, freshConversations);
       }
 
       // Calculer les messages non lus
@@ -225,7 +234,7 @@ export function useMessagesData(token, showToast) {
       }
       globalCache.isLoading = false;
     }
-  }, [token]);
+  }, [token, currentUserId]);
 
   /**
    * ✅ CHARGER MESSAGES D'UNE CONVERSATION AVEC CACHE

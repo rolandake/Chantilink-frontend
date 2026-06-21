@@ -305,12 +305,12 @@ export default function Messages() {
   const loadContacts = useCallback(async () => {
     if (!token) return;
     try {
-      const cached = await messageCache.getContacts();
+      const cached = await messageCache.getContacts(currentUserId);
       const cachedVisible = filterDeletedContacts(cached);
       if (cachedVisible.length > 0) setContacts(cachedVisible);
       const result = await API.getContacts(token);
       const list   = filterDeletedContacts(result.contacts || []);
-      await messageCache.saveContacts(list);
+      await messageCache.saveContacts(currentUserId, list);
       setContacts(list);
     } catch (e) { console.error("loadContacts:", e); }
   }, [token, filterDeletedContacts]);
@@ -319,7 +319,7 @@ export default function Messages() {
     if (!token) return;
     setLoading(true);
     try {
-      const cached = await messageCache.getConversations();
+      const cached = await messageCache.getConversations(currentUserId);
       const cachedVisible = filterDeletedContacts(cached);
       if (cachedVisible.length > 0) {
         setConversations(cachedVisible);
@@ -330,7 +330,7 @@ export default function Messages() {
       const result = await API.getConversations(token);
       const fresh  = filterDeletedContacts(result.conversations || []);
       if (fresh.length > 0) {
-        await messageCache.saveConversations(fresh);
+        await messageCache.saveConversations(currentUserId, fresh);
         setConversations(fresh);
         fresh.forEach((c) => {
           const id = normalizeId(c.id || c._id);

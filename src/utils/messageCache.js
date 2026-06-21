@@ -4,7 +4,7 @@
 // ============================================
 
 const DB_NAME = 'ChantilinkMessagesDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const MESSAGES_STORE = 'messages';
 const CONVERSATIONS_STORE = 'conversations';
 const CONTACTS_STORE = 'contacts';
@@ -47,17 +47,28 @@ class MessageCacheService {
           messagesStore.createIndex('recipient', 'recipient', { unique: false });
         }
 
+        if (event.oldVersion < 2) {
+          if (db.objectStoreNames.contains(CONVERSATIONS_STORE)) {
+            db.deleteObjectStore(CONVERSATIONS_STORE);
+          }
+          if (db.objectStoreNames.contains(CONTACTS_STORE)) {
+            db.deleteObjectStore(CONTACTS_STORE);
+          }
+        }
+
         // Store pour les conversations
         if (!db.objectStoreNames.contains(CONVERSATIONS_STORE)) {
           const conversationsStore = db.createObjectStore(CONVERSATIONS_STORE, { 
-            keyPath: 'id' 
+            keyPath: 'cacheKey'
           });
+          conversationsStore.createIndex('ownerId', 'ownerId', { unique: false });
           conversationsStore.createIndex('lastMessageTime', 'lastMessageTime', { unique: false });
         }
 
         // Store pour les contacts
         if (!db.objectStoreNames.contains(CONTACTS_STORE)) {
-          db.createObjectStore(CONTACTS_STORE, { keyPath: 'id' });
+          const contactsStore = db.createObjectStore(CONTACTS_STORE, { keyPath: 'cacheKey' });
+          contactsStore.createIndex('ownerId', 'ownerId', { unique: false });
         }
 
         console.log('🔧 [MessageCache] Stores créés');
@@ -70,6 +81,18 @@ class MessageCacheService {
    */
   getConversationId(userId1, userId2) {
     return [userId1, userId2].sort().join('_');
+  }
+
+  normalizeId(value) {
+    if (!value) return '';
+    if (typeof value === 'object') return String(value._id || value.id || '').trim().toLowerCase();
+    return String(value).trim().toLowerCase();
+  }
+
+  scopedCacheKey(ownerId, itemId) {
+    const owner = this.normalizeId(ownerId);
+    const item = this.normalizeId(itemId);
+    return owner && item ? `${owner}:${item}` : item;
   }
 
   // ============================================
@@ -232,16 +255,24 @@ class MessageCacheService {
   /**
    * Sauvegarder les conversations
    */
-  async saveConversations(conversations) {
+  async saveConversations(ownerIdOrConversations, maybeConversations) {
     await this.initPromise;
+    const hasOwner = Array.isArray(maybeConversations);
+    const ownerId = hasOwner ? this.normalizeId(ownerIdOrConversations) : '';
+    const conversations = hasOwner ? maybeConversations : ownerIdOrConversations;
     
     return new Promise((resolve, reject) => {
       const transaction = this.db.transaction([CONVERSATIONS_STORE], 'readwrite');
       const store = transaction.objectStore(CONVERSATIONS_STORE);
       
       conversations.forEach(conv => {
+        const id = this.normalizeId(conv.id || conv._id);
+        if (!id) return;
         const convToStore = {
           ...conv,
+          id,
+          ownerId,
+          cacheKey: this.scopedCacheKey(ownerId, id),
           cachedAt: Date.now()
         };
         store.put(convToStore);
@@ -262,18 +293,21 @@ class MessageCacheService {
   /**
    * Récupérer toutes les conversations
    */
-  async getConversations() {
+  async getConversations(ownerId = '') {
     await this.initPromise;
+    const normalizedOwner = this.normalizeId(ownerId);
     
     return new Promise((resolve, reject) => {
       const transaction = this.db.transaction([CONVERSATIONS_STORE], 'readonly');
       const store = transaction.objectStore(CONVERSATIONS_STORE);
-      const request = store.getAll();
+      const request = normalizedOwner
+        ? store.index('ownerId').getAll(normalizedOwner)
+        : store.getAll();
 
       request.onsuccess = () => {
-        const conversations = request.result.sort((a, b) => 
-          new Date(b.lastMessageTime) - new Date(a.lastMessageTime)
-        );
+        const conversations = request.result
+          .map(({ cacheKey, ownerId: _ownerId, ...conv }) => conv)
+          .sort((a, b) => new Date(b.lastMessageTime) - new Date(a.lastMessageTime));
         console.log(`📥 [MessageCache] ${conversations.length} conversations récupérées`);
         resolve(conversations);
       };
@@ -292,16 +326,24 @@ class MessageCacheService {
   /**
    * Sauvegarder les contacts
    */
-  async saveContacts(contacts) {
+  async saveContacts(ownerIdOrContacts, maybeContacts) {
     await this.initPromise;
+    const hasOwner = Array.isArray(maybeContacts);
+    const ownerId = hasOwner ? this.normalizeId(ownerIdOrContacts) : '';
+    const contacts = hasOwner ? maybeContacts : ownerIdOrContacts;
     
     return new Promise((resolve, reject) => {
       const transaction = this.db.transaction([CONTACTS_STORE], 'readwrite');
       const store = transaction.objectStore(CONTACTS_STORE);
       
       contacts.forEach(contact => {
+        const id = this.normalizeId(contact.id || contact._id);
+        if (!id) return;
         const contactToStore = {
           ...contact,
+          id,
+          ownerId,
+          cacheKey: this.scopedCacheKey(ownerId, id),
           cachedAt: Date.now()
         };
         store.put(contactToStore);
@@ -322,17 +364,20 @@ class MessageCacheService {
   /**
    * Récupérer tous les contacts
    */
-  async getContacts() {
+  async getContacts(ownerId = '') {
     await this.initPromise;
+    const normalizedOwner = this.normalizeId(ownerId);
     
     return new Promise((resolve, reject) => {
       const transaction = this.db.transaction([CONTACTS_STORE], 'readonly');
       const store = transaction.objectStore(CONTACTS_STORE);
-      const request = store.getAll();
+      const request = normalizedOwner
+        ? store.index('ownerId').getAll(normalizedOwner)
+        : store.getAll();
 
       request.onsuccess = () => {
         console.log(`📥 [MessageCache] ${request.result.length} contacts récupérés`);
-        resolve(request.result);
+        resolve(request.result.map(({ cacheKey, ownerId: _ownerId, ...contact }) => contact));
       };
 
       request.onerror = () => {
