@@ -107,6 +107,54 @@ export const removeContactFromCache = (contactId, ownerId) => {
   }
 };
 
+const deletedKey = (ownerId) => {
+  const id = normalizeId(ownerId);
+  if (!id) return null;
+  return `chantilink_deleted_contacts_${id}`;
+};
+
+export const readDeletedContactIds = (ownerId) => {
+  const key = deletedKey(ownerId);
+  if (!key) return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(parsed) ? parsed.map(normalizeId).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+};
+
+export const isContactDeleted = (contactId, ownerId) => {
+  const id = normalizeId(contactId);
+  if (!id) return false;
+  return readDeletedContactIds(ownerId).includes(id);
+};
+
+export const markContactDeleted = (contactId, ownerId) => {
+  const key = deletedKey(ownerId);
+  const id = normalizeId(contactId);
+  if (!key || !id) return;
+  try {
+    const ids = new Set(readDeletedContactIds(ownerId));
+    ids.add(id);
+    localStorage.setItem(key, JSON.stringify([...ids]));
+  } catch (e) {
+    console.error("[contactsCache] markContactDeleted error:", e);
+  }
+};
+
+export const unmarkContactDeleted = (contactId, ownerId) => {
+  const key = deletedKey(ownerId);
+  const id = normalizeId(contactId);
+  if (!key || !id) return;
+  try {
+    const ids = readDeletedContactIds(ownerId).filter((item) => item !== id);
+    localStorage.setItem(key, JSON.stringify(ids));
+  } catch (e) {
+    console.error("[contactsCache] unmarkContactDeleted error:", e);
+  }
+};
+
 // ──────────────────────────────────────────────────────────────────────────
 // Vider tous les contacts du cache (déconnexion)
 // ──────────────────────────────────────────────────────────────────────────
@@ -115,6 +163,8 @@ export const clearOnAppContacts = (ownerId) => {
   if (!key) return;
   try {
     localStorage.removeItem(key);
+    const deleted = deletedKey(ownerId);
+    if (deleted) localStorage.removeItem(deleted);
   } catch (e) {
     console.error("[contactsCache] clearOnAppContacts error:", e);
   }

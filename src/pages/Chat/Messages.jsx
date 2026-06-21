@@ -43,6 +43,8 @@ import { useToast }  from "../../context/ToastContext";
 import { API }       from "../../services/apiService";
 import {
   saveContactToOnApp,
+  unmarkContactDeleted,
+  readDeletedContactIds,
   normalizeId,           // ✅ FIX : utiliser normalizeId partout (remplace getEntityId pour userId)
 } from "../../utils/contactsCache";
 import messageCache  from "../../utils/messageCache";
@@ -257,6 +259,12 @@ export default function Messages() {
   // ✅ FIX : normalizeId pour currentUserId → même clé que ContactSidebar
   const currentUserId = normalizeId(user?.id || user?._id);
 
+  const filterDeletedContacts = useCallback((list = []) => {
+    if (!currentUserId) return list;
+    const deleted = new Set(readDeletedContactIds(currentUserId));
+    return list.filter((item) => !deleted.has(normalizeId(item.id || item._id)));
+  }, [currentUserId]);
+
   const onboardingKey   = currentUserId ? `chantilink_onboarding_done_${currentUserId}` : null;
   const needsOnboarding = onboardingKey && !localStorage.getItem(onboardingKey) && !user?.phone;
   const [showOnboarding, setShowOnboarding] = useState(needsOnboarding);
@@ -298,29 +306,29 @@ export default function Messages() {
     if (!token) return;
     try {
       const cached = await messageCache.getContacts();
-      if (cached.length > 0) setContacts(cached);
+      const cachedVisible = filterDeletedContacts(cached);
+      if (cachedVisible.length > 0) setContacts(cachedVisible);
       const result = await API.getContacts(token);
-      const list   = result.contacts || [];
-      if (list.length > 0) {
-        await messageCache.saveContacts(list);
-        setContacts(list);
-      }
+      const list   = filterDeletedContacts(result.contacts || []);
+      await messageCache.saveContacts(list);
+      setContacts(list);
     } catch (e) { console.error("loadContacts:", e); }
-  }, [token]);
+  }, [token, filterDeletedContacts]);
 
   const loadConversations = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
       const cached = await messageCache.getConversations();
-      if (cached.length > 0) {
-        setConversations(cached);
+      const cachedVisible = filterDeletedContacts(cached);
+      if (cachedVisible.length > 0) {
+        setConversations(cachedVisible);
         const counts = {};
-        cached.forEach((c) => { if (c.unreadCount > 0) counts[normalizeId(c.id)] = c.unreadCount; });
+        cachedVisible.forEach((c) => { if (c.unreadCount > 0) counts[normalizeId(c.id)] = c.unreadCount; });
         setUnreadCounts((p) => ({ ...p, ...counts }));
       }
       const result = await API.getConversations(token);
-      const fresh  = result.conversations || [];
+      const fresh  = filterDeletedContacts(result.conversations || []);
       if (fresh.length > 0) {
         await messageCache.saveConversations(fresh);
         setConversations(fresh);
@@ -334,10 +342,12 @@ export default function Messages() {
           if (c.unreadCount > 0 && id) counts[id] = c.unreadCount;
         });
         setUnreadCounts((p) => ({ ...p, ...counts }));
+      } else {
+        setConversations([]);
       }
     } catch (e) { console.error("loadConversations:", e); showToast("Erreur de chargement", "error"); }
     finally { setLoading(false); }
-  }, [token, showToast, currentUserId]);
+  }, [token, showToast, currentUserId, filterDeletedContacts]);
 
   const handleOnboardingComplete = useCallback(() => {
     if (onboardingKey) localStorage.setItem(onboardingKey, "1");
@@ -370,9 +380,20 @@ export default function Messages() {
   // ✅ FIX : sauvegarder immédiatement dans le cache local avec currentUserId normalisé
   const handlePickerSync = useCallback((found) => {
     if (currentUserId && found.length > 0) {
+      const normalizedFound = [];
       found.forEach((c) => {
         const id = normalizeId(c.id || c._id);
-        if (id) saveContactToOnApp({ ...c, id }, currentUserId);
+        if (id) {
+          unmarkContactDeleted(id, currentUserId);
+          const entry = { ...c, id };
+          saveContactToOnApp(entry, currentUserId);
+          normalizedFound.push(entry);
+        }
+      });
+      setContacts((prev) => {
+        const map = new Map(prev.map((item) => [normalizeId(item.id || item._id), item]));
+        normalizedFound.forEach((item) => map.set(item.id, { ...map.get(item.id), ...item }));
+        return Array.from(map.values());
       });
     }
     loadContacts();
@@ -506,22 +527,48 @@ export default function Messages() {
   const handleEmojiSelect = useCallback((emoji) => { setInput((p) => p + emoji.emoji); setShowEmoji(false); }, []);
 
   // ── Appels ────────────────────────────────────────────────────────────────
-  const handleVideoCall = useCallback(() => {
+  const ensureCallPermissions = useCallback(async (callType) => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      showToast("Micro/camera non disponibles sur ce navigateur", "error");
+      return false;
+    }
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: callType === "video",
+      });
+      mediaStream.getTracks().forEach((track) => track.stop());
+      return true;
+    } catch (err) {
+      const mediaName = callType === "video" ? "micro et camera" : "micro";
+      const denied = err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError";
+      showToast(
+        denied
+          ? `Autorisez l'acces au ${mediaName} pour passer l'appel`
+          : `Impossible d'acceder au ${mediaName}`,
+        "error"
+      );
+      return false;
+    }
+  }, [showToast]);
+
+  const handleVideoCall = useCallback(async () => {
     const c = selectedContactRef.current;
     if (!c) { showToast("Aucun contact sélectionné", "error"); return; }
-    setCall({ on: true, type: "video", friend: c, mute: false, video: true, isIncoming: false, callId: null });
+    if (!(await ensureCallPermissions("video"))) return;
     startCall("video");
-  }, [startCall, showToast, setCall]);
+  }, [startCall, showToast, ensureCallPermissions]);
 
-  const handleAudioCall = useCallback(() => {
+  const handleAudioCall = useCallback(async () => {
     const c = selectedContactRef.current;
     if (!c) { showToast("Aucun contact sélectionné", "error"); return; }
-    setCall({ on: true, type: "audio", friend: c, mute: false, video: false, isIncoming: false, callId: null });
+    if (!(await ensureCallPermissions("audio"))) return;
     startCall("audio");
-  }, [startCall, showToast, setCall]);
+  }, [startCall, showToast, ensureCallPermissions]);
 
-  const handleAcceptCall = useCallback(() => {
+  const handleAcceptCall = useCallback(async () => {
     if (!incomingCall || !socket) return;
+    if (!(await ensureCallPermissions(incomingCall.type))) return;
     ringtoneRef.current?.stop(); ringtoneRef.current = null;
     stopVibration(); stopTabCallAlert();
     socket.emit("accept-call", { callId: incomingCall.callId });
@@ -529,7 +576,7 @@ export default function Messages() {
     setCall({ on: true, type: incomingCall.type, friend: incomingCall.friend, mute: false, video: incomingCall.type === "video", isIncoming: true, callId: incomingCall.callId });
     setIncomingCall(null);
     cleanupCallRingtone();
-  }, [incomingCall, socket, setCall, setIncomingCall, cleanupCallRingtone]);
+  }, [incomingCall, socket, setCall, setIncomingCall, cleanupCallRingtone, ensureCallPermissions]);
 
   const handleRejectCall = useCallback(() => {
     if (!incomingCall || !socket) return;
@@ -554,6 +601,24 @@ export default function Messages() {
 
   const handleBack = useCallback(() => {
     setView("contacts"); setSelectedContact(null); selectedContactRef.current = null; setMessages([]);
+  }, []);
+
+  const handleContactDeleted = useCallback((id) => {
+    const normalizedId = normalizeId(id);
+    if (!normalizedId) return;
+    setContacts((prev) => prev.filter((c) => normalizeId(c.id || c._id) !== normalizedId));
+    setConversations((prev) => prev.filter((c) => normalizeId(c.id || c._id) !== normalizedId));
+    setUnreadCounts((prev) => {
+      const next = { ...prev };
+      delete next[normalizedId];
+      return next;
+    });
+    if (normalizeId(selectedContactRef.current?.id) === normalizedId) {
+      setView("contacts");
+      setSelectedContact(null);
+      selectedContactRef.current = null;
+      setMessages([]);
+    }
   }, []);
 
   const handleDeleteMessage = useCallback(async (messageId) => {
@@ -796,6 +861,7 @@ export default function Messages() {
               onlineUsers={onlineUsers}
               user={user}
               onPickerSync={handlePickerSync}
+              onContactDeleted={handleContactDeleted}
               onShowPending={() => setModal("pending")}
               onShowMissedCalls={() => setModal("missed")}
               missedCallsCount={missedCallsCount}

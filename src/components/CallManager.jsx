@@ -50,6 +50,16 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
     if (call?.callId) callIdRef.current = call.callId;
   }, [call?.callId]);
 
+  useEffect(() => {
+    if (!stream) return;
+    stream.getAudioTracks().forEach((track) => {
+      track.enabled = !call.mute;
+    });
+    stream.getVideoTracks().forEach((track) => {
+      track.enabled = !!call.video;
+    });
+  }, [stream, call.mute, call.video]);
+
   // ── Créer une PeerConnection commune (appelant + appelé) ───────────────
   const createPeerConnection = useCallback((mediaStream, remoteUserId) => {
     const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -383,7 +393,7 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
         </div>
 
         {/* Vidéo Locale */}
-        {call.video && stream && (
+        {call.type === "video" && call.video && stream && (
           <motion.div
             drag
             dragConstraints={{ left: 0, right: 200, top: 0, bottom: 200 }}
@@ -427,7 +437,7 @@ const CallManager = ({ call, onEndCall, onToggleMute, onToggleVideo, socket }) =
             {call.mute ? <MicOff size={24} /> : <Mic size={24} />}
           </button>
 
-          {call.video && (
+          {call.type === "video" && (
             <button
               onClick={onToggleVideo}
               className={`p-4 rounded-full transition-all duration-300 ${

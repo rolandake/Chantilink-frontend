@@ -19,45 +19,16 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useToast } from "../../context/ToastContext";
+import { API } from "../../services/apiService";
 import {
   readOnAppContacts,
   saveContactToOnApp,
   removeContactFromCache,
+  markContactDeleted,
+  unmarkContactDeleted,
+  readDeletedContactIds,
   normalizeId,   // ✅ FIX : même fonction que Messages.jsx
 } from "../../utils/contactsCache";
-
-const BASE_URL =
-  import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD
-    ? "https://chantilink-backend.onrender.com/api"
-    : "http://localhost:5000/api");
-
-// ─── API ─────────────────────────────────────────────────────────────────────
-const syncContactsAPI = async (token, contacts) => {
-  const res = await fetch(`${BASE_URL}/contacts/sync`, {
-    method:  "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body:    JSON.stringify({ contacts }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
-  return data;
-};
-
-/**
- * Supprime le lien contact entre l'utilisateur courant et un userId cible.
- * Route : DELETE /contacts/:targetUserId
- */
-const deleteContactByUserIdAPI = async (token, targetUserId) => {
-  const res = await fetch(`${BASE_URL}/contacts/${targetUserId}`, {
-    method:  "DELETE",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 404) return { success: true };
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || `Erreur ${res.status}`);
-  return data;
-};
 
 const openContactPicker = async () => {
   try {
@@ -107,12 +78,15 @@ const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
       const picked = await openContactPicker();
       if (!picked) { setLoading(false); return; }
       if (!picked.length) { showToast("Aucun contact sélectionné", "info"); setLoading(false); return; }
-      const data  = await syncContactsAPI(token, picked);
+      const data  = await API.syncContacts(token, picked);
       const found = data.onChantilink || [];
       // ✅ FIX : sauvegarder avec userId normalisé
       found.forEach((c) => {
         const id = normalizeId(c.id || c._id);
-        if (id && userId) saveContactToOnApp({ ...c, id }, userId);
+        if (id && userId) {
+          unmarkContactDeleted(id, userId);
+          saveContactToOnApp({ ...c, id }, userId);
+        }
       });
       setResult({ found, total: picked.length });
       onPickerSync?.(found);
@@ -127,11 +101,14 @@ const AddContactModal = ({ token, userId, onClose, onPickerSync }) => {
     if (clean.length < 10)  return setError("Numéro trop court (min 10 chiffres)");
     setLoading(true);
     try {
-      const data  = await syncContactsAPI(token, [{ phone: clean, name: form.name.trim() }]);
+      const data  = await API.syncContacts(token, [{ phone: clean, name: form.name.trim() }]);
       const found = data.onChantilink || [];
       found.forEach((c) => {
         const id = normalizeId(c.id || c._id);
-        if (id && userId) saveContactToOnApp({ ...c, id }, userId);
+        if (id && userId) {
+          unmarkContactDeleted(id, userId);
+          saveContactToOnApp({ ...c, id }, userId);
+        }
       });
       setResult({ found, total: 1 });
       onPickerSync?.(found);
@@ -290,6 +267,7 @@ export const ContactSidebar = ({
   onPickerSync,
   onShowPending,
   onShowMissedCalls,
+  onContactDeleted,
   missedCallsCount = 0,
   onBack,
 }) => {
@@ -301,10 +279,17 @@ export const ContactSidebar = ({
   const [search,        setSearch]        = useState("");
   const [showAdd,       setShowAdd]       = useState(false);
   const [deletingId,    setDeletingId]    = useState(null);
+  const [deletedIds,    setDeletedIds]    = useState(new Set());
 
   // ── Charger contacts depuis cache local ──────────────────────────────────
   const reloadLocal = useCallback(() => {
-    if (userId) setOnAppContacts(readOnAppContacts(userId));
+    if (userId) {
+      const deleted = new Set(readDeletedContactIds(userId));
+      setDeletedIds(deleted);
+      setOnAppContacts(
+        readOnAppContacts(userId).filter((c) => !deleted.has(normalizeId(c.id || c._id)))
+      );
+    }
   }, [userId]);
 
   useEffect(() => {
@@ -322,13 +307,14 @@ export const ContactSidebar = ({
   //   (les contacts ajoutés manuellement ont la priorité)
   useEffect(() => {
     if (!userId || contacts.length === 0) return;
+    const deleted = new Set(readDeletedContactIds(userId));
     const existingIds = new Set(
       readOnAppContacts(userId).map((c) => normalizeId(c.id || c._id))
     );
     contacts.forEach((c) => {
       const id = normalizeId(c.id || c._id);
       // Ne sauvegarder que les contacts qui n'existent pas déjà dans le cache
-      if (id && !existingIds.has(id)) {
+      if (id && !existingIds.has(id) && !deleted.has(id)) {
         saveContactToOnApp({ ...c, id }, userId);
       }
     });
@@ -341,12 +327,12 @@ export const ContactSidebar = ({
 
     conversations.forEach((conv) => {
       const id = normalizeId(conv.id || conv._id);
-      if (id) map.set(id, { ...conv, id, _hasConv: true });
+      if (id && !deletedIds.has(id)) map.set(id, { ...conv, id, _hasConv: true });
     });
 
     onAppContacts.forEach((c) => {
       const id = normalizeId(c.id || c._id);
-      if (id && !map.has(id)) {
+      if (id && !deletedIds.has(id) && !map.has(id)) {
         map.set(id, { ...c, id, _hasConv: false });
       }
     });
@@ -358,7 +344,7 @@ export const ContactSidebar = ({
       const tB = b.lastMessageTime ? new Date(b.lastMessageTime).getTime() : 0;
       return tB - tA;
     });
-  }, [conversations, onAppContacts]);
+  }, [conversations, onAppContacts, deletedIds]);
 
   const filtered = useMemo(() =>
     mergedList.filter((c) =>
@@ -370,9 +356,14 @@ export const ContactSidebar = ({
     const id = normalizeId(targetUserId);
     setDeletingId(id);
     try {
-      await deleteContactByUserIdAPI(token, id);
+      await API.deleteContact(token, id).catch((err) => {
+        if (err?.status !== 404) throw err;
+      });
+      markContactDeleted(id, userId);
       removeContactFromCache(id, userId);
+      setDeletedIds((prev) => new Set([...prev, id]));
       setOnAppContacts((prev) => prev.filter((c) => normalizeId(c.id || c._id) !== id));
+      onContactDeleted?.(id);
       showToast("Contact supprimé", "success");
     } catch (err) {
       showToast(err.message || "Impossible de supprimer", "error");
@@ -385,11 +376,18 @@ export const ContactSidebar = ({
   const handlePickerSync = useCallback((found) => {
     found.forEach((c) => {
       const id = normalizeId(c.id || c._id);
-      if (id && userId) saveContactToOnApp({ ...c, id }, userId);
+      if (id && userId) {
+        unmarkContactDeleted(id, userId);
+        saveContactToOnApp({ ...c, id }, userId);
+        setDeletedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
     });
     setTimeout(() => reloadLocal(), 50);
     onPickerSync?.(found);
-    setShowAdd(false);
   }, [userId, onPickerSync, reloadLocal]);
 
   return (
