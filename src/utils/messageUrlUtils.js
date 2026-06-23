@@ -3,6 +3,8 @@
 // Extraction robuste des URLs de fichiers dans les messages
 // ============================================
 
+const DEBUG_MESSAGE_URLS = false;
+
 /**
  * ✅ EXTRACTION ROBUSTE DE L'URL D'UN MESSAGE
  * Vérifie TOUS les champs possibles où l'URL peut être stockée
@@ -20,7 +22,7 @@ export const getMessageUrl = (message) => {
   const shouldLog = message.type && 
                     !['text', 'system', 'missed-call'].includes(message.type);
 
-  if (shouldLog) {
+  if (DEBUG_MESSAGE_URLS && shouldLog) {
     console.log('🔍 [getMessageUrl] Analyse message:', {
       id: message._id,
       type: message.type,
@@ -71,7 +73,7 @@ export const getMessageUrl = (message) => {
       
       // Vérifier que c'est bien une URL (commence par http)
       if (value.startsWith('http://') || value.startsWith('https://')) {
-        if (shouldLog) {
+        if (DEBUG_MESSAGE_URLS && shouldLog) {
           console.log(`✅ [getMessageUrl] URL trouvée dans "${field}":`, value);
         }
         return value;
@@ -80,7 +82,7 @@ export const getMessageUrl = (message) => {
   }
 
   // ❌ Aucune URL valide trouvée
-  if (shouldLog) {
+  if (DEBUG_MESSAGE_URLS && shouldLog) {
     console.warn('⚠️ [getMessageUrl] Aucune URL trouvée pour message:', {
       id: message._id,
       type: message.type,

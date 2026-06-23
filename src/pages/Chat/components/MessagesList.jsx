@@ -74,6 +74,14 @@ const shouldCacheMediaLocally = (type, metadata = {}) => {
   return false;
 };
 
+const isCrossOriginUrl = (url) => {
+  try {
+    return new URL(url, window.location.href).origin !== window.location.origin;
+  } catch {
+    return true;
+  }
+};
+
 // === HOOK CHARGEMENT MÉDIA LOCAL ===
 const useLocalMedia = (messageId, remoteUrl, type, metadata = {}) => {
   const [localUrl, setLocalUrl] = useState(null);
@@ -94,7 +102,7 @@ const useLocalMedia = (messageId, remoteUrl, type, metadata = {}) => {
         setLoading(true);
         setError(null);
 
-        if (!shouldCacheMediaLocally(type, metadata)) {
+        if (isCrossOriginUrl(remoteUrl) || !shouldCacheMediaLocally(type, metadata)) {
           setLocalUrl(remoteUrl);
           setLoading(false);
           return;

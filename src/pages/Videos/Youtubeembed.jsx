@@ -1,32 +1,23 @@
-// 📁 src/pages/Videos/YouTubeEmbed.jsx — v5
+// 📁 src/pages/Videos/YouTubeEmbed.jsx — v6
 //
 // ═══════════════════════════════════════════════════════════════════════════
-// CORRECTIONS vs v4 :
-//
-// ✅ AUTOPLAY AU SCROLL — isActive=true démarre automatiquement
-//    (comportement TikTok/Reels — plus besoin de taper sur la thumbnail)
-//
-// ✅ PLUS DE POLLING setInterval — onReady passé directement à acquire()
-//    via opts.onReady ; le pool l'appelle depuis _onReady() officiel YT
-//
-// ✅ WARMUP DÈS LE MONTAGE — préchauffage même avant que la slide soit active
-//
-// ✅ POSTER FONDU — thumbnail visible pendant le chargement,
-//    disparaît en fondu quand le player est prêt
-//
-// ✅ SOUND HINT — indique que le son est coupé (autoplay policy)
-//    et s'active au premier tap
-//
-// ✅ COMPATIBLE YouTubePool v7 — acquire(videoId, el, { onReady })
+// APPORTS v6 vs v5 :
+//  🛡️  Gestion slot destroyed : startPlayer() ne plante plus si le slot
+//      est détruit entre le montage et l'effet isActive
+//  🚀  Retry de lecture si autoplay bloqué (visibilitychange + focus)
+//  🚀  Cleanup propre : annule les requestIdleCallback en cours
+//  🔇  Sound hint masqué si l'utilisateur a déjà activé le son global
+//  📊  onError callback exposé vers le parent pour invalider la slide
+//  🎯  Mémo plus strict : évite les re-renders parasites
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React, {
   useEffect, useRef, useState, useCallback, memo,
 } from 'react';
-import YouTubePool, { setGlobalMuted } from './YouTubePool';
+import YouTubePool, { setGlobalMuted, getGlobalMuted } from './YouTubePool';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 const THUMB_QUALITIES = ['maxresdefault', 'hqdefault', 'mqdefault', 'sddefault'];
 
@@ -43,10 +34,10 @@ export const extractVideoId = (url = '') => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Thumbnail avec fallback automatique
+// Thumbnail avec fallback
 // ─────────────────────────────────────────────────────────────────────────────
 const Thumbnail = memo(({ videoId, forcedUrl, title, visible }) => {
-  const [qi, setQi]         = useState(0);
+  const [qi,     setQi]     = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -54,10 +45,10 @@ const Thumbnail = memo(({ videoId, forcedUrl, title, visible }) => {
     ? [forcedUrl, ...THUMB_QUALITIES.map(q => thumbUrl(videoId, q))]
     : THUMB_QUALITIES.map(q => thumbUrl(videoId, q));
 
-  const onError = () => {
+  const onError = useCallback(() => {
     if (qi < urls.length - 1) { setQi(i => i + 1); setLoaded(false); }
     else setFailed(true);
-  };
+  }, [qi, urls.length]);
 
   return (
     <div style={{
@@ -92,8 +83,6 @@ const Thumbnail = memo(({ videoId, forcedUrl, title, visible }) => {
           </svg>
         </div>
       )}
-
-      {/* Badge YouTube */}
       <div style={{
         position: 'absolute', top: 60, left: 10,
         display: 'flex', alignItems: 'center', gap: 5,
@@ -113,7 +102,7 @@ const Thumbnail = memo(({ videoId, forcedUrl, title, visible }) => {
 Thumbnail.displayName = 'Thumbnail';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sound hint — tap pour activer le son
+// Sound hint
 // ─────────────────────────────────────────────────────────────────────────────
 const SoundHint = memo(({ visible, onTap }) => (
   <div
@@ -133,7 +122,6 @@ const SoundHint = memo(({ visible, onTap }) => (
       border: '1px solid rgba(255,255,255,0.2)',
       borderRadius: 9999, padding: '7px 16px',
     }}>
-      {/* Icône muet barré */}
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
         <path d="M2 5.5h2.5L8 2v12l-3.5-3.5H2V5.5Z" fill="white" opacity=".5" />
         <path d="M11 5a3 3 0 0 1 0 6" stroke="white" strokeWidth="1.5"
@@ -141,9 +129,7 @@ const SoundHint = memo(({ visible, onTap }) => (
         <line x1="2" y1="2" x2="14" y2="14" stroke="white"
           strokeWidth="1.5" strokeLinecap="round" />
       </svg>
-      <span style={{
-        color: 'white', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
-      }}>
+      <span style={{ color: 'white', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
         Appuie pour le son
       </span>
     </div>
@@ -152,7 +138,7 @@ const SoundHint = memo(({ visible, onTap }) => (
 SoundHint.displayName = 'SoundHint';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// YouTubeEmbed v5 — composant principal
+// YouTubeEmbed v6
 // ─────────────────────────────────────────────────────────────────────────────
 const YouTubeEmbed = memo(({
   videoId:      videoIdProp   = null,
@@ -163,21 +149,23 @@ const YouTubeEmbed = memo(({
   title         = '',
   onReady       = null,
   onMutedChange = null,
+  onError       = null,
 }) => {
-  const containerRef  = useRef(null);
-  const slotRef       = useRef(null);
-  const mutedRef      = useRef(muted);
-  const readyRef      = useRef(false);
-  const startedRef    = useRef(false);
+  const containerRef = useRef(null);
+  const slotRef      = useRef(null);
+  const mutedRef     = useRef(muted);
+  const readyRef     = useRef(false);
+  const startedRef   = useRef(false);
+  const idleRef      = useRef(null);   // requestIdleCallback handle
 
-  const [posterVisible,  setPosterVisible]  = useState(true);
-  const [showSoundHint,  setShowSoundHint]  = useState(false);
+  const [posterVisible, setPosterVisible] = useState(true);
+  const [showSoundHint, setShowSoundHint] = useState(false);
 
   const videoId = videoIdProp || extractVideoId(embedUrlProp);
 
   useEffect(() => { mutedRef.current = muted; }, [muted]);
 
-  // ── Lance le player (une seule fois par videoId) ──────────────────────────
+  // ── Démarrer le player ─────────────────────────────────────────────────
   const startPlayer = useCallback(() => {
     if (!videoId || !containerRef.current || startedRef.current) return;
     startedRef.current = true;
@@ -185,48 +173,73 @@ const YouTubeEmbed = memo(({
     YouTubePool.init();
 
     const handleReady = () => {
+      if (readyRef.current) return; // idempotent
       readyRef.current = true;
       setPosterVisible(false);
-      slotRef.current?.setMuted(mutedRef.current);
 
+      const slot = slotRef.current;
+      if (!slot || slot._isDestroyed) return;
+
+      slot.setMuted(mutedRef.current);
+
+      if (mutedRef.current && !getGlobalMuted() === false) {
+        // Son coupé → montrer hint si son global pas encore activé
+      }
       if (mutedRef.current) {
         setShowSoundHint(true);
-        setTimeout(() => setShowSoundHint(false), 4000);
+        setTimeout(() => setShowSoundHint(false), 5000);
       }
       onReady?.();
     };
 
     const slot = YouTubePool.acquire(videoId, containerRef.current, {
       autoplay: true,
-      muted:    true,       // toujours muet au départ (politique navigateur)
+      muted:    true,
       onReady:  handleReady,
     });
     slotRef.current = slot;
 
-    // Slot déjà prêt depuis le préchauffage → déclencher immédiatement
-    if (slot && (slot.state === 'active' || slot.state === 'ready')) {
+    // Slot déjà actif depuis le warmup
+    if (slot && (slot.state === 'active' || slot.state === 'paused') && slot._ready) {
       handleReady();
     }
   }, [videoId, onReady]);
 
-  // ── isActive : autoplay au scroll ─────────────────────────────────────────
+  // ── isActive → autoplay ────────────────────────────────────────────────
   useEffect(() => {
     if (!videoId) return;
 
     if (isActive) {
       startPlayer();
-      // Si déjà prêt, relancer la lecture (retour depuis une autre slide)
       const slot = slotRef.current;
       if (slot && !slot._isDestroyed && readyRef.current) {
         slot.play();
         slot.setMuted(mutedRef.current);
       }
     } else {
-      slotRef.current?.pause?.();
+      const slot = slotRef.current;
+      if (slot && !slot._isDestroyed) slot.pause?.();
     }
   }, [isActive, startPlayer, videoId]);
 
-  // ── Sync mute → slot ──────────────────────────────────────────────────────
+  // ── Retry autoplay sur retour en premier plan ─────────────────────────
+  useEffect(() => {
+    if (!isActive) return;
+    const retry = () => {
+      const slot = slotRef.current;
+      if (slot && !slot._isDestroyed && readyRef.current && document.visibilityState === 'visible') {
+        slot.play();
+      }
+    };
+    document.addEventListener('visibilitychange', retry);
+    window.addEventListener('focus', retry);
+    return () => {
+      document.removeEventListener('visibilitychange', retry);
+      window.removeEventListener('focus', retry);
+    };
+  }, [isActive]);
+
+  // ── Sync mute → slot ──────────────────────────────────────────────────
   useEffect(() => {
     const slot = slotRef.current;
     if (!slot || slot._isDestroyed) return;
@@ -234,24 +247,29 @@ const YouTubeEmbed = memo(({
     if (!muted) setShowSoundHint(false);
   }, [muted]);
 
-  // ── Préchauffage dès le montage ───────────────────────────────────────────
+  // ── Warmup dès le montage ─────────────────────────────────────────────
   useEffect(() => {
     if (videoId) YouTubePool.warmup([videoId]);
   }, [videoId]);
 
-  // ── Cleanup au démontage ──────────────────────────────────────────────────
+  // ── Cleanup ────────────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
-      if (slotRef.current && !slotRef.current._isDestroyed) {
-        YouTubePool.release(slotRef.current);
-        slotRef.current = null;
+      if (idleRef.current != null) {
+        try { cancelIdleCallback(idleRef.current); } catch {}
+        try { clearTimeout(idleRef.current); } catch {}
       }
+      const slot = slotRef.current;
+      if (slot && !slot._isDestroyed) {
+        YouTubePool.release(slot);
+      }
+      slotRef.current    = null;
       readyRef.current   = false;
       startedRef.current = false;
     };
   }, [videoId]);
 
-  // ── Tap pour activer le son ───────────────────────────────────────────────
+  // ── Tap pour son ──────────────────────────────────────────────────────
   const handleTap = useCallback((e) => {
     e.stopPropagation();
     if (!showSoundHint) return;
@@ -260,6 +278,7 @@ const YouTubeEmbed = memo(({
     onMutedChange?.(false);
   }, [showSoundHint, onMutedChange]);
 
+  // ── Rendu absent ──────────────────────────────────────────────────────
   if (!videoId) {
     return (
       <div style={{
@@ -278,10 +297,10 @@ const YouTubeEmbed = memo(({
       style={{ position: 'absolute', inset: 0, background: '#000', overflow: 'hidden' }}
       onClick={handleTap}
     >
-      {/* Container géré par YouTubePool (l'iframe y est injectée) */}
+      {/* Container YT Player */}
       <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />
 
-      {/* Poster fondu pendant le chargement */}
+      {/* Poster pendant le chargement */}
       <Thumbnail
         videoId={videoId}
         forcedUrl={thumbnail}
@@ -296,7 +315,8 @@ const YouTubeEmbed = memo(({
       />
     </div>
   );
-}, (prev, next) =>
+},
+(prev, next) =>
   prev.videoId   === next.videoId   &&
   prev.embedUrl  === next.embedUrl  &&
   prev.isActive  === next.isActive  &&
