@@ -33,6 +33,7 @@ export const ChatInput = ({
   fileRef
 }) => {
   const [showAttachMenu, setShowAttachMenu] = React.useState(false);
+  const [fileAccept, setFileAccept] = React.useState("image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar");
   const [recordingTime, setRecordingTime] = React.useState(0);
   const timerRef = useRef(null);
 
@@ -74,7 +75,18 @@ export const ChatInput = ({
 
   const handleFileSelect = (type) => {
     setShowAttachMenu(false);
-    fileRef.current?.click();
+    const acceptByType = {
+      image: "image/jpeg,image/png,image/webp,image/gif",
+      video: "video/mp4,video/webm,video/quicktime",
+      file: ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,.7z",
+    };
+    setFileAccept(acceptByType[type] || acceptByType.file);
+    requestAnimationFrame(() => {
+      if (fileRef.current) {
+        fileRef.current.dataset.kind = type;
+        fileRef.current.click();
+      }
+    });
   };
 
   // Mode enregistrement audio
@@ -259,7 +271,7 @@ export const ChatInput = ({
         <input
           ref={fileRef}
           type="file"
-          accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar"
+          accept={fileAccept}
           onChange={onUpload}
           className="hidden"
         />

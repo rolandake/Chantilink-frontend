@@ -35,6 +35,10 @@ const detectFileType = (msg) => {
   if (['image', 'video', 'audio', 'file'].includes(msg.type) && url) {
     return msg.type;
   }
+
+  if (msg.mimeType?.startsWith('image/')) return 'image';
+  if (msg.mimeType?.startsWith('video/')) return 'video';
+  if (msg.mimeType?.startsWith('audio/')) return 'audio';
   
   const urlLower = url.toLowerCase();
   if (urlLower.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?|$)/i)) return 'image';
@@ -62,6 +66,14 @@ const formatDuration = (seconds) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+const shouldCacheMediaLocally = (type, metadata = {}) => {
+  const size = Number(metadata.fileSize || 0);
+  if (type === 'file' || type === 'video') return false;
+  if (type === 'image') return !size || size <= 10 * 1024 * 1024;
+  if (type === 'audio') return !size || size <= 20 * 1024 * 1024;
+  return false;
+};
+
 // === HOOK CHARGEMENT MÉDIA LOCAL ===
 const useLocalMedia = (messageId, remoteUrl, type, metadata = {}) => {
   const [localUrl, setLocalUrl] = useState(null);
@@ -81,6 +93,12 @@ const useLocalMedia = (messageId, remoteUrl, type, metadata = {}) => {
       try {
         setLoading(true);
         setError(null);
+
+        if (!shouldCacheMediaLocally(type, metadata)) {
+          setLocalUrl(remoteUrl);
+          setLoading(false);
+          return;
+        }
 
         const localMedia = await localMediaStorage.getMedia(messageId);
         
@@ -250,6 +268,7 @@ const ImageMessage = React.memo(({ messageId, remoteUrl, isMe, metadata }) => {
 const VideoMessage = React.memo(({ messageId, remoteUrl, metadata }) => {
   const { localUrl, loading } = useLocalMedia(messageId, remoteUrl, 'video', metadata);
   const [loaded, setLoaded] = useState(false);
+  const mimeType = metadata?.mimeType || 'video/mp4';
 
   return (
     <div className="relative rounded-lg overflow-hidden bg-black my-1 max-w-xs">
@@ -268,9 +287,9 @@ const VideoMessage = React.memo(({ messageId, remoteUrl, metadata }) => {
           preload="metadata"
           className={`w-full max-h-80 transition-opacity ${loaded ? 'opacity-100' : 'opacity-0'}`}
           onLoadedMetadata={() => setLoaded(true)}
+          onError={() => setLoaded(true)}
         >
-          <source src={localUrl} type="video/mp4" />
-          <source src={localUrl} type="video/webm" />
+          <source src={localUrl} type={mimeType} />
         </video>
       )}
     </div>
@@ -407,7 +426,8 @@ const MessageItem = React.memo(React.forwardRef(({ msg, prevMsg, currentUserId, 
   const metadata = {
     conversationId,
     fileName: msg.fileName || msg.content,
-    fileSize: msg.fileSize
+    fileSize: msg.fileSize,
+    mimeType: msg.mimeType
   };
 
   const handleDelete = () => {

@@ -88,6 +88,37 @@ const openContactPicker = async () => {
   } catch (err) { console.info("Picker:", err.message); return []; }
 };
 
+const FILE_LIMITS_MB = {
+  image: 10,
+  video: 100,
+  audio: 25,
+  file: 30,
+};
+
+const DOCUMENT_EXTENSIONS = new Set([
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "zip", "rar", "7z",
+]);
+
+const getFileExtension = (name = "") => {
+  const clean = name.split("?")[0].split("#")[0];
+  const ext = clean.includes(".") ? clean.split(".").pop() : "";
+  return (ext || "").toLowerCase();
+};
+
+const getMessageFileType = (file, requestedKind = "") => {
+  const mime = file?.type || "";
+  const ext = getFileExtension(file?.name);
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  if (DOCUMENT_EXTENSIONS.has(ext)) return "file";
+  if (["image", "video", "file"].includes(requestedKind)) return requestedKind;
+  return "";
+};
+
+const cleanFileName = (name = "Fichier") =>
+  name.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, " ").trim().slice(0, 120) || "Fichier";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ONBOARDING
 // ─────────────────────────────────────────────────────────────────────────────
@@ -471,7 +502,22 @@ export default function Messages() {
     const contact = selectedContactRef.current;
     if (!file || !contact || !token) { if (!token) showToast("Session expirée", "error"); return; }
 
-    const maxMb = file.type.startsWith("video/") ? 100 : file.type.startsWith("audio/") ? 25 : 20;
+    const requestedKind = e.target.dataset.kind || "";
+    const msgType = getMessageFileType(file, requestedKind);
+    if (!msgType || (requestedKind && requestedKind !== "file" && requestedKind !== msgType)) {
+      showToast("Format de fichier non autorisé pour cette option", "error");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    if (file.size <= 0) {
+      showToast("Fichier vide ou illisible", "error");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    const safeName = cleanFileName(file.name);
+    const maxMb = FILE_LIMITS_MB[msgType] || FILE_LIMITS_MB.file;
     if (file.size > maxMb * 1024 * 1024) {
       showToast(`Fichier trop volumineux (max ${maxMb} Mo)`, "error");
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -484,25 +530,27 @@ export default function Messages() {
       const up = await API.uploadMessageFile(token, file);
       if (!up.success || !up.url) throw new Error(up?.message || "Upload incomplet");
 
-      let msgType = "file";
-      if (file.type.startsWith("image/")) msgType = "image";
-      else if (file.type.startsWith("audio/")) msgType = "audio";
-      else if (file.type.startsWith("video/")) msgType = "video";
-
       await sendMediaMessage({
         recipientId:  contact.id,
-        content:      file.name,
+        content:      safeName,
         type:         msgType,
         file:         up.url, fileUrl: up.url, url: up.url,
         secure_url:   up.url, attachmentUrl: up.url,
-        fileName:     file.name, fileSize: file.size, mimeType: file.type,
+        fileName:     safeName,
+        originalName:  file.name,
+        fileSize:     file.size,
+        mimeType:     file.type || "application/octet-stream",
+        metadata:     { uploadKind: requestedKind || msgType },
       });
       showToast("✅ Fichier envoyé !", "success");
     } catch (err) {
       showToast(err.message || "❌ Erreur d'envoi", "error");
     } finally {
       setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+        delete fileInputRef.current.dataset.kind;
+      }
     }
   }, [token, sendMediaMessage, showToast]);
 
