@@ -1,14 +1,14 @@
 // src/context/AuthContext.jsx
-// VERSION PERSISTANCE ROBUSTE v2.1
+// VERSION PERSISTANCE ROBUSTE v3.0
 //
-// CORRECTIONS vs version précédente :
-//   ✅ getToken() attend readyRef avant de répondre (plus jamais de null prématuré)
-//   ✅ File d'attente refresh dans AuthContext ET axiosClientGlobal (0 doublon)
-//   ✅ Écoute l'event "auth:token-refreshed" émis par axiosClientGlobal
-//   ✅ Cache sessionStorage : survit aux rechargements (F5, navigation)
-//   ✅ Erreur réseau ≠ déconnexion (seul 401 = logout silencieux)
-//   ✅ Refresh au retour d'onglet + retour réseau
-//   ✅ Sync déconnexion entre onglets via localStorage event
+// CORRECTIONS vs v2 :
+//   ✅ Logout uniquement sur 401 AVEC réponse serveur (pas sur erreur réseau)
+//   ✅ getToken() tolère les erreurs réseau (retourne token cache, ne déconnecte pas)
+//   ✅ Safety timeout étendu à 12s (Render cold start peut prendre 8-10s)
+//   ✅ Retry réseau sur l'init (3 tentatives espacées de 2s)
+//   ✅ refreshAccessToken : erreur réseau → retourne token actuel (pas null)
+//   ✅ Pas de logout sur status 0 / null / undefined (réseau coupé)
+//   ✅ isAuthenticated basé sur user ET token OU user seul (cache offline)
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -59,10 +59,9 @@ console.log(`🔧 [AuthContext] ${isProd ? "PROD" : "DEV"} — ${API_URL}`);
 
 // ─── AXIOS DÉDIÉ AUTH ────────────────────────────────────────────────────────
 // Instance séparée pour les appels auth, sans intercepteurs de retry
-// (évite les boucles infinies)
 const authAxios = axios.create({
   baseURL:         BACKEND_URL,
-  timeout:         12000,
+  timeout:         15000,          // ← étendu à 15s pour Render cold start
   withCredentials: true,
   headers:         { "Content-Type": "application/json" },
 });
@@ -81,7 +80,6 @@ async function saveSession(user, token = null) {
     localStorage.setItem("cl_user", JSON.stringify(user));
     if (typeof sessionStorage !== "undefined") {
       sessionStorage.setItem("cl_user_ss", JSON.stringify(user));
-      // On stocke le token uniquement en sessionStorage (même onglet, pas cross-tab)
       if (token) sessionStorage.setItem("cl_token_ss", token);
     }
   } catch (e) {
@@ -140,6 +138,20 @@ async function clearSession() {
   } catch {}
 }
 
+// ─── HELPER : est-ce vraiment un 401 serveur (pas un timeout/réseau) ─────────
+function isServerUnauthorized(err) {
+  const status = err?.response?.status;
+  // Seulement si le serveur a répondu avec 401 explicitement
+  return status === 401;
+}
+
+// ─── HELPER : est-ce une erreur réseau/timeout (pas une déconnexion) ─────────
+function isNetworkError(err) {
+  const status = err?.response?.status;
+  // Pas de status = pas de réponse serveur (réseau coupé, timeout, CORS, Render cold start)
+  return !status || status === 0 || status >= 500;
+}
+
 // ─── PROVIDER ─────────────────────────────────────────────────────────────────
 export function AuthProvider({ children }) {
   const [user,           setUser]           = useState(null);
@@ -155,10 +167,9 @@ export function AuthProvider({ children }) {
   const currentUserRef = useRef(null);
   const getTokenRef    = useRef(null);
 
-  // Refs synchrones — toujours à jour même dans les closures
   const tokenRef        = useRef(null);
   const tokenExpiresRef = useRef(null);
-  const readyRef        = useRef(false);     // true quand init terminée
+  const readyRef        = useRef(false);
   const isRefreshing    = useRef(false);
   const refreshQueue    = useRef([]);
 
@@ -201,10 +212,9 @@ export function AuthProvider({ children }) {
     if (!silent) addNotification("info", "Déconnecté");
   }, [addNotification]);
 
-  // ─── REFRESH TOKEN (avec file d'attente) ────────────────────────────────────
+  // ─── REFRESH TOKEN ────────────────────────────────────────────────────────
   const refreshAccessToken = useCallback(async () => {
     if (isRefreshing.current) {
-      // On attend que le refresh en cours finisse
       return new Promise((resolve, reject) => {
         refreshQueue.current.push({ resolve, reject });
       });
@@ -231,33 +241,36 @@ export function AuthProvider({ children }) {
       return res.data.token;
     } catch (err) {
       rejectQueue(err);
-      if (err?.response?.status === 401 && isMounted.current) {
-        // Cookie révoqué ou expiré → logout silencieux
-        console.info("[AuthContext] Cookie 401 → logout silencieux");
+
+      if (isServerUnauthorized(err) && isMounted.current) {
+        // 401 explicite du serveur → cookie révoqué → logout silencieux
+        console.info("[AuthContext] Cookie 401 serveur → logout silencieux");
         setUser(null);
         setToken(null);
         tokenRef.current        = null;
         tokenExpiresRef.current = null;
         await clearSession();
+        return null;
       }
-      // Erreurs réseau → on ne déconnecte PAS
-      return null;
+
+      // Erreur réseau / timeout / 5xx → on ne déconnecte PAS
+      // On retourne le token actuel pour ne pas bloquer les appels en cours
+      console.warn("[AuthContext] Erreur réseau lors du refresh — token cache maintenu");
+      return tokenRef.current;
     } finally {
       isRefreshing.current = false;
     }
   }, [applySession]);
 
   // ─── GET TOKEN ───────────────────────────────────────────────────────────────
-  // Attend que l'init soit terminée, puis retourne un token valide.
-  // C'est LE point d'entrée unique pour obtenir un token.
   const getToken = useCallback(async () => {
-    // Attendre la fin de l'init (max 8s)
+    // Attendre la fin de l'init (max 12s — Render cold start)
     if (!readyRef.current) {
       await new Promise((resolve) => {
         const check = setInterval(() => {
           if (readyRef.current) { clearInterval(check); resolve(); }
         }, 50);
-        setTimeout(() => { clearInterval(check); resolve(); }, 8000);
+        setTimeout(() => { clearInterval(check); resolve(); }, 12000);
       });
     }
 
@@ -266,23 +279,23 @@ export function AuthProvider({ children }) {
 
     const timeLeft = (tokenExpiresRef.current || 0) - Date.now();
 
-    if (timeLeft > 3 * 60 * 1000) return currentToken;   // encore frais
+    // Token encore frais
+    if (timeLeft > 3 * 60 * 1000) return currentToken;
+
+    // Expire dans moins de 3 min → refresh préventif silencieux
     if (timeLeft > 0) {
-      // Expire dans moins de 3 min → refresh préventif silencieux
       refreshAccessToken().catch(() => {});
-      return currentToken; // on retourne l'actuel pendant ce temps
+      return currentToken;
     }
 
-    // Expiré → refresh bloquant
+    // Expiré → refresh bloquant, mais fallback sur token cache si réseau coupé
     const newToken = await refreshAccessToken();
-    return newToken || currentToken; // fallback si réseau coupé
+    return newToken || currentToken;
   }, [refreshAccessToken]);
 
   useEffect(() => { getTokenRef.current = getToken; }, [getToken]);
 
-  // ─── ÉCOUTE L'EVENT "auth:token-refreshed" (émis par axiosClientGlobal) ─────
-  // axiosClientGlobal fait son propre refresh sur 401 et dispatch cet event
-  // pour que AuthContext reste synchronisé
+  // ─── ÉCOUTE L'EVENT "auth:token-refreshed" ────────────────────────────────
   useEffect(() => {
     const handler = async (e) => {
       const { token: tk, expiresIn, user: u } = e.detail || {};
@@ -290,7 +303,6 @@ export function AuthProvider({ children }) {
         console.log("[AuthContext] 📡 Token reçu via event axiosClient");
         await applySession({ token: tk, expiresIn, user: u });
       } else if (tk) {
-        // Pas de user dans l'event → on met juste à jour le token
         tokenRef.current        = tk;
         tokenExpiresRef.current = Date.now() + (expiresIn || 3600) * 1000;
         setToken(tk);
@@ -317,21 +329,49 @@ export function AuthProvider({ children }) {
       }
     };
 
-    // Filet de sécurité absolu
+    // Safety timeout : 12s (Render cold start peut prendre 8-10s)
     const safetyTimer = setTimeout(() => {
       console.warn("⏱️ [AuthContext] Safety timeout → forçage sessionLoading=false");
       markReady();
-    }, 8000);
+    }, 12000);
+
+    // Helper : tenter le refresh-token avec retry réseau
+    const tryRefreshWithRetry = async (maxAttempts = 3, delayMs = 2000) => {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const res = await authAxios.post("/api/auth/refresh-token");
+          if (res.data?.success && res.data?.token) {
+            return res.data;
+          }
+          return null; // Succès HTTP mais pas de token (ne pas retenter)
+        } catch (err) {
+          const status = err?.response?.status;
+
+          if (status === 401) {
+            // Cookie invalide → inutile de réessayer
+            return { failed401: true };
+          }
+
+          // Erreur réseau / timeout / 5xx
+          if (attempt < maxAttempts) {
+            console.warn(`[AuthContext] Init refresh tentative ${attempt}/${maxAttempts} échouée — retry dans ${delayMs}ms`);
+            await new Promise(r => setTimeout(r, delayMs));
+          } else {
+            console.warn(`[AuthContext] Init refresh : ${maxAttempts} tentatives échouées — cache maintenu`);
+          }
+        }
+      }
+      return null; // Toutes les tentatives ont échoué (réseau)
+    };
 
     const init = async () => {
-      // ── Étape 1 : cache (instantané, pas de réseau) ─────────────────────────
+      // ── Étape 1 : cache (instantané) ──────────────────────────────────────
       try {
         const cached = await loadCachedUser();
         if (cached?.user?._id && !cancelled) {
           setUser(cached.user);
           if (cached.user.language) applyLanguage(cached.user.language);
 
-          // Si on a un token en cache, vérifier qu'il n'est pas expiré
           if (cached.token) {
             try {
               const parts = cached.token.split(".");
@@ -342,7 +382,7 @@ export function AuthProvider({ children }) {
                   tokenExpiresRef.current = payload.exp * 1000;
                   setToken(cached.token);
                   setTokenExpiresAt(payload.exp * 1000);
-                  console.log("✅ [AuthContext] Token cache encore valide — utilisé immédiatement");
+                  console.log("✅ [AuthContext] Token cache encore valide");
                 }
               }
             } catch {}
@@ -352,33 +392,30 @@ export function AuthProvider({ children }) {
         console.warn("[AuthContext] Erreur chargement cache:", e);
       }
 
-      // ── Étape 2 : validation serveur (cookie httpOnly) ───────────────────────
-      try {
-        const res = await authAxios.post("/api/auth/refresh-token");
-        if (!cancelled && res.data?.success && res.data?.token) {
-          await applySession(res.data);
+      // ── Étape 2 : validation serveur avec retry ────────────────────────────
+      const result = await tryRefreshWithRetry(3, 2000);
+
+      if (!cancelled) {
+        if (result?.failed401) {
+          // Cookie révoqué ou expiré côté serveur → nettoyage
+          console.info("[AuthContext] Cookie invalide (401) → nettoyage");
+          setUser(null);
+          setToken(null);
+          tokenRef.current        = null;
+          tokenExpiresRef.current = null;
+          await clearSession();
+        } else if (result?.token) {
+          // Refresh réussi
+          await applySession(result);
           console.log("✅ [AuthContext] Session validée côté serveur");
-        }
-      } catch (err) {
-        const status = err?.response?.status;
-        if (status === 401) {
-          if (!cancelled) {
-            console.info("[AuthContext] Cookie invalide (401) → nettoyage");
-            setUser(null);
-            setToken(null);
-            tokenRef.current        = null;
-            tokenExpiresRef.current = null;
-            await clearSession();
-          }
         } else {
-          // Réseau coupé, serveur down, timeout → ON GARDE LE CACHE
-          // L'utilisateur reste "connecté" visuellement
-          console.warn(`[AuthContext] Erreur réseau (${status || err.code || "timeout"}) → cache maintenu`);
+          // Réseau coupé ou serveur indisponible → cache maintenu
+          console.warn("[AuthContext] Serveur inaccessible → cache maintenu (pas de déconnexion)");
         }
-      } finally {
-        clearTimeout(safetyTimer);
-        markReady();
       }
+
+      clearTimeout(safetyTimer);
+      markReady();
     };
 
     init();
@@ -409,7 +446,6 @@ export function AuthProvider({ children }) {
       logout,
       notify: addNotification,
       getLanguage,
-      // Exposé pour que axiosClientGlobal puisse forcer un refresh si besoin
       refreshTokenForUser: refreshAccessToken,
     });
   }, [getToken, logout, addNotification, user?.language, refreshAccessToken]);
@@ -436,7 +472,6 @@ export function AuthProvider({ children }) {
     s.on("connect_error", (e) => console.warn("⚠️ Socket:", e.message));
     s.on("disconnect",    (reason) => {
       if (reason === "io server disconnect") {
-        // Déconnexion forcée par le serveur → refresh + reconnexion
         refreshAccessToken().then((newTk) => {
           if (newTk) { s.auth = { token: newTk }; s.connect(); }
         });
@@ -493,7 +528,7 @@ export function AuthProvider({ children }) {
       if (e.key === "cl_user" && e.newValue === null && currentUserRef.current) {
         console.log("[AuthContext] 📡 Déconnexion dans un autre onglet");
         setUser(null); setToken(null);
-        tokenRef.current = null;
+        tokenRef.current        = null;
         tokenExpiresRef.current = null;
       }
     };
@@ -502,12 +537,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ─── LOGIN ───────────────────────────────────────────────────────────────────
-  const login = useCallback(async (email, password, rememberMe = false) => {
+  const login = useCallback(async (email, password, rememberMe = true) => {
     setLoading(true);
     try {
       const res = await authAxios.post("/api/auth/login", {
-        email: email.trim().toLowerCase(),
-        password: String(password),
+        email:      email.trim().toLowerCase(),
+        password:   String(password),
         rememberMe,
       });
       if (!res.data?.success) throw new Error(res.data?.message || "Erreur login");
@@ -525,7 +560,7 @@ export function AuthProvider({ children }) {
   }, [applySession, addNotification]);
 
   // ─── REGISTER ────────────────────────────────────────────────────────────────
-  const register = useCallback(async (fullName, email, password, rememberMe = false, language = "fr") => {
+  const register = useCallback(async (fullName, email, password, rememberMe = true, language = "fr") => {
     setLoading(true);
     try {
       const res = await authAxios.post("/api/auth/register", {
@@ -614,6 +649,7 @@ export function AuthProvider({ children }) {
     loading,
     ready,
     sessionLoading,
+    // ✅ isAuthenticated = vrai si on a un user (même sans token, en mode offline cache)
     isAuthenticated: !!user,
     notifications,
     login,
