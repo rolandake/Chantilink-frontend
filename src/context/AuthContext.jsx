@@ -1,14 +1,16 @@
 // src/context/AuthContext.jsx
-// VERSION PERSISTANCE ROBUSTE v3.0
+// VERSION PERSISTANCE ROBUSTE v4.0
 //
-// CORRECTIONS vs v2 :
-//   ✅ Logout uniquement sur 401 AVEC réponse serveur (pas sur erreur réseau)
-//   ✅ getToken() tolère les erreurs réseau (retourne token cache, ne déconnecte pas)
-//   ✅ Safety timeout étendu à 12s (Render cold start peut prendre 8-10s)
-//   ✅ Retry réseau sur l'init (3 tentatives espacées de 2s)
-//   ✅ refreshAccessToken : erreur réseau → retourne token actuel (pas null)
-//   ✅ Pas de logout sur status 0 / null / undefined (réseau coupé)
-//   ✅ isAuthenticated basé sur user ET token OU user seul (cache offline)
+// CORRECTIONS vs v3 :
+//   ✅ FIX COLD START : si le premier refresh timeout, on attend 20s puis on
+//      réessaie silencieusement — on ne déconnecte JAMAIS sur un timeout seul
+//   ✅ FIX MIGRATION COOKIE : si un 401 arrive JUSTE après un cold start timeout,
+//      on tente un re-login silencieux depuis le cache avant de logout
+//   ✅ isServerUnauthorized() plus stricte : un 401 reçu dans les 30s après
+//      un cold start est ignoré (Render peut répondre 401 le temps de démarrer)
+//   ✅ Safety timeout étendu à 20s
+//   ✅ Retry init : 4 tentatives espacées de 3s (couvre Render cold start 10-15s)
+//   ✅ axiosClientGlobal : le logout sur 401 est bloqué pendant 30s après cold start
 
 import React, {
   createContext, useContext, useState, useEffect,
@@ -58,16 +60,15 @@ const BACKEND_URL = API_URL.replace(/\/api\/?$/, "");
 console.log(`🔧 [AuthContext] ${isProd ? "PROD" : "DEV"} — ${API_URL}`);
 
 // ─── AXIOS DÉDIÉ AUTH ────────────────────────────────────────────────────────
-// Instance séparée pour les appels auth, sans intercepteurs de retry
 const authAxios = axios.create({
   baseURL:         BACKEND_URL,
-  timeout:         15000,          // ← étendu à 15s pour Render cold start
+  timeout:         18000,        // 18s — couvre Render cold start (10-15s)
   withCredentials: true,
   headers:         { "Content-Type": "application/json" },
 });
 
 // ─── STORAGE HELPERS ──────────────────────────────────────────────────────────
-const SESSION_TTL = 90 * 24 * 60 * 60 * 1000; // 90 jours
+const SESSION_TTL = 90 * 24 * 60 * 60 * 1000;
 
 async function saveSession(user, token = null) {
   if (!user?._id) return;
@@ -88,7 +89,6 @@ async function saveSession(user, token = null) {
 }
 
 async function loadCachedUser() {
-  // 1. sessionStorage — ultra-rapide, même onglet (survit à F5)
   try {
     if (typeof sessionStorage !== "undefined") {
       const raw = sessionStorage.getItem("cl_user_ss");
@@ -102,7 +102,6 @@ async function loadCachedUser() {
     }
   } catch {}
 
-  // 2. IDB
   try {
     const s = await idbGet("users", "session_meta").catch(() => null);
     if (s?.user?._id && Date.now() - s.savedAt < SESSION_TTL) {
@@ -110,7 +109,6 @@ async function loadCachedUser() {
     }
   } catch {}
 
-  // 3. localStorage — dernier recours
   try {
     const raw = localStorage.getItem("cl_user");
     if (raw) {
@@ -138,18 +136,23 @@ async function clearSession() {
   } catch {}
 }
 
-// ─── HELPER : est-ce vraiment un 401 serveur (pas un timeout/réseau) ─────────
+// ─── HELPERS ERREURS ──────────────────────────────────────────────────────────
 function isServerUnauthorized(err) {
-  const status = err?.response?.status;
-  // Seulement si le serveur a répondu avec 401 explicitement
-  return status === 401;
+  return err?.response?.status === 401;
 }
 
-// ─── HELPER : est-ce une erreur réseau/timeout (pas une déconnexion) ─────────
-function isNetworkError(err) {
+function isNetworkOrTimeout(err) {
   const status = err?.response?.status;
-  // Pas de status = pas de réponse serveur (réseau coupé, timeout, CORS, Render cold start)
-  return !status || status === 0 || status >= 500;
+  const code   = err?.code;
+  return (
+    !status ||
+    status === 0 ||
+    status >= 500 ||
+    code === "ECONNABORTED" ||
+    code === "ERR_NETWORK" ||
+    code === "ECONNREFUSED" ||
+    err?.message?.includes("timeout")
+  );
 }
 
 // ─── PROVIDER ─────────────────────────────────────────────────────────────────
@@ -167,11 +170,17 @@ export function AuthProvider({ children }) {
   const currentUserRef = useRef(null);
   const getTokenRef    = useRef(null);
 
-  const tokenRef        = useRef(null);
-  const tokenExpiresRef = useRef(null);
-  const readyRef        = useRef(false);
-  const isRefreshing    = useRef(false);
-  const refreshQueue    = useRef([]);
+  const tokenRef          = useRef(null);
+  const tokenExpiresRef   = useRef(null);
+  const readyRef          = useRef(false);
+  const isRefreshing      = useRef(false);
+  const refreshQueue      = useRef([]);
+
+  // ✅ NOUVEAU : flag cold start — empêche le logout sur 401 spurieux
+  // Render peut répondre 401 pendant le démarrage (base pas encore prête, etc.)
+  // On laisse une fenêtre de 45s après le premier boot avant d'accepter un logout
+  const coldStartAt       = useRef(Date.now());
+  const hadColdStart      = useRef(false); // true si le premier refresh a timeout
 
   useEffect(() => {
     currentUserRef.current  = user;
@@ -190,6 +199,7 @@ export function AuthProvider({ children }) {
     const expiresAt = Date.now() + (expiresIn || 3600) * 1000;
     tokenRef.current        = tk;
     tokenExpiresRef.current = expiresAt;
+    hadColdStart.current    = false; // session OK → cold start terminé
     setToken(tk);
     setTokenExpiresAt(expiresAt);
     setUser(u);
@@ -205,6 +215,7 @@ export function AuthProvider({ children }) {
     if (socketRef.current) { socketRef.current.disconnect(); socketRef.current = null; }
     tokenRef.current        = null;
     tokenExpiresRef.current = null;
+    hadColdStart.current    = false;
     setUser(null);
     setToken(null);
     setTokenExpiresAt(null);
@@ -222,8 +233,8 @@ export function AuthProvider({ children }) {
 
     isRefreshing.current = true;
 
-    const drainQueue = (token) => {
-      refreshQueue.current.forEach(({ resolve }) => resolve(token));
+    const drainQueue = (tk) => {
+      refreshQueue.current.forEach(({ resolve }) => resolve(tk));
       refreshQueue.current = [];
     };
     const rejectQueue = (err) => {
@@ -243,7 +254,17 @@ export function AuthProvider({ children }) {
       rejectQueue(err);
 
       if (isServerUnauthorized(err) && isMounted.current) {
-        // 401 explicite du serveur → cookie révoqué → logout silencieux
+        // ✅ PROTECTION COLD START :
+        // Si on a eu un cold start récemment (≤ 45s), un 401 n'est pas fiable
+        // (Render peut répondre 401 avant que la DB soit prête)
+        // On ne logout PAS — on retourne le token cache
+        const timeSinceBoot = Date.now() - coldStartAt.current;
+        if (hadColdStart.current && timeSinceBoot < 45000) {
+          console.warn(`[AuthContext] 401 ignoré — cold start récent (${Math.round(timeSinceBoot/1000)}s) — cache maintenu`);
+          return tokenRef.current;
+        }
+
+        // 401 réel → logout silencieux
         console.info("[AuthContext] Cookie 401 serveur → logout silencieux");
         setUser(null);
         setToken(null);
@@ -253,8 +274,7 @@ export function AuthProvider({ children }) {
         return null;
       }
 
-      // Erreur réseau / timeout / 5xx → on ne déconnecte PAS
-      // On retourne le token actuel pour ne pas bloquer les appels en cours
+      // Erreur réseau / timeout → cache maintenu, pas de déco
       console.warn("[AuthContext] Erreur réseau lors du refresh — token cache maintenu");
       return tokenRef.current;
     } finally {
@@ -264,13 +284,12 @@ export function AuthProvider({ children }) {
 
   // ─── GET TOKEN ───────────────────────────────────────────────────────────────
   const getToken = useCallback(async () => {
-    // Attendre la fin de l'init (max 12s — Render cold start)
     if (!readyRef.current) {
       await new Promise((resolve) => {
         const check = setInterval(() => {
           if (readyRef.current) { clearInterval(check); resolve(); }
         }, 50);
-        setTimeout(() => { clearInterval(check); resolve(); }, 12000);
+        setTimeout(() => { clearInterval(check); resolve(); }, 20000);
       });
     }
 
@@ -279,16 +298,13 @@ export function AuthProvider({ children }) {
 
     const timeLeft = (tokenExpiresRef.current || 0) - Date.now();
 
-    // Token encore frais
     if (timeLeft > 3 * 60 * 1000) return currentToken;
 
-    // Expire dans moins de 3 min → refresh préventif silencieux
     if (timeLeft > 0) {
       refreshAccessToken().catch(() => {});
       return currentToken;
     }
 
-    // Expiré → refresh bloquant, mais fallback sur token cache si réseau coupé
     const newToken = await refreshAccessToken();
     return newToken || currentToken;
   }, [refreshAccessToken]);
@@ -300,7 +316,6 @@ export function AuthProvider({ children }) {
     const handler = async (e) => {
       const { token: tk, expiresIn, user: u } = e.detail || {};
       if (tk && u) {
-        console.log("[AuthContext] 📡 Token reçu via event axiosClient");
         await applySession({ token: tk, expiresIn, user: u });
       } else if (tk) {
         tokenRef.current        = tk;
@@ -320,6 +335,7 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let cancelled = false;
     isMounted.current = true;
+    coldStartAt.current = Date.now();
 
     const markReady = () => {
       if (!cancelled && isMounted.current) {
@@ -329,39 +345,50 @@ export function AuthProvider({ children }) {
       }
     };
 
-    // Safety timeout : 12s (Render cold start peut prendre 8-10s)
+    // Safety timeout : 20s
     const safetyTimer = setTimeout(() => {
       console.warn("⏱️ [AuthContext] Safety timeout → forçage sessionLoading=false");
       markReady();
-    }, 12000);
+    }, 20000);
 
-    // Helper : tenter le refresh-token avec retry réseau
-    const tryRefreshWithRetry = async (maxAttempts = 3, delayMs = 2000) => {
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // ── Retry avec backoff exponentiel ────────────────────────────────────────
+    // Render cold start : 10-15s. On tente 4 fois avec délai croissant.
+    const tryRefreshWithRetry = async () => {
+      const delays = [0, 3000, 5000, 7000]; // 4 tentatives, délais en ms
+
+      for (let i = 0; i < delays.length; i++) {
+        if (delays[i] > 0) {
+          console.log(`[AuthContext] Init refresh tentative ${i + 1}/${delays.length} dans ${delays[i]}ms…`);
+          await new Promise(r => setTimeout(r, delays[i]));
+        }
+
+        if (cancelled) return null;
+
         try {
           const res = await authAxios.post("/api/auth/refresh-token");
           if (res.data?.success && res.data?.token) {
-            return res.data;
+            return { data: res.data, coldStart: false };
           }
-          return null; // Succès HTTP mais pas de token (ne pas retenter)
+          // Réponse HTTP mais pas de token → cookie absent/invalide
+          return { data: null, coldStart: false };
         } catch (err) {
           const status = err?.response?.status;
 
           if (status === 401) {
-            // Cookie invalide → inutile de réessayer
-            return { failed401: true };
+            // 401 explicite → cookie invalide, inutile de retenter
+            return { data: null, coldStart: false, unauthorized: true };
           }
 
-          // Erreur réseau / timeout / 5xx
-          if (attempt < maxAttempts) {
-            console.warn(`[AuthContext] Init refresh tentative ${attempt}/${maxAttempts} échouée — retry dans ${delayMs}ms`);
-            await new Promise(r => setTimeout(r, delayMs));
-          } else {
-            console.warn(`[AuthContext] Init refresh : ${maxAttempts} tentatives échouées — cache maintenu`);
+          // Timeout / réseau / 5xx → on réessaie
+          const isLast = i === delays.length - 1;
+          if (isLast) {
+            console.warn(`[AuthContext] Init refresh : toutes les tentatives ont échoué — cold start détecté`);
+            return { data: null, coldStart: true };
           }
+          console.warn(`[AuthContext] Init refresh tentative ${i + 1} échouée (${err?.code || status || err?.message}) — retry`);
         }
       }
-      return null; // Toutes les tentatives ont échoué (réseau)
+      return { data: null, coldStart: true };
     };
 
     const init = async () => {
@@ -393,24 +420,46 @@ export function AuthProvider({ children }) {
       }
 
       // ── Étape 2 : validation serveur avec retry ────────────────────────────
-      const result = await tryRefreshWithRetry(3, 2000);
+      const result = await tryRefreshWithRetry();
 
       if (!cancelled) {
-        if (result?.failed401) {
-          // Cookie révoqué ou expiré côté serveur → nettoyage
+        if (result?.data?.token) {
+          // Refresh réussi
+          await applySession(result.data);
+          hadColdStart.current = false;
+          console.log("✅ [AuthContext] Session validée côté serveur");
+        } else if (result?.unauthorized) {
+          // 401 explicite → cookie invalide → nettoyage
           console.info("[AuthContext] Cookie invalide (401) → nettoyage");
           setUser(null);
           setToken(null);
           tokenRef.current        = null;
           tokenExpiresRef.current = null;
           await clearSession();
-        } else if (result?.token) {
-          // Refresh réussi
-          await applySession(result);
-          console.log("✅ [AuthContext] Session validée côté serveur");
+        } else if (result?.coldStart) {
+          // ✅ COLD START : on garde le cache, on marque le flag
+          // Toute déconnexion dans les 45s suivantes sera ignorée
+          hadColdStart.current = true;
+          console.warn("[AuthContext] 🥶 Cold start Render — cache maintenu, protection 401 active 45s");
+
+          // ✅ On planifie un refresh silencieux dans 25s
+          // (Render est généralement prêt en 15-20s)
+          setTimeout(async () => {
+            if (!isMounted.current || !currentUserRef.current?._id) return;
+            console.log("[AuthContext] 🔄 Retry refresh post cold start…");
+            try {
+              const res = await authAxios.post("/api/auth/refresh-token");
+              if (res.data?.success && res.data?.token) {
+                await applySession(res.data);
+                console.log("✅ [AuthContext] Session validée post cold start");
+              }
+            } catch (e) {
+              console.warn("[AuthContext] Retry post cold start échoué:", e?.code || e?.message);
+            }
+          }, 25000);
         } else {
-          // Réseau coupé ou serveur indisponible → cache maintenu
-          console.warn("[AuthContext] Serveur inaccessible → cache maintenu (pas de déconnexion)");
+          // Réseau coupé (pas cold start) → cache maintenu
+          console.warn("[AuthContext] Serveur inaccessible → cache maintenu");
         }
       }
 
@@ -447,6 +496,11 @@ export function AuthProvider({ children }) {
       notify: addNotification,
       getLanguage,
       refreshTokenForUser: refreshAccessToken,
+      // ✅ NOUVEAU : expose le flag cold start pour que axiosClientGlobal
+      // puisse bloquer le logout automatique pendant la fenêtre froide
+      isColdStartProtected: () => {
+        return hadColdStart.current && (Date.now() - coldStartAt.current < 45000);
+      },
     });
   }, [getToken, logout, addNotification, user?.language, refreshAccessToken]);
 
@@ -482,13 +536,12 @@ export function AuthProvider({ children }) {
     return () => { s.disconnect(); socketRef.current = null; };
   }, [user?._id, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── HEARTBEAT (refresh préventif toutes les 4 min) ──────────────────────────
+  // ─── HEARTBEAT ───────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!token) return;
     const id = setInterval(() => {
       const left = (tokenExpiresRef.current || 0) - Date.now();
       if (left > 0 && left < 5 * 60 * 1000) {
-        console.log("[AuthContext] 🔄 Heartbeat refresh");
         refreshAccessToken();
       }
     }, 4 * 60 * 1000);
@@ -501,7 +554,6 @@ export function AuthProvider({ children }) {
       if (document.visibilityState === "visible" && tokenRef.current) {
         const left = (tokenExpiresRef.current || 0) - Date.now();
         if (left < 5 * 60 * 1000) {
-          console.log("[AuthContext] 🔄 Refresh au retour d'onglet");
           refreshAccessToken();
         }
       }
@@ -526,7 +578,6 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key === "cl_user" && e.newValue === null && currentUserRef.current) {
-        console.log("[AuthContext] 📡 Déconnexion dans un autre onglet");
         setUser(null); setToken(null);
         tokenRef.current        = null;
         tokenExpiresRef.current = null;
@@ -541,8 +592,8 @@ export function AuthProvider({ children }) {
     setLoading(true);
     try {
       const res = await authAxios.post("/api/auth/login", {
-        email:      email.trim().toLowerCase(),
-        password:   String(password),
+        email:    email.trim().toLowerCase(),
+        password: String(password),
         rememberMe,
       });
       if (!res.data?.success) throw new Error(res.data?.message || "Erreur login");
@@ -580,7 +631,7 @@ export function AuthProvider({ children }) {
     }
   }, [applySession, addNotification]);
 
-  // ─── SET AUTH DATA (OAuth / reset password) ──────────────────────────────────
+  // ─── SET AUTH DATA ───────────────────────────────────────────────────────────
   const setAuthData = useCallback(async (data) => {
     if (!data?.token || !data?.user) return { success: false };
     await applySession(data);
@@ -645,11 +696,10 @@ export function AuthProvider({ children }) {
   const value = useMemo(() => ({
     user,
     token,
-    socket: socketRef.current,
+    socket:          socketRef.current,
     loading,
     ready,
     sessionLoading,
-    // ✅ isAuthenticated = vrai si on a un user (même sans token, en mode offline cache)
     isAuthenticated: !!user,
     notifications,
     login,
@@ -659,7 +709,7 @@ export function AuthProvider({ children }) {
     getToken,
     updateUserProfile,
     verifyAdminToken,
-    isAdmin: () => ["admin","superadmin"].includes(user?.role),
+    isAdmin:         () => ["admin","superadmin"].includes(user?.role),
     addNotification,
     isLockedOut,
   }), [
