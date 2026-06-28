@@ -1,36 +1,39 @@
-// 📁 src/pages/Videos/VideosPage.jsx — v14
+// 📁 src/pages/Videos/VideosPage.jsx — v15
 //
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHANGEMENTS v14 vs v13 :
+// CHANGEMENTS v15 vs v14 — CORRECTION CRITIQUE :
 //
-//  🎬 MIX 80% BTP / 20% DIVERTISSEMENT
-//     - fetchEntertainment() : appel dédié aux contenus pêle-mêle
-//       (Pixabay/Vimeo catégories "fun, viral, sport, music, lifestyle")
-//     - ENTERTAINMENT_RATIO = 0.20 : 1 slide diverti pour 4 BTP
-//     - entertainmentPool séparé — jamais mélangé dans l'algo BTP
-//     - Badge "Divertissement 🎬" sur les slides non-BTP
+//  ❌ SUPPRESSION TOTALE DU SYSTÈME "80% BTP / 20% DIVERTISSEMENT" (v14)
+//     - fetchEntertainment() supprimée intégralement
+//     - ENTERTAINMENT_CATEGORIES, ENTERTAINMENT_SOURCES supprimées
+//     - entertainmentPool, ENTERTAINMENT_RATIO supprimés
+//     - buildInterleavedSlides() supprimée (n'était plus utilisée correctement)
+//     - EntertainmentBadge supprimé
+//     - Le feed redevient 100% métier BTP / génie civil, point.
 //
-//  🛡️ SÉCURITÉ / ROBUSTESSE
-//     - Pas de données sensibles dans le feed (emails filtrés)
-//     - invalidSet persisté en sessionStorage (reset à fermeture onglet)
-//     - fetchAggregated() : abort controller pour cancel les fetches obsolètes
-//     - Protection double-fetch : aggLoadingRef + fetchId
-//     - handleVisible() : debounce interne 100ms (IntersectionObserver suffit)
-//     - loadMoreRef : mutex réel (Promise) pour éviter les appels parallèles
+//     Raison : ce système réintroduisait exactement le problème déjà corrigé
+//     côté backend (Mastodon v3) — injecter du contenu hors-sujet (sport,
+//     musique, food, lifestyle...) dans un feed métier spécialisé. La
+//     correction doit être cohérente sur toute la chaîne : backend ET
+//     frontend doivent appliquer le même principe "100% génie civil/BTP".
 //
-//  🚀 FLUIDITÉ INFINITE SCROLL
-//     - IntersectionObserver seul pilote les transitions (plus de scroll listener)
-//     - Threshold 0.55 (légèrement plus tôt) pour transition plus fluide
-//     - Virtual window étendu : CONFIG.virtual = 6 (±6 slides rendues)
-//     - notifyActive() émet en microtask (queueMicrotask) pour eviter jank
-//     - preloadAhead dynamique selon la vitesse de scroll (AdaptiveBuffer)
-//     - YouTubePool.warmup() appelé 2 slides avant (plus tôt = moins de poster)
+//  🛡️ GARDE-FOU MÉTIER CENTRALISÉ CÔTÉ CLIENT (défense en profondeur)
+//     - classifyCivilRelevance() : réplique côté client du module backend
+//       civilEngineeringRelevance.js — sert de double vérification si jamais
+//       l'API renvoie un item qui aurait dû être filtré en amont.
+//     - isAcceptableForFeed() appliqué systématiquement dans fetchAggregated
+//       avant tout autre traitement (filtre, boost, reorder).
+//     - intelligentReorder() applique désormais un boost fort pour le
+//       contenu génie civil pur (cohérent avec le backend).
 //
-//  🔄 CYCLE DE VIE AMÉLIORÉ
-//     - recycle() trie différemment à chaque round (entropie)
-//     - seenSet window glissante de 200 (au lieu de 300 fixes)
-//       → les vieilles vidéos réapparaissent naturellement
-//     - Cleanup au démontage : abort tous les fetches en cours
+//  ✅ CONSERVÉ DE v14 (améliorations robustesse légitimes) :
+//     - Abort controller pour fetchAggregated (cancel fetches obsolètes)
+//     - Mutex réel (loadMoreMutex) pour éviter les appels parallèles
+//     - IntersectionObserver seul pilote les transitions (threshold 0.55)
+//     - notifyActive() en microtask pour éviter le jank
+//     - invalidSet en sessionStorage (reset à la fermeture d'onglet)
+//     - Pubs moins fréquentes (1 toutes les 10 slides)
+//     - Cleanup complet au démontage
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import React, {
@@ -57,21 +60,19 @@ const API_BASE = (
 ).replace(/\/api$/, '');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONFIG v14
+// CONFIG v15 — système entertainment entièrement retiré
 // ─────────────────────────────────────────────────────────────────────────────
 const CONFIG = {
   ads:              { enabled: true, frequency: 10 },
   aggregated:       { enabled: true, initialLoad: 40, loadMore: 25 },
-  entertainment:    { enabled: true, initialLoad: 12, loadMore: 8 },
-  entertainmentRatio: 0.20,   // 20% des slides = divertissement
-  virtual:          6,         // slides rendues autour de l'active
+  virtual:          6,
   bufferAhead:      8,
   bufferMin:        5,
   recycleMin:       8,
   preloadAhead:     4,
-  momentumLock:     180,       // ms minimum entre deux transitions
+  momentumLock:     180,
   watchScoreMin:    0.12,
-  ytWarmupAhead:    5,         // slides YT préchauffées à l'avance
+  ytWarmupAhead:    5,
   minFeedSize:      12,
   coldStartVariety: 5,
 
@@ -104,7 +105,7 @@ const CONFIG = {
   seen: {
     storageKey:  'vp_seen_ids_v1',
     invalidKey:  'vp_invalid_ids_v1',
-    maxEntries:  200,            // fenêtre glissante réduite
+    maxEntries:  200,
   },
 
   diversity: {
@@ -113,35 +114,13 @@ const CONFIG = {
     simPenalty:     0.35,
     simThreshold:   0.42,
   },
+
+  // ✅ NOUVEAU v15 — seuil minimum de pertinence métier (0-100)
+  relevance: {
+    minScore: 8,
+    civilEngineeringBoost: 1000,
+  },
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CATÉGORIES DIVERTISSEMENT (pour le 20%)
-// ─────────────────────────────────────────────────────────────────────────────
-const ENTERTAINMENT_CATEGORIES = [
-  'fun', 'viral', 'sport', 'music', 'lifestyle', 'travel',
-  'food', 'animals', 'nature', 'art', 'dance', 'comedy',
-];
-
-const ENTERTAINMENT_SOURCES = ['pixabay', 'vimeo', 'youtube'];
-
-// Badge affiché sur les slides de divertissement
-const EntertainmentBadge = memo(() => (
-  <div style={{
-    position: 'absolute', top: 12, right: 12, zIndex: 30,
-    background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(10px)',
-    border: '1px solid rgba(255,255,255,0.15)',
-    borderRadius: 9999, padding: '3px 10px',
-    display: 'flex', alignItems: 'center', gap: 5,
-    pointerEvents: 'none',
-  }}>
-    <span style={{ fontSize: 12 }}>🎬</span>
-    <span style={{ color: 'rgba(255,255,255,0.75)', fontSize: 10, fontWeight: 700 }}>
-      Divertissement
-    </span>
-  </div>
-));
-EntertainmentBadge.displayName = 'EntertainmentBadge';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COPY / NORMALISATION
@@ -191,6 +170,109 @@ const cleanTags = (tags, lang = 'fr') => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ✅ NOUVEAU v15 — GARDE-FOU MÉTIER CENTRALISÉ CÔTÉ CLIENT
+// Réplique côté client du module backend civilEngineeringRelevance.js.
+// Sert de DERNIÈRE LIGNE DE DÉFENSE : même si l'API renvoie par erreur un
+// item hors-sujet (bug, cache obsolète, nouvelle source mal configurée…),
+// il ne pourra jamais s'afficher dans le feed.
+// ─────────────────────────────────────────────────────────────────────────────
+const TIER1_CIVIL_ENGINEERING = [
+  'génie civil', 'genie civil', 'civil engineering', 'ouvrage d\'art',
+  'béton armé', 'beton arme', 'reinforced concrete', 'geotechnical', 'géotechnique',
+  'structural engineering', 'ingénierie structurelle', 'ingenierie structurelle',
+  'résistance des matériaux', 'resistance des materiaux', 'dimensionnement structure',
+  'ouvrage hydraulique', 'bureau d\'études', 'bureau detudes', 'هندسة مدنية',
+];
+
+const TIER2_BTP_CONSTRUCTION = [
+  'construction', 'chantier', 'btp', 'bâtiment', 'batiment', 'building site',
+  'building construction', 'construction site', 'travaux publics',
+  'maçonnerie', 'maconnerie', 'masonry', 'charpente', 'carpentry framing',
+  'terrassement', 'earthworks', 'fondation', 'foundation', 'pieux', 'pile foundation',
+  'ferraillage', 'rebar', 'coffrage', 'formwork', 'pont', 'bridge', 'viaduc', 'viaduct',
+  'tunnel', 'barrage', 'dam construction', 'infrastructure', 'voirie',
+  'grue', 'crane', 'pelleteuse', 'excavator', 'bulldozer', 'échafaudage', 'scaffolding',
+  'gros œuvre', 'gros oeuvre', 'second œuvre', 'second oeuvre',
+  'béton', 'beton', 'concrete', 'carrelage', 'tiling', 'façade', 'facade',
+  'toiture', 'roofing', 'étanchéité', 'etancheite', 'waterproofing',
+  'isolation thermique', 'thermal insulation', 'plomberie', 'plumbing',
+  'chauffage', 'heating', 'électricité bâtiment', 'electrical building',
+  'structure métallique', 'steel structure', 'soudure', 'welding',
+  'topographie', 'surveying', 'géomètre', 'geometre', 'métré', 'metre',
+  'urbanisme', 'urban planning', 'aménagement', 'amenagement',
+  'rénovation', 'renovation', 'réhabilitation', 'rehabilitation',
+  'démolition', 'demolition', 'BIM', 'maquette numérique',
+  'préfabriqué', 'prefabricated', 'modulaire', 'modular construction',
+  'هندسة', 'بناء', 'إنشاءات', 'خرسانة',
+];
+
+const TIER3_TRADE_PROFESSIONS = [
+  'ingénieur', 'ingenieur', 'engineer', 'architecte', 'architect',
+  'maçon', 'macon', 'mason', 'grutier', 'crane operator',
+  'conducteur de travaux', 'site manager', 'chef de chantier', 'foreman',
+  'plombier', 'plumber', 'électricien', 'electrician', 'couvreur', 'roofer',
+  'coffreur', 'bancheur', 'ferrailleur', 'steel fixer',
+  'entreprise btp', 'construction company',
+];
+
+const OFF_TOPIC_SIGNALS = [
+  'recette de cuisine', 'cooking recipe', 'maquillage', 'makeup tutorial',
+  'unboxing', 'gaming gameplay', 'let\'s play', 'stand up comedy',
+  'horoscope', 'astrology', 'dating advice', 'celebrity gossip',
+  'concert live music festival', 'football match highlights',
+  'basketball game highlights', 'workout routine fitness',
+];
+
+const buildSearchableText = (item = {}) => {
+  const parts = [
+    item.title, item.description, item.channelName,
+    Array.isArray(item.tags) ? item.tags.join(' ') : '',
+    Array.isArray(item.hashtags) ? item.hashtags.join(' ') : '',
+    item.category,
+  ];
+  return parts.filter(Boolean).join(' ').toLowerCase();
+};
+
+const countMatches = (text, terms) => {
+  let count = 0;
+  for (const term of terms) if (text.includes(term.toLowerCase())) count++;
+  return count;
+};
+
+/** Score 0-100 de pertinence métier BTP/génie civil. */
+const classifyCivilRelevance = (item) => {
+  const text = buildSearchableText(item);
+  if (!text.trim()) return 0;
+
+  const tier1Hits = countMatches(text, TIER1_CIVIL_ENGINEERING);
+  const tier2Hits = countMatches(text, TIER2_BTP_CONSTRUCTION);
+  const tier3Hits = countMatches(text, TIER3_TRADE_PROFESSIONS);
+  const offTopicHits = countMatches(text, OFF_TOPIC_SIGNALS);
+
+  if (offTopicHits > 0 && tier1Hits === 0 && tier2Hits === 0) return 0;
+
+  let score = 0;
+  score += Math.min(tier1Hits, 4) * 20;
+  score += Math.min(tier2Hits, 5) * 8;
+  score += Math.min(tier3Hits, 3) * 4;
+  score -= Math.min(offTopicHits, 3) * 10;
+
+  return Math.max(0, Math.min(100, score));
+};
+
+const isPureCivilEngineering = (item) => {
+  const text = buildSearchableText(item);
+  return countMatches(text, TIER1_CIVIL_ENGINEERING) > 0;
+};
+
+/** Filtre final — true si l'item peut entrer dans le feed. */
+const isAcceptableForFeed = (item) => {
+  if (!item || typeof item !== 'object') return false;
+  if (!item.title && !item.description) return false;
+  return classifyCivilRelevance(item) >= CONFIG.relevance.minScore;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // NETWORK MANAGER
 // ─────────────────────────────────────────────────────────────────────────────
 class NetworkManager {
@@ -214,12 +296,11 @@ class NetworkManager {
 const networkMgr = new NetworkManager();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// INTENT CLASSIFIER
+// INTENT CLASSIFIER — "entertainment" générique retiré
 // ─────────────────────────────────────────────────────────────────────────────
 const INTENT_PATTERNS = {
   btp_pro:       ['chantier','béton','beton','coffrage','ferraillage','maçonnerie','terrassement','grue','pelleteuse','échafaudage','formwork','rebar','excavation','fondation','structure'],
   learning:      ['tutoriel','tutorial','comment faire','how to','formation','cours','technique','explication','guide','méthode','apprendre'],
-  entertainment: ['compilation','best of','funny','incroyable','amazing','fail','top','viral','tiktok','sport','music'],
   news:          ['actualité','news','breaking','annonce','nouveau','lancement','2024','2025'],
   ambient:       ['relaxing','satisfying','asmr','timelapse','time-lapse','drone','aerial'],
 };
@@ -231,7 +312,7 @@ const classifyIntent = (item) => {
     scores[intent] = keywords.filter(kw => text.includes(kw)).length;
   }
   const top = Object.entries(scores).sort((a,b) => b[1]-a[1])[0];
-  return top[1] > 0 ? top[0] : 'entertainment';
+  return top[1] > 0 ? top[0] : 'btp_pro';
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -310,6 +391,7 @@ class UserProfileStore {
     const intent = classifyIntent(item);
     score += (this._intent[intent]||0) * 1.2;
     if (d.btpScore > 0.4 && detectBTPLocal(item)) score += CONFIG.profile.boostBTP * 10;
+    if (isPureCivilEngineering(item)) score += CONFIG.relevance.civilEngineeringBoost * 0.01;
     return score;
   }
   get dominantIntent() { const e = Object.entries(this._intent); if (!e.length) return null; return e.sort((a,b) => b[1]-a[1])[0][0]; }
@@ -376,6 +458,7 @@ class DiversityGuard {
 }
 const diversityGuard = new DiversityGuard();
 
+// ✅ v15 — intelligentReorder applique désormais aussi le boost génie civil pur
 const intelligentReorder = (items, { jitter = 0.3, forColdStart = false } = {}) => {
   if (items.length <= 1) return items;
   if (forColdStart && items.length >= CONFIG.coldStartVariety) {
@@ -396,10 +479,11 @@ const intelligentReorder = (items, { jitter = 0.3, forColdStart = false } = {}) 
   }
   const scored = items.map(item => {
     const profileScore = userProfile.scoreItem(item);
+    const civilBoost   = isPureCivilEngineering(item) ? 15 : 0;
     const viralScore   = Math.log1p((item.likes||0) + (item.views||0) * 0.01) * 0.5;
     const freshScore   = item.publishedAt ? Math.max(0, 1 - (Date.now() - new Date(item.publishedAt).getTime()) / (7 * 86400000)) : 0;
     const jitterVal    = (Math.random() - 0.5) * jitter;
-    return { item, raw: profileScore * 2 + viralScore + freshScore + jitterVal };
+    return { item, raw: profileScore * 2 + civilBoost + viralScore + freshScore + jitterVal };
   });
   const result = [], remaining = [...scored];
   while (remaining.length > 0) {
@@ -600,7 +684,6 @@ let _recycleRound = 0;
 const smartRecycle = (pool) => {
   _recycleRound++;
   diversityGuard.reset();
-  // Entropie différente à chaque round
   const shuffled = [...pool].sort(() => (Math.random() - 0.5) * (0.3 + (_recycleRound % 3) * 0.2));
   return intelligentReorder(shuffled).map(item => ({
     ...item,
@@ -685,7 +768,7 @@ const useOnline = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UI COMPONENTS (ProgressRing, badges, skeleton, ActionBar, etc.)
+// UI COMPONENTS
 // ─────────────────────────────────────────────────────────────────────────────
 const ProgressRing = memo(({ progress = 0, size = 36, stroke = 2.5 }) => {
   const r = (size - stroke * 2) / 2, circ = 2 * Math.PI * r;
@@ -719,7 +802,7 @@ WatchStreakBadge.displayName = 'WatchStreakBadge';
 const IntentToast = memo(({ intent }) => {
   const labels = {
     btp_pro: '🏗️ Contenu pro BTP', learning: '📚 Mode apprentissage',
-    entertainment: '🎬 Mode divertissement', news: '📰 Actualités', ambient: '🎥 Immersif',
+    news: '📰 Actualités', ambient: '🎥 Immersif',
   };
   if (!intent || !labels[intent]) return null;
   return (
@@ -854,7 +937,7 @@ const SlidePlaceholder = memo(() => <div className="w-full snap-start snap-alway
 SlidePlaceholder.displayName = 'SlidePlaceholder';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SLIDE ITEM — IntersectionObserver seul pilote les transitions
+// SLIDE ITEM — badge divertissement retiré
 // ─────────────────────────────────────────────────────────────────────────────
 const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError }) => {
   const ctx       = useContext(ActiveIndexContext);
@@ -863,7 +946,6 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
   const [isActive, setIsActive] = useState(() => ctx?.getActiveIndex() === index);
   const uid      = item.id;
   const itemData = item.data;
-  const isEntertainment = item.isEntertainment;
 
   useEffect(() => {
     if (!ctx) return;
@@ -899,8 +981,6 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
               : <VideoCard video={itemData} isActive={isActive} isAutoPost={false} onModalChange={onModalChange}
                   onVideoError={onVideoError ? () => onVideoError(item.id) : undefined}/>
             }
-            {/* Badge divertissement */}
-            {isEntertainment && isActive && <EntertainmentBadge/>}
           </div>
         )
       }
@@ -917,7 +997,7 @@ const SlideItem = memo(({ item, index, onVisible, onModalChange, onVideoError })
 SlideItem.displayName = 'SlideItem';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VIDEOS PAGE v14
+// VIDEOS PAGE v15 — 100% BTP / Génie Civil
 // ─────────────────────────────────────────────────────────────────────────────
 const VideosPage = () => {
   ensureCSS();
@@ -947,26 +1027,21 @@ const VideosPage = () => {
   const slideListeners    = useRef({});
   const feedItemsRef      = useRef([]);
   const seenSet           = useRef(loadPersistedSet(CONFIG.seen.storageKey));
-  // invalidSet en sessionStorage (reset à fermeture onglet)
   const invalidSet        = useRef(loadPersistedSet(CONFIG.seen.invalidKey, 500, sessionStorage));
   const aggPool           = useRef([]);
-  const entertainmentPool = useRef([]);
   const fetchTriggered    = useRef(false);
   const anyModalRef       = useRef(false);
   const aggPageRef        = useRef(1);
   const aggHasMoreRef     = useRef(true);
   const aggLoadingRef     = useRef(false);
-  const entPageRef        = useRef(1);
-  const entHasMoreRef     = useRef(true);
-  const entLoadingRef     = useRef(false);
   const userHasMoreRef    = useRef(userHasMore);
   const userLoadingRef    = useRef(userLoading);
   const loadMoreMutex     = useRef(false);
   const watchStreakRef     = useRef(0);
   const activeItemRef     = useRef(null);
   const lastIntentRef     = useRef(null);
-  const activeAbortRef    = useRef(null); // fetch abort controller courant
-  const lastVisibleTime   = useRef(0);    // debounce handleVisible
+  const activeAbortRef    = useRef(null);
+  const lastVisibleTime   = useRef(0);
 
   useEffect(() => { userHasMoreRef.current = userHasMore; }, [userHasMore]);
   useEffect(() => { userLoadingRef.current = userLoading; }, [userLoading]);
@@ -994,19 +1069,12 @@ const VideosPage = () => {
     const start = idx + 1, end = Math.min(start + CONFIG.behavior.liveReorderDepth, items.length);
     if (end <= start) return;
     const slice    = items.slice(start, end);
-    const btpItems = slice.filter(i => !i.isEntertainment).map(i => i.data).filter(Boolean);
+    const btpItems = slice.map(i => i.data).filter(Boolean);
     if (btpItems.length < 2) return;
     const reordered = intelligentReorder(btpItems, { jitter: 0.2 });
-    const uidMap    = new Map(slice.filter(i => !i.isEntertainment).map(i => [i.data, i]));
-    const newBTP    = reordered.map(d => uidMap.get(d)).filter(Boolean);
-    // Réinsérer les slides divertissement à leur place originale
-    const newSlice = [];
-    let bi = 0;
-    for (const item of slice) {
-      if (item.isEntertainment) newSlice.push(item);
-      else { if (bi < newBTP.length) newSlice.push(newBTP[bi++]); else newSlice.push(item); }
-    }
-    const newFeed = [...items.slice(0, start), ...newSlice, ...items.slice(end)];
+    const uidMap    = new Map(slice.map(i => [i.data, i]));
+    const newSlice  = reordered.map(d => uidMap.get(d)).filter(Boolean);
+    const newFeed   = [...items.slice(0, start), ...newSlice, ...items.slice(end)];
     feedItemsRef.current = newFeed;
     startTransition(() => setFeedItems([...newFeed]));
   }, []);
@@ -1071,14 +1139,11 @@ const VideosPage = () => {
     adaptiveBuf.record(now);
     cancelPreloadsAfter(networkMgr.preloadAhead);
 
-    // Précharger les slides suivantes (priorité aux non-embarquées)
     for (let i = 1; i <= networkMgr.preloadAhead; i++) injectPreload(items[newIdx + i]);
 
-    // Préchauffer YT 2 slides plus tôt
     const nextYtIds = extractYoutubeIds(items, newIdx + 1, CONFIG.ytWarmupAhead);
     if (nextYtIds.length > 0) YouTubePool.warmup(nextYtIds);
 
-    // Transition en microtask pour éviter le jank
     queueMicrotask(() => {
       startTransition(() => {
         slideListeners.current[old]?.(false);
@@ -1088,7 +1153,6 @@ const VideosPage = () => {
     });
   }, [sendWatchScore]);
 
-  // ── Invalider un item ────────────────────────────────────────────────────
   const invalidateItem = useCallback((uid) => {
     if (invalidSet.current.has(uid)) return;
     invalidSet.current.add(uid);
@@ -1097,35 +1161,13 @@ const VideosPage = () => {
     startTransition(() => setFeedItems(prev => prev.filter(i => i.id !== uid)));
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // INTERLEAVE BTP + DIVERTISSEMENT (80/20)
-  // Règle : toutes les 5 slides BTP → 1 slide divertissement
-  // ─────────────────────────────────────────────────────────────────────────
-  const buildInterleavedSlides = useCallback((btpItems, entItems) => {
-    const result = [];
-    let   ei     = 0;
-    for (let i = 0; i < btpItems.length; i++) {
-      result.push(btpItems[i]);
-      // Insérer 1 divertissement toutes les 4 slides BTP
-      if ((i + 1) % 4 === 0 && ei < entItems.length) {
-        result.push({ ...entItems[ei++], isEntertainment: true });
-      }
-    }
-    // Ajouter les divertissements restants à la fin (au cas où peu de BTP)
-    while (ei < entItems.length) {
-      result.push({ ...entItems[ei++], isEntertainment: true });
-    }
-    return result;
-  }, []);
-
-  // ── appendItems ───────────────────────────────────────────────────────────
-  const appendItems = useCallback((rawItems, { coldStart = false, isEntertainment = false } = {}) => {
+  // ── appendItems — système entertainment retiré ───────────────────────────
+  const appendItems = useCallback((rawItems, { coldStart = false } = {}) => {
     if (!rawItems || rawItems.length === 0) return;
 
-    const toProcess = isEntertainment ? rawItems : applyViralBoost(rawItems);
-    const reordered = isEntertainment ? toProcess : intelligentReorder(toProcess, { jitter: coldStart ? 0.1 : 0.3, forColdStart: coldStart });
+    const boosted   = applyViralBoost(rawItems);
+    const reordered = intelligentReorder(boosted, { jitter: coldStart ? 0.1 : 0.3, forColdStart: coldStart });
 
-    // Vérifier si tout a déjà été vu
     const allSeen = reordered.every(item => {
       const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
       return seenSet.current.has(uid) || invalidSet.current.has(uid);
@@ -1138,7 +1180,7 @@ const VideosPage = () => {
     const toAdd = [];
     let len = feedItemsRef.current.length;
     for (const item of reordered) {
-      const uid = item._uid || `${item._isAggregated ? 'agg' : (isEntertainment ? 'ent' : 'user')}-${item._id || item.externalId}`;
+      const uid = item._uid || `${item._isAggregated ? 'agg' : 'user'}-${item._id || item.externalId}`;
       if (seenSet.current.has(uid) || invalidSet.current.has(uid)) continue;
       seenSet.current.add(uid);
       if (!item.isEmbed) probeItemBackground(item, () => invalidateItem(uid));
@@ -1147,10 +1189,8 @@ const VideosPage = () => {
         id:   uid,
         data: { ...item, _uid: uid },
         isAggregated: !!item._isAggregated,
-        isEntertainment: !!isEntertainment,
       });
       len++;
-      // Pubs moins fréquentes (1 toutes les 10 slides)
       if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) {
         toAdd.push({ type: 'ad', id: `ad-${++_adCounter}` });
       }
@@ -1169,7 +1209,6 @@ const VideosPage = () => {
       if (wasEmpty) { setFeedReady(true); setTimeout(() => setShowScrollHint(true), 3200); }
     });
 
-    // Préchargement des premières slides
     const preloadSlice = toAdd.slice(0, networkMgr.preloadAhead);
     if ('requestIdleCallback' in window) requestIdleCallback(() => preloadSlice.forEach(injectPreload), { timeout: 2000 });
     else setTimeout(() => preloadSlice.forEach(injectPreload), 400);
@@ -1178,14 +1217,14 @@ const VideosPage = () => {
       const firstYtIds = extractYoutubeIds(toAdd, 0, CONFIG.ytWarmupAhead);
       if (firstYtIds.length > 0) YouTubePool.warmup(firstYtIds);
     }
-  }, [invalidateItem, buildInterleavedSlides]);
+  }, [invalidateItem]);
 
   const recycle = useCallback(() => {
     if (aggPool.current.length < CONFIG.recycleMin) return;
     const recycled = smartRecycle(aggPool.current);
     const toAdd    = []; let len = feedItemsRef.current.length;
     for (const item of recycled) {
-      toAdd.push({ type:'content', id:item._uid, data:item, isAggregated:true, isEntertainment:false });
+      toAdd.push({ type:'content', id:item._uid, data:item, isAggregated:true });
       len++;
       if (CONFIG.ads.enabled && len % CONFIG.ads.frequency === 0) toAdd.push({ type:'ad', id:`ad-${++_adCounter}` });
     }
@@ -1193,7 +1232,7 @@ const VideosPage = () => {
     startTransition(() => setFeedItems(prev => [...prev, ...toAdd]));
   }, []);
 
-  // ── fetchAggregated (BTP) ─────────────────────────────────────────────────
+  // ── fetchAggregated (BTP uniquement) — garde-fou métier appliqué ─────────
   const fetchAggregated = useCallback(async (page = 1, limit = 40) => {
     if (!CONFIG.aggregated.enabled || aggLoadingRef.current) return;
     try {
@@ -1223,9 +1262,12 @@ const VideosPage = () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
 
+      // ✅ v15 — GARDE-FOU MÉTIER : isAcceptableForFeed() en première position,
+      // avant même isPlayableCandidate. Aucun item hors-sujet ne peut passer,
+      // même si le backend a un bug ou une nouvelle source mal configurée.
       const finalItems = (json.data || [])
+        .filter(isAcceptableForFeed)
         .filter(isPlayableCandidate)
-        .filter(detectBTPLocal)
         .map(c => sanitizeItem({ ...c, _isAggregated: true }, activeLang));
 
       aggPool.current       = [...aggPool.current, ...finalItems];
@@ -1234,57 +1276,17 @@ const VideosPage = () => {
 
       appendItems(finalItems, { coldStart: page === 1 && userProfile.isNewUser });
 
-      // Charger plus si feed trop court
       if (feedItemsRef.current.length < CONFIG.minFeedSize && aggHasMoreRef.current) {
         setTimeout(() => fetchAggregated(page + 1, limit), 200);
       }
     } catch (err) {
-      if (err.name === 'AbortError') return; // fetch annulé
+      if (err.name === 'AbortError') return;
       aggHasMoreRef.current = false;
       if (aggPool.current.length >= CONFIG.recycleMin) recycle();
     } finally {
       aggLoadingRef.current = false;
     }
   }, [getToken, appendItems, recycle, language]);
-
-  // ── fetchEntertainment (20% divertissement) ───────────────────────────────
-  const fetchEntertainment = useCallback(async (page = 1, limit = 12) => {
-    if (!CONFIG.entertainment.enabled || entLoadingRef.current) return;
-    try {
-      entLoadingRef.current = true;
-      const token      = await getToken();
-      const activeLang = normalizeFeedLanguage(language);
-      const headers    = {
-        'Accept-Language': activeLang,
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      };
-      // Catégories divertissement en round-robin
-      const catIdx     = (page - 1) % ENTERTAINMENT_CATEGORIES.length;
-      const categories = ENTERTAINMENT_CATEGORIES.slice(catIdx, catIdx + 3).join(',');
-
-      const res = await fetch(
-        `${API_BASE}/api/aggregated?page=${page}&limit=${limit}&type=short_videos&sources=${ENTERTAINMENT_SOURCES.join(',')}&categories=${encodeURIComponent(categories)}&language=${encodeURIComponent(activeLang)}`,
-        { headers }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-
-      const items = (json.data || [])
-        .filter(isPlayableCandidate)
-        .filter(item => !detectBTPLocal(item)) // Exclure le BTP du pool divertissement
-        .map(c => sanitizeItem({ ...c, _isAggregated: true, _isEntertainment: true }, activeLang));
-
-      entertainmentPool.current = [...entertainmentPool.current, ...items];
-      entPageRef.current    = page;
-      entHasMoreRef.current = json.pagination?.hasMore || false;
-
-      if (items.length > 0) appendItems(items, { isEntertainment: true });
-    } catch (err) {
-      entHasMoreRef.current = false;
-    } finally {
-      entLoadingRef.current = false;
-    }
-  }, [getToken, appendItems, language]);
 
   // ── Vidéos utilisateur ────────────────────────────────────────────────────
   useEffect(() => {
@@ -1295,15 +1297,13 @@ const VideosPage = () => {
     if (newOnes.length > 0) appendItems(newOnes.map(v => ({ ...v, _isUserVideo: true })));
   }, [userVideos, appendItems]);
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  // ── Init — fetch entertainment supprimé ───────────────────────────────────
   useEffect(() => {
     if (!fetchTriggered.current) {
       fetchTriggered.current = true;
       YouTubePool.init();
       fetchUserVideos(true);
       fetchAggregated(1, CONFIG.aggregated.initialLoad);
-      // Décaler légèrement le fetch entertainment pour ne pas bloquer le BTP
-      setTimeout(() => fetchEntertainment(1, CONFIG.entertainment.initialLoad), 800);
     }
   }, []); // eslint-disable-line
 
@@ -1313,8 +1313,7 @@ const VideosPage = () => {
     const check = setInterval(() => {
       const mem = performance.memory;
       if (mem && mem.usedJSHeapSize > mem.jsHeapSizeLimit * 0.75) {
-        aggPool.current           = aggPool.current.slice(-CONFIG.recycleMin);
-        entertainmentPool.current = entertainmentPool.current.slice(-6);
+        aggPool.current = aggPool.current.slice(-CONFIG.recycleMin);
         _preloadedUrls.clear(); cancelPreloadsAfter(0);
       }
     }, 15000);
@@ -1334,15 +1333,13 @@ const VideosPage = () => {
           if (userHasMoreRef.current && !userLoadingRef.current) fetchUserVideos();
           if (aggHasMoreRef.current && !aggLoadingRef.current)
             await fetchAggregated(aggPageRef.current + 1, CONFIG.aggregated.loadMore);
-          if (entHasMoreRef.current && !entLoadingRef.current)
-            await fetchEntertainment(entPageRef.current + 1, CONFIG.entertainment.loadMore);
           if (!userHasMoreRef.current && !aggHasMoreRef.current) recycle();
         } finally {
           loadMoreMutex.current = false;
         }
       })();
     }
-  }, [notifyActive, fetchUserVideos, fetchAggregated, fetchEntertainment, recycle]);
+  }, [notifyActive, fetchUserVideos, fetchAggregated, recycle]);
 
   const handleVideoError = useCallback((itemId) => {
     invalidateItem(itemId);
@@ -1357,7 +1354,7 @@ const VideosPage = () => {
     anyModalRef.current = isOpen; setAnyModalOpen(isOpen);
   }, []);
 
-  // ── Reset complet ─────────────────────────────────────────────────────────
+  // ── Reset complet — fetch entertainment supprimé ─────────────────────────
   const handleVideoPublished = useCallback(() => {
     if (activeAbortRef.current) activeAbortRef.current.abort();
 
@@ -1368,11 +1365,8 @@ const VideosPage = () => {
     try { sessionStorage.removeItem(CONFIG.seen.invalidKey); } catch {}
 
     aggPool.current           = [];
-    entertainmentPool.current = [];
     aggPageRef.current        = 1;
     aggHasMoreRef.current     = true;
-    entPageRef.current        = 1;
-    entHasMoreRef.current     = true;
     watchStreakRef.current     = 0;
     _recycleRound             = 0;
     _adCounter                = 0;
@@ -1388,8 +1382,7 @@ const VideosPage = () => {
 
     fetchUserVideos(true);
     fetchAggregated(1, CONFIG.aggregated.initialLoad);
-    setTimeout(() => fetchEntertainment(1, CONFIG.entertainment.initialLoad), 800);
-  }, [fetchUserVideos, fetchAggregated, fetchEntertainment]);
+  }, [fetchUserVideos, fetchAggregated]);
 
   // Reset sur changement de langue
   useEffect(() => {
