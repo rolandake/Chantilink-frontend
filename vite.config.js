@@ -5,7 +5,7 @@ import path from "path";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-const API_URL = env.VITE_BACKEND_URL || (env.VITE_API_URL || "http://localhost:5000").replace(/\/api$/, "");
+  const API_URL = env.VITE_BACKEND_URL || (env.VITE_API_URL || "http://localhost:5000").replace(/\/api$/, "");
 
   return {
     plugins: [
@@ -83,7 +83,6 @@ const API_URL = env.VITE_BACKEND_URL || (env.VITE_API_URL || "http://localhost:5
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "src"),
-        // ✅ DÉCOMMENTÉ - Force une seule instance de React
         react: path.resolve(__dirname, "node_modules/react"),
         "react-dom": path.resolve(__dirname, "node_modules/react-dom"),
         "react/jsx-runtime": path.resolve(__dirname, "node_modules/react/jsx-runtime"),
@@ -122,18 +121,7 @@ const API_URL = env.VITE_BACKEND_URL || (env.VITE_API_URL || "http://localhost:5
       target: "es2015",
       minify: "esbuild",
       cssMinify: "esbuild",
-      chunkSizeWarningLimit: 1000,
-      rollupOptions: {
-        output: {
-          manualChunks: {
-            vendor: ["react", "react-dom", "react-router-dom"],
-            ui: ["framer-motion", "lucide-react"],
-            utils: ["axios", "date-fns"],
-            media: ["emoji-picker-react"],
-            stripe: ["@stripe/stripe-js", "@stripe/react-stripe-js"],
-          },
-        },
-      },
+      chunkSizeWarningLimit: 1500,
     },
 
     define: {
@@ -141,6 +129,7 @@ const API_URL = env.VITE_BACKEND_URL || (env.VITE_API_URL || "http://localhost:5
       "process.env.VITE_CURRENCY": JSON.stringify("XOF"),
     },
 
+    // ✅ FIX VITE 8 : optimizeDeps.esbuildOptions → rolldownOptions
     optimizeDeps: {
       include: [
         "react",
@@ -156,9 +145,11 @@ const API_URL = env.VITE_BACKEND_URL || (env.VITE_API_URL || "http://localhost:5
         "react-chartjs-2",
       ],
       force: true,
-      esbuildOptions: {
-        mainFields: ["module", "main"],
-        conditions: ["import", "module", "default"],
+      rolldownOptions: {
+        resolve: {
+          mainFields: ["module", "main"],
+          conditionNames: ["import", "module", "default"],
+        },
       },
     },
   };
