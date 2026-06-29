@@ -1,7 +1,7 @@
 /**
  * OpportunitiesPage.jsx
  * Onglet Opportunités — Chantilink
- * v4 — avec modal de détail d'offre (OppDetailModal)
+ * v5 — badge "Chantilink" + logo entreprise pour les opportunités internes
  */
 
 import React, {
@@ -164,7 +164,17 @@ const OppCard = memo(({ opp, isDarkMode, onOpen }) => {
       <div style={{ padding: "14px 16px 14px 20px" }}>
         {/* Top row */}
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-          <TypeIcon type={opp.type} size={40} />
+          {/* ✅ Logo entreprise si offre interne avec logo, sinon icône générique */}
+          {opp.isInternal && opp.businessLogo ? (
+            <img
+              src={opp.businessLogo}
+              alt={opp.company}
+              style={{ width: 40, height: 40, borderRadius: 14, objectFit: "cover", flexShrink: 0 }}
+              onError={(e) => { e.currentTarget.style.display = "none"; }}
+            />
+          ) : (
+            <TypeIcon type={opp.type} size={40} />
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
             {/* Meta row */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
@@ -186,6 +196,18 @@ const OppCard = memo(({ opp, isDarkMode, onOpen }) => {
                 }}>
                   <Sparkles size={9} strokeWidth={2.5} />
                   Nouveau
+                </span>
+              )}
+              {/* ✅ Badge opportunité interne (créée depuis une page entreprise Chantilink) */}
+              {opp.isInternal && (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", gap: 3,
+                  fontSize: 10, fontWeight: 700,
+                  padding: "2px 7px", borderRadius: 99,
+                  background: "rgba(59,130,246,0.14)", color: "#3b82f6",
+                }}>
+                  <Building2 size={9} strokeWidth={2.5} />
+                  Chantilink
                 </span>
               )}
               <span style={{
@@ -474,7 +496,6 @@ export default function OpportunitiesPage() {
 
             {/* ── Toggle Récentes + Tri ─────────────────────────────── */}
             <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
-              {/* Toggle "Récentes uniquement" */}
               <button
                 onClick={() => setOnlyNew((v) => !v)}
                 aria-pressed={onlyNew}
@@ -503,7 +524,6 @@ export default function OpportunitiesPage() {
                 )}
               </button>
 
-              {/* Sélecteur de tri */}
               <div style={{ position: "relative", marginLeft: "auto" }}>
                 <select
                   value={sortBy}

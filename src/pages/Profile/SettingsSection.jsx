@@ -1,20 +1,33 @@
-// src/pages/Profile/SettingsSection.jsx
-import React, { useState, lazy, Suspense } from 'react';
+// src/pages/profile/SettingsSection.jsx
+// v4.0 — Refonte visuelle : onglets en accordéon déroulant (1 panneau ouvert à la fois)
+//   - Remplace l'ancienne double barre (mobile/desktop) par une liste verticale unique
+//   - Chaque ligne se déplie sur place pour afficher son contenu (style "paramètres pro")
+//   - AccountTypeSwitcher reste fixe en haut
+//   - ✅ FIX route : utilise PATCH /api/users/:id/pro (la seule route qui accepte accountType
+//     pour personal/business/pro) au lieu de /:id/account-type qui n'existe pas côté backend
+
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import MonetisationProgram from "./Monetisation/MonetisationProgram";
+import axios from 'axios';
+import MonetisationProgram   from "./Monetisation/MonetisationProgram";
 import MonetisationDashboard from "./Monetisation/MonetisationDashboard";
-import OffersSection from "./Monetisation/OffersSection";
-import MyClients from "./Monetisation/MyClients";
-import StatsSection from "./Monetisation/StatsSection";
-import WithdrawalsSection from "./Monetisation/WithdrawalsSection";
-import TransactionsSection from "./Monetisation/TransactionsSection";
-import StorageManager from "./StorageManager";
-import { useAuth } from '../../context/AuthContext';
-import { useDarkMode } from '../../context/DarkModeContext';
-import LanguageSelector from "../../components/LanguageSelector";
-import PrivacyPolicy from "../../components/legal/PrivacyPolicy";
+import OffersSection         from "./Monetisation/OffersSection";
+import MyClients             from "./Monetisation/MyClients";
+import StatsSection          from "./Monetisation/StatsSection";
+import WithdrawalsSection    from "./Monetisation/WithdrawalsSection";
+import TransactionsSection   from "./Monetisation/TransactionsSection";
+import StorageManager        from "./StorageManager";
+import BusinessProfileForm   from "./Business/BusinessProfileForm";
+import MyOpportunities       from "./Business/MyOpportunities";
+import AccountTypeSwitcher   from "./AccountTypeSwitcher";
+import { useAuth }           from '../../context/AuthContext';
+import { useDarkMode }       from '../../context/DarkModeContext';
+import LanguageSelector      from "../../components/LanguageSelector";
+import PrivacyPolicy         from "../../components/legal/PrivacyPolicy";
+import { PROFILE_BACKEND_BASE } from "./profileApi";
 
 const AdminDashboard = lazy(() => import('../Admin/AdminDashboard'));
+const BASE_URL       = PROFILE_BACKEND_BASE;
 
 // ── ICÔNES SVG ────────────────────────────────────────────────────────────────
 const Icons = {
@@ -88,315 +101,333 @@ const Icons = {
       <path d="M12 2l2.09 6.26L20 9.27l-5 4.87 1.18 6.88L12 17.77l-4.18 3.25L9 14.14 4 9.27l5.91-1.01L12 2z" />
     </svg>
   ),
+  business: () => (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="7" width="20" height="15" rx="2" />
+      <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
+      <path d="M12 12v4" />
+      <path d="M8 12v4" />
+      <path d="M16 12v4" />
+    </svg>
+  ),
+  myOpportunities: () => (
+    <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="7.5" width="19" height="13" rx="2.5" />
+      <path d="M8 7.5V6a3 3 0 0 1 3-3h2a3 3 0 0 1 3 3v1.5" />
+      <path d="M2.5 13h19" />
+    </svg>
+  ),
+  chevron: () => (
+    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  ),
 };
 
 // ── LOADING ───────────────────────────────────────────────────────────────────
 const LoadingSpinner = () => (
-  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200 }}>
     <div style={{
-      width: 40, height: 40,
+      width: 36, height: 36,
       border: '3px solid rgba(249,115,22,0.2)',
       borderTopColor: '#f97316',
       borderRadius: '50%',
       animation: 'spin 0.8s linear infinite',
     }} />
-    <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
   </div>
 );
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
-export default function SettingsSection({ user, showToast }) {
-  const [activeTab, setActiveTab] = useState("programme");
-  const { isAdmin } = useAuth();
+export default function SettingsSection({ user, showToast, onUserUpdated }) {
+  const isBusiness = user?.accountType === "business";
+  const isPro      = user?.accountType === "pro";
+
+  const [openTab, setOpenTab] = useState(isBusiness || isPro ? "business" : "programme");
+  const { isAdmin, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
   const userIsAdmin = isAdmin();
 
-  const TABS = [
-    { id: "programme", label: "Programme",      IconComp: Icons.program  },
-    { id: "dashboard", label: "Tableau de bord", IconComp: Icons.dashboard },
-    { id: "create",    label: "Offres",           IconComp: Icons.create   },
-    { id: "clients",   label: "Mes clients",       IconComp: Icons.clients  },
-    { id: "revenus",   label: "Statistiques",      IconComp: Icons.stats    },
-    { id: "transactions", label: "Transactions",   IconComp: Icons.payouts  },
-    { id: "retraits",  label: "Retraits",           IconComp: Icons.payouts  },
-    { id: "storage",   label: "Stockage",           IconComp: Icons.storage  },
-    { id: "language",  label: "Langue",             IconComp: Icons.language },
-    { id: "about",     label: "A propos",           IconComp: Icons.about    },
-    ...(userIsAdmin ? [{ id: "admin", label: "Admin", IconComp: Icons.admin, badge: "Admin" }] : []),
+  const [changingType, setChangingType] = useState(false);
+
+  const handleAccountTypeChange = async (newType) => {
+    if (!user?._id) {
+      showToast?.("Utilisateur introuvable", "error");
+      return;
+    }
+    if (newType === user?.accountType) return;
+
+    setChangingType(true);
+    try {
+      const token = await getToken?.();
+      if (!token) throw new Error("Session expirée");
+
+      // ✅ FIX : /:id/account-type n'existe pas côté backend.
+      // /:id/pro accepte accountType pour personal | business | pro.
+      const { data } = await axios.patch(
+        `${BASE_URL}/api/users/${user._id}/pro`,
+        { accountType: newType },
+        {
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          timeout: 10000,
+        }
+      );
+
+      const updatedUser = data?.user || { ...user, accountType: newType };
+      onUserUpdated?.(updatedUser);
+      setOpenTab(newType === "business" || newType === "pro" ? "business" : "programme");
+      showToast?.("✅ Type de compte mis à jour !", "success");
+    } catch (err) {
+      showToast?.(
+        err?.response?.data?.message || err.message || "Erreur lors du changement de type",
+        "error"
+      );
+    } finally {
+      setChangingType(false);
+    }
+  };
+
+  // ── Groupes d'onglets (sections) selon accountType ──────────────────────
+  const GROUPS = [
+    {
+      label: "Monétisation",
+      hidden: isBusiness || isPro,
+      items: [
+        { id: "programme",    label: "Programme",       desc: "Activer et suivre le programme créateur", IconComp: Icons.program   },
+        { id: "dashboard",    label: "Tableau de bord", desc: "Vue d'ensemble de votre activité",         IconComp: Icons.dashboard },
+        { id: "create",       label: "Offres",          desc: "Créer et gérer vos offres",                IconComp: Icons.create    },
+        { id: "clients",      label: "Mes clients",     desc: "Liste et suivi de vos clients",             IconComp: Icons.clients   },
+        { id: "revenus",      label: "Statistiques",    desc: "Performances et revenus",                   IconComp: Icons.stats     },
+        { id: "transactions", label: "Transactions",    desc: "Historique des paiements",                  IconComp: Icons.payouts   },
+        { id: "retraits",     label: "Retraits",        desc: "Demander et suivre vos retraits",           IconComp: Icons.payouts   },
+      ],
+    },
+    {
+      label: "Compte",
+      hidden: false,
+      items: [
+        { id: "storage", label: "Stockage", desc: "Gérer l'espace utilisé par vos médias", IconComp: Icons.storage },
+        {
+          id: "business", label: "Entreprise",
+          desc: isPro ? "Votre profil professionnel (CV en ligne)" : "Informations de votre page entreprise",
+          IconComp: Icons.business, badge: isBusiness ? "Actif" : (isPro ? "Pro" : null),
+        },
+        ...(isBusiness ? [
+          { id: "myOpportunities", label: "Mes offres", desc: "Offres publiées par votre entreprise", IconComp: Icons.myOpportunities },
+        ] : []),
+      ],
+    },
+    {
+      label: "Général",
+      hidden: false,
+      items: [
+        { id: "language", label: "Langue",   desc: "Langue de l'application et du contenu", IconComp: Icons.language },
+        { id: "about",    label: "À propos", desc: "Politique de confidentialité",          IconComp: Icons.about    },
+        ...(userIsAdmin ? [{ id: "admin", label: "Admin", desc: "Outils de modération", IconComp: Icons.admin, badge: "Admin" }] : []),
+      ],
+    },
   ];
 
-  const renderContent = () => {
-    switch (activeTab) {
-      case "programme": return <MonetisationProgram user={user} showToast={showToast} onNavigate={setActiveTab} />;
-      case "dashboard": return <MonetisationDashboard />;
-      case "create":    return <OffersSection />;
-      case "clients":   return <MyClients />;
-      case "revenus":   return <StatsSection />;
+  const visibleIds = GROUPS.filter(g => !g.hidden).flatMap(g => g.items.map(i => i.id));
+
+  useEffect(() => {
+    if (!visibleIds.includes(openTab)) {
+      setOpenTab(isBusiness || isPro ? "business" : "programme");
+    }
+  }, [isBusiness, isPro]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const bdr        = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
+  const sub        = isDarkMode ? '#9ca3af' : '#6b7280';
+  const muted      = isDarkMode ? '#6b7280' : '#9ca3af';
+  const cardBg     = isDarkMode ? 'rgba(255,255,255,0.02)' : '#ffffff';
+  const panelBg    = isDarkMode ? 'rgba(255,255,255,0.015)' : '#fafafa';
+  const groupLabel = isDarkMode ? '#71717a' : '#9ca3af';
+  const titleColor = isDarkMode ? '#f9fafb' : '#111827';
+
+  const renderContent = (id) => {
+    switch (id) {
+      case "programme":    return <MonetisationProgram user={user} showToast={showToast} onNavigate={setOpenTab} />;
+      case "dashboard":    return <MonetisationDashboard />;
+      case "create":       return <OffersSection />;
+      case "clients":      return <MyClients />;
+      case "revenus":      return <StatsSection />;
       case "transactions": return <TransactionsSection />;
-      case "retraits":  return <WithdrawalsSection />;
-      case "storage":   return <StorageManager user={user} showToast={showToast} />;
+      case "retraits":     return <WithdrawalsSection />;
+      case "storage":      return <StorageManager user={user} showToast={showToast} />;
+      case "business":     return <BusinessProfileForm user={user} showToast={showToast} onUserUpdated={onUserUpdated} />;
+      case "myOpportunities": return <MyOpportunities user={user} showToast={showToast} />;
+
       case "language":
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-            <div>
-              <h3 style={{ margin: '0 0 6px', fontSize: 18, fontWeight: 800, color: isDarkMode ? '#f9fafb' : '#111827' }}>
-                Langue de l'application
-              </h3>
-              <p style={{ margin: 0, fontSize: 13, color: sub, lineHeight: 1.6 }}>
-                Les menus, les vidéos recommandées et les textes des publications seront adaptés à la langue choisie.
-              </p>
-            </div>
+            <p style={{ margin: 0, fontSize: 13, color: sub, lineHeight: 1.6 }}>
+              Les menus, les vidéos recommandées et les textes des publications seront adaptés à la langue choisie.
+            </p>
             <LanguageSelector variant="pills" />
           </div>
         );
+
       case "about":
         return (
           <div
             className="settings-privacy-readable"
             style={{
-              borderRadius: 16,
+              borderRadius: 14,
               background: isDarkMode ? '#0f172a' : '#ffffff',
               border: `1px solid ${isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(15,23,42,0.1)'}`,
               overflow: 'hidden',
             }}
           >
             <style>{`
-              .settings-privacy-readable,
-              .settings-privacy-readable p,
-              .settings-privacy-readable li,
-              .settings-privacy-readable section {
+              .settings-privacy-readable, .settings-privacy-readable p,
+              .settings-privacy-readable li, .settings-privacy-readable section {
                 color: ${isDarkMode ? '#e5e7eb' : '#1f2937'} !important;
               }
-              .settings-privacy-readable h1,
-              .settings-privacy-readable h2,
-              .settings-privacy-readable strong {
+              .settings-privacy-readable h1, .settings-privacy-readable h2, .settings-privacy-readable strong {
                 color: ${isDarkMode ? '#f9fafb' : '#111827'} !important;
               }
-              .settings-privacy-readable h1 {
-                color: #f97316 !important;
-              }
+              .settings-privacy-readable h1 { color: #f97316 !important; }
               .settings-privacy-readable a {
                 color: ${isDarkMode ? '#93c5fd' : '#2563eb'} !important;
                 text-decoration: underline;
               }
-              .settings-privacy-readable .text-red-500 {
-                color: #ef4444 !important;
-              }
             `}</style>
-            <div style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+            <div style={{ maxHeight: '65vh', overflowY: 'auto', padding: 4 }}>
               <PrivacyPolicy />
             </div>
           </div>
         );
+
       case "admin":
         if (!userIsAdmin) return (
-          <div style={{ textAlign: 'center', padding: '48px 0', fontFamily: "'Sora','DM Sans',sans-serif" }}>
-            <p style={{ fontSize: 16, fontWeight: 600, color: '#ef4444' }}>
-              ⛔ Accès réservé aux administrateurs
-            </p>
-          </div>
+          <p style={{ textAlign: 'center', padding: '24px 0', fontSize: 14, fontWeight: 600, color: '#ef4444' }}>
+            ⛔ Accès réservé aux administrateurs
+          </p>
         );
         return <Suspense fallback={<LoadingSpinner />}><AdminDashboard /></Suspense>;
+
       default: return null;
     }
   };
 
-  const bdr        = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
-  const sub        = isDarkMode ? '#6b7280' : '#9ca3af';
-  const cardBg     = isDarkMode ? 'rgba(10,10,10,0.98)' : 'rgba(255,255,255,0.98)';
-  const cardShadow = isDarkMode ? '0 4px 24px rgba(0,0,0,0.4)' : '0 2px 16px rgba(0,0,0,0.07)';
-
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, fontFamily: "'Sora','DM Sans',sans-serif" }}>
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18, fontFamily: "'Sora','DM Sans',sans-serif" }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
-        .s-tab {
-          position: relative;
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 5px;
-          padding: 13px 8px 15px;
-          border: none;
-          background: none;
-          cursor: pointer;
-          font-family: 'Sora','DM Sans',sans-serif;
-          transition: color 0.2s;
-          outline: none;
-          min-width: 80px;
-        }
-        .s-tab .s-icon-wrap {
-          display: flex; align-items: center; justify-content: center;
-          width: 36px; height: 36px; border-radius: 10px;
-          transition: background 0.25s, transform 0.2s;
-        }
-        .s-tab:hover .s-icon-wrap {
-          transform: translateY(-2px);
-          background: rgba(249,115,22,0.08);
-        }
-        .s-tab.active .s-icon-wrap {
-          background: linear-gradient(135deg, rgba(249,115,22,0.15), rgba(236,72,153,0.12));
-        }
-
-        @media (min-width: 768px) {
-          .s-mobile  { display: none !important; }
-          .s-desktop { display: flex !important; }
-        }
-        @media (max-width: 767px) {
-          .s-mobile  { display: flex !important; }
-          .s-desktop { display: none  !important; }
-        }
-      `}</style>
-
-      {/* ── TAB BAR MOBILE ── */}
-      <div
-        className="s-mobile"
-        style={{
-          gap: 8,
-          overflowX: 'auto',
-          padding: '2px 2px 8px',
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-        }}
-      >
-        {TABS.map(({ id, label, IconComp, badge }) => {
-          const isActive = id === activeTab;
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setActiveTab(id)}
-              aria-label={label}
-              style={{
-                flex: '0 0 auto',
-                minWidth: 76,
-                height: 68,
-                borderRadius: 16,
-                border: `1px solid ${isActive ? 'rgba(249,115,22,0.42)' : bdr}`,
-                background: isActive
-                  ? (isDarkMode ? 'rgba(249,115,22,0.14)' : '#fff7ed')
-                  : cardBg,
-                color: isActive ? '#f97316' : sub,
-                boxShadow: isActive ? '0 8px 22px rgba(249,115,22,0.12)' : 'none',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 5,
-                fontFamily: "'Sora','DM Sans',sans-serif",
-                cursor: 'pointer',
-                position: 'relative',
-                WebkitTapHighlightColor: 'transparent',
-              }}
-            >
-              <IconComp />
-              <span style={{ fontSize: 10, fontWeight: isActive ? 800 : 650, whiteSpace: 'nowrap' }}>
-                {label.length > 11 ? `${label.slice(0, 10)}…` : label}
-              </span>
-              {badge && (
-                <span style={{
-                  position: 'absolute', top: 5, right: 6,
-                  padding: '1px 5px', borderRadius: 999,
-                  fontSize: 8, fontWeight: 800,
-                  background: '#ef4444', color: '#fff',
-                }}>
-                  {badge}
-                </span>
-              )}
-            </button>
-          );
-        })}
+      {/* Sélecteur de type de compte */}
+      <div style={{ opacity: changingType ? 0.6 : 1, pointerEvents: changingType ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
+        <AccountTypeSwitcher
+          currentType={user?.accountType || "personal"}
+          onChange={handleAccountTypeChange}
+        />
       </div>
 
-      {/* ── TAB BAR DESKTOP ── */}
-      <div
-        className="s-desktop"
-        style={{
-          background: cardBg,
-          backdropFilter: 'blur(20px)',
-          borderRadius: 20,
-          border: `1px solid ${bdr}`,
-          overflow: 'hidden',
-          boxShadow: cardShadow,
-        }}
-      >
-        <div style={{
-          display: 'flex',
-          overflowX: 'auto',
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-        }}>
-          {TABS.map(({ id, label, IconComp, badge }) => {
-            const isActive = id === activeTab;
-            return (
-              <button
-                key={id}
-                className={`s-tab${isActive ? ' active' : ''}`}
-                onClick={() => setActiveTab(id)}
-                style={{ color: isActive ? '#f97316' : sub, fontWeight: isActive ? 700 : 400 }}
-              >
-                {/* Icône SVG dans wrapper */}
-                <span className="s-icon-wrap">
-                  <IconComp />
-                </span>
+      {/* Liste accordéon groupée */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+        {GROUPS.filter(g => !g.hidden).map((group) => (
+          <div key={group.label} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span style={{
+              fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
+              textTransform: 'uppercase', color: groupLabel, padding: '0 4px',
+            }}>
+              {group.label}
+            </span>
 
-                {/* Label + badge */}
-                <span style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}>
-                  {label}
-                  {badge && (
-                    <span style={{
-                      padding: '1px 6px', borderRadius: 999,
-                      fontSize: 9, fontWeight: 700,
-                      background: '#ef4444', color: '#fff',
-                      letterSpacing: '0.02em',
-                    }}>
-                      {badge}
-                    </span>
-                  )}
-                </span>
+            <div style={{
+              borderRadius: 16, border: `1px solid ${bdr}`, background: cardBg,
+              overflow: 'hidden',
+            }}>
+              {group.items.map(({ id, label, desc, IconComp, badge }, idx) => {
+                const isOpen = openTab === id;
+                const badgeColor = badge === "Actif" ? "#22c55e" : (badge === "Pro" ? "#3b82f6" : "#ef4444");
+                return (
+                  <div
+                    key={id}
+                    style={{ borderTop: idx === 0 ? 'none' : `1px solid ${bdr}` }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setOpenTab(isOpen ? null : id)}
+                      aria-expanded={isOpen}
+                      style={{
+                        width: '100%', display: 'flex', alignItems: 'center', gap: 14,
+                        padding: '14px 16px', border: 'none', cursor: 'pointer',
+                        background: isOpen ? (isDarkMode ? 'rgba(249,115,22,0.07)' : '#fff7ed') : 'transparent',
+                        textAlign: 'left', fontFamily: "'Sora','DM Sans',sans-serif",
+                        transition: 'background 0.15s',
+                      }}
+                    >
+                      <span style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        width: 38, height: 38, borderRadius: 10, flexShrink: 0,
+                        color: isOpen ? '#f97316' : sub,
+                        background: isOpen
+                          ? 'linear-gradient(135deg, rgba(249,115,22,0.15), rgba(236,72,153,0.12))'
+                          : (isDarkMode ? 'rgba(255,255,255,0.04)' : '#f4f4f5'),
+                        transition: 'all 0.2s',
+                      }}>
+                        <IconComp />
+                      </span>
 
-                {/* Underline animé */}
-                {isActive && (
-                  <motion.div
-                    layoutId="settings-underline"
-                    style={{
-                      position: 'absolute', bottom: 0,
-                      left: '15%', right: '15%',
-                      height: 3, borderRadius: '3px 3px 0 0',
-                      background: 'linear-gradient(90deg,#f97316,#ec4899)',
-                    }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 40 }}
-                  />
-                )}
-              </button>
-            );
-          })}
-        </div>
+                      <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                        <span style={{
+                          fontSize: 14.5, fontWeight: isOpen ? 700 : 600,
+                          color: isOpen ? '#f97316' : titleColor,
+                          display: 'flex', alignItems: 'center', gap: 8,
+                        }}>
+                          {label}
+                          {badge && (
+                            <span style={{
+                              padding: '1px 7px', borderRadius: 999, fontSize: 9.5, fontWeight: 800,
+                              background: badgeColor, color: '#fff', letterSpacing: '0.02em',
+                            }}>
+                              {badge}
+                            </span>
+                          )}
+                        </span>
+                        <span style={{
+                          fontSize: 12, color: muted, overflow: 'hidden',
+                          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {desc}
+                        </span>
+                      </span>
+
+                      <motion.span
+                        animate={{ rotate: isOpen ? 90 : 0 }}
+                        transition={{ duration: 0.2 }}
+                        style={{ color: isOpen ? '#f97316' : muted, flexShrink: 0 }}
+                      >
+                        <Icons.chevron />
+                      </motion.span>
+                    </button>
+
+                    <AnimatePresence initial={false}>
+                      {isOpen && (
+                        <motion.div
+                          key="panel"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.25, ease: 'easeInOut' }}
+                          style={{ overflow: 'hidden' }}
+                        >
+                          <div style={{
+                            padding: '18px 18px 22px',
+                            background: panelBg,
+                            borderTop: `1px solid ${bdr}`,
+                          }}>
+                            {renderContent(id)}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
-
-      {/* ── CONTENU ── */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={activeTab}
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.2 }}
-          style={{
-            padding: 24,
-            borderRadius: 20,
-            minHeight: 300,
-            background: cardBg,
-            border: `1px solid ${bdr}`,
-            backdropFilter: 'blur(20px)',
-            boxShadow: cardShadow,
-          }}
-        >
-          {renderContent()}
-        </motion.div>
-      </AnimatePresence>
     </div>
   );
 }

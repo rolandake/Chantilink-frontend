@@ -1,14 +1,8 @@
 // src/pages/profile/ProfilePage.jsx
-// v8.5 — follow/unfollow : Authorization Bearer + endpoint toggle unique
-//
-// CHANGEMENTS v8.5 :
-//   - unfollowUser appelle directement POST /:id/follow (toggle backend)
-//     Le backend detects already following -> unfollow automatique
-//     Plus de fallback /unfollow qui n'existe pas
-//   - getAuthHeaders() : getToken() -> Authorization: Bearer <token>
-//   - followUser + unfollowUser + fetchUserById : tous avec Bearer token
-//   - BASE_URL = API_URL.replace(/\/api\/?$/, "") : évite /api/api/users/...
-//   - padding 0 sur racine : couverture colle sous la navbar
+// v8.8 — profil pro : isPro transmis à ProfileMenu + onglet "cv" géré dans renderContent
+//   - isPro={effectiveProfileUser?.accountType === "pro"} passé à <ProfileMenu>
+//   - renderContent() gère selectedTab === "cv" → <ProCVView>
+//   - Pas d'onglet "Projets" (non pertinent pour le profil pro)
 
 import React, { useState, useEffect, useCallback, useRef, memo, startTransition } from "react";
 import { motion } from "framer-motion";
@@ -19,6 +13,7 @@ import ProfileMediaGrid from "./ProfileMediaGrid";
 import SettingsSection from "./SettingsSection";
 import CreatePost from "../Home/CreatePost";
 import PostCard from "../Home/PostCard";
+import ProCVView from "./Pro/ProCVView"; // ✅ NOUVEAU
 import { usePosts } from "../../context/PostsContext";
 import { useAuth } from "../../context/AuthContext";
 import { useDarkMode } from "../../context/DarkModeContext";
@@ -35,11 +30,6 @@ import {
   idbGetProfileUser as idbGetUser,
 } from "../../utils/idbMigration";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// URL DE BASE
-// VITE_API_URL peut valoir "http://localhost:5000" ou "http://localhost:5000/api"
-// BASE_URL supprime le /api trailing -> on construit les paths manuellement
-// ─────────────────────────────────────────────────────────────────────────────
 const BASE_URL = PROFILE_BACKEND_BASE;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,12 +76,11 @@ export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
       for (const p of posts) {
         if (!p?._id || seen.has(p._id)) continue;
         seen.add(p._id);
-        result.push({ 
-          ...p, 
+        result.push({
+          ...p,
           _fromProfileCache: true,
           _profileCacheUserId: userId,
           _profileCacheLoadedAt: ts,
-          // Marquer pour isolation: ne pas mélanger automatiquement avec home feed
           _shouldIsolateFromHomeFeed: true,
         });
       }
@@ -100,7 +89,6 @@ export const readAllCachedProfilePosts = (maxAge = PROFILE_CACHE_TTL) => {
   } catch { return []; }
 };
 
-// 🧹 Nettoyer le cache des posts du profil quand on navigue away
 export const clearProfilePostsCache = () => {
   if (typeof window !== "undefined") {
     try {
@@ -239,6 +227,9 @@ const buildMinimalUser = (uid, partial = {}) => ({
   followers:      partial.followers     || [],
   following:      partial.following     || [],
   createdAt:      partial.createdAt     || null,
+  accountType:    partial.accountType   || "personal",
+  businessInfo:   partial.businessInfo  || null,
+  proInfo:        partial.proInfo       || null, // ✅ préservé
 });
 
 const buildProfileFromEmbeddedUser = (targetId) => {
@@ -481,8 +472,6 @@ export default function ProfilePage({
   ]);
 
   // ── Helper : headers Authorization Bearer ─────────────────────────────────
-  // AuthContext stocke le token en mémoire React (pas localStorage)
-  // -> doit etre passe manuellement dans chaque requete API protegee
   const getAuthHeaders = useCallback(async () => {
     const currentToken = await getToken?.();
     if (!currentToken) throw new Error("Token manquant");
@@ -540,11 +529,7 @@ export default function ProfilePage({
     return null;
   }, [fetchUserPosts]);
 
-  // ── followUser ─────────────────────────────────────────────────────────────
-  // Le backend POST /api/users/:id/follow est un toggle :
-  //   - si pas encore suivi  -> ajoute dans following/followers
-  //   - si deja suivi        -> retire (unfollow)
-  // On appelle le MEME endpoint pour follow ET unfollow.
+  // ── followUser / unfollowUser (même endpoint toggle) ──────────────────────
   const followUser = useCallback(async (uid) => {
     if (mockHandlers?.followUser) return await mockHandlers.followUser(uid);
     const headers = await getAuthHeaders();
@@ -556,9 +541,6 @@ export default function ProfilePage({
     return data;
   }, [mockHandlers, getAuthHeaders]);
 
-  // ── unfollowUser ───────────────────────────────────────────────────────────
-  // Identique a followUser : meme endpoint toggle.
-  // Le backend detecte que l'user suit deja -> retire l'abonnement.
   const unfollowUser = useCallback(async (uid) => {
     if (mockHandlers?.unfollowUser) return await mockHandlers.unfollowUser(uid);
     const headers = await getAuthHeaders();
@@ -588,14 +570,25 @@ export default function ProfilePage({
     try { await idbSetUser(user._id, user); } catch (err) { console.warn("IDB User Save Error", err); }
   }, [isMockProfile]);
 
+  // ── handleProfileUserUpdated ───────────────────────────────────────────────
   const handleProfileUserUpdated = useCallback((updatedUser) => {
     if (!updatedUser) return;
     const updatedId = updatedUser._id || updatedUser.id || profileUser?._id;
     if (!updatedId) return;
+
     requestCache.current.delete(String(updatedId));
+
     startTransition(() => {
-      setProfileUser(prev => ({ ...(prev || {}), ...updatedUser, _id: updatedId }));
+      setProfileUser(prev => ({
+        ...(prev || {}),
+        ...updatedUser,
+        _id: updatedId,
+        accountType:  updatedUser.accountType  ?? prev?.accountType,
+        businessInfo: updatedUser.businessInfo ?? prev?.businessInfo,
+        proInfo:      updatedUser.proInfo      ?? prev?.proInfo, // ✅ préservé
+      }));
     });
+
     saveUser({ ...(profileUser || {}), ...updatedUser, _id: updatedId });
   }, [profileUser, saveUser]);
 
@@ -616,25 +609,9 @@ export default function ProfilePage({
 
   // ── loadProfilePosts ───────────────────────────────────────────────────────
   const loadProfilePosts = useCallback(async (targetId, pageNumber = 1, append = false, prefetchedPosts = null) => {
-    profileDebug("loadProfilePosts:start", {
-      targetId,
-      pageNumber,
-      append,
-      prefetchedCount: Array.isArray(prefetchedPosts) ? prefetchedPosts.length : 0,
-      loadingLocked: loadingRef.current,
-      currentPosts: profilePosts.length,
-    });
-
-    if (!targetId || loadingRef.current) {
-      profileDebug("loadProfilePosts:skip", {
-        reason: !targetId ? "missing_targetId" : "loading_locked",
-        targetId,
-      });
-      return;
-    }
+    if (!targetId || loadingRef.current) return;
     if (!isValidObjectId(targetId)) {
       const localPosts = getPostsFromHomePool(targetId);
-      profileDebug("loadProfilePosts:invalidObjectId", { targetId, homePoolCount: localPosts.length });
       if (localPosts.length > 0) {
         startTransition(() => setProfilePosts(localPosts.map(normalizePost)));
         storeProfilePostsInCache(targetId, localPosts);
@@ -648,13 +625,11 @@ export default function ProfilePage({
 
       if (prefetchedPosts && !append) {
         postsArray = prefetchedPosts;
-        profileDebug("loadProfilePosts:prefetched", { count: postsArray.length });
         startTransition(() => setProfilePosts(prefetchedPosts));
       }
 
       if (isMockProfile && initialPosts && !append) {
         postsArray = initialPosts;
-        profileDebug("loadProfilePosts:mockInitial", { count: postsArray.length });
         startTransition(() => setProfilePosts(initialPosts));
         storeProfilePostsInCache(targetId, initialPosts);
         return;
@@ -662,25 +637,17 @@ export default function ProfilePage({
 
       if (!isMockProfile && !append && !prefetchedPosts) {
         try {
-          profileDebug("loadProfilePosts:cache:start", { targetId });
           const cached = await withTimeout(getCachedPosts(targetId), 1200, []);
           if (Array.isArray(cached) && cached.length > 0) {
             postsArray = cached;
-            profileDebug("loadProfilePosts:cache", { count: cached.length });
             startTransition(() => setProfilePosts(cached));
             Promise.resolve(storeProfilePostsInCache(targetId, cached)).catch(() => {});
-          } else {
-            profileDebug("loadProfilePosts:cacheEmpty", { targetId });
           }
-        } catch (e) {
-          profileDebug("loadProfilePosts:cache:error", { message: e?.message });
-          console.warn("IDB cache read error:", e);
-        }
+        } catch (e) { console.warn("IDB cache read error:", e); }
       }
 
       if (!append && !prefetchedPosts && postsArray.length === 0) {
         const homePostsForUser = getPostsFromHomePool(targetId);
-        profileDebug("loadProfilePosts:homePool", { count: homePostsForUser.length });
         if (homePostsForUser.length > 0) {
           postsArray = homePostsForUser;
           startTransition(() => setProfilePosts(homePostsForUser.map(normalizePost)));
@@ -690,35 +657,18 @@ export default function ProfilePage({
 
       if (navigator.onLine && !prefetchedPosts) {
         try {
-          profileDebug("loadProfilePosts:api:start", { targetId, pageNumber });
           const result  = await Promise.race([
             fetchUserPosts(targetId, pageNumber),
             new Promise(resolve => setTimeout(() => resolve([]), 10000)),
           ]);
           const fetched = extractPostsFromResult(result);
-          profileDebug("loadProfilePosts:api:done", {
-            resultType: Array.isArray(result) ? "array" : typeof result,
-            fetchedCount: fetched.length,
-            previousSourceCount: postsArray.length,
-          });
           if (fetched.length > 0) postsArray = fetched;
         } catch (err) {
-          profileDebug("loadProfilePosts:api:error", { message: err?.message });
           if (postsArray.length === 0) showLocalToast("Mode hors ligne", "info");
         }
-      } else {
-        profileDebug("loadProfilePosts:api:skip", {
-          online: navigator.onLine,
-          hasPrefetchedPosts: !!prefetchedPosts,
-        });
       }
 
       setHasMore(postsArray.length >= 20);
-      profileDebug("loadProfilePosts:final", {
-        finalCount: postsArray.length,
-        append,
-        hasMore: postsArray.length >= 20,
-      });
       startTransition(() => {
         setProfilePosts(prev => {
           const base   = append ? prev : [];
@@ -728,12 +678,6 @@ export default function ProfilePage({
             .filter(p => { if (!p?._id || seen.has(p._id)) return false; seen.add(p._id); return true; })
             .map(normalizePost)
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          profileDebug("loadProfilePosts:setState", {
-            previousCount: prev.length,
-            mergedCount: merged.length,
-            uniqueCount: unique.length,
-            sampleIds: unique.slice(0, 3).map(p => p._id),
-          });
           if (!isMockProfile && isValidObjectId(targetId)) savePosts(targetId, unique);
           storeProfilePostsInCache(targetId, unique);
           return unique;
@@ -741,20 +685,14 @@ export default function ProfilePage({
       });
     } catch (err) { console.error("[Profile] loadProfilePosts error:", err); }
     finally {
-      profileDebug("loadProfilePosts:end", { targetId, pageNumber });
       loadingRef.current = false;
       setIsLoadingPosts(false);
     }
-  }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts, profilePosts.length]);
+  }, [fetchUserPosts, savePosts, showLocalToast, isMockProfile, initialPosts]);
 
   useEffect(() => {
     if (!isLoadingPosts) return;
     const timer = setTimeout(() => {
-      profileDebug("postsLoadingWatchdog:release", {
-        targetUserId,
-        currentPosts: profilePosts.length,
-        loadingLocked: loadingRef.current,
-      });
       loadingRef.current = false;
       setIsLoadingPosts(false);
       if (profilePosts.length === 0) setHasMore(false);
@@ -795,43 +733,32 @@ export default function ProfilePage({
       showLocalToast("Action impossible sur ce profil", "error");
       return;
     }
-
     setFollowLoading(true);
     const wasFollowing = followStatus;
-
-    // Mise à jour optimiste
     const newFollowers = wasFollowing
       ? (profileUser.followers || []).filter(
           u => !isSameUser(typeof u === "object" ? u._id : u, authUserId)
         )
       : [...(profileUser.followers || []), authUserId];
     startTransition(() => setProfileUser(prev => ({ ...prev, followers: newFollowers })));
-
     try {
-      // Les deux branchements appellent le même endpoint toggle
       if (wasFollowing) await unfollowUser(profileUser._id);
       else              await followUser(profileUser._id);
       showLocalToast(wasFollowing ? "Désabonné !" : "Abonné !");
     } catch (err) {
-      // Rollback
       const rollback = wasFollowing
         ? [...(profileUser.followers || []), authUserId]
         : (profileUser.followers || []).filter(
             u => !isSameUser(typeof u === "object" ? u._id : u, authUserId)
           );
       startTransition(() => setProfileUser(prev => ({ ...prev, followers: rollback })));
-
       const status = err?.response?.status;
-      if (status === 401 || status === 403)
-        showLocalToast("Non autorisé — reconnecte-toi", "error");
-      else if (status === 404)
-        showLocalToast("Utilisateur introuvable", "error");
+      if (status === 401 || status === 403) showLocalToast("Non autorisé — reconnecte-toi", "error");
+      else if (status === 404)              showLocalToast("Utilisateur introuvable", "error");
       else if (err.code === "ERR_NETWORK" || err.code === "ECONNABORTED")
         showLocalToast("Hors ligne — réessaie plus tard", "error");
       else
         showLocalToast("Erreur lors de l'action", "error");
-
-      console.error("[Follow] Erreur:", status, err?.response?.data || err.message);
     } finally {
       setFollowLoading(false);
     }
@@ -869,24 +796,10 @@ export default function ProfilePage({
 
   // ── useEffect principal : chargement du profil ────────────────────────────
   useEffect(() => {
-    profileDebug("mainEffect:start", {
-      authLoading,
-      hasAuthUser: !!authUser,
-      authUserId,
-      routeUserId: userId,
-      targetUserId,
-      isOwner,
-      hasProfileUser: !!profileUser,
-      isLoadingUser,
-      postsCount: profilePosts.length,
-    });
-
     if (authLoading && !authUser && !targetUserId) return;
     if (!authUser && !targetUserId) { navigate("/auth", { replace: true }); return; }
 
-    // Cas 1 : navigation instantanée (instantUser depuis PostCard)
     if (navInstantUser && !initialUser && !silentRevalidatedRef.current) {
-      profileDebug("mainEffect:case", "navInstantUser");
       silentRevalidatedRef.current = true;
       setIsLoadingUser(false);
       setUserNotFound(false);
@@ -907,9 +820,7 @@ export default function ProfilePage({
       return;
     }
 
-    // Cas 2 : profil injecté (SSR / parent)
     if (initialUser) {
-      profileDebug("mainEffect:case", "initialUser");
       setProfileUser(initialUser);
       setIsBot(!!initialUser.isBot);
       setIsLoadingUser(false);
@@ -919,17 +830,13 @@ export default function ProfilePage({
       return;
     }
 
-    // Cas 3 : pas d'ID
     if (!targetUserId || targetUserId === "undefined") {
-      profileDebug("mainEffect:case", "missingTargetUserId");
       setIsLoadingUser(false);
       setUserNotFound(true);
       return;
     }
 
-    // Cas 4 : mock ID
     if (isMockId(targetUserId)) {
-      profileDebug("mainEffect:case", "mockId");
       const result = buildProfileFromEmbeddedUser(targetUserId);
       if (result) {
         setProfileUser(result.profile);
@@ -950,9 +857,7 @@ export default function ProfilePage({
       return;
     }
 
-    // Cas 5 : ID invalide
     if (!isValidObjectId(targetUserId)) {
-      profileDebug("mainEffect:case", "invalidObjectId", { targetUserId, isOwner });
       if (isOwner) {
         setProfileUser(authUser);
         setIsBot(false);
@@ -965,9 +870,7 @@ export default function ProfilePage({
       return;
     }
 
-    // Cas 6 : chargement normal depuis l'API
     (async () => {
-      profileDebug("mainEffect:case", "normalApi", { targetUserId, isOwner });
       if (!profileUser && isValidObjectId(targetUserId)) {
         setProfileUser(isOwner ? authUser : buildMinimalUser(targetUserId));
       }
@@ -976,18 +879,21 @@ export default function ProfilePage({
       let postsLoadPromise = null;
       try {
         postsLoadPromise = loadProfilePosts(targetUserId, 1, false);
-        idbClearOtherKeys(`profilePosts_${targetUserId}`)
-          .then(() => profileDebug("mainEffect:idbClearOtherKeys:done", { targetUserId }))
-          .catch(err => profileDebug("mainEffect:idbClearOtherKeys:error", { message: err?.message }));
+        idbClearOtherKeys(`profilePosts_${targetUserId}`).catch(() => {});
 
         if (isOwner) {
-          setProfileUser(authUser);
+          setProfileUser(prev => ({ ...(prev || {}), ...authUser }));
           setIsBot(false);
           setUserNotFound(false);
           saveUser(authUser);
           if (navigator.onLine)
             fetchUserById(authUserId)
-              .then(fresh => { if (fresh) { setProfileUser(fresh); saveUser(fresh); } })
+              .then(fresh => {
+                if (fresh) {
+                  setProfileUser(prev => ({ ...(prev || {}), ...fresh }));
+                  saveUser(fresh);
+                }
+              })
               .catch(() => {});
         } else {
           const cachedUser = await idbGetUser(targetUserId);
@@ -1000,7 +906,7 @@ export default function ProfilePage({
           if (navigator.onLine) {
             const fetchedUser = await fetchUserById(targetUserId);
             if (fetchedUser) {
-              setProfileUser(fetchedUser);
+              setProfileUser(prev => ({ ...(prev || {}), ...fetchedUser }));
               setIsBot(!!fetchedUser.isBot);
               setUserNotFound(false);
               saveUser(fetchedUser);
@@ -1063,14 +969,12 @@ export default function ProfilePage({
         await postsLoadPromise;
       } catch (err) {
         console.error("Profil Load Error:", err);
-        profileDebug("mainEffect:error", { message: err?.message });
         if (!profileUser && isValidObjectId(targetUserId)) {
           setProfileUser(buildMinimalUser(targetUserId));
           setUserNotFound(false);
         }
         showLocalToast("Erreur lors du chargement", "error");
       } finally {
-        profileDebug("mainEffect:end", { targetUserId });
         setIsLoadingUser(false);
       }
     })();
@@ -1080,7 +984,6 @@ export default function ProfilePage({
   useEffect(() => {
     if (!isLoadingUser || profileUser || !isValidObjectId(targetUserId)) return;
     const timer = setTimeout(() => {
-      profileDebug("userLoadingWatchdog:release", { targetUserId, isOwner, hasAuthUser: !!authUser });
       setProfileUser(isOwner && authUser ? authUser : buildMinimalUser(targetUserId));
       setUserNotFound(false);
       setIsLoadingUser(false);
@@ -1139,47 +1042,9 @@ export default function ProfilePage({
       ? (isOwner && authUser ? authUser : buildMinimalUser(targetUserId))
       : null);
 
-  const stats = {
-    posts:     profilePosts.length,
-    followers: effectiveProfileUser?.followers?.length || effectiveProfileUser?.followersCount || 0,
-    following: effectiveProfileUser?.following?.length || effectiveProfileUser?.followingCount || 0,
-  };
-
-  const pageBg = isDarkMode ? "#080808" : "#fff";
-
-  useEffect(() => {
-    profileDebug("renderState", {
-      targetUserId,
-      authLoading,
-      isLoadingUser,
-      isLoadingPosts,
-      userNotFound,
-      hasProfileUser: !!profileUser,
-      hasEffectiveProfileUser: !!effectiveProfileUser,
-      postsCount: profilePosts.length,
-      hasMore,
-      selectedTab,
-      firstPost: profilePosts[0] ? {
-        id: profilePosts[0]._id,
-        content: String(profilePosts[0].content || profilePosts[0].contenu || "").slice(0, 80),
-        userId: profilePosts[0].user?._id || profilePosts[0].userId || profilePosts[0].author?._id,
-        userName: profilePosts[0].user?.fullName || profilePosts[0].user?.username || profilePosts[0].fullName,
-        mediaType: profilePosts[0].mediaType,
-        mediaCount: Array.isArray(profilePosts[0].media) ? profilePosts[0].media.length : 0,
-      } : null,
-    });
-  }, [
-    targetUserId,
-    authLoading,
-    isLoadingUser,
-    isLoadingPosts,
-    userNotFound,
-    profileUser,
-    effectiveProfileUser,
-    profilePosts,
-    hasMore,
-    selectedTab,
-  ]);
+  // ✅ flags accountType
+  const isBusiness = effectiveProfileUser?.accountType === "business";
+  const isPro      = effectiveProfileUser?.accountType === "pro";
 
   const handleLoadMore = useCallback(() => {
     if (!hasMore || isLoadingPosts || loadingRef.current || !effectiveProfileUser?._id) return;
@@ -1192,7 +1057,6 @@ export default function ProfilePage({
     if (profilePosts.length === 0 && !isLoadingPosts) {
       return <EmptyPostsState isOwner={isOwner} isDarkMode={isDarkMode} />;
     }
-
     return (
       <div className="profile-feed-list">
         {profilePosts.map((post, index) => {
@@ -1215,14 +1079,35 @@ export default function ProfilePage({
   };
 
   const renderContent = () => {
+    // ── Paramètres ──────────────────────────────────────────────────────────
     if (selectedTab === "settings" && isOwner) {
       return (
         <section className="profile-section profile-panel">
-          <SettingsSection user={effectiveProfileUser} showToast={showLocalToast} />
+          <SettingsSection
+            user={effectiveProfileUser}
+            showToast={showLocalToast}
+            onUserUpdated={handleProfileUserUpdated}
+          />
         </section>
       );
     }
 
+    // ── Onglet CV (profil pro) ───────────────────────────────────────────────
+    // ✅ NOUVEAU — ProCVView en lecture / édition owner
+    if (selectedTab === "cv") {
+      return (
+        <section className="profile-section profile-panel">
+          <ProCVView
+            user={effectiveProfileUser}
+            isOwner={isOwner}
+            showToast={showLocalToast}
+            onUserUpdated={handleProfileUserUpdated}
+          />
+        </section>
+      );
+    }
+
+    // ── Feed principal ───────────────────────────────────────────────────────
     if (selectedTab === "feed") {
       return (
         <section className="profile-section profile-feed-section">
@@ -1238,6 +1123,7 @@ export default function ProfilePage({
       );
     }
 
+    // ── Médias (profil perso uniquement) ────────────────────────────────────
     const videoPosts = profilePosts.filter(isVideoPost);
     return (
       <section className="profile-section">
@@ -1253,6 +1139,8 @@ export default function ProfilePage({
       </section>
     );
   };
+
+  const pageBg = isDarkMode ? "#080808" : "#fff";
 
   if (authLoading || (isLoadingUser && !effectiveProfileUser)) {
     return (
@@ -1397,11 +1285,14 @@ export default function ProfilePage({
             </div>
           )}
 
+          {/* ✅ isPro transmis à ProfileMenu */}
           <ProfileMenu
             selectedTab={selectedTab}
             onTabChange={setSelectedTab}
             isDarkMode={isDarkMode}
             isOwner={isOwner}
+            isBusiness={isBusiness}
+            isPro={isPro}
           />
 
           {renderContent()}
