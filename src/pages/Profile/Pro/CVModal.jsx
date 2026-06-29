@@ -1,10 +1,5 @@
 // src/pages/profile/Pro/CVModal.jsx
-// Modal affiché quand l'utilisateur clique sur le bouton "CV"
-// dans ProfileHeader (mode profil pro)
-// 3 options : Créer avec IA / Importer / Remplir manuellement
-// Si "Créer avec IA" → affiche CVBuilderAI
-// Si "Importer"      → input file PDF/Word
-// Si "Manuel"        → ouvre CVForm
+// ✅ FIX — suppression de l'option "ai" + keys uniques dans AnimatePresence
 
 import React, { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -16,7 +11,6 @@ import axios from "axios";
 
 const BASE_URL = PROFILE_BACKEND_BASE;
 
-// ── Spinner ────────────────────────────────────────────────────────────────────
 const Spin = ({ size = 18, color = "#fff" }) => (
   <span style={{
     display:     "inline-block",
@@ -30,48 +24,29 @@ const Spin = ({ size = 18, color = "#fff" }) => (
   }} />
 );
 
-// ── Choix d'action ─────────────────────────────────────────────────────────────
 const CHOICES = [
-  {
-    id:    "ai",
-    icon:  "✨",
-    label: "Créer avec l'IA",
-    desc:  "Génère ton CV depuis ton profil en 30 sec",
-    color: "#6366f1",
-    gradient: "linear-gradient(135deg,#6366f1,#8b5cf6)",
-    primary: true,
-  },
-  {
-    id:    "import",
-    icon:  "📄",
-    label: "Importer un fichier",
-    desc:  "PDF ou Word · 5 Mo max",
-    color: "#f97316",
-    gradient: null,
-  },
   {
     id:    "manual",
     icon:  "✏️",
     label: "Remplir manuellement",
     desc:  "Formulaire section par section",
     color: "#22c55e",
-    gradient: null,
   },
 ];
 
 export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdated }) {
   const { isDarkMode } = useDarkMode();
   const { getToken }   = useAuth();
-  const [step,         setStep]         = useState("choice"); // "choice" | "ai" | "manual"
-  const [uploading,    setUploading]    = useState(false);
-  const fileInputRef                    = useRef(null);
+  // ✅ FIX : seulement "choice" | "manual" (plus de "ai")
+  const [step,      setStep]      = useState("choice");
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef              = useRef(null);
 
   const bg   = isDarkMode ? "#111"    : "#fff";
   const bdr  = isDarkMode ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)";
   const text = isDarkMode ? "#f8fafc" : "#0f172a";
   const sub  = isDarkMode ? "#6b7280" : "#9ca3af";
 
-  // ── Import fichier ──────────────────────────────────────────────────────────
   const handleFileImport = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -103,7 +78,6 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
 
   const handleChoice = (id) => {
     if (id === "import") { fileInputRef.current?.click(); return; }
-    if (id === "ai")     { setStep("ai"); return; }
     if (id === "manual") { setStep("manual"); return; }
   };
 
@@ -114,6 +88,7 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
   return (
     <AnimatePresence>
       <motion.div
+        key="cv-modal-backdrop"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -147,7 +122,7 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
             fontFamily:   "'Sora','DM Sans',sans-serif",
           }}
         >
-          {/* ── Header ── */}
+          {/* Header */}
           <div style={{
             display:        "flex",
             alignItems:     "center",
@@ -157,7 +132,7 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
           }}>
             <div>
               <p style={{ fontSize: 16, fontWeight: 800, color: text, margin: 0 }}>
-                {step === "choice" ? "Votre CV" : step === "ai" ? "Création IA" : "Remplir manuellement"}
+                {step === "choice" ? "Votre CV" : "Remplir manuellement"}
               </p>
               <p style={{ fontSize: 12, color: sub, margin: "3px 0 0" }}>
                 {step === "choice" ? "Choisissez comment créer ou importer votre CV" : ""}
@@ -185,7 +160,6 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
             </motion.button>
           </div>
 
-          {/* ── Input fichier caché ── */}
           <input
             ref={fileInputRef}
             type="file"
@@ -194,13 +168,11 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
             style={{ display: "none" }}
           />
 
-          {/* ── Contenu ── */}
+          {/* ✅ FIX : keys explicites non-vides sur chaque branche AnimatePresence */}
           <AnimatePresence mode="wait">
-
-            {/* ÉTAPE : Choix */}
             {step === "choice" && (
               <motion.div
-                key="choice"
+                key="cv-step-choice"
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{   opacity: 0, x: 20 }}
@@ -220,25 +192,18 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
                       gap:          14,
                       padding:      "14px 16px",
                       borderRadius: 14,
-                      border:       c.primary
-                        ? "none"
-                        : `1px solid ${bdr}`,
-                      background:   c.primary
-                        ? c.gradient
-                        : isDarkMode ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)",
+                      border:       `1px solid ${bdr}`,
+                      background:   isDarkMode ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)",
                       cursor:       "pointer",
                       textAlign:    "left",
                       fontFamily:   "inherit",
-                      boxShadow:    c.primary
-                        ? `0 6px 20px ${c.color}35`
-                        : "none",
                     }}
                   >
                     <span style={{
                       width:        40,
                       height:       40,
                       borderRadius: 12,
-                      background:   c.primary ? "rgba(255,255,255,0.15)" : `${c.color}15`,
+                      background:   `${c.color}15`,
                       display:      "flex",
                       alignItems:   "center",
                       justifyContent: "center",
@@ -248,24 +213,15 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
                       {c.id === "import" && uploading ? <Spin color={c.color} /> : c.icon}
                     </span>
                     <div style={{ flex: 1 }}>
-                      <div style={{
-                        fontSize:   13,
-                        fontWeight: 700,
-                        color:      c.primary ? "#fff" : text,
-                      }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: text }}>
                         {c.label}
                       </div>
-                      <div style={{
-                        fontSize: 11,
-                        color:    c.primary ? "rgba(255,255,255,0.7)" : sub,
-                        marginTop: 2,
-                      }}>
+                      <div style={{ fontSize: 11, color: sub, marginTop: 2 }}>
                         {c.desc}
                       </div>
                     </div>
                     <svg width={14} height={14} viewBox="0 0 24 24" fill="none"
-                      stroke={c.primary ? "rgba(255,255,255,0.6)" : sub}
-                      strokeWidth={2} strokeLinecap="round">
+                      stroke={sub} strokeWidth={2} strokeLinecap="round">
                       <polyline points="9 18 15 12 9 6" />
                     </svg>
                   </motion.button>
@@ -273,30 +229,9 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
               </motion.div>
             )}
 
-            {/* ÉTAPE : Créer avec IA */}
-            {step === "ai" && (
-              <motion.div
-                key="ai"
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{   opacity: 0, x: -20 }}
-                style={{ padding: "16px 20px 28px" }}
-              >
-                <CVBuilderAI
-                  user={user}
-                  showToast={showToast}
-                  onUserUpdated={onUserUpdated}
-                  onBack={() => setStep("choice")}
-                  onDone={handleClose}
-                  isDarkMode={isDarkMode}
-                />
-              </motion.div>
-            )}
-
-            {/* ÉTAPE : Manuel */}
             {step === "manual" && (
               <motion.div
-                key="manual"
+                key="cv-step-manual"
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{   opacity: 0, x: -20 }}
@@ -312,208 +247,11 @@ export default function CVModal({ isOpen, onClose, user, showToast, onUserUpdate
                 />
               </motion.div>
             )}
-
           </AnimatePresence>
         </motion.div>
       </motion.div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </AnimatePresence>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CVBuilderAI — génère le CV depuis les infos du profil via l'API Anthropic
-// ─────────────────────────────────────────────────────────────────────────────
-function CVBuilderAI({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) {
-  const { getToken } = useAuth();
-  const [loading, setLoading]   = useState(false);
-  const [preview, setPreview]   = useState(null);
-  const [saving,  setSaving]    = useState(false);
-
-  const text = isDarkMode ? "#f8fafc" : "#0f172a";
-  const sub  = isDarkMode ? "#6b7280" : "#9ca3af";
-  const bdr  = isDarkMode ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)";
-  const card = isDarkMode ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.02)";
-
-  const generate = async () => {
-    setLoading(true);
-    try {
-      const prompt = `Tu es un expert en rédaction de CV professionnels.
-À partir des informations suivantes, génère un CV structuré en JSON.
-
-Nom : ${user?.fullName || "Non renseigné"}
-Bio : ${user?.bio || "Non renseignée"}
-Localisation : ${user?.location || "Non renseignée"}
-Site web : ${user?.website || "Non renseigné"}
-Infos pro existantes : ${JSON.stringify(user?.proInfo || {})}
-
-Génère UNIQUEMENT un JSON valide avec cette structure exacte (sans backticks, sans explication) :
-{
-  "jobTitle": "titre du poste principal",
-  "summary": "résumé professionnel en 2-3 phrases",
-  "skills": ["compétence1", "compétence2", "compétence3"],
-  "experiences": [
-    { "company": "nom entreprise", "role": "poste", "startDate": "Mois AAAA", "endDate": "Présent", "current": true, "description": "description courte" }
-  ],
-  "education": [
-    { "school": "établissement", "degree": "diplôme", "year": "AAAA" }
-  ],
-  "languages": ["Français", "Anglais"],
-  "certifications": []
-}`;
-
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model:      "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages:   [{ role: "user", content: prompt }],
-        }),
-      });
-      const data = await resp.json();
-      const raw  = data.content?.[0]?.text || "";
-      const clean = raw.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      setPreview(parsed);
-    } catch (err) {
-      showToast?.("Erreur lors de la génération IA", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const saveGenerated = async () => {
-    if (!preview) return;
-    setSaving(true);
-    try {
-      const token = await getToken?.();
-      if (!token) throw new Error("Session expirée");
-      const { data } = await axios.patch(
-        `${BASE_URL}/api/users/${user._id}/pro`,
-        { accountType: "pro", ...preview },
-        { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, timeout: 10000 }
-      );
-      if (data?.user) onUserUpdated?.(data.user);
-      showToast?.("✅ Profil pro créé !", "success");
-      onDone();
-    } catch (err) {
-      showToast?.(err?.response?.data?.message || "Erreur lors de la sauvegarde", "error");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <button
-        type="button"
-        onClick={onBack}
-        style={{ background: "none", border: "none", color: sub, cursor: "pointer", fontSize: 12, textAlign: "left", display: "flex", alignItems: "center", gap: 4, padding: 0, fontFamily: "inherit" }}
-      >
-        ← Retour
-      </button>
-
-      {!preview && !loading && (
-        <div style={{ textAlign: "center", padding: "24px 0" }}>
-          <div style={{ fontSize: 48, marginBottom: 12 }}>✨</div>
-          <p style={{ fontSize: 14, fontWeight: 700, color: text, marginBottom: 6 }}>
-            Génération IA depuis votre profil
-          </p>
-          <p style={{ fontSize: 12, color: sub, marginBottom: 20, lineHeight: 1.6 }}>
-            L'IA va analyser ta bio, localisation et infos existantes pour créer un CV structuré.
-          </p>
-          <motion.button
-            type="button"
-            onClick={generate}
-            whileHover={{ scale: 1.03 }}
-            whileTap={{ scale: 0.97 }}
-            style={{
-              padding:      "12px 28px",
-              borderRadius: 999,
-              border:       "none",
-              background:   "linear-gradient(135deg,#6366f1,#8b5cf6)",
-              color:        "#fff",
-              fontWeight:   800,
-              fontSize:     14,
-              cursor:       "pointer",
-              boxShadow:    "0 6px 20px rgba(99,102,241,0.35)",
-              fontFamily:   "inherit",
-            }}
-          >
-            Générer mon CV
-          </motion.button>
-        </div>
-      )}
-
-      {loading && (
-        <div style={{ textAlign: "center", padding: "32px 0" }}>
-          <div style={{
-            width: 44, height: 44,
-            border: "3px solid rgba(99,102,241,0.2)",
-            borderTopColor: "#6366f1",
-            borderRadius: "50%",
-            animation: "spin .8s linear infinite",
-            margin: "0 auto 16px",
-          }} />
-          <p style={{ fontSize: 13, color: sub }}>Génération en cours…</p>
-        </div>
-      )}
-
-      {preview && !loading && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ padding: "12px 14px", borderRadius: 12, background: card, border: `1px solid ${bdr}` }}>
-            <p style={{ fontSize: 13, fontWeight: 800, color: "#6366f1", margin: "0 0 4px" }}>{preview.jobTitle}</p>
-            <p style={{ fontSize: 12, color: sub, margin: 0, lineHeight: 1.5 }}>{preview.summary}</p>
-          </div>
-
-          {preview.skills?.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {preview.skills.map((s) => (
-                <span key={s} style={{ padding: "4px 10px", borderRadius: 20, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.2)", color: "#6366f1", fontSize: 11, fontWeight: 600 }}>{s}</span>
-              ))}
-            </div>
-          )}
-
-          {preview.experiences?.[0] && (
-            <div style={{ padding: "10px 14px", borderRadius: 12, background: card, border: `1px solid ${bdr}` }}>
-              <p style={{ fontSize: 11, fontWeight: 700, color: text, margin: "0 0 2px" }}>{preview.experiences[0].role}</p>
-              <p style={{ fontSize: 11, color: "#6366f1", margin: "0 0 4px" }}>{preview.experiences[0].company}</p>
-              <p style={{ fontSize: 11, color: sub, margin: 0 }}>{preview.experiences[0].description}</p>
-            </div>
-          )}
-
-          <p style={{ fontSize: 11, color: sub, textAlign: "center" }}>
-            {preview.experiences?.length} expérience(s) · {preview.education?.length} formation(s) générées
-          </p>
-
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              type="button"
-              onClick={() => setPreview(null)}
-              style={{ flex: 1, padding: "11px 0", borderRadius: 12, border: `1px solid ${bdr}`, background: "transparent", color: sub, fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}
-            >
-              Regénérer
-            </button>
-            <motion.button
-              type="button"
-              onClick={saveGenerated}
-              disabled={saving}
-              whileTap={{ scale: 0.97 }}
-              style={{
-                flex: 2, padding: "11px 0", borderRadius: 12, border: "none",
-                background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
-                color: "#fff", fontWeight: 800, fontSize: 12, cursor: "pointer",
-                opacity: saving ? 0.7 : 1, fontFamily: "inherit",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-              }}
-            >
-              {saving ? <><Spin size={14} /> Sauvegarde…</> : "Enregistrer ce CV"}
-            </motion.button>
-          </div>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -549,7 +287,6 @@ function CVForm({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) 
     color: text, fontSize: 12, fontFamily: "inherit",
     outline: "none", boxSizing: "border-box",
   };
-
   const labelStyle = { fontSize: 10, fontWeight: 700, color: sub, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 5 };
 
   const setExp = (i, key, val) => setForm(prev => {
@@ -557,20 +294,17 @@ function CVForm({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) 
     exps[i] = { ...exps[i], [key]: val };
     return { ...prev, experiences: exps };
   });
-
   const setEdu = (i, key, val) => setForm(prev => {
     const edu = [...prev.education];
     edu[i] = { ...edu[i], [key]: val };
     return { ...prev, education: edu };
   });
-
   const addTag = (field, val, setter) => {
     const v = val.trim();
     if (!v || form[field].includes(v)) return;
     setForm(prev => ({ ...prev, [field]: [...prev[field], v] }));
     setter("");
   };
-
   const removeTag = (field, val) => setForm(prev => ({ ...prev, [field]: prev[field].filter(x => x !== val) }));
 
   const handleSave = async () => {
@@ -634,7 +368,6 @@ function CVForm({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) 
         ← Retour
       </button>
 
-      {/* Titre + dispo */}
       <Section title="Identité professionnelle" />
       <div>
         <label style={labelStyle}>Titre de poste *</label>
@@ -653,11 +386,9 @@ function CVForm({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) 
         <textarea value={form.summary} onChange={e => setForm(p => ({ ...p, summary: e.target.value }))} rows={3} maxLength={600} placeholder="Présentation courte de votre parcours…" style={{ ...inputStyle, resize: "vertical" }} />
       </div>
 
-      {/* Compétences */}
       <Section title="Compétences" />
       <TagInput field="skills" value={skillIn} setValue={setSkillIn} placeholder="Ex : AutoCAD, Gestion chantier…" />
 
-      {/* Expériences */}
       <Section title="Expériences" />
       {form.experiences.map((exp, i) => (
         <div key={i} style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${bdr}`, background: bgIn, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -702,7 +433,6 @@ function CVForm({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) 
         + Ajouter une expérience
       </button>
 
-      {/* Formation */}
       <Section title="Formation" />
       {form.education.map((edu, i) => (
         <div key={i} style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${bdr}`, background: bgIn, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -733,11 +463,9 @@ function CVForm({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) 
         + Ajouter une formation
       </button>
 
-      {/* Langues */}
       <Section title="Langues" />
       <TagInput field="languages" value={langIn} setValue={setLangIn} placeholder="Français, Anglais…" />
 
-      {/* Sauvegarder */}
       <motion.button
         type="button"
         onClick={handleSave}
@@ -768,7 +496,3 @@ function CVForm({ user, showToast, onUserUpdated, onBack, onDone, isDarkMode }) 
     </div>
   );
 }
-
-// Import axios manquant dans le scope du module — à ajouter en haut du vrai fichier
-// import axios from "axios";
-// import { PROFILE_BACKEND_BASE } from "../profileApi";

@@ -1,10 +1,14 @@
 // src/pages/profile/SettingsSection.jsx
-// v4.0 — Refonte visuelle : onglets en accordéon déroulant (1 panneau ouvert à la fois)
+// v4.1 — Refonte visuelle : onglets en accordéon déroulant (1 panneau ouvert à la fois)
 //   - Remplace l'ancienne double barre (mobile/desktop) par une liste verticale unique
 //   - Chaque ligne se déplie sur place pour afficher son contenu (style "paramètres pro")
 //   - AccountTypeSwitcher reste fixe en haut
 //   - ✅ FIX route : utilise PATCH /api/users/:id/pro (la seule route qui accepte accountType
 //     pour personal/business/pro) au lieu de /:id/account-type qui n'existe pas côté backend
+//   - ✅ FIX v4.1 : item "Entreprise" retiré du groupe "Compte" pour les comptes pro —
+//     BusinessProfileForm est 100% dédié à accountType "business" (toggle + champs
+//     businessName/businessCategory/etc. + route PATCH /:id/business). Le profil pro
+//     gère déjà tout depuis l'onglet "CV" du profil (ProCVView), pas depuis Paramètres.
 
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -142,7 +146,12 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
   const isBusiness = user?.accountType === "business";
   const isPro      = user?.accountType === "pro";
 
-  const [openTab, setOpenTab] = useState(isBusiness || isPro ? "business" : "programme");
+  // ✅ FIX v4.1 : un compte pro n'a pas de panneau "business" dans Paramètres
+  // (BusinessProfileForm est dédié aux pages entreprise), donc l'onglet par
+  // défaut pour un pro retombe sur "storage" plutôt que "business".
+  const [openTab, setOpenTab] = useState(
+    isBusiness ? "business" : (isPro ? "storage" : "programme")
+  );
   const { isAdmin, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
   const userIsAdmin = isAdmin();
@@ -174,7 +183,8 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
 
       const updatedUser = data?.user || { ...user, accountType: newType };
       onUserUpdated?.(updatedUser);
-      setOpenTab(newType === "business" || newType === "pro" ? "business" : "programme");
+      // ✅ FIX v4.1 : business → onglet business ; pro → onglet storage (pas de panneau business pour un pro)
+      setOpenTab(newType === "business" ? "business" : (newType === "pro" ? "storage" : "programme"));
       showToast?.("✅ Type de compte mis à jour !", "success");
     } catch (err) {
       showToast?.(
@@ -206,11 +216,14 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
       hidden: false,
       items: [
         { id: "storage", label: "Stockage", desc: "Gérer l'espace utilisé par vos médias", IconComp: Icons.storage },
-        {
+        // ✅ FIX v4.1 : item "Entreprise" retiré pour les comptes pro — BusinessProfileForm
+        // ne gère que accountType "business" (toggle + champs business*), un profil pro
+        // gère son CV depuis l'onglet "CV" du profil, pas depuis Paramètres.
+        ...(!isPro ? [{
           id: "business", label: "Entreprise",
-          desc: isPro ? "Votre profil professionnel (CV en ligne)" : "Informations de votre page entreprise",
-          IconComp: Icons.business, badge: isBusiness ? "Actif" : (isPro ? "Pro" : null),
-        },
+          desc: "Informations de votre page entreprise",
+          IconComp: Icons.business, badge: isBusiness ? "Actif" : null,
+        }] : []),
         ...(isBusiness ? [
           { id: "myOpportunities", label: "Mes offres", desc: "Offres publiées par votre entreprise", IconComp: Icons.myOpportunities },
         ] : []),
@@ -231,7 +244,7 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
 
   useEffect(() => {
     if (!visibleIds.includes(openTab)) {
-      setOpenTab(isBusiness || isPro ? "business" : "programme");
+      setOpenTab(isBusiness ? "business" : (isPro ? "storage" : "programme"));
     }
   }, [isBusiness, isPro]); // eslint-disable-line react-hooks/exhaustive-deps
 
