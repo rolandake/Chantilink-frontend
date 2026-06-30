@@ -1,5 +1,16 @@
 // src/pages/profile/SettingsSection.jsx
-// v4.1 — Refonte visuelle : onglets en accordéon déroulant (1 panneau ouvert à la fois)
+// v5.0 — ✅ Navigation plein écran : un clic sur un item ouvre une vue détail
+//   qui occupe toute la page (avec transition d'entrée/sortie), au lieu de
+//   l'accordéon qui dépliait le contenu sur place. Meilleure UX, surtout mobile.
+//   - Vue liste (AccountTypeSwitcher + items groupés) <-> vue détail (header
+//     avec bouton retour + label de l'item + renderContent(openTab))
+//   - AnimatePresence mode="wait" + slide horizontal (x) entre les deux vues
+//   - openTab = null → vue liste ; openTab = id → vue détail plein écran
+//   - v4.2 — ⏸️ Monétisation désactivée temporairement (toute la section, tous types de compte)
+//   - Le groupe "Monétisation" est masqué via hidden: true (voir commentaire dans GROUPS)
+//   - Aucun import, item ou renderContent supprimé : réactivation = remettre
+//     hidden: isBusiness || isPro (ou hidden: false) sur le groupe "Monétisation"
+//   - v4.1 — Refonte visuelle : onglets en accordéon déroulant (1 panneau ouvert à la fois)
 //   - Remplace l'ancienne double barre (mobile/desktop) par une liste verticale unique
 //   - Chaque ligne se déplie sur place pour afficher son contenu (style "paramètres pro")
 //   - AccountTypeSwitcher reste fixe en haut
@@ -146,12 +157,9 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
   const isBusiness = user?.accountType === "business";
   const isPro      = user?.accountType === "pro";
 
-  // ✅ FIX v4.1 : un compte pro n'a pas de panneau "business" dans Paramètres
-  // (BusinessProfileForm est dédié aux pages entreprise), donc l'onglet par
-  // défaut pour un pro retombe sur "storage" plutôt que "business".
-  const [openTab, setOpenTab] = useState(
-    isBusiness ? "business" : (isPro ? "storage" : "programme")
-  );
+  // ✅ v5.0 : plus d'accordéon — la liste s'affiche d'abord, un clic ouvre
+  // l'item en plein écran (vue détail avec transition d'entrée/sortie).
+  const [openTab, setOpenTab] = useState(null);
   const { isAdmin, getToken } = useAuth();
   const { isDarkMode } = useDarkMode();
   const userIsAdmin = isAdmin();
@@ -183,8 +191,8 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
 
       const updatedUser = data?.user || { ...user, accountType: newType };
       onUserUpdated?.(updatedUser);
-      // ✅ FIX v4.1 : business → onglet business ; pro → onglet storage (pas de panneau business pour un pro)
-      setOpenTab(newType === "business" ? "business" : (newType === "pro" ? "storage" : "programme"));
+      // ✅ v5.0 : on revient à la liste après le changement (plus d'accordéon pré-ouvert)
+      setOpenTab(null);
       showToast?.("✅ Type de compte mis à jour !", "success");
     } catch (err) {
       showToast?.(
@@ -200,7 +208,11 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
   const GROUPS = [
     {
       label: "Monétisation",
-      hidden: isBusiness || isPro,
+      // ⏸️ TEMP v4.2 : monétisation désactivée temporairement, pour TOUS les types de compte
+      // (avant : hidden: isBusiness || isPro). Rien n'est supprimé ci-dessous (items,
+      // imports, renderContent restent intacts) — pour réactiver plus tard, remettre :
+      // hidden: isBusiness || isPro   (ou hidden: false pour l'activer partout)
+      hidden: true,
       items: [
         { id: "programme",    label: "Programme",       desc: "Activer et suivre le programme créateur", IconComp: Icons.program   },
         { id: "dashboard",    label: "Tableau de bord", desc: "Vue d'ensemble de votre activité",         IconComp: Icons.dashboard },
@@ -215,6 +227,10 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
       label: "Compte",
       hidden: false,
       items: [
+        // ✅ AJOUT v4.3 : la Monétisation est masquée, mais la certification doit rester
+        // visible — on expose ici MonetisationProgram (qui n'affiche plus que la
+        // certification, voir MonetisationProgram.jsx v4.3) sous un onglet dédié.
+        { id: "certification", label: "Certification", desc: "Certifier votre compte professionnel", IconComp: Icons.about, badge: user?.isVerified ? "Certifié" : null },
         { id: "storage", label: "Stockage", desc: "Gérer l'espace utilisé par vos médias", IconComp: Icons.storage },
         // ✅ FIX v4.1 : item "Entreprise" retiré pour les comptes pro — BusinessProfileForm
         // ne gère que accountType "business" (toggle + champs business*), un profil pro
@@ -243,8 +259,10 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
   const visibleIds = GROUPS.filter(g => !g.hidden).flatMap(g => g.items.map(i => i.id));
 
   useEffect(() => {
-    if (!visibleIds.includes(openTab)) {
-      setOpenTab(isBusiness ? "business" : (isPro ? "storage" : "programme"));
+    // ✅ v5.0 : si l'item ouvert disparaît (ex. plus pro/business), on referme
+    // la vue détail et on revient à la liste — sans rouvrir un autre item.
+    if (openTab && !visibleIds.includes(openTab)) {
+      setOpenTab(null);
     }
   }, [isBusiness, isPro]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -266,6 +284,7 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
       case "transactions": return <TransactionsSection />;
       case "retraits":     return <WithdrawalsSection />;
       case "storage":      return <StorageManager user={user} showToast={showToast} />;
+      case "certification": return <MonetisationProgram user={user} showToast={showToast} onNavigate={setOpenTab} />;
       case "business":     return <BusinessProfileForm user={user} showToast={showToast} onUserUpdated={onUserUpdated} />;
       case "myOpportunities": return <MyOpportunities user={user} showToast={showToast} />;
 
@@ -322,125 +341,153 @@ export default function SettingsSection({ user, showToast, onUserUpdated }) {
     }
   };
 
+  // Trouve les métadonnées (label, icône...) de l'item actuellement ouvert,
+  // pour l'en-tête de la vue détail plein écran.
+  const activeItem = openTab
+    ? GROUPS.flatMap(g => g.items).find(i => i.id === openTab)
+    : null;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18, fontFamily: "'Sora','DM Sans',sans-serif" }}>
+    <div style={{ fontFamily: "'Sora','DM Sans',sans-serif", position: 'relative', overflow: 'hidden' }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
-      {/* Sélecteur de type de compte */}
-      <div style={{ opacity: changingType ? 0.6 : 1, pointerEvents: changingType ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
-        <AccountTypeSwitcher
-          currentType={user?.accountType || "personal"}
-          onChange={handleAccountTypeChange}
-        />
-      </div>
-
-      {/* Liste accordéon groupée */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-        {GROUPS.filter(g => !g.hidden).map((group) => (
-          <div key={group.label} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <span style={{
-              fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
-              textTransform: 'uppercase', color: groupLabel, padding: '0 4px',
-            }}>
-              {group.label}
-            </span>
-
-            <div style={{
-              borderRadius: 16, border: `1px solid ${bdr}`, background: cardBg,
-              overflow: 'hidden',
-            }}>
-              {group.items.map(({ id, label, desc, IconComp, badge }, idx) => {
-                const isOpen = openTab === id;
-                const badgeColor = badge === "Actif" ? "#22c55e" : (badge === "Pro" ? "#3b82f6" : "#ef4444");
-                return (
-                  <div
-                    key={id}
-                    style={{ borderTop: idx === 0 ? 'none' : `1px solid ${bdr}` }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setOpenTab(isOpen ? null : id)}
-                      aria-expanded={isOpen}
-                      style={{
-                        width: '100%', display: 'flex', alignItems: 'center', gap: 14,
-                        padding: '14px 16px', border: 'none', cursor: 'pointer',
-                        background: isOpen ? (isDarkMode ? 'rgba(249,115,22,0.07)' : '#fff7ed') : 'transparent',
-                        textAlign: 'left', fontFamily: "'Sora','DM Sans',sans-serif",
-                        transition: 'background 0.15s',
-                      }}
-                    >
-                      <span style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        width: 38, height: 38, borderRadius: 10, flexShrink: 0,
-                        color: isOpen ? '#f97316' : sub,
-                        background: isOpen
-                          ? 'linear-gradient(135deg, rgba(249,115,22,0.15), rgba(236,72,153,0.12))'
-                          : (isDarkMode ? 'rgba(255,255,255,0.04)' : '#f4f4f5'),
-                        transition: 'all 0.2s',
-                      }}>
-                        <IconComp />
-                      </span>
-
-                      <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                        <span style={{
-                          fontSize: 14.5, fontWeight: isOpen ? 700 : 600,
-                          color: isOpen ? '#f97316' : titleColor,
-                          display: 'flex', alignItems: 'center', gap: 8,
-                        }}>
-                          {label}
-                          {badge && (
-                            <span style={{
-                              padding: '1px 7px', borderRadius: 999, fontSize: 9.5, fontWeight: 800,
-                              background: badgeColor, color: '#fff', letterSpacing: '0.02em',
-                            }}>
-                              {badge}
-                            </span>
-                          )}
-                        </span>
-                        <span style={{
-                          fontSize: 12, color: muted, overflow: 'hidden',
-                          textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        }}>
-                          {desc}
-                        </span>
-                      </span>
-
-                      <motion.span
-                        animate={{ rotate: isOpen ? 90 : 0 }}
-                        transition={{ duration: 0.2 }}
-                        style={{ color: isOpen ? '#f97316' : muted, flexShrink: 0 }}
-                      >
-                        <Icons.chevron />
-                      </motion.span>
-                    </button>
-
-                    <AnimatePresence initial={false}>
-                      {isOpen && (
-                        <motion.div
-                          key="panel"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.25, ease: 'easeInOut' }}
-                          style={{ overflow: 'hidden' }}
-                        >
-                          <div style={{
-                            padding: '18px 18px 22px',
-                            background: panelBg,
-                            borderTop: `1px solid ${bdr}`,
-                          }}>
-                            {renderContent(id)}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              })}
+      <AnimatePresence initial={false} mode="wait">
+        {!openTab ? (
+          // ── VUE LISTE ────────────────────────────────────────────────────
+          <motion.div
+            key="list"
+            initial={{ opacity: 0, x: -24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -24 }}
+            transition={{ duration: 0.22, ease: 'easeInOut' }}
+            style={{ display: 'flex', flexDirection: 'column', gap: 18 }}
+          >
+            {/* Sélecteur de type de compte */}
+            <div style={{ opacity: changingType ? 0.6 : 1, pointerEvents: changingType ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
+              <AccountTypeSwitcher
+                currentType={user?.accountType || "personal"}
+                onChange={handleAccountTypeChange}
+              />
             </div>
-          </div>
-        ))}
-      </div>
+
+            {/* Liste des items — un clic ouvre la page plein écran correspondante */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              {GROUPS.filter(g => !g.hidden).map((group) => (
+                <div key={group.label} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, letterSpacing: '0.08em',
+                    textTransform: 'uppercase', color: groupLabel, padding: '0 4px',
+                  }}>
+                    {group.label}
+                  </span>
+
+                  <div style={{
+                    borderRadius: 16, border: `1px solid ${bdr}`, background: cardBg,
+                    overflow: 'hidden',
+                  }}>
+                    {group.items.map(({ id, label, desc, IconComp, badge }, idx) => {
+                      const badgeColor = badge === "Actif" ? "#22c55e" : (badge === "Pro" ? "#3b82f6" : (badge === "Certifié" ? "#3b82f6" : "#ef4444"));
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setOpenTab(id)}
+                          style={{
+                            width: '100%', display: 'flex', alignItems: 'center', gap: 14,
+                            padding: '14px 16px', border: 'none', cursor: 'pointer',
+                            borderTop: idx === 0 ? 'none' : `1px solid ${bdr}`,
+                            background: 'transparent',
+                            textAlign: 'left', fontFamily: "'Sora','DM Sans',sans-serif",
+                            transition: 'background 0.15s',
+                          }}
+                        >
+                          <span style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            width: 38, height: 38, borderRadius: 10, flexShrink: 0,
+                            color: sub,
+                            background: isDarkMode ? 'rgba(255,255,255,0.04)' : '#f4f4f5',
+                          }}>
+                            <IconComp />
+                          </span>
+
+                          <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                            <span style={{
+                              fontSize: 14.5, fontWeight: 600, color: titleColor,
+                              display: 'flex', alignItems: 'center', gap: 8,
+                            }}>
+                              {label}
+                              {badge && (
+                                <span style={{
+                                  padding: '1px 7px', borderRadius: 999, fontSize: 9.5, fontWeight: 800,
+                                  background: badgeColor, color: '#fff', letterSpacing: '0.02em',
+                                }}>
+                                  {badge}
+                                </span>
+                              )}
+                            </span>
+                            <span style={{
+                              fontSize: 12, color: muted, overflow: 'hidden',
+                              textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>
+                              {desc}
+                            </span>
+                          </span>
+
+                          <span style={{ color: muted, flexShrink: 0, display: 'flex' }}>
+                            <Icons.chevron />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        ) : (
+          // ── VUE DÉTAIL PLEIN ÉCRAN ──────────────────────────────────────
+          <motion.div
+            key={`detail-${openTab}`}
+            initial={{ opacity: 0, x: 24 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 24 }}
+            transition={{ duration: 0.22, ease: 'easeInOut' }}
+            style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}
+          >
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '4px 4px 16px',
+              borderBottom: `1px solid ${bdr}`,
+              marginBottom: 18,
+              position: 'sticky', top: 0, zIndex: 1,
+              background: isDarkMode ? '#0f0f0f' : '#fff',
+            }}>
+              <button
+                type="button"
+                onClick={() => setOpenTab(null)}
+                aria-label="Retour"
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                  border: `1px solid ${bdr}`, background: 'transparent', cursor: 'pointer',
+                  color: titleColor,
+                }}
+              >
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              </button>
+              <span style={{ fontSize: 16, fontWeight: 800, color: titleColor }}>
+                {activeItem?.label || ''}
+              </span>
+            </div>
+
+            <div style={{ flex: 1 }}>
+              {renderContent(openTab)}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

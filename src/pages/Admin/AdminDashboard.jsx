@@ -1,17 +1,25 @@
 // ==========================================
 // 📁 AdminDashboard.jsx
 // ✅ Profils cliquables → navigation /profile/:id
+// ✅ NOUVEAU : badge type de compte (Utilisateur / Pro / Entreprise)
+// ✅ NOUVEAU : statut "connecté" réel via /admin/online-users (Socket.IO),
+//    remplace user.isOnline qui n'était fiable qu'au login/logout
+// ✅ NOUVEAU : filtres par type de compte + filtre "en ligne uniquement"
+// ✅ Icônes SVG maison (AdminIcons.jsx) au lieu de lucide-react
 // ==========================================
 import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  Users, Crown, CheckCircle, Ban, Search, RotateCw, 
+import {
+  Users, Crown, CheckCircle, Ban, Search, RotateCw,
   Mail, Trash2, AlertCircle, Shield, Clock, Eye, Activity,
-  Flag, TrendingUp, AlertTriangle
-} from 'lucide-react';
+  Flag, TrendingUp, AlertTriangle, Briefcase, Building2,
+} from '../../components/icons/AdminIcons';
 import { useAuth } from '../../context/AuthContext';
 
 const API_URL = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://chantilink-backend.onrender.com/api' : 'http://localhost:5000/api');
+
+// ✅ Intervalle de rafraîchissement du statut "en ligne" (Socket.IO temps réel)
+const ONLINE_POLL_INTERVAL = 15000;
 
 // ==========================================
 // 🔧 REQUEST HOOK
@@ -40,9 +48,32 @@ const useSecureRequest = (token) => {
 };
 
 // ==========================================
-// 🖼️ AVATAR CLIQUABLE — composant partagé
+// 🏷️ BADGE TYPE DE COMPTE
+// ✅ NOUVEAU — lit user.accountType ("personal" | "pro" | "business")
 // ==========================================
-const ClickableAvatar = memo(({ user, size = 48, navigate }) => {
+const ACCOUNT_TYPE_CONFIG = {
+  personal: { label: 'Utilisateur',    color: 'bg-slate-100 text-slate-700 border-slate-200',     Icon: Users },
+  pro:      { label: 'Professionnel',  color: 'bg-indigo-100 text-indigo-700 border-indigo-200',  Icon: Briefcase },
+  business: { label: 'Entreprise',     color: 'bg-orange-100 text-orange-700 border-orange-200',  Icon: Building2 },
+};
+
+const AccountTypeBadge = memo(({ accountType, compact = false }) => {
+  const cfg = ACCOUNT_TYPE_CONFIG[accountType] || ACCOUNT_TYPE_CONFIG.personal;
+  const Icon = cfg.Icon;
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[8px] font-black rounded border uppercase ${cfg.color}`}>
+      <Icon size={9} />
+      {!compact && cfg.label}
+    </span>
+  );
+});
+AccountTypeBadge.displayName = 'AccountTypeBadge';
+
+// ==========================================
+// 🖼️ AVATAR CLIQUABLE — composant partagé
+// ✅ isOnline reçu en prop (calculé depuis le tracker temps réel, pas user.isOnline)
+// ==========================================
+const ClickableAvatar = memo(({ user, size = 48, navigate, isOnline }) => {
   const handleClick = (e) => {
     e.stopPropagation();
     if (!user?._id || ['unknown', 'null', 'undefined'].includes(String(user._id))) return;
@@ -66,6 +97,9 @@ const ClickableAvatar = memo(({ user, size = 48, navigate }) => {
           <Ban size={10} className="text-white" />
         </div>
       )}
+      {!user?.isBanned && isOnline && (
+        <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-white animate-pulse" />
+      )}
     </button>
   );
 });
@@ -79,11 +113,12 @@ const getFollowersCount = (user) => {
 // ==========================================
 // 🚨 REPORTED USER CARD
 // ==========================================
-const ReportedUserCard = memo(({ user, onAction, onViewReports, navigate }) => {
+const ReportedUserCard = memo(({ user, onAction, onViewReports, navigate, onlineUserIds }) => {
   const reportCount = user.moderation?.reportCount || 0;
   const strikes     = user.moderation?.strikes || 0;
   const riskLevel   = user.moderation?.riskLevel || 'low';
   const followersCount = getFollowersCount(user);
+  const isOnline = onlineUserIds?.has(String(user._id)) || false;
   
   const riskColors = {
     low:      'bg-green-100 text-green-700 border-green-200',
@@ -103,7 +138,7 @@ const ReportedUserCard = memo(({ user, onAction, onViewReports, navigate }) => {
     <div className="p-4 border-b border-gray-100 bg-white hover:bg-gray-50 transition-colors">
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3 flex-1">
-          <ClickableAvatar user={user} size={48} navigate={navigate} />
+          <ClickableAvatar user={user} size={48} navigate={navigate} isOnline={isOnline} />
           
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -117,6 +152,14 @@ const ReportedUserCard = memo(({ user, onAction, onViewReports, navigate }) => {
               {user.isVerified && <Shield size={12} className="text-blue-500 flex-shrink-0" />}
             </div>
             <p className="text-xs text-gray-500 truncate">{user.email}</p>
+            <div className="flex items-center gap-1.5 mt-1">
+              <AccountTypeBadge accountType={user.accountType} />
+              {isOnline && (
+                <span className="text-[8px] font-black text-green-600 uppercase flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> En ligne
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -383,11 +426,13 @@ ContentActionsPanel.displayName = 'ContentActionsPanel';
 
 // ==========================================
 // 👤 USER CARD
+// ✅ isOnline calculé depuis onlineUserIds (tracker Socket.IO temps réel)
+// ✅ Badge type de compte affiché
 // ==========================================
-const UserCard = memo(({ user, onAction, navigate }) => {
+const UserCard = memo(({ user, onAction, navigate, onlineUserIds }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const isOnline = user.isOnline || false;
+  const isOnline = onlineUserIds?.has(String(user._id)) || false;
   const followersCount = getFollowersCount(user);
   const dateInscription = new Date(user.createdAt).toLocaleDateString('fr-FR', {
     day: 'numeric', month: 'short', year: 'numeric'
@@ -403,13 +448,8 @@ const UserCard = memo(({ user, onAction, navigate }) => {
       <div className="p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
-            {/* ✅ Avatar cliquable */}
-            <div className="relative">
-              <ClickableAvatar user={user} size={56} navigate={navigate} />
-              <div className={`absolute bottom-0 right-0 w-4 h-4 rounded-full border-2 border-white ${
-                isOnline ? 'bg-green-500 animate-pulse' : 'bg-gray-400'
-              }`} />
-            </div>
+            {/* ✅ Avatar cliquable avec pastille en ligne réelle */}
+            <ClickableAvatar user={user} size={56} navigate={navigate} isOnline={isOnline} />
 
             <div className="min-w-0">
               {/* ✅ Nom cliquable */}
@@ -421,16 +461,19 @@ const UserCard = memo(({ user, onAction, navigate }) => {
                 {user.role === 'admin' && <Shield size={12} className="text-red-500 flex-shrink-0" />}
               </button>
               <p className="text-[11px] text-gray-400 truncate">{user.email}</p>
-              <button
-                onClick={goToProfile}
-                className="mt-1 inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-[10px] font-black text-blue-600 hover:bg-blue-100"
-              >
-                Voir le profil
-              </button>
+              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                <AccountTypeBadge accountType={user.accountType} />
+                <button
+                  onClick={goToProfile}
+                  className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-[10px] font-black text-blue-600 hover:bg-blue-100"
+                >
+                  Voir le profil
+                </button>
+              </div>
               <div className="flex items-center gap-1.5 mt-1">
                 <Clock size={10} className={isOnline ? 'text-green-600' : 'text-gray-400'} />
                 <span className={`text-[9px] font-black uppercase ${isOnline ? 'text-green-600' : 'text-gray-400'}`}>
-                  {isOnline ? 'En ligne' : `Vu: ${new Date(user.lastSeen || user.updatedAt).toLocaleDateString()}`}
+                  {isOnline ? 'En ligne maintenant' : `Vu: ${new Date(user.lastSeen || user.updatedAt).toLocaleDateString()}`}
                 </span>
               </div>
             </div>
@@ -487,6 +530,16 @@ const UserCard = memo(({ user, onAction, navigate }) => {
             </h4>
             <div className="space-y-2 text-[11px]">
               <div className="flex justify-between border-b border-gray-50 pb-1">
+                <span className="text-gray-400">Type de compte</span>
+                <span className="font-bold text-gray-700">{ACCOUNT_TYPE_CONFIG[user.accountType || 'personal']?.label}</span>
+              </div>
+              <div className="flex justify-between border-b border-gray-50 pb-1">
+                <span className="text-gray-400">Statut connexion</span>
+                <span className={`font-bold ${isOnline ? 'text-green-600' : 'text-gray-700'}`}>
+                  {isOnline ? 'En ligne maintenant' : 'Hors ligne'}
+                </span>
+              </div>
+              <div className="flex justify-between border-b border-gray-50 pb-1">
                 <span className="text-gray-400">Inscrit</span>
                 <span className="font-bold text-gray-700">{dateInscription}</span>
               </div>
@@ -528,6 +581,8 @@ UserCard.displayName = 'UserCard';
 // ✅ FIX : pagination côté serveur pour supporter des milliers d'utilisateurs
 // ✅ FIX : stats via /admin/stats (aggregations MongoDB, pas de chargement complet)
 // ✅ FIX : recherche côté serveur avec debounce
+// ✅ NOUVEAU : statut connecté réel via /admin/online-users, polling 15s
+// ✅ NOUVEAU : filtres type de compte (perso/pro/entreprise) + en ligne uniquement
 // ==========================================
 export default function AdminDashboard() {
   const { user, token } = useAuth();
@@ -543,6 +598,13 @@ export default function AdminDashboard() {
   const [notificationModal, setNotificationModal] = useState({ show: false, targetUser: null });
   const [reportsModal,    setReportsModal]    = useState({ show: false, user: null });
   const [activeTab,       setActiveTab]       = useState('all');
+
+  // ✅ NOUVEAU — filtres locaux (s'appliquent sur la page chargée)
+  const [typeFilter,      setTypeFilter]      = useState('all'); // all | personal | pro | business
+  const [onlineOnly,      setOnlineOnly]      = useState(false);
+
+  // ✅ NOUVEAU — utilisateurs réellement connectés (Set d'IDs, source: Socket.IO)
+  const [onlineUserIds,   setOnlineUserIds]   = useState(new Set());
 
   // ✅ Pagination côté serveur
   const [currentPage,     setCurrentPage]     = useState(1);
@@ -566,6 +628,20 @@ export default function AdminDashboard() {
       if (data.success && data.stats) setServerStats(data.stats);
     } catch (err) {
       console.warn('Stats admin indisponibles:', err.message);
+    }
+  }, [request, token]);
+
+  // ✅ NOUVEAU — utilisateurs réellement connectés (tracker Socket.IO côté serveur)
+  const loadOnlineUsers = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await request('/admin/online-users');
+      if (data.success && Array.isArray(data.onlineUserIds)) {
+        setOnlineUserIds(new Set(data.onlineUserIds.map(String)));
+      }
+    } catch (err) {
+      // Endpoint pas encore branché côté serveur — on garde l'ancien état, pas bloquant
+      console.warn('Statut en ligne indisponible:', err.message);
     }
   }, [request, token]);
 
@@ -599,8 +675,16 @@ export default function AdminDashboard() {
     if (token && ['admin', 'superadmin', 'moderator'].includes(user?.role)) {
       loadUsers(1, '');
       loadStats();
+      loadOnlineUsers();
     }
-  }, [token, user, loadUsers, loadStats]);
+  }, [token, user, loadUsers, loadStats, loadOnlineUsers]);
+
+  // ✅ NOUVEAU — polling du statut en ligne toutes les 15s
+  useEffect(() => {
+    if (!(token && ['admin', 'superadmin', 'moderator'].includes(user?.role))) return;
+    const interval = setInterval(loadOnlineUsers, ONLINE_POLL_INTERVAL);
+    return () => clearInterval(interval);
+  }, [token, user, loadOnlineUsers]);
 
   const stats = useMemo(() => ({
     total:    serverStats.total,
@@ -610,6 +694,18 @@ export default function AdminDashboard() {
     reported: serverStats.reported,
     followers: serverStats.followers,
   }), [serverStats]);
+
+  // ✅ NOUVEAU — utilisateurs affichés après filtres type/en-ligne (sur la page chargée)
+  const displayedUsers = useMemo(() => {
+    let list = users;
+    if (typeFilter !== 'all') {
+      list = list.filter(u => (u.accountType || 'personal') === typeFilter);
+    }
+    if (onlineOnly) {
+      list = list.filter(u => onlineUserIds.has(String(u._id)));
+    }
+    return list;
+  }, [users, typeFilter, onlineOnly, onlineUserIds]);
 
   const handleUserAction = useCallback(async (action, targetUser) => {
     if (action === 'notify') { setNotificationModal({ show: true, targetUser }); return; }
@@ -654,15 +750,19 @@ export default function AdminDashboard() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [totalPages, loadUsers, searchQuery]);
 
-  // ✅ La recherche est maintenant côté serveur, pas besoin de filteredUsers/filterReportedUsers
-  // On utilise directement users/reportedUsers qui sont déjà filtrés par le backend
-
   if (!user || !token) {
     return <div className="p-20 text-center"><p className="text-gray-600">⏳ Chargement...</p></div>;
   }
   if (!['admin', 'superadmin', 'moderator'].includes(user.role)) {
     return <div className="p-20 text-center"><p className="text-red-600 font-bold text-xl">⛔ Accès refusé</p></div>;
   }
+
+  const TYPE_FILTER_OPTIONS = [
+    { key: 'all',      label: 'Tous types' },
+    { key: 'personal', label: 'Utilisateurs' },
+    { key: 'pro',      label: 'Professionnels' },
+    { key: 'business', label: 'Entreprises' },
+  ];
 
   return (
     <div className="min-h-screen bg-gray-50 pb-32">
@@ -682,7 +782,7 @@ export default function AdminDashboard() {
             <h1 className="text-xl md:text-2xl font-black text-blue-600">ADMIN DASHBOARD</h1>
             <p className="text-xs text-gray-400 font-semibold">Utilisateurs, contenu, signalements et traçabilité en temps réel</p>
           </div>
-          <button onClick={() => { loadUsers(currentPage, searchQuery); loadStats(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
+          <button onClick={() => { loadUsers(currentPage, searchQuery); loadStats(); loadOnlineUsers(); }} className="p-2 bg-gray-100 rounded-full active:rotate-180 transition-all">
             <RotateCw size={18}/>
           </button>
         </div>
@@ -705,6 +805,12 @@ export default function AdminDashboard() {
       {/* STATS */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 p-4 max-w-[1600px] mx-auto">
         <div className="bg-blue-600   p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Membres</p><p className="text-3xl font-black">{stats.total}</p></div>
+        <div className="bg-emerald-600 p-4 rounded-[28px] text-white shadow-lg">
+          <p className="text-[10px] font-black opacity-70 uppercase flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" /> Connectés
+          </p>
+          <p className="text-3xl font-black">{onlineUserIds.size}</p>
+        </div>
         <div className="bg-indigo-600 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Abonnés</p><p className="text-3xl font-black">{stats.followers.toLocaleString('fr-FR')}</p></div>
         <div className="bg-orange-500 p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Élite</p><p className="text-3xl font-black">{stats.premium}</p></div>
         <div className="bg-green-600  p-4 rounded-[28px] text-white shadow-lg"><p className="text-[10px] font-black opacity-70 uppercase">Vérifiés</p><p className="text-3xl font-black">{stats.verified}</p></div>
@@ -727,6 +833,36 @@ export default function AdminDashboard() {
             <Flag size={16} className="inline mr-2" /> Signalés ({reportedUsers.length})
           </button>
         </div>
+
+        {/* ✅ NOUVEAU — filtres type de compte + en ligne uniquement (onglet "Tous") */}
+        {activeTab === 'all' && (
+          <div className="flex flex-wrap gap-2 mt-3">
+            {TYPE_FILTER_OPTIONS.map(opt => (
+              <button
+                key={opt.key}
+                onClick={() => setTypeFilter(opt.key)}
+                className={`px-3 py-1.5 rounded-full text-[11px] font-bold border transition-colors ${
+                  typeFilter === opt.key
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+            <button
+              onClick={() => setOnlineOnly(v => !v)}
+              className={`px-3 py-1.5 rounded-full text-[11px] font-bold border transition-colors flex items-center gap-1.5 ${
+                onlineOnly
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${onlineOnly ? 'bg-white' : 'bg-emerald-500'} ${onlineOnly ? 'animate-pulse' : ''}`} />
+              En ligne uniquement
+            </button>
+          </div>
+        )}
       </div>
 
       {/* LISTE */}
@@ -734,7 +870,9 @@ export default function AdminDashboard() {
         <div className="bg-white rounded-[32px] shadow-sm border overflow-hidden">
           <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
             <span className="text-[10px] font-black text-gray-500 uppercase">
-              {activeTab === 'all' ? `Registre (${users.length}/${totalUsers})` : `Signalements (${reportedUsers.length})`}
+              {activeTab === 'all'
+                ? `Registre (${displayedUsers.length}/${totalUsers}${typeFilter !== 'all' || onlineOnly ? ' — filtré sur cette page' : ''})`
+                : `Signalements (${reportedUsers.length})`}
             </span>
             <Activity size={14} className="text-gray-400" />
           </div>
@@ -742,13 +880,13 @@ export default function AdminDashboard() {
           {loading ? (
             <div className="p-20 text-center"><RotateCw className="animate-spin mx-auto text-blue-500" /></div>
           ) : activeTab === 'all' ? (
-            users.length === 0
+            displayedUsers.length === 0
               ? <div className="p-20 text-center text-gray-400 font-bold">Aucun résultat</div>
               : (
                 <>
                   <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3">
-                    {users.map(u => (
-                      <UserCard key={u._id} user={u} onAction={handleUserAction} navigate={navigate} />
+                    {displayedUsers.map(u => (
+                      <UserCard key={u._id} user={u} onAction={handleUserAction} navigate={navigate} onlineUserIds={onlineUserIds} />
                     ))}
                   </div>
                   {/* PAGINATION */}
@@ -786,6 +924,7 @@ export default function AdminDashboard() {
                       onAction={handleUserAction}
                       onViewReports={(user) => setReportsModal({ show: true, user })}
                       navigate={navigate}
+                      onlineUserIds={onlineUserIds}
                     />
                   ))}
                 </div>

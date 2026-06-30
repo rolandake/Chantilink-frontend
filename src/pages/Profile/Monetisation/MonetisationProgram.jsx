@@ -5,6 +5,15 @@ import { useDarkMode } from "../../../context/DarkModeContext";
 import { getAuthToken, monetisationFetch, readMonetisationJson } from "./monetisationApi";
 import useMonetisationRealtime, { emitMonetisationRefresh } from "./useMonetisationRealtime";
 
+// ⏸️ TEMP v4.3 — Programme créateur réduit à la CERTIFICATION DE COMPTE uniquement.
+//   - La monétisation (offres, revenus, retraits, politique de monétisation) est masquée
+//     temporairement le temps de retravailler cette partie.
+//   - Rien n'est supprimé côté logique : status.monetisation, status.payout, stats, etc.
+//     continuent d'être chargés depuis l'API et restent dans `status` — seules les
+//     sections d'affichage monétisation ont été retirées du rendu.
+//   - Pour réactiver plus tard : remettre les blocs commentés "MONÉTISATION (désactivée)"
+//     ci-dessous, ou repartir de l'ancienne version du fichier.
+
 const fallbackStatus = (user = {}) => {
   const followersCount = user.followersCount || user.followers?.length || 0;
   const postsCount = user.postsCount || 0;
@@ -51,6 +60,7 @@ const fallbackStatus = (user = {}) => {
       eligible: certificationChecks.every((check) => check.passed),
       checks: certificationChecks,
     },
+    // ⏸️ Conservé tel quel (non affiché) pour ne rien casser quand la monétisation reviendra.
     monetisation: {
       status: "not_ready",
       eligible: false,
@@ -114,9 +124,6 @@ const statusLabel = {
   not_ready: "À compléter",
   requires_certification: "Certification requise",
 };
-
-const formatMoney = (amount, currency = "XOF") =>
-  new Intl.NumberFormat("fr-FR", { style: "currency", currency, maximumFractionDigits: 0 }).format(amount || 0);
 
 function CheckRow({ check, dark, onNavigate }) {
   return (
@@ -226,8 +233,10 @@ export default function MonetisationProgram({ user, showToast, onNavigate }) {
   }, [refresh]);
   useMonetisationRealtime(refresh, "status");
 
+  // ⏸️ TEMP v4.3 : la progression affichée ne porte plus que sur la certification
+  // (avant : certification + monétisation cumulées).
   const progress = useMemo(() => {
-    const checks = [...(status.certification?.checks || []), ...(status.monetisation?.checks || [])];
+    const checks = status.certification?.checks || [];
     if (!checks.length) return 0;
     return Math.round((checks.filter((check) => check.passed).length / checks.length) * 100);
   }, [status]);
@@ -256,19 +265,6 @@ export default function MonetisationProgram({ user, showToast, onNavigate }) {
     }
   };
 
-  const stats = status.monetisation?.stats || {};
-  const currency = status.payout?.currency || "XOF";
-  const breakdown = stats.revenueBreakdown || {};
-  const revenueStreams = stats.social?.streams || [];
-  const streamAmounts = {
-    creator_fund: breakdown.creatorFund,
-    ad_share: breakdown.adShare,
-    tips: breakdown.tips,
-    subscriptions: breakdown.subscriptions,
-    premium_content: breakdown.premiumContent,
-    offers: breakdown.offerSales,
-  };
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: "'Sora','DM Sans',sans-serif" }}>
       <div
@@ -284,14 +280,14 @@ export default function MonetisationProgram({ user, showToast, onNavigate }) {
         <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
           <div style={{ maxWidth: 620 }}>
             <p style={{ margin: "0 0 6px", color: "#f97316", fontSize: 12, fontWeight: 900, textTransform: "uppercase", letterSpacing: ".08em" }}>
-              Programme créateur
+              Certification de compte
             </p>
             <h2 style={{ margin: 0, color: text, fontSize: 24, fontWeight: 950, lineHeight: 1.15 }}>
-              Certifier et monétiser votre compte professionnel
+              Certifier votre compte professionnel
             </h2>
             <p style={{ margin: "10px 0 0", color: sub, fontSize: 13, lineHeight: 1.65 }}>
-              ChantiLink active la monétisation aux profils fiables qui apportent une vraie valeur au génie civil :
-              contenus utiles, offres claires, identité vérifiée et historique propre.
+              La certification confirme que le compte représente une vraie personne ou activité professionnelle
+              fiable dans le génie civil et le BTP.
             </p>
           </div>
           <div
@@ -322,9 +318,6 @@ export default function MonetisationProgram({ user, showToast, onNavigate }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 10, marginTop: 18 }}>
           {[
             ["Certification", statusLabel[status.certification?.status] || "À vérifier"],
-            ["Monétisation", statusLabel[status.monetisation?.status] || "À compléter"],
-            ["Retraits", status.payout?.enabled ? "Activés" : "À préparer"],
-            ["Revenus", formatMoney(stats.totalRevenue, currency)],
           ].map(([label, value]) => (
             <div key={label} style={{ border: `1px solid ${border}`, borderRadius: 14, padding: 12, background: dark ? "rgba(2,6,23,0.35)" : "rgba(255,255,255,0.78)" }}>
               <p style={{ margin: 0, color: sub, fontSize: 11, fontWeight: 800 }}>{label}</p>
@@ -334,173 +327,38 @@ export default function MonetisationProgram({ user, showToast, onNavigate }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
-        <SectionCard dark={dark} title="Conditions pour être certifié" subtitle="La certification confirme que le compte représente une vraie personne ou activité professionnelle.">
-          {(status.certification?.checks || []).map((check) => (
-            <CheckRow key={check.id} check={check} dark={dark} onNavigate={onNavigate} />
-          ))}
-          <button
-            type="button"
-            disabled={!status.certification?.eligible || status.account?.isVerified || submitting === "certification"}
-            onClick={() => submitApplication("certification")}
-            style={{
-              width: "100%",
-              marginTop: 14,
-              border: "none",
-              borderRadius: 14,
-              padding: "12px 14px",
-              background: status.certification?.eligible && !status.account?.isVerified ? "linear-gradient(135deg,#f97316,#ec4899)" : dark ? "#1f2937" : "#e5e7eb",
-              color: status.certification?.eligible && !status.account?.isVerified ? "#fff" : sub,
-              fontWeight: 900,
-              cursor: status.certification?.eligible && !status.account?.isVerified ? "pointer" : "not-allowed",
-            }}
-          >
-            {status.account?.isVerified ? "Compte déjà certifié" : submitting === "certification" ? "Envoi en cours..." : "Demander la certification"}
-          </button>
-        </SectionCard>
-
-        <SectionCard dark={dark} title="Conditions pour monétiser" subtitle="Le compte doit être certifié, actif, utile et prêt à vendre une offre claire.">
-          {(status.monetisation?.checks || []).map((check) => (
-            <CheckRow key={check.id} check={check} dark={dark} onNavigate={onNavigate} />
-          ))}
-          <button
-            type="button"
-            disabled={!status.monetisation?.eligible || submitting === "monetisation"}
-            onClick={() => submitApplication("monetisation")}
-            style={{
-              width: "100%",
-              marginTop: 14,
-              border: "none",
-              borderRadius: 14,
-              padding: "12px 14px",
-              background: status.monetisation?.eligible ? "linear-gradient(135deg,#10b981,#0ea5e9)" : dark ? "#1f2937" : "#e5e7eb",
-              color: status.monetisation?.eligible ? "#fff" : sub,
-              fontWeight: 900,
-              cursor: status.monetisation?.eligible ? "pointer" : "not-allowed",
-            }}
-          >
-            {submitting === "monetisation" ? "Envoi en cours..." : "Demander l'activation monétisation"}
-          </button>
-        </SectionCard>
-      </div>
-
-      <SectionCard
-        dark={dark}
-        title="Comment le compte gagne de l'argent"
-        subtitle="Le créateur peut cumuler plusieurs revenus, comme sur les grands réseaux : audience, publicités, soutien direct, abonnements et ventes."
-      >
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12 }}>
-          {revenueStreams.map((stream) => (
-            <div
-              key={stream.id}
-              style={{
-                border: `1px solid ${border}`,
-                borderRadius: 16,
-                padding: 14,
-                background: dark ? "rgba(2,6,23,0.32)" : "#f8fafc",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                <strong style={{ color: text, fontSize: 13 }}>{stream.title}</strong>
-                <span style={{ color: "#10b981", fontSize: 12, fontWeight: 900 }}>
-                  {formatMoney(streamAmounts[stream.id], currency)}
-                </span>
-              </div>
-              <p style={{ margin: "8px 0 0", color: sub, fontSize: 12, lineHeight: 1.5 }}>{stream.description}</p>
-              {stream.enabledBy && (
-                <p style={{ margin: "10px 0 0", color: "#f97316", fontSize: 11, fontWeight: 800 }}>
-                  Activation : {stream.enabledBy}
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10, marginTop: 14 }}>
-          {[
-            ["Solde disponible", stats.availableBalance],
-            ["Ce mois", stats.monthlyRevenue],
-            ["Vues qualifiées", stats.social?.totals?.qualifiedViews, "number"],
-            ["Frais plateforme", stats.platformFees],
-          ].map(([label, value, type]) => (
-            <div key={label} style={{ border: `1px solid ${border}`, borderRadius: 14, padding: 12 }}>
-              <p style={{ margin: 0, color: sub, fontSize: 11, fontWeight: 800 }}>{label}</p>
-              <strong style={{ display: "block", marginTop: 4, color: text, fontSize: 14 }}>
-                {type === "number" ? Number(value || 0).toLocaleString("fr-FR") : formatMoney(value, currency)}
-              </strong>
-            </div>
-          ))}
-        </div>
+      <SectionCard dark={dark} title="Conditions pour être certifié" subtitle="La certification confirme que le compte représente une vraie personne ou activité professionnelle.">
+        {(status.certification?.checks || []).map((check) => (
+          <CheckRow key={check.id} check={check} dark={dark} onNavigate={onNavigate} />
+        ))}
+        <button
+          type="button"
+          disabled={!status.certification?.eligible || status.account?.isVerified || submitting === "certification"}
+          onClick={() => submitApplication("certification")}
+          style={{
+            width: "100%",
+            marginTop: 14,
+            border: "none",
+            borderRadius: 14,
+            padding: "12px 14px",
+            background: status.certification?.eligible && !status.account?.isVerified ? "linear-gradient(135deg,#f97316,#ec4899)" : dark ? "#1f2937" : "#e5e7eb",
+            color: status.certification?.eligible && !status.account?.isVerified ? "#fff" : sub,
+            fontWeight: 900,
+            cursor: status.certification?.eligible && !status.account?.isVerified ? "pointer" : "not-allowed",
+          }}
+        >
+          {status.account?.isVerified ? "Compte déjà certifié" : submitting === "certification" ? "Envoi en cours..." : "Demander la certification"}
+        </button>
       </SectionCard>
 
-      {Array.isArray(stats.social?.topPosts) && stats.social.topPosts.length > 0 && (
-        <SectionCard dark={dark} title="Publications qui rapportent le plus" subtitle="Estimation basée sur les vues qualifiées, le type de média et l'engagement.">
-          <div style={{ display: "grid", gap: 10 }}>
-            {stats.social.topPosts.slice(0, 5).map((post) => (
-              <div
-                key={post.postId}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto",
-                  gap: 12,
-                  alignItems: "center",
-                  padding: 12,
-                  borderRadius: 14,
-                  border: `1px solid ${border}`,
-                  background: dark ? "rgba(2,6,23,0.28)" : "#f8fafc",
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <p style={{ margin: 0, color: text, fontSize: 13, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {post.title}
-                  </p>
-                  <p style={{ margin: "5px 0 0", color: sub, fontSize: 11 }}>
-                    {Number(post.qualifiedViews || 0).toLocaleString("fr-FR")} vues qualifiées
-                  </p>
-                </div>
-                <strong style={{ color: "#10b981", fontSize: 13 }}>{formatMoney(post.estimatedRevenue, currency)}</strong>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
-        <SectionCard dark={dark} title={status.policy?.title || "Politique de monétisation"} subtitle={status.policy?.rulesSummary}>
-          <div style={{ display: "grid", gap: 10 }}>
-            {(status.policy?.rules || []).map((rule, index) => (
-              <div key={rule} style={{ display: "grid", gridTemplateColumns: "26px 1fr", gap: 10, alignItems: "start" }}>
-                <span style={{ color: "#f97316", fontWeight: 900, fontSize: 12 }}>{String(index + 1).padStart(2, "0")}</span>
-                <p style={{ margin: 0, color: dark ? "#cbd5e1" : "#334155", fontSize: 12, lineHeight: 1.55 }}>{rule}</p>
-              </div>
-            ))}
-          </div>
-        </SectionCard>
-
-        <SectionCard dark={dark} title="Retraits et paiements" subtitle={`Minimum de retrait : ${formatMoney(status.payout?.minimumAmount, currency)}.`}>
-          {(status.payout?.requirements || []).map((item) => (
-            <p key={item} style={{ margin: "0 0 10px", color: dark ? "#cbd5e1" : "#334155", fontSize: 12, lineHeight: 1.5 }}>
-              <strong style={{ color: status.payout?.enabled ? "#10b981" : "#f97316" }}>{status.payout?.enabled ? "Actif" : "Requis"}</strong> : {item}
-            </p>
-          ))}
-          <button
-            type="button"
-            onClick={() => onNavigate?.("create")}
-            style={{
-              width: "100%",
-              border: `1px solid ${border}`,
-              borderRadius: 14,
-              padding: "11px 12px",
-              background: dark ? "rgba(255,255,255,0.06)" : "#f8fafc",
-              color: text,
-              fontWeight: 900,
-              cursor: "pointer",
-            }}
-          >
-            Créer ou améliorer une offre
-          </button>
-        </SectionCard>
-      </div>
+      {/* ⏸️ MONÉTISATION (désactivée temporairement) — sections retirées du rendu :
+          - SectionCard "Conditions pour monétiser" (status.monetisation.checks)
+          - SectionCard "Comment le compte gagne de l'argent" (revenue streams, stats)
+          - SectionCard "Publications qui rapportent le plus" (stats.social.topPosts)
+          - SectionCard "Politique de monétisation ChantiLink" (status.policy.rules)
+          - SectionCard "Retraits et paiements" (status.payout)
+          Les données restent disponibles dans `status` (monetisation, payout, policy)
+          pour une réactivation rapide plus tard. */}
     </div>
   );
 }

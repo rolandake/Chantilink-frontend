@@ -3,6 +3,11 @@
 // Sidebar sombre (initiales, contact, compétences, langues, certifs)
 // Corps blanc (résumé, expériences, formation)
 // Utilisé dans ProCVView à la place du rendu carte après sauvegarde
+// ✅ FIX dark mode : les titres de section du corps ("Résumé", "Expérience",
+//   "Formation"), le poste sous le nom et le nom d'entreprise dans les
+//   expériences utilisaient ACCENT/ACCENT2 (bleu marine #1e3a5f / #2d5a8e),
+//   quasi invisibles sur le fond sombre du corps (#1a1a2e). On bascule sur
+//   un bleu plus clair en isDarkMode pour garder un bon contraste.
 
 import React, { useRef } from "react";
 import { motion } from "framer-motion";
@@ -40,7 +45,9 @@ const SideSection = ({ title, children }) => (
 );
 
 // ── Séparateur de section (corps) ─────────────────────────────────────────────
-const BodySection = ({ title, accent = "#1e3a5f", children }) => (
+// ✅ FIX dark mode : accentText (couleur du titre + barre) distincte de accentBorder
+// (couleur du trait gauche dans ExpCard), pour rester lisible sur fond sombre.
+const BodySection = ({ title, accent = "#1e3a5f", isDarkMode, children }) => (
   <div style={{ marginBottom: 20 }}>
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
       <span style={{
@@ -56,7 +63,7 @@ const BodySection = ({ title, accent = "#1e3a5f", children }) => (
         fontWeight: 800,
         letterSpacing: "0.1em",
         textTransform: "uppercase",
-        color: accent,
+        color: isDarkMode ? "#7ab8f5" : accent,
         margin: 0,
       }}>{title}</p>
     </div>
@@ -65,22 +72,22 @@ const BodySection = ({ title, accent = "#1e3a5f", children }) => (
 );
 
 // ── Expérience card ───────────────────────────────────────────────────────────
-const ExpCard = ({ exp, accent }) => (
+const ExpCard = ({ exp, accent, isDarkMode }) => (
   <div style={{ marginBottom: 14, paddingLeft: 12, borderLeft: `2px solid ${accent}25` }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 4 }}>
       <div>
-        <p style={{ fontSize: 12, fontWeight: 800, color: "#111827", margin: "0 0 1px" }}>
+        <p style={{ fontSize: 12, fontWeight: 800, color: isDarkMode ? "#f8fafc" : "#111827", margin: "0 0 1px" }}>
           {exp.role || "—"}
         </p>
-        <p style={{ fontSize: 11, fontWeight: 700, color: accent, margin: "0 0 5px" }}>
+        <p style={{ fontSize: 11, fontWeight: 700, color: isDarkMode ? "#7ab8f5" : accent, margin: "0 0 5px" }}>
           {exp.company || "—"}
         </p>
       </div>
       <span style={{
         fontSize: 9,
         fontWeight: 700,
-        color: "#6b7280",
-        background: "#f3f4f6",
+        color: isDarkMode ? "#cbd5e1" : "#6b7280",
+        background: isDarkMode ? "rgba(255,255,255,0.08)" : "#f3f4f6",
         padding: "3px 8px",
         borderRadius: 4,
         whiteSpace: "nowrap",
@@ -91,7 +98,7 @@ const ExpCard = ({ exp, accent }) => (
       </span>
     </div>
     {exp.description && (
-      <p style={{ fontSize: 10.5, color: "#4b5563", margin: 0, lineHeight: 1.65 }}>
+      <p style={{ fontSize: 10.5, color: isDarkMode ? "#94a3b8" : "#4b5563", margin: 0, lineHeight: 1.65 }}>
         {exp.description}
       </p>
     )}
@@ -99,13 +106,13 @@ const ExpCard = ({ exp, accent }) => (
 );
 
 // ── Formation card ────────────────────────────────────────────────────────────
-const EduCard = ({ edu }) => (
+const EduCard = ({ edu, isDarkMode }) => (
   <div style={{ marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 4 }}>
     <div>
-      <p style={{ fontSize: 12, fontWeight: 700, color: "#111827", margin: "0 0 1px" }}>
+      <p style={{ fontSize: 12, fontWeight: 700, color: isDarkMode ? "#f8fafc" : "#111827", margin: "0 0 1px" }}>
         {edu.degree || "—"}
       </p>
-      <p style={{ fontSize: 10.5, color: "#6b7280", margin: 0 }}>
+      <p style={{ fontSize: 10.5, color: isDarkMode ? "#94a3b8" : "#6b7280", margin: 0 }}>
         {edu.school || ""}
       </p>
     </div>
@@ -113,8 +120,8 @@ const EduCard = ({ edu }) => (
       <span style={{
         fontSize: 9,
         fontWeight: 700,
-        color: "#6b7280",
-        background: "#f3f4f6",
+        color: isDarkMode ? "#cbd5e1" : "#6b7280",
+        background: isDarkMode ? "rgba(255,255,255,0.08)" : "#f3f4f6",
         padding: "3px 8px",
         borderRadius: 4,
         flexShrink: 0,
@@ -169,7 +176,7 @@ export default function ProCVDocument({ user, isOwner, onEdit, isDarkMode }) {
               borderRadius: 999,
               border:       "1px solid rgba(30,58,95,0.25)",
               background:   isDarkMode ? "rgba(30,58,95,0.18)" : "rgba(30,58,95,0.07)",
-              color:        ACCENT,
+              color:        isDarkMode ? "#7ab8f5" : ACCENT,
               fontWeight:   700,
               fontSize:     12,
               cursor:       "pointer",
@@ -346,7 +353,7 @@ export default function ProCVDocument({ user, isOwner, onEdit, isDarkMode }) {
           <div style={{
             marginBottom:  22,
             paddingBottom: 16,
-            borderBottom:  `2px solid ${ACCENT}`,
+            borderBottom:  `2px solid ${isDarkMode ? "#7ab8f5" : ACCENT}`,
           }}>
             <h1 style={{
               fontSize:    22,
@@ -362,7 +369,7 @@ export default function ProCVDocument({ user, isOwner, onEdit, isDarkMode }) {
               <p style={{
                 fontSize:   13,
                 fontWeight: 600,
-                color:      ACCENT2,
+                color:      isDarkMode ? "#a8cdf0" : ACCENT2,
                 margin:     0,
                 letterSpacing: "0.01em",
               }}>
@@ -373,7 +380,7 @@ export default function ProCVDocument({ user, isOwner, onEdit, isDarkMode }) {
 
           {/* Résumé */}
           {pi.summary && (
-            <BodySection title="Résumé" accent={ACCENT}>
+            <BodySection title="Résumé" accent={isDarkMode ? "#7ab8f5" : ACCENT} isDarkMode={isDarkMode}>
               <p style={{
                 fontSize:   11,
                 color:      isDarkMode ? "#cbd5e1" : "#374151",
@@ -387,18 +394,18 @@ export default function ProCVDocument({ user, isOwner, onEdit, isDarkMode }) {
 
           {/* Expériences */}
           {hasExp && (
-            <BodySection title="Expérience" accent={ACCENT}>
+            <BodySection title="Expérience" accent={isDarkMode ? "#7ab8f5" : ACCENT} isDarkMode={isDarkMode}>
               {pi.experiences.map((exp, i) => (
-                <ExpCard key={i} exp={exp} accent={ACCENT2} />
+                <ExpCard key={i} exp={exp} accent={ACCENT2} isDarkMode={isDarkMode} />
               ))}
             </BodySection>
           )}
 
           {/* Formation */}
           {hasEdu && (
-            <BodySection title="Formation" accent={ACCENT}>
+            <BodySection title="Formation" accent={isDarkMode ? "#7ab8f5" : ACCENT} isDarkMode={isDarkMode}>
               {pi.education.map((edu, i) => (
-                <EduCard key={i} edu={edu} />
+                <EduCard key={i} edu={edu} isDarkMode={isDarkMode} />
               ))}
             </BodySection>
           )}
